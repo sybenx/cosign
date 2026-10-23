@@ -1,0 +1,54 @@
+package cc.aaro.cosign
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import cc.aaro.cosign.ui.App
+import cc.aaro.cosign.ui.CosignTheme
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // The app is always dark; keep the system bar icons light whatever the phone's theme.
+        enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
+        val phone = CosignApp.instance.phone
+        testHook(intent)
+        setContent {
+            CosignTheme {
+                val ui by phone.ui.collectAsState()
+                val notify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+                // Once in a group: stay reachable, and be allowed to say so.
+                LaunchedEffect(ui.member != null) {
+                    if (ui.member != null) {
+                        if (Build.VERSION.SDK_INT >= 33) notify.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        CosignService.start(this@MainActivity)
+                    }
+                }
+                App(phone, ui)
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        testHook(intent)
+    }
+
+    // Debug builds only: hand the app a pairing code without a camera, for the
+    // emulator (adb shell am start -n cc.aaro.cosign/.MainActivity --es pair '<code>').
+    private fun testHook(intent: Intent?) {
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+        intent?.getStringExtra("pair")?.let { CosignApp.instance.phone.scanned(it) }
+    }
+}

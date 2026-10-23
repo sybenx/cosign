@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.Cosign" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF13110F</item>
+        <item name="android:windowSplashScreenBackground">#FF13110F</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

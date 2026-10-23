@@ -1,0 +1,10 @@
+# Shares and keys. Never commit these.
+server/data/
+server/logs/
+node_modules/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore.properties
+.DS_Store

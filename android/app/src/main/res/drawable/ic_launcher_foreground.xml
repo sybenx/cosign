@@ -1,0 +1,10 @@
+<!-- Three members, any two of which sign: two filled, one an outline. Inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FF7FC8C0" android:pathData="M54,35m-9,0a9,9 0,1 1,18 0a9,9 0,1 1,-18 0" />
+    <path android:fillColor="#FF7FC8C0" android:pathData="M38,64m-9,0a9,9 0,1 1,18 0a9,9 0,1 1,-18 0" />
+    <path android:fillColor="#00000000" android:strokeColor="#FF7FC8C0" android:strokeWidth="3.5"
+        android:pathData="M70,64m-7.25,0a7.25,7.25 0,1 1,14.5 0a7.25,7.25 0,1 1,-14.5 0" />
+    <path android:fillColor="#00000000" android:strokeColor="#FF7FC8C0" android:strokeWidth="2.5"
+        android:pathData="M49,42 L41,56 M59,42 L66,56 M47,64 L62,64" />
+</vector>
