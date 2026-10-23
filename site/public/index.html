@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cosign demo</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; background: #13110f; color: #ede6da; max-width: 640px; margin: 0 auto; padding: 28px 20px 60px; }
+  h1 { font-size: 24px; margin: 0 0 4px; } .muted { color: #a69d90; }
+  .card { background: #1e1b18; border: 1px solid #2a2622; border-radius: 14px; padding: 20px; margin: 18px 0; }
+  #qr { width: 260px; max-width: 100%; background: #fff; border-radius: 12px; padding: 6px; margin: 14px 0; }
+  #qr:empty { height: 260px; background: #1e1b18; border: 1px dashed #34302b; }
+  button { font: inherit; border-radius: 10px; padding: 9px 14px; border: 1px solid #34302b; background: #24201c; color: #ede6da; cursor: pointer; margin: 4px 6px 4px 0; }
+  button.primary { background: #7fc8c0; color: #13110f; border-color: #7fc8c0; font-weight: 600; }
+  button.danger { border-color: #5a4520; color: #e9cf97; }
+  textarea { width: 100%; box-sizing: border-box; background: #13110f; color: #ede6da; border: 1px solid #34302b; border-radius: 10px; padding: 10px; font: inherit; min-height: 60px; }
+  h2 { font-size: 15px; color: #a69d90; margin: 0 0 10px; font-weight: 600; }
+  ul { padding-left: 18px; margin: 0; } li { margin: 4px 0; }
+  li.ok { color: #7fc8c0; } li.no { color: #e5736b; } li.wait { color: #f2b33d; }
+  #confirm { border-color: #2f4a47; background: #16201f; }
+</style>
+
+<h1>Cosign demo</h1>
+<div class="muted">A site that signs in with your phone — without your key.</div>
+
+<section id="signedout" hidden>
+  <div class="card">
+    <h2>Sign in with your phone</h2>
+    <div id="qr"></div>
+    <div id="status" class="muted"></div>
+    <button id="again" hidden>Show a new code</button>
+  </div>
+  <div class="card" id="confirm" hidden>
+    <h2>Your phone answered</h2>
+    <div id="rendering" style="margin-bottom:12px"></div>
+    <button class="primary" id="yes">Sign in</button><button id="no">Cancel</button>
+  </div>
+</section>
+
+<section id="signedin" hidden>
+  <div class="card">
+    <h2>Signed in as</h2>
+    <div id="who" style="font-family: ui-monospace, monospace; font-size: 18px"></div>
+    <div class="muted" style="margin-top:6px">Following <span id="follows">0</span> · <button id="signout" style="padding:3px 10px">Sign out</button></div>
+  </div>
+  <div class="card">
+    <h2>Everyday — signs straight away</h2>
+    <textarea id="text" placeholder="gm from the cosign demo"></textarea>
+    <button class="primary" data-act="note">Post a note</button>
+    <button data-act="react">React</button>
+    <button data-act="follow30">Follow 30 people</button>
+    <button data-act="follow1">Follow 1 more</button>
+    <button data-act="name">Set profile name</button>
+  </div>
+  <div class="card">
+    <h2>Destructive — your phone has to approve</h2>
+    <button class="danger" data-act="unfollow">Unfollow everyone</button>
+    <button class="danger" data-act="wipe">Wipe profile</button>
+    <button class="danger" data-act="delete6">Delete 6 notes</button>
+    <div class="muted" style="margin-top:8px; font-size:14px">Unfollowing only counts as destructive once there's a follow list to lose, and a wiped profile once there's a profile.</div>
+  </div>
+  <div class="card"><h2>What happened</h2><ul id="log"></ul></div>
+</section>
+
+<script type="module" src="app.js"></script>

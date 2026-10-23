@@ -14,5 +14,10 @@
     "@noble/hashes": "^2.4.0",
     "nostr-tools": "^2.25.2",
     "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^5.9.3"
   }
 }

@@ -16,6 +16,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import cc.aaro.cosign.ui.App
 import cc.aaro.cosign.ui.CosignTheme
+import org.unifiedpush.android.connector.UnifiedPush
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,6 +34,8 @@ class MainActivity : ComponentActivity() {
                     if (ui.member != null) {
                         if (Build.VERSION.SDK_INT >= 33) notify.launch(Manifest.permission.POST_NOTIFICATIONS)
                         CosignService.start(this@MainActivity)
+                        // ntfy, if it's installed. Without it, approvals reach you while Cosign is running.
+                        UnifiedPush.tryUseCurrentOrDefaultDistributor(this@MainActivity) { ok -> if (ok) UnifiedPush.register(this@MainActivity) }
                     }
                 }
                 App(phone, ui)

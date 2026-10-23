@@ -44,6 +44,13 @@
 
         <receiver android:name=".DecisionReceiver" android:exported="false" />
 
+        <!-- ntfy (or any UnifiedPush distributor) wakes the app when an approval is waiting. -->
+        <service android:name=".Push" android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

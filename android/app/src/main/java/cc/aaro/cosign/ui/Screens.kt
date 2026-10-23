@@ -44,10 +44,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cc.aaro.cosign.Ask
-import cc.aaro.cosign.Kinds
+import cc.aaro.cosign.Change
+import cc.aaro.cosign.Connect
 import cc.aaro.cosign.Line
 import cc.aaro.cosign.Offer
 import cc.aaro.cosign.Phone
+import cc.aaro.cosign.Site
 import cc.aaro.cosign.Ui
 import kotlinx.coroutines.delay
 import java.text.DateFormat
@@ -58,18 +60,19 @@ fun App(phone: Phone, ui: Ui) {
     var scanning by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Vault.Ground)) {
         when {
-            ui.offer != null -> JoinPrompt(ui.offer, phone::accept, phone::decline)
-            ui.joining != null -> Joining(ui.joining, phone::decline)
-            ui.member == null && scanning -> {
+            scanning -> {
                 BackHandler { scanning = false }
                 Box(Modifier.fillMaxSize()) {
                     QrScanner(Modifier.fillMaxSize()) { scanning = false; phone.scanned(it) }
                     TextButton({ scanning = false }, Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(24.dp)) { Text("Cancel", color = Vault.Text) }
                 }
             }
+            ui.offer != null -> JoinPrompt(ui.offer, phone::accept, phone::decline)
+            ui.joining != null -> Joining(ui.joining, phone::decline)
             ui.member == null -> Welcome(ui.error) { phone.clearError(); scanning = true }
-            else -> Home(phone, ui)
+            else -> Home(phone, ui) { phone.clearError(); scanning = true }
         }
+        ui.connect?.let { ConnectSheet(it, phone::confirmConnect, phone::closeConnect) }
     }
 }
 
@@ -83,20 +86,17 @@ private fun Welcome(error: String?, onScan: () -> Unit) = Page {
     Text("Cosign", style = MaterialTheme.typography.headlineMedium, color = Vault.Text)
     Spacer(Modifier.height(12.dp))
     Text(
-        "Holds one share of your Nostr key. Your two servers sign the everyday things between them; " +
-            "anything that matters waits for you to tap Approve here. Lose this phone, or either server, and the other two still work.",
+        "Your Nostr key, split between your two servers and this phone. Sites sign through your servers; " +
+            "this phone is where you connect them, remove them, and approve anything destructive.",
         style = MaterialTheme.typography.bodyLarge, color = Vault.Muted,
     )
-    if (error != null) {
-        Spacer(Modifier.height(16.dp))
-        Text(error, color = Vault.Danger, style = MaterialTheme.typography.bodyMedium)
-    }
+    error?.let { Spacer(Modifier.height(16.dp)); Text(it, color = Vault.Danger, style = MaterialTheme.typography.bodyMedium) }
     Spacer(Modifier.weight(1f))
     Button(onScan, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
         Text("Scan your server's code", style = MaterialTheme.typography.labelLarge)
     }
     Spacer(Modifier.height(8.dp))
-    Text("It's on the server's page, under “Add your phone”.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted, modifier = Modifier.align(Alignment.CenterHorizontally))
+    Text("It's on your server's page, under “Add your phone”.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted, modifier = Modifier.align(Alignment.CenterHorizontally))
 }
 
 @Composable
@@ -112,29 +112,69 @@ private fun Joining(text: String, onCancel: () -> Unit) = Page {
 @Composable
 private fun JoinPrompt(offer: Offer, onJoin: () -> Unit, onCancel: () -> Unit) = Page {
     Spacer(Modifier.height(24.dp))
-    Text("Join this key?", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+    Text("Add this phone?", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
     Spacer(Modifier.height(12.dp))
     Text(short(offer.group.npub), fontFamily = PlexMono, color = Vault.Teal, style = MaterialTheme.typography.titleMedium)
     Spacer(Modifier.height(20.dp))
-    val names = offer.group.members.map { if (it.idx == offer.idx) "this phone" else it.name }
     Text(
-        "This phone will hold 1 of ${offer.group.members.size} shares. Any ${offer.group.threshold} of " +
-            names.joinToString(", ") + " can sign; no one of them can sign alone.",
+        "This phone will hold 1 of ${offer.group.members.size} shares of this key. Any ${offer.group.threshold} of your servers and this phone can sign; none of them alone.",
         color = Vault.Text, style = MaterialTheme.typography.bodyLarge,
     )
     Spacer(Modifier.height(12.dp))
-    Text(
-        "Notes, reactions and logins are signed by the servers without asking. Anything else — your profile, follow list, deletions, DMs — asks you here first.",
-        color = Vault.Muted, style = MaterialTheme.typography.bodyMedium,
-    )
+    Text("Almost everything signs without asking. Anything destructive — most of your follows gone, your profile wiped, a pile of deletions — waits for you here.",
+        color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
     Spacer(Modifier.weight(1f))
-    Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Join", style = MaterialTheme.typography.labelLarge) }
+    Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Add this phone", style = MaterialTheme.typography.labelLarge) }
     Spacer(Modifier.height(8.dp))
     TextButton(onCancel, Modifier.fillMaxWidth()) { Text("Not now", color = Vault.Muted) }
 }
 
+/** Connecting a site: the one-tap consent of QRST at its lowest check, then progress. */
 @Composable
-private fun Home(phone: Phone, ui: Ui) {
+private fun ConnectSheet(c: Connect, onConnect: () -> Unit, onClose: () -> Unit) {
+    BackHandler { onClose() }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            when (c.stage) {
+                Connect.Stage.CONFIRM -> {
+                    Text("Let ${c.origin} sign as you?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                    Spacer(Modifier.height(10.dp))
+                    Text("It gets its own access, through your servers — not your key. Everyday things sign automatically; anything destructive comes to this phone first.",
+                        style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Remove it here any time. That stops future signing; it doesn't undo what it already signed.",
+                        style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+                    Spacer(Modifier.height(20.dp))
+                    // Declining is never the weaker control; the affirmative one names the site.
+                    OutlinedButton(onClose, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Don't connect", color = Vault.Text) }
+                    Spacer(Modifier.height(10.dp))
+                    Button(onConnect, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
+                        Text("Connect ${c.origin}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                Connect.Stage.WORKING -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(22.dp), color = Vault.Teal, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(14.dp))
+                    Text(c.message ?: "Connecting…", color = Vault.Text)
+                }
+                Connect.Stage.DONE, Connect.Stage.FAILED -> {
+                    Text(if (c.stage == Connect.Stage.DONE) "Connected" else "Not connected", style = MaterialTheme.typography.titleLarge,
+                        color = if (c.stage == Connect.Stage.DONE) Vault.Teal else Vault.Danger)
+                    Spacer(Modifier.height(8.dp))
+                    Text(c.message ?: "", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(18.dp))
+                    Button(onClose, Modifier.fillMaxWidth().height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Edge, Vault.Text)) { Text("OK") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
     val m = ui.member!!
     var leaving by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -145,67 +185,89 @@ private fun Home(phone: Phone, ui: Ui) {
             Text("Cosign", style = MaterialTheme.typography.labelMedium, color = Vault.Muted)
             Spacer(Modifier.height(4.dp))
             Text(short(m.group.npub), fontFamily = PlexMono, style = MaterialTheme.typography.titleLarge, color = Vault.Text)
-            Text("1 of ${m.group.members.size} shares · any ${m.group.threshold} sign", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (mem in m.group.members) Chip(if (mem.idx == m.idx) "This phone" else mem.name, ui.online[mem.idx] == true, Modifier.weight(1f))
+            }
+            if (ui.relaysUp == 0) Text("No relay connection. Retrying…", color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (mem in m.group.members) {
-                    val label = if (mem.idx == m.idx) "This phone" else mem.name
-                    Chip(label, ui.online[mem.idx] == true, Modifier.weight(1f))
-                }
+            Button(onScan, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
+                Text("Connect a site", style = MaterialTheme.typography.labelLarge)
             }
-            if (ui.relaysUp == 0) {
-                Spacer(Modifier.height(8.dp))
-                Text("No relay connection. Retrying…", color = Vault.Danger, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-        if (ui.asks.isEmpty()) {
-            item {
-                Card(Vault.Edge) {
-                    Text("Nothing waiting", style = MaterialTheme.typography.titleSmall, color = Vault.Text)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Your servers sign notes, reactions and logins without asking. Anything else will appear here, and as a notification.",
-                        style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
-                }
-            }
+            ui.error?.let { Text(it, color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp)) }
         }
         items(ui.asks, key = { it.id }) { ask -> AskCard(ask, now) { approve -> phone.decide(ask.id, approve) } }
-        item { Text("Activity", style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.padding(top = 8.dp)) }
-        if (ui.log.isEmpty()) item { Text("Nothing yet.", color = Vault.Muted, style = MaterialTheme.typography.bodySmall) }
-        items(ui.log) { LogLine(it) }
+
+        item { Heading("Sites that can sign as you") }
+        if (ui.sites.isEmpty()) item { Muted("None yet. Tap Connect a site and scan a site's sign-in code.") }
+        items(ui.sites, key = { it.pk }) { SiteRow(it) { phone.removeSite(it) } }
+
+        item { Heading("Recent changes to your lists") }
+        if (ui.changes.isEmpty()) item { Muted("Follows, profile, relays, bookmarks… every change shows up here, with Undo.") }
+        items(ui.changes.take(12), key = { it.id }) { ChangeRow(it) { phone.undo(it) } }
+
+        item { Heading("On this phone") }
+        items(ui.log.take(20)) { LogLine(it) }
         item {
-            Spacer(Modifier.height(16.dp))
-            Text("${ui.relaysUp}/${m.group.relays.size} relays", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
-            TextButton({ leaving = true }, contentPadding = PaddingValues(0.dp)) { Text("Leave this group", color = Vault.Danger, style = MaterialTheme.typography.bodySmall) }
+            Spacer(Modifier.height(12.dp))
+            Muted("${ui.relaysUp}/${m.group.relays.size} relays · " + if (ui.push != null) "ntfy wakes this phone for approvals" else "no ntfy: approvals arrive while Cosign is running")
+            TextButton({ leaving = true }, contentPadding = PaddingValues(0.dp)) { Text("Remove this phone from your key", color = Vault.Danger, style = MaterialTheme.typography.bodySmall) }
         }
     }
 
     if (leaving) AlertDialog(
         onDismissRequest = { leaving = false },
-        title = { Text("Leave this group?") },
-        text = { Text("This deletes the share on this phone. The two servers can still sign everyday things, but nothing that needs the phone until you set up a new key.") },
+        title = { Text("Remove this phone?") },
+        text = { Text("This deletes the share on this phone. Your servers keep signing everyday things, but nothing destructive can be approved until you set up a new key.") },
         confirmButton = { TextButton({ leaving = false; phone.leave() }) { Text("Delete the share", color = Vault.Danger) } },
         dismissButton = { TextButton({ leaving = false }) { Text("Keep it") } },
         containerColor = Vault.Surface,
     )
 }
 
+@Composable private fun Heading(text: String) = Text(text, style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.padding(top = 10.dp))
+@Composable private fun Muted(text: String) = Text(text, style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+
 @Composable
 private fun AskCard(ask: Ask, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
     val left = ((ask.expiresAt - now) / 1000).coerceAtLeast(0)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("Sign a ${Kinds.name(ask.event.kind)}?", style = MaterialTheme.typography.titleMedium, color = Vault.Text, modifier = Modifier.weight(1f))
+        Text("Approve?", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText, modifier = Modifier.weight(1f))
         Text("${left}s", fontFamily = PlexMono, color = Vault.AmberText, style = MaterialTheme.typography.bodySmall)
     }
+    Spacer(Modifier.height(4.dp))
+    Text(ask.hold, style = MaterialTheme.typography.titleMedium, color = Vault.Text)
     Spacer(Modifier.height(6.dp))
-    Text(Kinds.describe(ask.event), style = MaterialTheme.typography.bodyMedium, color = Vault.AmberText, maxLines = 6, overflow = TextOverflow.Ellipsis)
-    Spacer(Modifier.height(6.dp))
-    Text("${ask.app} asked, through ${ask.via}", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+    Text("${ask.app} asked", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
     Spacer(Modifier.height(14.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedButton({ onDecide(false) }, Modifier.weight(1f).height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Deny", color = Vault.Text) }
         Button({ onDecide(true) }, Modifier.weight(1f).height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.OnAmber)) { Text("Approve", fontWeight = FontWeight.SemiBold) }
     }
+}
+
+@Composable
+private fun SiteRow(site: Site, onRemove: () -> Unit) = Row(
+    Modifier.fillMaxWidth().background(Vault.Surface, RoundedCornerShape(12.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(12.dp)).padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    Column(Modifier.weight(1f)) {
+        Text(site.origin.removePrefix("https://"), color = Vault.Text, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("used ${ago(site.lastUsed)}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+    }
+    TextButton(onRemove) { Text("Remove", color = Vault.AmberText) }
+}
+
+@Composable
+private fun ChangeRow(c: Change, onUndo: () -> Unit) = Row(verticalAlignment = Alignment.CenterVertically) {
+    Box(Modifier.size(6.dp).background(if (c.held) Vault.Amber else Vault.Teal, CircleShape))
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.weight(1f)) {
+        Text(c.text, style = MaterialTheme.typography.bodyMedium, color = if (c.undone) Vault.Muted else Vault.Text)
+        Text("${c.by.removePrefix("https://")} · ${ago(c.at)}${if (c.undone) " · undone" else ""}", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+    }
+    if (!c.undone) TextButton(onUndo) { Text("Undo", color = Vault.Teal) }
 }
 
 @Composable
@@ -231,6 +293,11 @@ private fun LogLine(line: Line) = Row {
         Text(line.text, style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
         Text(DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(line.ts)), style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
     }
+}
+
+private fun ago(seconds: Long): String {
+    val s = System.currentTimeMillis() / 1000 - seconds
+    return when { s < 60 -> "just now"; s < 3600 -> "${s / 60} min ago"; s < 86400 -> "${s / 3600} h ago"; else -> "${s / 86400} d ago" }
 }
 
 private fun short(npub: String) = if (npub.length > 20) npub.take(12) + "…" + npub.takeLast(6) else npub

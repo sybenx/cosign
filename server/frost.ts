@@ -36,6 +36,8 @@ const inv = (a: bigint) => {
 const tagged = (tag: string, ...m: Uint8Array[]) => schnorr.utils.taggedHash(tag, ...m);
 const mulG = (k: bigint) => G.multiply(mod(k));
 const xOnly = (p: Pt) => p.toBytes(true).slice(1);
+/** BIP-340 cares only whether y is even. */
+export const evenY = (p: Pt) => p.toAffine().y % 2n === 0n;
 
 export function randomScalar(): bigint {
   for (;;) { const k = toInt(randomBytes(32)); if (k > 0n && k < N) return k; }
@@ -51,7 +53,7 @@ export function deal(secretHex: string | null, n = 3, t = 2): Dealt {
   let a0 = secretHex ? mod(BigInt('0x' + secretHex)) : randomScalar();
   // BIP-340 keys are x-only with even y. If ours is odd, sign with n - a0,
   // which has the same x and therefore the same npub.
-  if (!mulG(a0).hasEvenY()) a0 = N - a0;
+  if (!evenY(mulG(a0))) a0 = N - a0;
   const coeffs = [a0];
   for (let k = 1; k < t; k++) coeffs.push(randomScalar());
   const f = (x: bigint) => coeffs.reduceRight((acc, c) => mod(acc * x + c), 0n);
@@ -104,7 +106,7 @@ function roundContext(groupX: string, msgHex: string, commits: Commit[]): RoundC
     R = R.add(Point.fromHex(cm.D)).add(Point.fromHex(cm.E).multiply(r));
   }
   if (R.is0()) throw new Error('degenerate group commitment');
-  const flip = !R.hasEvenY();
+  const flip = !evenY(R);
   const Rx = xOnly(R);
   const c = mod(toInt(tagged('BIP0340/challenge', Rx, Y, msg)));
   return { rho, R, flip, c, Rx, participants: [...ids].sort((a, b) => a - b) };

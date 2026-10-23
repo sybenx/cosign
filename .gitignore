@@ -8,3 +8,7 @@ android/app/build/
 android/local.properties
 android/keystore.properties
 .DS_Store
+site/public/app.js
+site/public/app.js.map
+*.apk
+android/.kotlin/

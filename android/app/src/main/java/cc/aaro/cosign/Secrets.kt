@@ -16,7 +16,7 @@ import javax.crypto.spec.GCMParameterSpec
  * needs no unlock, so the background service can answer while the phone is
  * locked; that is a prototype's choice, and the obvious thing to tighten.
  */
-class Store(context: Context) {
+class Secrets(context: Context) {
     private val prefs = context.getSharedPreferences("cosign", Context.MODE_PRIVATE)
 
     private fun key(): SecretKey {

@@ -1,16 +1,19 @@
-// A cosign server: holds one share, signs with whichever member agrees, and
-// runs the NIP-46 bunker that Nostr apps talk to.
+// A cosign server: one share of your key, and the signer your sites talk to.
 //
 //   node server.ts data/a
 //
-// Server A (idx 1) answers the bunker. Server B (idx 2) answers it only while A
-// has been silent for 30 s, so one bunker URI keeps working when either is down.
+// Sites connect with a one-time ticket your phone hands them over QRST, then ask for
+// signatures over relays. Almost everything signs at once, with the other server. A
+// change that would destroy something (most of your follows, your profile, your relay
+// list…) waits for your phone instead. Server A answers sites; server B answers only
+// while A has been silent for 30 s.
 
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes as nodeRandom } from 'node:crypto';
 import { getEventHash, finalizeEvent, type Event } from 'nostr-tools/pure';
+import { SimplePool } from 'nostr-tools/pool';
 import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
 import { extract } from '@noble/hashes/hkdf.js';
@@ -19,15 +22,23 @@ import { utf8ToBytes } from '@noble/hashes/utils.js';
 import QRCode from 'qrcode';
 import * as F from './frost.ts';
 import { Pool, sealTo, openFrom, KIND_MEMBER, KIND_NIP46 } from './net.ts';
-import { allows, kindName, type Member } from './policy.ts';
+import { ARCHIVED, assess, keyOf, kindName } from './policy.ts';
+import { Archive } from './archive.ts';
 
 // --- State -------------------------------------------------------------------
+
+interface Member { idx: number; name: string; role: 'server' | 'phone'; pk: string | null; sharePub: string; push?: string | null }
+interface Site { pk: string; origin: string; added: number; lastUsed: number; revoked?: number }
+interface Ticket { t: string; origin: string; expires: number; used?: boolean }
+interface Change { id: string; key: string; kind: number; at: number; text: string; by: string; held?: boolean; undone?: boolean }
 
 const dir = process.argv[2];
 if (!dir) { console.error('usage: node server.ts data/a'); process.exit(1); }
 const file = join(dir, 'state.json');
 const S = JSON.parse(readFileSync(file, 'utf8'));
+S.sites ??= []; S.tickets ??= []; S.changes ??= [];
 const save = () => { writeFileSync(file + '.tmp', JSON.stringify(S, null, 2), { mode: 0o600 }); renameSync(file + '.tmp', file); };
+const archive = new Archive(join(dir, 'archive.json'));
 
 const members: Member[] = S.group.members;
 const me = members.find(m => m.idx === S.self.idx)!;
@@ -35,11 +46,13 @@ const other = () => members.find(m => m.role === 'server' && m.idx !== me.idx)!;
 const phone = () => members.find(m => m.role === 'phone')!;
 const byPk = (pk: string) => members.find(m => m.pk === pk);
 const groupX: string = S.group.groupX;
+const site = (pk: string) => (S.sites as Site[]).find(s => s.pk === pk);
+const now = () => Math.floor(Date.now() / 1000);
 
 const startedAt = Date.now();
 const lastSeen = new Map<number, number>();
 const seen = (idx: number) => lastSeen.get(idx) ?? 0;
-// Pings go out every 10 s; three missed means gone. One threshold for everything.
+// Pings go out every 10 s; three missed means gone.
 const online = (m: Member) => m.idx === me.idx || Date.now() - seen(m.idx) < 30_000;
 
 const activity: { ts: number; text: string }[] = [];
@@ -52,136 +65,268 @@ const note = (text: string) => {
 // --- Relays ------------------------------------------------------------------
 
 const pool = new Pool(S.group.relays, onEvent, t => console.log(`[${me.name}] ${t}`));
-const send = (toPk: string, msg: object) => pool.publish(sealTo(S.self.sk, toPk, msg));
+const send = (toPk: string | null | undefined, msg: object) => { if (toPk) pool.publish(sealTo(S.self.sk, toPk, msg)); };
+const toOther = (msg: object) => send(other().pk, msg);
+const toPhone = (msg: object) => send(phone().pk, msg);
 
 const pending = new Map<string, { resolve: (v: any) => void; timer: NodeJS.Timeout }>();
 const rid = () => F.bytesToHex(F.randomBytes(8));
+/** Ask a member, and keep asking (freshly wrapped) until it answers or time runs out. */
 function ask(toPk: string, msg: any, ms: number): Promise<any> {
   return new Promise(resolve => {
-    const timer = setTimeout(() => { pending.delete(msg.id); resolve({ ok: false, reason: 'no answer' }); }, ms);
-    pending.set(msg.id, { resolve, timer });
+    const again = setInterval(() => send(toPk, msg), 4000);
+    const timer = setTimeout(() => { clearInterval(again); pending.delete(msg.id); resolve({ ok: false, reason: 'no answer' }); }, ms);
+    pending.set(msg.id, { resolve: v => { clearInterval(again); resolve(v); }, timer });
     send(toPk, msg);
   });
 }
 
+// A request asked again gets the same answer: never a second partial with new nonces.
+const given = new Map<string, { at: number; msg: object }>();
+setInterval(() => { for (const [k, v] of given) if (Date.now() - v.at > 120_000) given.delete(k); }, 30_000);
+function answerOnce(to: Member, id: string, make: () => object | undefined) {
+  const k = `${to.pk}:${id}`;
+  const prior = given.get(k);
+  if (prior) return send(to.pk, prior.msg);
+  const msg = make();
+  if (!msg) return;
+  given.set(k, { at: Date.now(), msg });
+  send(to.pk, msg);
+}
+
 function onEvent(e: Event) {
-  if (e.created_at < Math.floor(Date.now() / 1000) - 120) return; // stale
+  const age = now() - e.created_at;
+  if (age > 120) return;
   if (e.kind === KIND_MEMBER) {
     const msg = openFrom(S.self.sk, e);
-    // Relays replay recent "ephemeral" events to a fresh subscription whatever
-    // `since` says. A request that old has been given up on by whoever sent it.
-    const age = Math.floor(Date.now() / 1000) - e.created_at;
+    // Relays replay recent "ephemeral" events to a new subscription; a request that
+    // old has been given up on by whoever sent it.
     if (msg && (msg.type === 'sign_req' || msg.type === 'ecdh_req') && age > 30) return;
     if (msg) onMember(msg, e.pubkey).catch(err => console.error(err));
   } else if (e.kind === KIND_NIP46) {
-    onBunker(e).catch(err => console.error(err));
+    onSiteRequest(e).catch(err => console.error(err));
   }
 }
 
-// --- Member messages ---------------------------------------------------------
+// --- Members -----------------------------------------------------------------
 
 async function onMember(msg: any, fromPk: string) {
   const from = byPk(fromPk);
-  if (from) lastSeen.set(from.idx, Date.now());
+  if (from) {
+    const wasOnline = online(from);
+    lastSeen.set(from.idx, Date.now());
+    // The other server just came back: bring it up to date.
+    if (!wasOnline && from.role === 'server') syncTo();
+  }
 
-  // Replies to something we asked.
   if ((msg.type === 'sign_res' || msg.type === 'ecdh_res') && pending.has(msg.id)) {
     const p = pending.get(msg.id)!; clearTimeout(p.timer); pending.delete(msg.id);
-    p.resolve({ ...msg, from });
-    return;
+    return p.resolve({ ...msg, from });
   }
-
-  // Pairing comes from a phone we don't know yet.
   if (msg.type === 'pair_hello') return onPairHello(msg, fromPk);
   if (msg.type === 'pair_ack') return onPairAck(msg, fromPk);
+  if (!from) return;
 
-  if (!from) return; // everything else is members only
-
+  const fromPhone = from.role === 'phone';
   switch (msg.type) {
     case 'ping': return;
-    case 'member': {
-      // The pairing server tells us who the phone is.
-      if (from.role !== 'server') return;
-      const m = members.find(x => x.idx === msg.idx);
-      if (m && m.role === 'phone') { m.pk = msg.pk; save(); note('learned the phone from ' + from.name); }
+    case 'sign_req': return answerOnce(from, msg.id, () => onSignReq(msg, from));
+    case 'ecdh_req': return answerOnce(from, msg.id, () => onEcdhReq(msg, from));
+
+    case 'member': { // the server that added the phone says who it is
+      if (fromPhone) return;
+      phone().pk = msg.pk; save(); note('learned your phone from ' + from.name); return;
+    }
+    case 'push': { // where to send "approval needed"
+      if (!fromPhone) return;
+      phone().push = msg.endpoint || null; save(); toOther({ type: 'push_relay', endpoint: msg.endpoint }); return;
+    }
+    case 'push_relay': { if (!fromPhone) { phone().push = msg.endpoint || null; save(); } return; }
+    case 'ticket': { // the phone is about to hand this to a site
+      if (!(S.tickets as Ticket[]).some(t => t.t === msg.t)) {
+        S.tickets.push({ t: String(msg.t), origin: String(msg.origin ?? 'a site'), expires: Number(msg.expires) });
+        S.tickets = (S.tickets as Ticket[]).filter(t => t.expires > now() - 3600);
+        save();
+        if (fromPhone) toOther({ type: 'ticket', t: msg.t, origin: msg.origin, expires: msg.expires });
+      }
       return;
     }
-    case 'clients': {
-      if (from.role !== 'server') return;
-      const before = S.bunker.clients.length;
-      S.bunker.clients = [...new Set([...S.bunker.clients, ...msg.clients])];
-      if (S.bunker.clients.length !== before) save();
+    case 'revoke': return revoke(String(msg.pk), fromPhone ? 'on your phone' : `on ${from.name}`, !fromPhone);
+    case 'undo': { if (fromPhone) undo(String(msg.id)).catch(err => { note(`undo failed: ${err.message}`); toPhone({ type: 'undo_failed', id: msg.id, reason: err.message }); }); return; }
+    case 'state_req': { if (fromPhone) pushState(); return; }
+    case 'signed': { // the other server signed something worth keeping
+      if (fromPhone) return;
+      archive.record(msg.event);
+      if (msg.change) addChange(msg.change, true);
       return;
     }
-    case 'sign_req': return onSignReq(msg, from);
-    case 'ecdh_req': return onEcdhReq(msg, from);
+    case 'sync': { if (!fromPhone) mergeSync(msg); return; }
   }
 }
 
-// As the co-signer: check the event is what it claims to be, check policy, sign.
-async function onSignReq(msg: any, from: Member) {
-  const reply = (r: object) => send(from.pk!, { type: 'sign_res', id: msg.id, ...r });
-  const ev = msg.event;
-  const participants: number[] = msg.participants;
-  if (from.role !== 'server') return reply({ ok: false, reason: 'only servers coordinate' });
-  if (participants.length !== 2 || !participants.includes(me.idx) || !participants.includes(from.idx)) return reply({ ok: false, reason: 'bad participants' });
-  if (ev.pubkey !== groupX || getEventHash(ev) !== msg.msg) return reply({ ok: false, reason: 'event does not match the message' });
-  const p = allows(ev.kind, participants, members, S.group.autoKinds);
-  if (!p.ok) { note(`refused ${kindName(ev.kind)} from ${from.name}: ${p.why}`); return reply({ ok: false, reason: p.why }); }
-  const mine = F.commit(me.idx);
-  const commits = [msg.commit, mine.commit];
-  const z = F.partialSign({ groupX, msg: msg.msg, commits, idx: me.idx, secret: S.self.share, nonces: mine.nonces });
-  note(`co-signed ${kindName(ev.kind)} for ${from.name}`);
-  reply({ ok: true, commit: mine.commit, z });
+// --- Sites -------------------------------------------------------------------
+//
+// A site talks NIP-46 to the shared signer key, over relays. A request may arrive more
+// than once (the site re-sends until it hears back, and relays repeat things), so
+// answers are kept for a while and sent again to a repeat, freshly wrapped: strfry
+// refuses an event id it has already seen, even an ephemeral one.
+
+const coordinating = () => me.idx === 1 || (Date.now() - startedAt > 30_000 && !online(members.find(m => m.idx === 1)!));
+const answers = new Map<string, { at: number; body: string; scheme: 'nip44' | 'nip04' }>();
+const working = new Set<string>();
+setInterval(() => { for (const [k, v] of answers) if (Date.now() - v.at > 180_000) answers.delete(k); }, 30_000);
+
+function reply(clientPk: string, scheme: 'nip44' | 'nip04', body: string) {
+  const sk = F.hexToBytes(S.signer.sk);
+  const content = scheme === 'nip44' ? nip44.v2.encrypt(body, nip44.v2.utils.getConversationKey(sk, clientPk)) : nip04.encrypt(sk, clientPk, body);
+  pool.publish(finalizeEvent({ kind: KIND_NIP46, created_at: now(), tags: [['p', clientPk]], content }, sk));
 }
 
-async function onEcdhReq(msg: any, from: Member) {
-  const reply = (r: object) => send(from.pk!, { type: 'ecdh_res', id: msg.id, ...r });
-  if (from.role !== 'server' || !msg.participants.includes(me.idx)) return reply({ ok: false, reason: 'bad request' });
-  const point = F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants: msg.participants, peerX: msg.peerX });
-  reply({ ok: true, point });
+async function onSiteRequest(e: Event) {
+  if (!coordinating()) return;
+  const sk = F.hexToBytes(S.signer.sk);
+  let scheme: 'nip44' | 'nip04' = 'nip44', req: any;
+  try { req = JSON.parse(nip44.v2.decrypt(e.content, nip44.v2.utils.getConversationKey(sk, e.pubkey))); }
+  catch { try { scheme = 'nip04'; req = JSON.parse(nip04.decrypt(sk, e.pubkey, e.content)); } catch { return; } }
+  if (!req?.id || !req.method) return;
+  if (process.env.DEBUG) console.log(`[${me.name}] site ${e.pubkey.slice(0, 6)} asked ${req.method} (${req.id})`);
+
+  const k = `${e.pubkey}:${req.id}`;
+  const cached = answers.get(k);
+  if (cached) return reply(e.pubkey, cached.scheme, cached.body);
+  if (working.has(k)) return;
+  working.add(k);
+  const answer = (body: object) => {
+    const text = JSON.stringify({ id: req.id, ...body });
+    answers.set(k, { at: Date.now(), body: text, scheme });
+    working.delete(k);
+    reply(e.pubkey, scheme, text);
+  };
+
+  try {
+    const s = site(e.pubkey);
+    if (req.method === 'connect') {
+      if (s?.revoked) return answer({ error: 'Access for this site was removed. Connect it again from your phone.' });
+      if (s) return answer({ result: 'ack' });
+      const ticket = (S.tickets as Ticket[]).find(t => t.t === req.params?.[1]);
+      if (!ticket || ticket.used || ticket.expires < now()) return answer({ error: 'This ticket is not valid. Scan the code again with your phone.' });
+      ticket.used = true;
+      S.sites.push({ pk: e.pubkey, origin: ticket.origin, added: now(), lastUsed: now() } satisfies Site);
+      save(); syncTo(); pushState();
+      note(`${ticket.origin} connected`);
+      return answer({ result: 'ack' });
+    }
+    if (req.method === 'ping') return answer({ result: 'pong' });
+    if (!s) return answer({ error: 'Not connected. Scan this site’s code with your phone.' });
+    if (s.revoked) return answer({ error: 'Access for this site was removed on your phone.' });
+    s.lastUsed = now();
+
+    switch (req.method) {
+      case 'get_public_key': return answer({ result: groupX });
+      case 'get_relays': return answer({ result: JSON.stringify(Object.fromEntries(S.group.relays.map((r: string) => [r, { read: true, write: true }]))) });
+      case 'sign_event': return answer({ result: JSON.stringify(await frostSign(JSON.parse(req.params[0]), s.origin)) });
+      case 'nip44_encrypt': return answer({ result: nip44.v2.encrypt(req.params[1], await groupNip44Key(req.params[0])) });
+      case 'nip44_decrypt': return answer({ result: nip44.v2.decrypt(req.params[1], await groupNip44Key(req.params[0])) });
+      case 'nip04_encrypt': return answer({ result: await groupNip04(req.params[0], req.params[1], false) });
+      case 'nip04_decrypt': return answer({ result: await groupNip04(req.params[0], req.params[1], true) });
+      default: return answer({ error: `unsupported method ${req.method}` });
+    }
+  } catch (err: any) {
+    answer({ error: err?.message ?? String(err) });
+  }
 }
 
-// --- Coordinating ------------------------------------------------------------
-
-/** Who to ask, in order. Auto kinds try the other server first; the rest need the phone. */
-function cosigners(kind: number): Member[] {
-  const p = phone(), o = other();
-  const list = S.group.autoKinds.includes(kind) ? [o, p] : [p];
-  return list.filter(m => m.pk).sort((a, b) => Number(online(b)) - Number(online(a)));
+function revoke(pk: string, where: string, quiet = false) {
+  const s = site(pk);
+  if (!s || s.revoked) return;
+  s.revoked = now(); save();
+  if (!quiet) toOther({ type: 'revoke', pk });
+  pushState();
+  note(`removed ${s.origin} ${where}`);
 }
 
-async function frostSign(unsigned: any, app: string): Promise<Event> {
+// --- Signing -----------------------------------------------------------------
+
+/** Ask the other server; if it's away, the phone. Something destructive goes only to the phone. */
+async function frostSign(unsigned: any, by: string, opts: { undo?: string } = {}): Promise<Event> {
   const ev = {
-    pubkey: groupX, kind: unsigned.kind, created_at: unsigned.created_at ?? Math.floor(Date.now() / 1000),
+    pubkey: groupX, kind: Number(unsigned.kind), created_at: Number(unsigned.created_at ?? now()),
     tags: unsigned.tags ?? [], content: unsigned.content ?? '',
   };
   const id = getEventHash(ev);
+  const judged = assess(ev, archive.latest(keyOf(ev)));
+  const hold = judged.hold;
+  const order = (hold ? [phone()] : [other(), phone()]).filter(m => m.pk).sort((a, b) => Number(online(b)) - Number(online(a)));
   const tried: string[] = [];
-  for (const m of cosigners(ev.kind)) {
+
+  for (const m of order) {
     const participants = [me.idx, m.idx].sort((a, b) => a - b);
-    if (!allows(ev.kind, participants, members, S.group.autoKinds).ok) continue;
-    // Fresh nonces every attempt; ours are only used once we have a valid partner.
-    const mine = F.commit(me.idx);
     const isPhone = m.role === 'phone';
-    if (isPhone && !online(m)) tried.push('phone not seen lately');
-    const res = await ask(m.pk!, { type: 'sign_req', id: rid(), event: ev, msg: id, participants, commit: mine.commit, app }, isPhone ? (online(m) ? 60_000 : 15_000) : 8_000);
+    if (isPhone && hold && !opts.undo) pushPhone();
+    const mine = F.commit(me.idx); // fresh every attempt; ours are used only once we have a valid partner
+    const wait = isPhone ? (hold && !opts.undo ? 60_000 : online(m) ? 20_000 : 10_000) : 8_000;
+    const res = await ask(m.pk!, { type: 'sign_req', id: rid(), event: ev, msg: id, participants, commit: mine.commit, app: by, hold: hold ?? null, undo: opts.undo ?? null }, wait);
     if (!res.ok) { tried.push(`${m.name}: ${res.reason}`); continue; }
     const commits = [mine.commit, res.commit];
     if (res.commit?.idx !== m.idx || !F.verifyPartial({ groupX, msg: id, commits, idx: m.idx, sharePub: m.sharePub, z: res.z })) {
       tried.push(`${m.name}: bad partial`); continue;
     }
     const z = F.partialSign({ groupX, msg: id, commits, idx: me.idx, secret: S.self.share, nonces: mine.nonces });
-    const sig = F.aggregate({ groupX, msg: id, commits, partials: [z, res.z] });
-    note(`signed ${kindName(ev.kind)} for ${app} with ${m.name}${isPhone && !S.group.autoKinds.includes(ev.kind) ? ' (you approved)' : ''}`);
-    return { ...ev, id, sig } as Event;
+    const signed = { ...ev, id, sig: F.aggregate({ groupX, msg: id, commits, partials: [z, res.z] }) } as Event;
+    note(`signed ${kindName(ev.kind)} for ${by} with ${m.name}${hold && !opts.undo ? ' — you approved' : ''}`);
+    keep(signed, judged.change ?? hold, by, !!hold && !opts.undo);
+    return signed;
   }
-  note(`could not sign ${kindName(ev.kind)} for ${app}: ${tried.join('; ') || 'nobody to ask'}`);
-  throw new Error(tried.join('; ') || 'no co-signer available');
+  const declined = tried.some(t => t.includes('declined'));
+  note(`did not sign ${kindName(ev.kind)} for ${by}: ${tried.join('; ') || 'nobody to ask'}`);
+  throw new Error(declined ? 'You declined this on your phone.' : hold ? `Waiting for your phone timed out: ${hold}.` : `Couldn't sign: ${tried.join('; ') || 'nobody to ask'}`);
 }
 
-// Shared secrets for encrypting on the group's behalf. Kept in memory only, and
-// only for ten minutes: a cached shared secret is as sensitive as the share.
+/** Archive what was signed, note the change, and tell the other server and the phone. */
+function keep(signed: Event, text: string | undefined, by: string, held: boolean) {
+  if (!ARCHIVED.has(signed.kind) && !held) return;
+  archive.record(signed);
+  const change: Change | undefined = text ? { id: signed.id, key: keyOf(signed), kind: signed.kind, at: signed.created_at, text, by, held } : undefined;
+  if (change) addChange(change, false);
+  toOther({ type: 'signed', event: signed, change });
+}
+
+function addChange(c: Change, quiet: boolean) {
+  if ((S.changes as Change[]).some(x => x.id === c.id)) return;
+  S.changes.unshift(c);
+  S.changes.sort((a: Change, b: Change) => b.at - a.at);
+  S.changes.length = Math.min(S.changes.length, 60);
+  save();
+  if (!quiet) pushState();
+}
+
+// As the co-signer: check the event is what it claims to be, and judge it ourselves.
+function onSignReq(msg: any, from: Member): object {
+  const respond = (r: object) => ({ type: 'sign_res', id: msg.id, ...r });
+  const ev = msg.event;
+  const participants: number[] = msg.participants;
+  if (from.role !== 'server') return respond({ ok: false, reason: 'only servers coordinate' });
+  if (participants.length !== 2 || !participants.includes(me.idx) || !participants.includes(from.idx)) return respond({ ok: false, reason: 'bad participants' });
+  if (ev.pubkey !== groupX || getEventHash(ev) !== msg.msg) return respond({ ok: false, reason: 'event does not match the message' });
+  // Our own archive, not the coordinator's word: a compromised server can't talk us
+  // into co-signing something destructive without the phone.
+  const hold = assess(ev, archive.latest(keyOf(ev))).hold;
+  if (hold && !participants.includes(phone().idx)) {
+    note(`refused to co-sign for ${from.name}: ${hold} needs your phone`);
+    return respond({ ok: false, reason: `${hold} needs your phone` });
+  }
+  const mine = F.commit(me.idx);
+  const z = F.partialSign({ groupX, msg: msg.msg, commits: [msg.commit, mine.commit], idx: me.idx, secret: S.self.share, nonces: mine.nonces });
+  return respond({ ok: true, commit: mine.commit, z });
+}
+
+function onEcdhReq(msg: any, from: Member): object {
+  const respond = (r: object) => ({ type: 'ecdh_res', id: msg.id, ...r });
+  if (from.role !== 'server' || !msg.participants.includes(me.idx)) return respond({ ok: false, reason: 'bad request' });
+  return respond({ ok: true, point: F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants: msg.participants, peerX: msg.peerX }) });
+}
+
+// Shared secrets for encrypting on your behalf. Memory only, ten minutes.
 const ecdhCache = new Map<string, { x: Uint8Array; at: number }>();
 async function frostEcdh(peerX: string): Promise<Uint8Array> {
   const hit = ecdhCache.get(peerX);
@@ -189,16 +334,14 @@ async function frostEcdh(peerX: string): Promise<Uint8Array> {
   const tried: string[] = [];
   for (const m of [other(), phone()].filter(m => m.pk).sort((a, b) => Number(online(b)) - Number(online(a)))) {
     const participants = [me.idx, m.idx].sort((a, b) => a - b);
-    const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, m.role === 'phone' ? 20_000 : 6_000);
+    const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, m.role === 'phone' ? 15_000 : 6_000);
     if (!res.ok) { tried.push(`${m.name}: ${res.reason}`); continue; }
-    const mine = F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants, peerX });
-    const x = F.ecdhCombine([mine, res.point]);
+    const x = F.ecdhCombine([F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants, peerX }), res.point]);
     ecdhCache.set(peerX, { x, at: Date.now() });
     return x;
   }
   throw new Error('no member answered: ' + tried.join('; '));
 }
-
 const groupNip44Key = async (peerX: string) => extract(sha256, await frostEcdh(peerX), utf8ToBytes('nip44-v2'));
 async function groupNip04(peerX: string, text: string, decrypt: boolean) {
   const key = await frostEcdh(peerX);
@@ -212,86 +355,95 @@ async function groupNip04(peerX: string, text: string, decrypt: boolean) {
   return Buffer.concat([c.update(text, 'utf8'), c.final()]).toString('base64') + '?iv=' + iv.toString('base64');
 }
 
-// --- NIP-46 bunker -----------------------------------------------------------
+// --- Undo --------------------------------------------------------------------
+//
+// Sign the version before this change again, with a fresh timestamp, and publish it.
+// The phone asked for it, so if it needs the phone, the phone co-signs without asking.
 
-const coordinating = () => me.idx === 1 || (Date.now() - startedAt > 30_000 && !online(members.find(m => m.idx === 1)!));
-const appName = (pk: string) => 'app ' + pk.slice(0, 6);
-
-async function onBunker(e: Event) {
-  if (!coordinating()) return;
-  const sk = F.hexToBytes(S.bunker.sk);
-  let scheme: 'nip44' | 'nip04' = 'nip44', req: any;
-  try { req = JSON.parse(nip44.v2.decrypt(e.content, nip44.v2.utils.getConversationKey(sk, e.pubkey))); }
-  catch { try { scheme = 'nip04'; req = JSON.parse(nip04.decrypt(sk, e.pubkey, e.content)); } catch { return; } }
-
-  const respond = (body: object) => {
-    const text = JSON.stringify({ id: req.id, ...body });
-    const content = scheme === 'nip44' ? nip44.v2.encrypt(text, nip44.v2.utils.getConversationKey(sk, e.pubkey)) : nip04.encrypt(sk, e.pubkey, text);
-    pool.publish(sealRaw(content, e.pubkey));
-  };
-  const authorized = S.bunker.clients.includes(e.pubkey);
-
-  try {
-    switch (req.method) {
-      case 'connect': {
-        if (!authorized && req.params?.[1] !== S.bunker.secret) return respond({ error: 'wrong or missing secret' });
-        if (!authorized) {
-          S.bunker.clients.push(e.pubkey); save();
-          send(other().pk!, { type: 'clients', clients: S.bunker.clients });
-          note(`${appName(e.pubkey)} connected`);
-        }
-        return respond({ result: 'ack' });
-      }
-      case 'ping': return respond({ result: 'pong' });
-    }
-    if (!authorized) return respond({ error: 'not connected: use the bunker link with its secret' });
-    switch (req.method) {
-      case 'get_public_key': return respond({ result: groupX });
-      case 'get_relays': return respond({ result: JSON.stringify(Object.fromEntries(S.group.relays.map((r: string) => [r, { read: true, write: true }]))) });
-      case 'sign_event': {
-        const signed = await frostSign(JSON.parse(req.params[0]), appName(e.pubkey));
-        return respond({ result: JSON.stringify(signed) });
-      }
-      case 'nip44_encrypt': return respond({ result: nip44.v2.encrypt(req.params[1], await groupNip44Key(req.params[0])) });
-      case 'nip44_decrypt': return respond({ result: nip44.v2.decrypt(req.params[1], await groupNip44Key(req.params[0])) });
-      case 'nip04_encrypt': return respond({ result: await groupNip04(req.params[0], req.params[1], false) });
-      case 'nip04_decrypt': return respond({ result: await groupNip04(req.params[0], req.params[1], true) });
-      default: return respond({ error: `unsupported method ${req.method}` });
-    }
-  } catch (err: any) {
-    respond({ error: err?.message ?? String(err) });
-  }
+async function undo(changeId: string) {
+  const change = (S.changes as Change[]).find(c => c.id === changeId);
+  const target = archive.find(changeId);
+  if (!change || !target) throw new Error('nothing to undo');
+  const before = archive.history(keyOf(target)).find(e => e.created_at < target.created_at && e.id !== target.id);
+  if (!before) throw new Error('there is no earlier version to go back to');
+  const signed = await frostSign({ kind: before.kind, tags: before.tags, content: before.content, created_at: now() }, 'Undo on your phone', { undo: changeId });
+  change.undone = true; save();
+  await publishOut(signed);
+  pushState();
+  toOther({ type: 'sync', changes: S.changes });
+  note(`undid "${change.text}"`);
 }
 
-const sealRaw = (content: string, toPk: string) =>
-  finalizeEvent({ kind: KIND_NIP46, created_at: Math.floor(Date.now() / 1000), tags: [['p', toPk]], content }, F.hexToBytes(S.bunker.sk));
+/** Your relays: the write relays in your archived relay list, plus the group's. */
+async function publishOut(e: Event) {
+  const list = archive.latest('10002');
+  const mine = (list?.tags ?? []).filter(t => t[0] === 'r' && t[2] !== 'read').map(t => t[1]);
+  const targets = [...new Set([...mine, ...S.group.relays])];
+  const p = new SimplePool();
+  await Promise.allSettled(p.publish(targets, e as any));
+  p.close(targets);
+}
 
-// --- Pairing a phone ---------------------------------------------------------
-//
-// The QR carries this server's public key, a one-time token and the relays. A
-// phone that echoes the token gets the phone share, sealed to the key it just
-// generated. It keeps the share only if its user says yes, and tells us so;
-// then we forget the share. Like QRST at its lowest level: scan, confirm, done.
+// --- Keeping the two servers and the phone in step ------------------------------
+
+function syncTo() {
+  toOther({ type: 'sync', sites: S.sites, tickets: S.tickets, changes: S.changes, archive: archive.all() });
+}
+
+function mergeSync(msg: any) {
+  let dirty = false;
+  for (const s of (msg.sites ?? []) as Site[]) {
+    const mine = site(s.pk);
+    if (!mine) { S.sites.push(s); dirty = true; continue; }
+    if (s.revoked && !mine.revoked) { mine.revoked = s.revoked; dirty = true; }
+    if (s.lastUsed > mine.lastUsed) { mine.lastUsed = s.lastUsed; dirty = true; }
+  }
+  for (const t of (msg.tickets ?? []) as Ticket[]) {
+    const mine = (S.tickets as Ticket[]).find(x => x.t === t.t);
+    if (!mine) { S.tickets.push(t); dirty = true; } else if (t.used && !mine.used) { mine.used = true; dirty = true; }
+  }
+  for (const e of msg.archive ?? []) archive.record(e);
+  for (const c of (msg.changes ?? []) as Change[]) {
+    const mine = (S.changes as Change[]).find(x => x.id === c.id);
+    if (!mine) addChange(c, true); else if (c.undone && !mine.undone) { mine.undone = true; dirty = true; }
+  }
+  if (dirty) save();
+  pushState();
+}
+
+function pushState() {
+  toPhone({
+    type: 'state',
+    sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: s.origin, added: s.added, lastUsed: s.lastUsed })),
+    changes: (S.changes as Change[]).slice(0, 30),
+  });
+}
+
+/** Wake the phone through ntfy. The message says only that something is waiting. */
+function pushPhone() {
+  const url = phone().push;
+  if (!url) return;
+  fetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' } })
+    .catch(err => note(`push failed: ${err.message}`));
+}
+
+// --- Adding your phone --------------------------------------------------------
 
 let offeredTo: string | null = null;
-
-function pairingUri() {
-  if (!S.pairing) return null;
-  return `cosign:pair?pk=${me.pk}&t=${S.pairing.token}&${S.group.relays.map((r: string) => 'r=' + encodeURIComponent(r)).join('&')}`;
-}
+const pairingUri = () => S.pairing
+  ? `cosign:pair?pk=${me.pk}&t=${S.pairing.token}&${S.group.relays.map((r: string) => 'r=' + encodeURIComponent(r)).join('&')}`
+  : null;
 
 function onPairHello(msg: any, fromPk: string) {
   if (!S.pairing || msg.token !== S.pairing.token) return;
   offeredTo = fromPk;
   send(fromPk, {
-    type: 'pair_offer',
-    token: S.pairing.token,
-    idx: S.pairing.idx,
-    share: S.pairing.share,
-    group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays, autoKinds: S.group.autoKinds,
+    type: 'pair_offer', token: S.pairing.token, idx: S.pairing.idx, share: S.pairing.share,
+    signer: S.signer.pk,
+    group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays,
       members: members.map(m => ({ idx: m.idx, name: m.name, role: m.role, pk: m.role === 'phone' ? null : m.pk, sharePub: m.sharePub })) },
   });
-  note('a phone scanned the pairing code');
+  note('a phone scanned the code');
 }
 
 function onPairAck(msg: any, fromPk: string) {
@@ -301,71 +453,94 @@ function onPairAck(msg: any, fromPk: string) {
   S.pairing = null; // the phone has its share; this server no longer does
   save();
   lastSeen.set(p.idx, Date.now());
-  send(other().pk!, { type: 'member', idx: p.idx, pk: fromPk });
-  note('phone paired');
+  toOther({ type: 'member', idx: p.idx, pk: fromPk });
+  note('your phone joined');
 }
 
 // --- Liveness ----------------------------------------------------------------
 
-setInterval(() => {
-  for (const m of members) if (m.pk && m.idx !== me.idx) send(m.pk, { type: 'ping', idx: me.idx, ts: Date.now() });
-}, 10_000);
-setTimeout(() => { for (const m of members) if (m.pk && m.idx !== me.idx) send(m.pk, { type: 'ping', idx: me.idx, ts: Date.now() }); }, 2000);
+const pingAll = () => { for (const m of members) if (m.pk && m.idx !== me.idx) send(m.pk, { type: 'ping', idx: me.idx, ts: Date.now() }); };
+setInterval(pingAll, 10_000);
+setTimeout(pingAll, 2000);
+setTimeout(syncTo, 4000);
+
+// Pick up what's already published under your key, so the first change is judged
+// against something.
+async function fetchArchive() {
+  const p = new SimplePool();
+  const relays = [...new Set([...S.group.relays, 'wss://relay.damus.io'])];
+  try {
+    const events = await p.querySync(relays, { authors: [groupX], kinds: [...ARCHIVED] }, { maxWait: 6000 });
+    let n = 0;
+    for (const e of events) if (archive.record(e)) n++;
+    if (n) note(`archived ${n} version${n === 1 ? '' : 's'} already on relays`);
+  } catch { /* relays come and go */ }
+  p.close(relays);
+}
+setTimeout(fetchArchive, 3000);
+setInterval(fetchArchive, 15 * 60_000);
 
 // --- Status page -------------------------------------------------------------
 
-const bunkerUri = () => `bunker://${S.bunker.pk}?${S.group.relays.map((r: string) => 'relay=' + encodeURIComponent(r)).join('&')}&secret=${S.bunker.secret}`;
-
+const ago = (t: number) => { const s = now() - t; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
+const esc = (s: string) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 function status() {
   return {
     me: me.name, npub: S.group.npub, coordinating: coordinating(),
-    members: members.map(m => ({ name: m.name, role: m.role, paired: !!m.pk, online: !!m.pk && online(m), self: m.idx === me.idx })),
-    relays: pool.status(), pairing: !!S.pairing, apps: S.bunker.clients.length,
-    autoKinds: S.group.autoKinds.map(kindName), activity,
+    members: members.map(m => ({ name: m.name, online: !!m.pk && online(m), paired: !!m.pk, self: m.idx === me.idx })),
+    relays: pool.status(), pairing: !!S.pairing,
+    sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: esc(s.origin), lastUsed: ago(s.lastUsed) })),
+    changes: (S.changes as Change[]).slice(0, 15).map(c => ({ text: esc(c.text), by: esc(c.by), when: ago(c.at), held: !!c.held, undone: !!c.undone })),
+    activity: activity.map(a => ({ ts: a.ts, text: esc(a.text) })),
   };
 }
 
 const page = async () => {
   const pu = pairingUri();
-  const pairQr = pu ? await QRCode.toString(pu, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }) : '';
-  const bunkerQr = await QRCode.toString(bunkerUri(), { type: 'svg', margin: 1 });
+  const pairQr = pu ? await QRCode.toString(pu, { type: 'svg', margin: 1 }) : '';
   return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>${me.name} · cosign</title>
 <style>
- body{font:15px/1.45 system-ui,sans-serif;background:#111;color:#eee;max-width:760px;margin:0 auto;padding:24px}
- h1{font-size:20px;margin:0 0 4px} .muted{color:#999} .card{background:#1b1b1b;border:1px solid #2a2a2a;border-radius:12px;padding:16px;margin:16px 0}
- .row{display:flex;gap:10px;align-items:center;margin:6px 0} .dot{width:10px;height:10px;border-radius:50%;background:#555}
- .on{background:#3c3} .qr{background:#fff;padding:10px;border-radius:10px;width:220px} code{word-break:break-all;font-size:12px;color:#ccc}
- .grid{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start} ul{padding-left:18px;margin:6px 0} li{margin:3px 0}
+ body{font:15px/1.45 system-ui,sans-serif;background:#13110f;color:#ede6da;max-width:760px;margin:0 auto;padding:24px}
+ h1{font-size:20px;margin:0 0 4px} h2{font-size:15px;margin:0 0 8px;color:#a69d90;font-weight:600}
+ .muted{color:#a69d90} .card{background:#1e1b18;border:1px solid #2a2622;border-radius:12px;padding:16px;margin:14px 0}
+ .row{display:flex;gap:10px;align-items:center;margin:6px 0} .dot{width:9px;height:9px;border-radius:50%;background:#4a443c;flex:none} .on{background:#7fc8c0}
+ .qr{background:#fff;padding:10px;border-radius:10px;width:220px} .grid{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+ button{background:none;border:1px solid #5a4520;color:#e9cf97;border-radius:8px;padding:5px 12px;font:inherit;cursor:pointer}
+ .site{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid #2a2622} .site:first-child{border-top:0}
+ .held{color:#f2b33d} ul{padding-left:18px;margin:4px 0} li{margin:3px 0}
 </style>
-<h1>${me.name}</h1><div class=muted><span id=npub>${S.group.npub}</span> · any 2 of 3 sign</div>
-<div class=card><div id=members></div><div class=muted id=coord style="margin-top:8px"></div></div>
-${pu ? `<div class=card id=pair><b>Add your phone</b><div class=grid style="margin-top:10px"><div class=qr>${pairQr}</div>
-<div style="flex:1;min-width:220px">Open <b>Cosign</b> on your phone and scan this. It joins as the third member.<br><br>
-<span class=muted>Whoever scans it first gets the phone's share, so only show it to the phone you mean.</span></div></div></div>` : ''}
-<div class=card><b>Log in to a Nostr app</b><div class=grid style="margin-top:10px"><div class=qr>${bunkerQr}</div>
-<div style="flex:1;min-width:220px">Use “remote signer” or “bunker” login and scan or paste:<br><code>${bunkerUri()}</code><br><br>
-<span class=muted>Anyone with this link can ask to sign. What they get is decided below.</span></div></div></div>
-<div class=card><b>What needs the phone</b><div style="margin-top:6px">Signed by the two servers without asking: <span id=auto></span>.</div>
-<div style="margin-top:4px">Everything else — profile, follow list, deletions, DMs, relay list… — waits for you to tap Approve on the phone.</div></div>
-<div class=card><b>Activity</b><ul id=act></ul></div>
+<h1>${me.name}</h1><div class=muted>${S.group.npub} · 2 of 3</div>
+<div class=card><div id=members></div><div class=muted id=coord style="margin-top:6px"></div></div>
+${pu ? `<div class=card id=pair><h2>Add your phone</h2><div class=grid><div class=qr>${pairQr}</div>
+<div style="flex:1;min-width:220px">Open <b>Cosign</b> on your phone and scan this. It becomes the third member and your remote control.<br><br>
+<span class=muted>Whoever scans it first becomes that member, so only show it to your phone.</span></div></div></div>` : ''}
+<div class=card><h2>Sites that can sign as you</h2><div id=sites></div></div>
+<div class=card><h2>Recent changes to your lists</h2><ul id=changes></ul></div>
+<div class=card><h2>Activity</h2><ul id=act></ul></div>
 <script>
+const $=id=>document.getElementById(id);
+async function revoke(pk){ await fetch('/revoke',{method:'POST',body:pk}); tick(); }
 async function tick(){const s=await (await fetch('/status')).json();
- document.getElementById('members').innerHTML=s.members.map(m=>'<div class=row><span class="dot '+(m.online?'on':'')+'"></span>'+m.name+(m.self?' <span class=muted>(this one)</span>':'')+(m.paired?'':' <span class=muted>— not paired</span>')+'</div>').join('');
- document.getElementById('coord').textContent=(s.coordinating?'Answering the bunker. ':'Standing by for the bunker. ')+s.relays.filter(r=>r.up).length+'/'+s.relays.length+' relays · '+s.apps+' app(s) connected';
- document.getElementById('auto').textContent=s.autoKinds.join(', ');
- document.getElementById('act').innerHTML=s.activity.map(a=>'<li><span class=muted>'+new Date(a.ts).toLocaleTimeString()+'</span> '+a.text+'</li>').join('')||'<li class=muted>nothing yet</li>';
- if(!s.pairing){const p=document.getElementById('pair'); if(p) location.reload();}}
+ $('members').innerHTML=s.members.map(m=>'<div class=row><span class="dot '+(m.online?'on':'')+'"></span>'+m.name+(m.self?' <span class=muted>(this one)</span>':'')+(m.paired?'':' <span class=muted>— not added</span>')+'</div>').join('');
+ $('coord').textContent=(s.coordinating?'Answering your sites. ':'Standing by. ')+s.relays.filter(r=>r.up).length+'/'+s.relays.length+' relays';
+ $('sites').innerHTML=s.sites.map(x=>'<div class=site><div>'+x.origin+'<div class=muted style="font-size:13px">used '+x.lastUsed+'</div></div><button data-pk="'+x.pk+'">Remove</button></div>').join('')||'<div class=muted>None yet. Scan a site’s code with your phone.</div>';
+ for(const b of document.querySelectorAll('button[data-pk]')) b.onclick=()=>revoke(b.dataset.pk);
+ $('changes').innerHTML=s.changes.map(c=>'<li class="'+(c.held?'held':'')+'">'+c.text+' <span class=muted>· '+c.by+' · '+c.when+(c.undone?' · undone':'')+'</span></li>').join('')||'<li class=muted>None yet.</li>';
+ $('act').innerHTML=s.activity.map(a=>'<li><span class=muted>'+new Date(a.ts).toLocaleTimeString()+'</span> '+a.text+'</li>').join('')||'<li class=muted>Nothing yet.</li>';
+ if(!s.pairing&&$('pair'))location.reload();}
 tick(); setInterval(tick,2000);
 </script>`;
 };
 
 createServer(async (req, res) => {
   if (req.url === '/status') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(status())); }
+  if (req.url === '/revoke' && req.method === 'POST') {
+    let body = ''; req.on('data', c => (body += c)); req.on('end', () => { revoke(body.trim(), `on ${me.name}'s page`); res.end('ok'); }); return;
+  }
   if (req.url === '/') { res.setHeader('content-type', 'text/html'); return res.end(await page()); }
   res.statusCode = 404; res.end();
 }).listen(S.port, process.env.HOST ?? '127.0.0.1', () => console.log(`[${me.name}] http://localhost:${S.port}`));
 
-const filters = [{ kinds: [KIND_MEMBER], '#p': [me.pk!] }, { kinds: [KIND_NIP46], '#p': [S.bunker.pk] }];
-pool.start(filters);
+pool.start([{ kinds: [KIND_MEMBER], '#p': [me.pk!] }, { kinds: [KIND_NIP46], '#p': [S.signer.pk] }]);
 note('started');

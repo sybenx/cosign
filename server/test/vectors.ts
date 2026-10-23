@@ -9,7 +9,7 @@ const N = F.N, G = F.G, mod = (a: bigint) => ((a % N) + N) % N;
 const sc = (label: string) => mod(F.toInt(sha256(utf8ToBytes(label)))) || 1n;
 const pt = (k: bigint) => F.bytesToHex(G.multiply(k).toBytes(true));
 
-let a0 = sc('cosign vector a0'); if (!G.multiply(a0).hasEvenY()) a0 = N - a0;
+let a0 = sc('cosign vector a0'); if (!F.evenY(G.multiply(a0))) a0 = N - a0;
 const a1 = sc('cosign vector a1');
 const share = (i: number) => mod(a0 + a1 * BigInt(i));
 const groupX = F.bytesToHex(G.multiply(a0).toBytes(true).slice(1));

@@ -2,17 +2,30 @@ package cc.aaro.cosign
 
 import android.content.Context
 import android.net.Uri
+import cc.aaro.cosign.core.CodeCheck
 import cc.aaro.cosign.core.Event
 import cc.aaro.cosign.core.Frost
 import cc.aaro.cosign.core.Json
+import cc.aaro.cosign.core.Mode
 import cc.aaro.cosign.core.Nip44
+import cc.aaro.cosign.core.Outcome
+import cc.aaro.cosign.core.PairingParams
+import cc.aaro.cosign.core.PairingUri
+import cc.aaro.cosign.core.Phase
+import cc.aaro.cosign.core.SignerTicket
+import cc.aaro.cosign.core.SignerTicketProfile
 import cc.aaro.cosign.core.SystemEnv
 import cc.aaro.cosign.core.generateSecretKey
 import cc.aaro.cosign.core.hexToBytes
 import cc.aaro.cosign.core.isHex32
 import cc.aaro.cosign.core.publicKeyHex
 import cc.aaro.cosign.core.toHex
+import cc.aaro.cosign.net.KeyValue
 import cc.aaro.cosign.net.Relays
+import cc.aaro.cosign.net.Store
+import cc.aaro.cosign.net.Transfer
+import cc.aaro.cosign.net.TransferDeps
+import cc.aaro.cosign.net.TransferView
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import java.util.concurrent.ConcurrentHashMap
@@ -21,11 +34,14 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 data class Member(val idx: Int, val name: String, val role: String, val pk: String?, val sharePub: String)
-data class Group(val groupX: String, val npub: String, val threshold: Int, val relays: List<String>, val autoKinds: List<Int>, val members: List<Member>)
-data class Membership(val sk: String, val idx: Int, val share: String, val group: Group)
-data class Offer(val fromPk: String, val token: String, val idx: Int, val share: String, val group: Group)
-/** A signing request waiting for the user. */
-data class Ask(val id: String, val fromPk: String, val via: String, val app: String, val event: Event, val msg: String, val commit: Frost.Commit, val expiresAt: Long)
+data class Group(val groupX: String, val npub: String, val threshold: Int, val relays: List<String>, val members: List<Member>)
+data class Membership(val sk: String, val idx: Int, val share: String, val signer: String, val group: Group)
+data class Offer(val fromPk: String, val token: String, val idx: Int, val share: String, val signer: String, val group: Group)
+/** Something destructive, waiting for you. */
+data class Ask(val id: String, val fromPk: String, val via: String, val app: String, val event: Event, val msg: String, val commit: Frost.Commit, val hold: String, val expiresAt: Long)
+data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long)
+data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean)
+data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
 data class Line(val ts: Long, val text: String, val kind: String = "info")
 
 data class Ui(
@@ -37,20 +53,23 @@ data class Ui(
     val online: Map<Int, Boolean> = emptyMap(),
     val relaysUp: Int = 0,
     val log: List<Line> = emptyList(),
+    val sites: List<Site> = emptyList(),
+    val changes: List<Change> = emptyList(),
+    val connect: Connect? = null,
+    val push: String? = null,
 )
 
 /**
- * Everything the phone does as a member: join by scanning, answer the servers,
- * and ask its user about anything that isn't routine.
+ * The phone's part: your remote control, and one share of your key.
  *
- * The phone never starts a signature. A server does, when an app asks it to; the
- * phone is the second signer whenever the event needs one, or whenever the other
- * server is down.
+ * It connects sites (scan a site's code; your servers give it access of its own), shows
+ * and removes what's connected, approves anything destructive, and undoes changes. It
+ * co-signs routine things itself only while one of your servers is down.
  */
-class Phone(context: Context) {
+class Phone(private val context: Context) {
     interface Listener { fun onAsk(ask: Ask); fun onAskGone(id: String); fun onStatus() }
 
-    private val store = Store(context)
+    private val secrets = Secrets(context)
     private val env = SystemEnv
     val ui = MutableStateFlow(Ui())
     @Volatile var listener: Listener? = null
@@ -62,50 +81,60 @@ class Phone(context: Context) {
     private val timer = Executors.newSingleThreadScheduledExecutor()
     private var pinger: ScheduledFuture<*>? = null
     private var helloer: ScheduledFuture<*>? = null
+    /** Answers already given, by request id: a repeat gets the same answer, never a second partial. */
+    private val answered = ConcurrentHashMap<String, Map<String, Any?>>()
+    private val asking = ConcurrentHashMap.newKeySet<String>()
+    private val pendingReplies = ConcurrentHashMap<String, (Map<String, Any?>) -> Unit>()
+    private val myUndos = ConcurrentHashMap<String, Long>()
     private var lastEcdhNote = 0L
 
+    private val qrstStore = Store(object : KeyValue {
+        private val prefs = context.getSharedPreferences("qrst", Context.MODE_PRIVATE)
+        override fun get(key: String): String? = prefs.getString(key, null)
+        override fun put(key: String, value: String) { prefs.edit().putString(key, value).apply() }
+    })
+    private var transfer: Transfer<SignerTicket>? = null
+    private var connecting: PairingParams? = null
+
     init {
-        store.loadMembership()?.let { parseMembership(Json.parse(it)) }?.let { m -> ui.update { it.copy(member = m) } }
-        store.loadLog()?.let { Json.parse(it) as? List<*> }?.let { lines ->
+        secrets.loadMembership()?.let { parseMembership(Json.parse(it)) }?.let { m -> ui.update { it.copy(member = m) } }
+        secrets.loadLog()?.let { Json.parse(it) as? List<*> }?.let { lines ->
             ui.update { u -> u.copy(log = lines.mapNotNull { (it as? Map<*, *>)?.let { m -> Line(m["ts"] as Long, m["text"] as String, m["kind"] as? String ?: "info") } }) }
         }
+        ui.update { it.copy(push = context.getSharedPreferences("cosign", Context.MODE_PRIVATE).getString("push", null)) }
     }
 
     val isMember get() = ui.value.member != null
+    private fun servers() = ui.value.member?.group?.members?.filter { it.role == "server" && it.pk != null } ?: emptyList()
 
     /** Start answering, if this phone is in a group. Called by the service. */
     fun start() {
         val m = ui.value.member ?: return
-        // Joining already opened the relays with this key; reuse them.
         if (relays == null || sk != m.sk) connect(m.group.relays, m.sk)
         if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status() }, 0, 10, TimeUnit.SECONDS)
+        timer.schedule({ requestState(); ui.value.push?.let { tellPush(it) } }, 2, TimeUnit.SECONDS)
     }
 
     fun stop() { pinger?.cancel(false); pinger = null; relays?.stop(); relays = null; sk = null }
 
-    // --- Joining -------------------------------------------------------------
+    // --- Joining your servers ------------------------------------------------
 
-    fun scanned(text: String) {
+    private fun joinGroup(text: String) {
         val uri = Uri.parse(text.trim().replace("cosign:pair?", "cosign://pair?"))
         val pk = uri.getQueryParameter("pk")
         val token = uri.getQueryParameter("t")
         val urls = uri.getQueryParameters("r").filter { it.startsWith("wss://") || it.startsWith("ws://") }
-        if (uri.scheme != "cosign" || !isHex32(pk) || token.isNullOrBlank() || urls.isEmpty()) {
-            ui.update { it.copy(error = "That isn't a Cosign pairing code.") }
-            return
-        }
+        if (!isHex32(pk) || token.isNullOrBlank() || urls.isEmpty()) { ui.update { it.copy(error = "That code is damaged. Try scanning it again.") }; return }
         pairing = uri
-        val temp = generateSecretKey(env).toHex()
-        connect(urls, temp)
+        connect(urls, generateSecretKey(env).toHex())
         ui.update { it.copy(joining = "Reaching your server…", error = null, offer = null) }
-        // Say hello until the server answers, for up to 20 s.
         val started = System.currentTimeMillis()
         helloer?.cancel(false)
         helloer = timer.scheduleWithFixedDelay({
             if (ui.value.offer != null || pairing == null) { helloer?.cancel(false); return@scheduleWithFixedDelay }
             if (System.currentTimeMillis() - started > 20_000) {
                 helloer?.cancel(false); relays?.stop(); relays = null
-                ui.update { it.copy(joining = null, error = "The server didn't answer. Is it running, and is the code still on its page?") }
+                ui.update { it.copy(joining = null, error = "Your server didn't answer. Is it running, and is the code still on its page?") }
                 return@scheduleWithFixedDelay
             }
             if ((relays?.up() ?: 0) > 0) send(pk!!, mapOf("type" to "pair_hello", "token" to token))
@@ -118,13 +147,13 @@ class Phone(context: Context) {
         val group = parseGroup(msg["group"]) ?: return
         val idx = (msg["idx"] as? Long)?.toInt() ?: return
         val share = msg["share"] as? String ?: return
-        // Keep nothing that isn't the share it says it is.
+        val signer = msg["signer"] as? String ?: return
         if (group.members.firstOrNull { it.idx == idx }?.sharePub != Frost.sharePub(share)) {
-            ui.update { it.copy(joining = null, error = "The server sent a share that doesn't match its group. Nothing was kept.") }
+            ui.update { it.copy(joining = null, error = "Your server sent a share that doesn't match its group. Nothing was kept.") }
             return
         }
         helloer?.cancel(false)
-        ui.update { it.copy(joining = null, offer = Offer(fromPk, msg["token"] as String, idx, share, group)) }
+        ui.update { it.copy(joining = null, offer = Offer(fromPk, msg["token"] as String, idx, share, signer, group)) }
     }
 
     fun accept() {
@@ -132,8 +161,8 @@ class Phone(context: Context) {
         val mySk = sk ?: return
         val me = publicKeyHex(mySk.hexToBytes())
         val group = o.group.copy(members = o.group.members.map { if (it.idx == o.idx) it.copy(pk = me) else it })
-        val m = Membership(mySk, o.idx, o.share, group)
-        store.saveMembership(Json.stringify(membershipToMap(m)))
+        val m = Membership(mySk, o.idx, o.share, o.signer, group)
+        secrets.saveMembership(Json.stringify(membershipToMap(m)))
         send(o.fromPk, mapOf("type" to "pair_ack", "token" to o.token))
         pairing = null
         ui.update { it.copy(member = m, offer = null) }
@@ -143,18 +172,118 @@ class Phone(context: Context) {
     }
 
     fun decline() {
-        pairing = null; helloer?.cancel(false); relays?.stop(); relays = null; sk = null
+        pairing = null; helloer?.cancel(false)
+        if (!isMember) { relays?.stop(); relays = null; sk = null }
         ui.update { it.copy(offer = null, joining = null) }
     }
 
     fun clearError() = ui.update { it.copy(error = null) }
 
     fun leave() {
-        stop(); store.clear(); lastSeen.clear()
+        stop(); secrets.clear(); lastSeen.clear()
+        context.getSharedPreferences("cosign", Context.MODE_PRIVATE).edit().clear().apply()
         ui.value = Ui()
     }
 
-    // --- Answering -----------------------------------------------------------
+    // --- Scanning ------------------------------------------------------------
+
+    /** Whatever the camera read: your server's code, or a site's. */
+    fun scanned(text: String) {
+        val t = text.trim()
+        if (t.startsWith("cosign:pair")) {
+            if (isMember) ui.update { it.copy(error = "This phone is already part of your key. That code is for adding a phone.") } else joinGroup(t)
+            return
+        }
+        val params = try { PairingUri.parse(t) } catch (_: Exception) { null }
+        when {
+            params == null -> ui.update { it.copy(error = "That isn't a code Cosign understands.") }
+            !isMember -> ui.update { it.copy(error = "Add this phone to your servers first: scan the code on your server's page.") }
+            params.profile != SignerTicketProfile.id -> ui.update { it.copy(error = "That code is for something else (${params.profile}).") }
+            params.mode != Mode.OFFER -> ui.update { it.copy(error = "That code isn't asking to sign in.") }
+            else -> {
+                connecting = params
+                ui.update { it.copy(error = null, connect = Connect(params.origin ?: "This site", Connect.Stage.CONFIRM)) }
+            }
+        }
+    }
+
+    // --- Connecting a site ----------------------------------------------------
+    //
+    // A one-time ticket, handed over by QRST at its lowest check: this phone's own camera
+    // read the code, the ticket is sealed to that code's burner, and the site can't use
+    // it without your servers, who take it once and only for 15 minutes.
+
+    fun confirmConnect() {
+        val params = connecting ?: return
+        val m = ui.value.member ?: return
+        val origin = params.origin ?: "a site"
+        val ticket = SignerTicket(m.group.groupX, m.signer, m.group.relays, env.random(16).toHex(), env.now() + 900)
+        for (s in servers()) send(s.pk!!, mapOf("type" to "ticket", "t" to ticket.t, "origin" to origin, "expires" to ticket.expires))
+        ui.update { it.copy(connect = Connect(origin, Connect.Stage.WORKING, "Sending to $origin…")) }
+        var released = false
+        val deps = TransferDeps(SignerTicketProfile, qrstStore, env, "https://qrst.aaro.cc/", CodeCheck.NONE)
+        val t = Transfer.join(deps, params, true, ticket)
+        transfer = t
+        t.onChange = {
+            val v: TransferView<SignerTicket> = t.view()
+            if (v.session.phase == Phase.RELEASE && !released) { released = true; t.release(ticket) }
+            if (v.stage == TransferView.Stage.ENDED) finishConnect(origin, v.session.outcome)
+        }
+    }
+
+    private fun finishConnect(origin: String, outcome: Outcome?) {
+        if (ui.value.connect?.stage != Connect.Stage.WORKING) return
+        val (stage, message) = when (outcome) {
+            Outcome.DELIVERED, Outcome.SENT_UNCONFIRMED -> Connect.Stage.DONE to "$origin can sign as you now. Remove it below any time."
+            Outcome.SECOND_RESPONDER -> Connect.Stage.FAILED to "Two devices answered that code, so nothing was sent. Ask the site for a new code."
+            Outcome.PEER_ABORTED, Outcome.DECLINED -> Connect.Stage.FAILED to "$origin cancelled."
+            Outcome.EXPIRED -> Connect.Stage.FAILED to "That code expired. Ask the site for a new one."
+            else -> Connect.Stage.FAILED to "Couldn't connect $origin (${outcome?.wire ?: "unknown"})."
+        }
+        if (stage == Connect.Stage.DONE) note("Connected $origin", "approved")
+        ui.update { it.copy(connect = Connect(origin, stage, message)) }
+        // A success needs no tap to dismiss, and mustn't sit over an approval that arrives next.
+        if (stage == Connect.Stage.DONE) timer.schedule({ ui.update { u -> if (u.connect?.stage == Connect.Stage.DONE) u.copy(connect = null) else u } }, 2500, TimeUnit.MILLISECONDS)
+        connecting = null
+        timer.schedule({ requestState() }, 3, TimeUnit.SECONDS)
+    }
+
+    fun closeConnect() {
+        val stage = ui.value.connect?.stage
+        if (stage == Connect.Stage.CONFIRM || stage == Connect.Stage.WORKING) transfer?.cancel()
+        connecting = null
+        ui.update { it.copy(connect = null) }
+    }
+
+    // --- What's connected, and what changed --------------------------------------
+
+    fun removeSite(site: Site) {
+        for (s in servers()) send(s.pk!!, mapOf("type" to "revoke", "pk" to site.pk))
+        ui.update { it.copy(sites = it.sites.filter { x -> x.pk != site.pk }) }
+        note("Removed ${site.origin}", "denied")
+    }
+
+    fun undo(change: Change) {
+        // One server does it: the first one that's online.
+        val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        myUndos[change.id] = System.currentTimeMillis()
+        send(target.pk!!, mapOf("type" to "undo", "id" to change.id))
+        note("Undoing: ${change.text}")
+    }
+
+    fun requestState() { for (s in servers()) send(s.pk!!, mapOf("type" to "state_req")) }
+
+    // --- Push (ntfy, by UnifiedPush) ---------------------------------------------
+
+    fun setPushEndpoint(url: String?) {
+        context.getSharedPreferences("cosign", Context.MODE_PRIVATE).edit().putString("push", url).apply()
+        ui.update { it.copy(push = url) }
+        tellPush(url)
+    }
+
+    private fun tellPush(url: String?) { for (s in servers()) send(s.pk!!, mapOf("type" to "push", "endpoint" to (url ?: ""))) }
+
+    // --- Answering your servers --------------------------------------------------
 
     private fun connect(urls: List<String>, secret: String) {
         relays?.stop()
@@ -177,32 +306,48 @@ class Phone(context: Context) {
         when (type) {
             "sign_req" -> onSignReq(msg, from, m)
             "ecdh_req" -> onEcdhReq(msg, from, m)
+            "state" -> onState(msg)
+            "undo_failed" -> note("Couldn't undo: ${msg["reason"]}", "denied")
         }
         status()
     }
 
+    private fun onState(msg: Map<*, *>) {
+        val sites = (msg["sites"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
+            Site(it["pk"] as? String ?: return@let null, it["origin"] as? String ?: "a site", it["added"] as? Long ?: 0, it["lastUsed"] as? Long ?: 0) } } ?: return
+        val changes = (msg["changes"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
+            Change(it["id"] as? String ?: return@let null, it["text"] as? String ?: "", it["by"] as? String ?: "", it["at"] as? Long ?: 0, it["held"] == true, it["undone"] == true) } } ?: emptyList()
+        ui.update { it.copy(sites = sites.sortedByDescending { s -> s.lastUsed }, changes = changes) }
+    }
+
     private fun onSignReq(msg: Map<*, *>, from: Member, m: Membership) {
         val id = msg["id"] as? String ?: return
-        val reply = { body: Map<String, Any> -> send(from.pk!!, mapOf("type" to "sign_res", "id" to id) + body) }
+        answered[id]?.let { send(from.pk!!, it); return }
+        if (id in asking) return
+        val reply = { body: Map<String, Any?> -> val full = mapOf("type" to "sign_res", "id" to id) + body; answered[id] = full; send(from.pk!!, full) }
         val ev = Event.fromMap(msg["event"]) ?: return reply(mapOf("ok" to false, "reason" to "malformed event"))
         val participants = (msg["participants"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: emptyList()
         val c = msg["commit"] as? Map<*, *>
         val commit = c?.let { Frost.Commit((it["idx"] as Long).toInt(), it["D"] as String, it["E"] as String) }
         val digest = msg["msg"] as? String
-        if (commit == null || commit.idx != from.idx || participants.sorted() != listOf(from.idx, m.idx).sorted())
+        if (commit == null || digest == null || commit.idx != from.idx || participants.sorted() != listOf(from.idx, m.idx).sorted())
             return reply(mapOf("ok" to false, "reason" to "bad participants"))
-        // Sign only what we were shown: the digest must be this event's id under the group key.
-        if (ev.pubkey != m.group.groupX || ev.computeId() != digest)
-            return reply(mapOf("ok" to false, "reason" to "event does not match the message"))
-        val app = msg["app"] as? String ?: "an app"
-        val ask = Ask(id, from.pk!!, from.name, app, ev, digest, commit, System.currentTimeMillis() + 55_000)
-        if (ev.kind in m.group.autoKinds) {
-            // Routine, and only here because the other server is down.
-            sign(ask, m)
-            note("Signed ${Kinds.name(ev.kind)} for $app with ${from.name} (routine; the other server was down)", "auto")
+        // Sign only what we were shown: the digest must be this event's id under your key.
+        if (ev.pubkey != m.group.groupX || ev.computeId() != digest) return reply(mapOf("ok" to false, "reason" to "event does not match the message"))
+        val app = msg["app"] as? String ?: "a site"
+        val hold = msg["hold"] as? String
+        val undo = msg["undo"] as? String
+        val ask = Ask(id, from.pk!!, from.name, app, ev, digest, commit, hold ?: "", System.currentTimeMillis() + 55_000)
+        val myUndo = undo != null && System.currentTimeMillis() - (myUndos[undo] ?: 0) < 120_000
+        if (hold == null || myUndo) {
+            sign(ask, m, reply)
+            if (myUndo) note("Undone", "approved")
+            else note("Signed ${Describe.kind(ev.kind)} for $app with ${from.name} (the other server is down)", "auto")
             return
         }
-        ui.update { it.copy(asks = it.asks + ask) }
+        asking.add(id)
+        pendingReplies[id] = reply
+        ui.update { it.copy(asks = it.asks + ask, connect = if (it.connect?.stage == Connect.Stage.DONE) null else it.connect) }
         listener?.onAsk(ask)
         timer.schedule({ expire(id) }, 56, TimeUnit.SECONDS)
     }
@@ -210,48 +355,49 @@ class Phone(context: Context) {
     fun decide(id: String, approve: Boolean) {
         val ask = ui.value.asks.firstOrNull { it.id == id } ?: return
         val m = ui.value.member ?: return
+        val reply = pendingReplies.remove(id) ?: return
         ui.update { it.copy(asks = it.asks.filter { a -> a.id != id }) }
+        asking.remove(id)
         listener?.onAskGone(id)
-        if (System.currentTimeMillis() > ask.expiresAt) return note("Too late to answer: ${Kinds.name(ask.event.kind)} for ${ask.app}", "denied")
-        if (approve) {
-            sign(ask, m)
-            note("You approved ${Kinds.name(ask.event.kind)} for ${ask.app}", "approved")
-        } else {
-            send(ask.fromPk, mapOf("type" to "sign_res", "id" to id, "ok" to false, "reason" to "declined on the phone"))
-            note("You declined ${Kinds.name(ask.event.kind)} for ${ask.app}", "denied")
-        }
+        if (System.currentTimeMillis() > ask.expiresAt) return note("Too late to answer: ${ask.hold}", "denied")
+        if (approve) { sign(ask, m, reply); note("You approved: ${ask.hold} (${ask.app})", "approved") }
+        else { reply(mapOf("ok" to false, "reason" to "declined on the phone")); note("You declined: ${ask.hold} (${ask.app})", "denied") }
     }
 
-    private fun sign(ask: Ask, m: Membership) {
+    private fun sign(ask: Ask, m: Membership, reply: (Map<String, Any?>) -> Unit) {
         val (nonces, mine) = Frost.commit(m.idx, env)
         val z = Frost.partialSign(m.group.groupX, ask.msg, listOf(ask.commit, mine), m.idx, m.share, nonces)
-        send(ask.fromPk, mapOf("type" to "sign_res", "id" to ask.id, "ok" to true, "z" to z,
-            "commit" to mapOf("idx" to mine.idx, "D" to mine.D, "E" to mine.E)))
+        reply(mapOf("ok" to true, "z" to z, "commit" to mapOf("idx" to mine.idx, "D" to mine.D, "E" to mine.E)))
     }
 
     private fun expire(id: String) {
         val ask = ui.value.asks.firstOrNull { it.id == id } ?: return
+        pendingReplies.remove(id)
+        asking.remove(id)
         ui.update { it.copy(asks = it.asks.filter { a -> a.id != id }) }
         listener?.onAskGone(id)
-        note("Nobody answered: ${Kinds.name(ask.event.kind)} for ${ask.app}", "denied")
+        note("Not answered in time: ${ask.hold} (${ask.app})", "denied")
     }
 
     private fun onEcdhReq(msg: Map<*, *>, from: Member, m: Membership) {
         val id = msg["id"] as? String ?: return
+        answered[id]?.let { send(from.pk!!, it); return }
         val participants = (msg["participants"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
         val peerX = msg["peerX"] as? String ?: return
         if (!isHex32(peerX) || participants.sorted() != listOf(from.idx, m.idx).sorted()) return
-        val point = Frost.ecdhPartial(m.idx, m.share, participants, peerX)
-        send(from.pk!!, mapOf("type" to "ecdh_res", "id" to id, "ok" to true, "point" to point))
+        val body = mapOf("type" to "ecdh_res", "id" to id, "ok" to true, "point" to Frost.ecdhPartial(m.idx, m.share, participants, peerX))
+        answered[id] = body
+        send(from.pk!!, body)
         if (System.currentTimeMillis() - lastEcdhNote > 60_000) {
             lastEcdhNote = System.currentTimeMillis()
-            note("Helped ${from.name} decrypt messages (the other server was down)", "auto")
+            note("Helped ${from.name} read messages (the other server is down)", "auto")
         }
     }
 
     private fun pingServers() {
         val m = ui.value.member ?: return
-        for (s in m.group.members) if (s.role == "server" && s.pk != null) send(s.pk, mapOf("type" to "ping", "idx" to m.idx, "ts" to System.currentTimeMillis()))
+        for (s in servers()) send(s.pk!!, mapOf("type" to "ping", "idx" to m.idx, "ts" to System.currentTimeMillis()))
+        if (answered.size > 300) answered.keys.take(150).forEach { answered.remove(it) }
     }
 
     private fun status() {
@@ -264,7 +410,7 @@ class Phone(context: Context) {
 
     private fun note(text: String, kind: String = "info") {
         ui.update { it.copy(log = (listOf(Line(System.currentTimeMillis(), text, kind)) + it.log).take(60)) }
-        store.saveLog(Json.stringify(ui.value.log.map { mapOf("ts" to it.ts, "text" to it.text, "kind" to it.kind) }))
+        secrets.saveLog(Json.stringify(ui.value.log.map { mapOf("ts" to it.ts, "text" to it.text, "kind" to it.kind) }))
     }
 
     // --- Sealed messages ----------------------------------------------------
@@ -272,12 +418,11 @@ class Phone(context: Context) {
     private fun send(toPk: String, body: Map<String, Any?>) {
         val secret = sk?.hexToBytes() ?: return
         val content = Nip44.encrypt(Json.stringify(body), Nip44.conversationKey(secret, toPk), env.random(32))
-        val e = Event.sign(publicKeyHex(secret), env.now(), KIND_MEMBER, listOf(listOf("p", toPk)), content, secret, env)
-        relays?.publish(e)
+        relays?.publish(Event.sign(publicKeyHex(secret), env.now(), KIND_MEMBER, listOf(listOf("p", toPk)), content, secret, env))
     }
 
     private fun open(e: Event): Map<*, *>? = try {
-        val secret = sk?.hexToBytes() ?: return null
+        val secret = sk?.hexToBytes() ?: throw IllegalStateException()
         Json.parse(Nip44.decrypt(e.content, Nip44.conversationKey(secret, e.pubkey))) as? Map<*, *>
     } catch (_: Exception) { null }
 
@@ -289,24 +434,19 @@ class Phone(context: Context) {
             val mm = x as? Map<*, *> ?: return@mapNotNull null
             Member((mm["idx"] as Long).toInt(), mm["name"] as String, mm["role"] as String, mm["pk"] as? String, mm["sharePub"] as String)
         } ?: return null
-        return Group(
-            g["groupX"] as? String ?: return null, g["npub"] as? String ?: "", (g["threshold"] as? Long)?.toInt() ?: 2,
-            (g["relays"] as? List<*>)?.filterIsInstance<String>() ?: return null,
-            (g["autoKinds"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: emptyList(),
-            members,
-        )
+        return Group(g["groupX"] as? String ?: return null, g["npub"] as? String ?: "", (g["threshold"] as? Long)?.toInt() ?: 2,
+            (g["relays"] as? List<*>)?.filterIsInstance<String>() ?: return null, members)
     }
 
     private fun parseMembership(v: Any?): Membership? {
         val m = v as? Map<*, *> ?: return null
-        return Membership(m["sk"] as String, (m["idx"] as Long).toInt(), m["share"] as String, parseGroup(m["group"]) ?: return null)
+        return Membership(m["sk"] as String, (m["idx"] as Long).toInt(), m["share"] as String, m["signer"] as? String ?: return null, parseGroup(m["group"]) ?: return null)
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
-        "sk" to m.sk, "idx" to m.idx, "share" to m.share,
+        "sk" to m.sk, "idx" to m.idx, "share" to m.share, "signer" to m.signer,
         "group" to mapOf(
-            "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold,
-            "relays" to m.group.relays, "autoKinds" to m.group.autoKinds,
+            "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
             "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) },
         ),
     )
@@ -314,23 +454,11 @@ class Phone(context: Context) {
     companion object { const val KIND_MEMBER = 28001 }
 }
 
-object Kinds {
+object Describe {
     private val names = mapOf(
         0 to "profile", 1 to "note", 3 to "follow list", 4 to "DM", 5 to "deletion", 6 to "repost", 7 to "reaction",
-        13 to "DM", 14 to "DM", 16 to "repost", 1111 to "comment", 9734 to "zap request", 10000 to "mute list",
-        10002 to "relay list", 22242 to "relay login", 24242 to "upload login", 27235 to "web login", 30023 to "article", 30078 to "app settings",
+        13 to "DM", 14 to "DM", 16 to "repost", 62 to "request to vanish", 1111 to "comment", 9734 to "zap request", 10000 to "mute list",
+        10002 to "relay list", 10003 to "bookmarks", 22242 to "relay login", 24242 to "upload login", 27235 to "web login", 30023 to "article", 30078 to "app data",
     )
-    fun name(k: Int) = names[k] ?: "kind $k event"
-
-    /** One line saying what an event would do, in plain words. */
-    fun describe(e: Event): String = when (e.kind) {
-        0 -> (Json.parse(e.content) as? Map<*, *>)?.let { p ->
-            listOfNotNull((p["name"] ?: p["display_name"])?.let { "name “$it”" }, p["about"]?.let { "about “${it.toString().take(80)}”" }, p["picture"]?.let { "a new picture" })
-                .joinToString(", ").ifEmpty { "an empty profile" }.let { "Change your profile to $it" }
-        } ?: "Change your profile"
-        3 -> "Replace your follow list with ${e.tags.count { it.firstOrNull() == "p" }} people"
-        5 -> "Delete ${e.tags.count { it.firstOrNull() == "e" || it.firstOrNull() == "a" }} of your events"
-        10002 -> "Replace your relay list with ${e.tags.count { it.firstOrNull() == "r" }} relays"
-        else -> e.content.take(280).ifBlank { "No text" }
-    }
+    fun kind(k: Int) = names[k] ?: "kind $k event"
 }

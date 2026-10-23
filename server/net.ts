@@ -7,7 +7,8 @@
 // signature says who sent it.
 
 import { Relay } from 'nostr-tools/relay';
-import { finalizeEvent, verifyEvent, getPublicKey, type Event, type Filter } from 'nostr-tools/pure';
+import { finalizeEvent, verifyEvent, getPublicKey, type Event } from 'nostr-tools/pure';
+import type { Filter } from 'nostr-tools/filter';
 import * as nip44 from 'nostr-tools/nip44';
 import { hexToBytes } from '@noble/hashes/utils.js';
 
