@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes as nodeRandom } from 'node:crypto';
-import { getEventHash, finalizeEvent, type Event } from 'nostr-tools/pure';
+import { getEventHash, finalizeEvent, verifyEvent, type Event } from 'nostr-tools/pure';
 import { SimplePool } from 'nostr-tools/pool';
 import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
@@ -151,6 +151,10 @@ async function onMember(msg: any, fromPk: string) {
     case 'ping': return;
     case 'asking': { if (fromPhone) waitLonger(String(msg.id)); return; }
     case 'sign_req': return answerOnce(from, msg.id, () => onSignReq(msg, from));
+    // An app on your phone asked it to sign (Android signer): the phone runs the round.
+    case 'cosign_req': return answerOnce(from, msg.id, () => onCosignReq(msg, from));
+    case 'phone_signed': { if (fromPhone) onPhoneSigned(msg); return; }
+    case 'app_grant': { if (fromPhone) grantApp(msg); return; }
     case 'ecdh_req': return answerOnce(from, msg.id, () => onEcdhReq(msg, from));
 
     case 'member': { // the server that added the phone says who it is
@@ -430,8 +434,56 @@ function onSignReq(msg: any, from: Member): object {
 
 function onEcdhReq(msg: any, from: Member): object {
   const respond = (r: object) => ({ type: 'ecdh_res', id: msg.id, ...r });
-  if (from.role !== 'server' || !msg.participants.includes(me.idx)) return respond({ ok: false, reason: 'bad request' });
+  if (!msg.participants?.includes(me.idx) || !msg.participants.includes(from.idx)) return respond({ ok: false, reason: 'bad request' });
+  // The phone asks on behalf of an app it has let read your messages; that app must still have access.
+  if (from.role === 'phone' && !liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
   return respond({ ok: true, point: F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants: msg.participants, peerX: msg.peerX }) });
+}
+
+// --- Apps on your phone (Android signer, NIP-55) ------------------------------------
+//
+// The app asks your phone; the phone runs the round and asks this server for the other
+// half, as a site would ask a server. This server still judges every event against its
+// own archive: something destructive needs the phone to say you approved it there.
+
+const liveGrant = (pk: unknown) => { const s = site(String(pk)); return s && !s.revoked ? s : undefined; };
+
+function grantApp(msg: any) {
+  const pk = String(msg.pk ?? '');
+  if (!/^[0-9a-f]{64}$/.test(pk)) return;
+  const s = site(pk);
+  if (s && !s.revoked) return pushState();
+  if (s) delete s.revoked; // connected again on the phone
+  else S.sites.push({ pk, origin: String(msg.origin ?? 'An app').slice(0, 80), added: now(), lastUsed: now(), via: 'App on this phone' } satisfies Site);
+  save(); syncTo(); pushState();
+  note(`${msg.origin} connected, as an app on your phone`);
+}
+
+function onCosignReq(msg: any, from: Member): object {
+  const respond = (r: object) => ({ type: 'cosign_res', id: msg.id, ...r });
+  const ev = msg.event;
+  if (from.role !== 'phone') return respond({ ok: false, reason: 'only your phone does this' });
+  const participants: number[] = msg.participants ?? [];
+  if (participants.length !== 2 || !participants.includes(me.idx) || !participants.includes(from.idx)) return respond({ ok: false, reason: 'bad participants' });
+  if (ev?.pubkey !== groupX || getEventHash(ev) !== msg.msg) return respond({ ok: false, reason: 'event does not match the message' });
+  const grant = liveGrant(msg.grant);
+  if (!grant) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
+  const hold = assess(ev, archive.latest(keyOf(ev))).hold;
+  if (hold && !msg.approved) return respond({ ok: false, reason: `needs-approval: ${hold}` });
+  grant.lastUsed = now();
+  const mine = Sig.commit(S.group, me.idx, S.self.share);
+  const z = Sig.partial(2, S.group, me.idx, S.self.share, mine.nonces, msg.msg, [msg.commit, mine.commit]);
+  return respond({ ok: true, commit: mine.commit, z });
+}
+
+/** The phone finished a round for an app: keep it like anything else signed here. */
+function onPhoneSigned(msg: any) {
+  const ev = msg.event as Event;
+  if (!ev || ev.pubkey !== groupX || !verifyEvent(ev)) return;
+  const judged = assess(ev, archive.latest(keyOf(ev)));
+  const app = liveGrant(msg.grant)?.origin ?? 'an app on your phone';
+  note(`your phone signed ${kindName(ev.kind)} for ${app}${msg.approved ? ' — you approved' : ''}`);
+  keep(ev, judged.change ?? judged.hold, app, !!msg.approved && !!judged.hold);
 }
 
 // Shared secrets for encrypting on your behalf. Memory only, ten minutes.

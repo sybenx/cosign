@@ -43,6 +43,9 @@ object Nip44 {
         return key
     }
 
+    /** The same key from an already-shared x coordinate (when the ECDH was done in two halves). */
+    fun conversationKeyFromShared(sharedX: ByteArray): ByteArray = hmac(SALT, sharedX)
+
     fun paddedLength(length: Int): Int {
         require(length >= 1) { "nip44: bad length" }
         if (length <= 32) return 32

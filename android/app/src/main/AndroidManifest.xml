@@ -55,6 +55,27 @@
             </intent-filter>
         </activity>
 
+        <!-- Android signer (NIP-55): apps on this phone sign through Cosign. The activity asks
+             you when it must (connecting, something destructive, first use of messages);
+             the provider answers everything else in the background. -->
+        <activity
+            android:name=".Nip55Activity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Cosign.Sheet">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nostrsigner" />
+            </intent-filter>
+        </activity>
+        <provider
+            android:name=".Nip55Provider"
+            android:exported="true"
+            android:authorities="cc.aaro.cosign.GET_PUBLIC_KEY;cc.aaro.cosign.SIGN_EVENT;cc.aaro.cosign.NIP04_ENCRYPT;cc.aaro.cosign.NIP04_DECRYPT;cc.aaro.cosign.NIP44_ENCRYPT;cc.aaro.cosign.NIP44_DECRYPT;cc.aaro.cosign.DECRYPT_ZAP_EVENT" />
+
         <!-- Keeps the relay connection open so a request can reach the phone while the
              app isn't on screen. Only runs once the phone has joined a group. -->
         <service

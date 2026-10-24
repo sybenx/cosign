@@ -30,7 +30,13 @@ import cc.aaro.cosign.net.TransferDeps
 import cc.aaro.cosign.net.TransferView
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import fr.acinq.secp256k1.Secp256k1
+import java.util.Base64
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -47,6 +53,12 @@ data class Site(val pk: String, val origin: String, val added: Long, val lastUse
 data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean)
 data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
 data class Line(val ts: Long, val text: String, val kind: String = "info")
+/** An app on this phone that may sign as you (Android signer, NIP-55). [pk] names its grant on your servers. */
+data class AppGrant(val pkg: String, val pk: String, val label: String, val dm: Boolean)
+/** Destructive: the app has to open Cosign so you can approve it. */
+class NeedsApproval(val what: String) : Exception(what)
+/** You removed this app; it must connect again. */
+class Revoked : Exception("revoked")
 
 data class Ui(
     val member: Membership? = null,
@@ -327,6 +339,7 @@ class Phone(private val context: Context) {
 
     fun removeSite(site: Site) {
         for (s in servers()) send(s.pk!!, mapOf("type" to "revoke", "pk" to site.pk))
+        appByPk(site.pk)?.let { apps.edit().remove(it.pkg).apply() }
         // Removing the extension removes every site it added; your servers do the same.
         ui.update { it.copy(sites = it.sites.filter { x -> x.pk != site.pk && x.parent != site.pk }) }
         note("Removed ${site.origin}", "denied")
@@ -351,6 +364,133 @@ class Phone(private val context: Context) {
     }
 
     private fun tellPush(url: String?) { for (s in servers()) send(s.pk!!, mapOf("type" to "push", "endpoint" to (url ?: ""))) }
+
+    // --- Apps on this phone (Android signer, NIP-55) ---------------------------------
+    //
+    // An app asks this phone, so this phone runs the round and asks one of your servers
+    // for the other half, the way a site asks a server. Both judge the event: something
+    // destructive needs you to approve it here first, and the server checks the app still
+    // has access. Decrypting is done in two halves and finished here, never on a server.
+
+    private val apps = context.getSharedPreferences("apps", Context.MODE_PRIVATE)
+    private val waiting = ConcurrentHashMap<String, CompletableFuture<Map<*, *>>>()
+    private val sharedXs = ConcurrentHashMap<String, Pair<Long, ByteArray>>()
+
+    fun appGrant(pkg: String): AppGrant? = apps.getString(pkg, null)?.let { j ->
+        (Json.parse(j) as? Map<*, *>)?.let { AppGrant(pkg, it["pk"] as String, it["label"] as String, it["dm"] == true) }
+    }
+    private fun appByPk(pk: String) = apps.all.keys.mapNotNull { appGrant(it) }.firstOrNull { it.pk == pk }
+    private fun store(g: AppGrant) = apps.edit().putString(g.pkg, Json.stringify(mapOf("pk" to g.pk, "label" to g.label, "dm" to g.dm))).apply()
+
+    fun connectApp(pkg: String, label: String): AppGrant {
+        val g = appGrant(pkg) ?: AppGrant(pkg, env.random(32).toHex(), label, false).also(::store)
+        for (s in servers()) send(s.pk!!, mapOf("type" to "app_grant", "pk" to g.pk, "origin" to g.label))
+        note("Connected ${g.label}", "approved")
+        timer.schedule({ requestState() }, 2, TimeUnit.SECONDS)
+        return g
+    }
+
+    fun allowDms(g: AppGrant): AppGrant = g.copy(dm = true).also { store(it); note("${g.label} may read and send your messages", "approved") }
+
+    /** What would be destroyed, if this needs you to approve it; else null. */
+    fun holdFor(ev: Event): String? = Policy.hold(ev, lists.latest(Policy.keyOf(ev)))
+
+    /** The event an app sent, as it will be signed: under your key, with its id. */
+    fun appEvent(json: String): Event {
+        val m = ui.value.member ?: error("Cosign isn't set up yet")
+        val raw = Json.parse(json) as? Map<*, *> ?: throw IllegalArgumentException("not an event")
+        val tags = (raw["tags"] as? List<*>)?.map { t -> (t as List<*>).map { it.toString() } } ?: emptyList()
+        return Event(m.group.groupX, raw["created_at"] as? Long ?: env.now(), (raw["kind"] as Long).toInt(), tags, raw["content"] as? String ?: "").withId()
+    }
+
+    /** Sign for an app, with one of your servers. Blocks for up to a few seconds; never call on the main thread. */
+    fun signForApp(g: AppGrant, ev: Event, approved: Boolean): Event {
+        val m = ui.value.member ?: error("Cosign isn't set up yet")
+        if (!approved) holdFor(ev)?.let { throw NeedsApproval(it) }
+        awake()
+        val group = groupJson(m)
+        val tried = mutableListOf<String>()
+        for (srv in servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }) {
+            val c = Json.parse(FrostNative.commit(group, m.idx, m.share)) as Map<*, *>
+            val mine = c["commit"] as Map<*, *>
+            val res = askServer(srv, mapOf("type" to "cosign_req", "id" to env.random(8).toHex(), "event" to ev.toMap(), "msg" to ev.id,
+                "participants" to listOf(m.idx, srv.idx).sorted(), "commit" to mine, "frost" to 2, "grant" to g.pk, "approved" to approved))
+                ?: run { tried += "${srv.name}: no answer"; null } ?: continue
+            if (res["ok"] != true) {
+                val why = res["reason"] as? String ?: "refused"
+                if (why.startsWith("revoked")) { apps.edit().remove(g.pkg).apply(); throw Revoked() }
+                if (why.startsWith("needs-approval:")) throw NeedsApproval(why.removePrefix("needs-approval:").trim())
+                tried += "${srv.name}: $why"; continue
+            }
+            val theirs = res["commit"] as Map<*, *>
+            val z2 = res["z"] as String
+            val commits = Json.stringify(listOf(mine, theirs))
+            if (!FrostNative.verifyPartial(group, ev.id, commits, srv.idx, z2)) { tried += "${srv.name}: bad partial"; continue }
+            val z = FrostNative.sign(group, m.idx, m.share, c["nonces"] as String, ev.id, commits)
+            val signed = ev.copy(sig = FrostNative.aggregate(group, ev.id, commits, Json.stringify(listOf(listOf(m.idx, z), listOf(srv.idx, z2)))))
+            send(srv.pk!!, mapOf("type" to "phone_signed", "event" to signed.toMap(), "grant" to g.pk, "approved" to approved))
+            note("Signed ${Describe.kind(ev.kind)} for ${g.label}", if (approved) "approved" else "auto")
+            return signed
+        }
+        throw IllegalStateException("Couldn't reach your servers (${tried.joinToString("; ")})")
+    }
+
+    /** The shared x with [peerX], from this phone's half and a server's. Kept ten minutes, in memory. */
+    private fun sharedX(g: AppGrant, peerX: String): ByteArray {
+        sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) return x }
+        val m = ui.value.member ?: error("Cosign isn't set up yet")
+        awake()
+        for (srv in servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }) {
+            val participants = listOf(m.idx, srv.idx).sorted()
+            val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk)) ?: continue
+            if (res["ok"] != true) { if ((res["reason"] as? String)?.startsWith("revoked") == true) throw Revoked(); continue }
+            val mine = Frost.ecdhPartial(m.idx, m.share, participants, peerX).hexToBytes()
+            val x = Secp256k1.pubKeyCombine(arrayOf(mine, (res["point"] as String).hexToBytes())).copyOfRange(1, 33)
+            sharedXs[peerX] = System.currentTimeMillis() to x
+            return x
+        }
+        throw IllegalStateException("Couldn't reach your servers")
+    }
+
+    fun nip44(g: AppGrant, peer: String, text: String, encrypt: Boolean): String {
+        val key = Nip44.conversationKeyFromShared(sharedX(g, peer))
+        return if (encrypt) Nip44.encrypt(text, key, env.random(32)) else Nip44.decrypt(text, key)
+    }
+
+    fun nip04(g: AppGrant, peer: String, text: String, encrypt: Boolean): String {
+        val key = SecretKeySpec(sharedX(g, peer), "AES")
+        val c = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        val b64 = Base64.getEncoder()
+        if (encrypt) {
+            val iv = env.random(16)
+            c.init(Cipher.ENCRYPT_MODE, key, IvParameterSpec(iv))
+            return b64.encodeToString(c.doFinal(text.toByteArray())) + "?iv=" + b64.encodeToString(iv)
+        }
+        val (ct, iv) = text.split("?iv=").let { it[0] to it.getOrElse(1) { "" } }
+        c.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(Base64.getDecoder().decode(iv)))
+        return String(c.doFinal(Base64.getDecoder().decode(ct)))
+    }
+
+    private fun groupJson(m: Membership) = Json.stringify(mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold,
+        "members" to m.group.members.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+
+    /** Ask a server and wait for its answer, saying it again once in case a relay dropped it. */
+    private fun askServer(srv: Member, msg: Map<String, Any?>): Map<*, *>? {
+        val id = msg["id"] as String
+        val f = CompletableFuture<Map<*, *>>()
+        waiting[id] = f
+        send(srv.pk!!, msg)
+        val again = timer.schedule({ if (!f.isDone) send(srv.pk!!, msg) }, 2, TimeUnit.SECONDS)
+        return try { f.get(if (ui.value.online[srv.idx] == true) 6 else 3, TimeUnit.SECONDS) } catch (_: Exception) { null }
+            finally { again.cancel(false); waiting.remove(id) }
+    }
+
+    /** An app can wake Cosign from nothing: make sure the relays are up before asking. */
+    private fun awake() {
+        start()
+        val until = System.currentTimeMillis() + 5000
+        while ((relays?.up() ?: 0) == 0 && System.currentTimeMillis() < until) Thread.sleep(100)
+    }
 
     // --- Answering your servers --------------------------------------------------
 
@@ -377,6 +517,7 @@ class Phone(private val context: Context) {
             "ecdh_req" -> onEcdhReq(msg, from, m)
             "state" -> onState(msg)
             "connected" -> onConnected(msg)
+            "cosign_res", "ecdh_res" -> (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }
             "signed" -> Event.fromMap(msg["event"])?.let { lists.record(it, m.group.groupX) }
             "undo_failed" -> note("Couldn't undo: ${msg["reason"]}", "denied")
         }

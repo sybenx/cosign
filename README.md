@@ -9,6 +9,9 @@ changes.
 - **Connecting a site** is QRST at its lowest level: the site shows a code, you scan
   it with Cosign, tap *Connect*, and the site is signed in. What crosses is a one-time
   ticket, not your key; the site redeems it with your servers for access of its own.
+- **Apps on your phone sign through Cosign** (Android signer, NIP-55), the way they use
+  Amber: connect once, everyday signing is silent, destructive things and the first use
+  of your messages ask you. Each app shows in your list with Remove.
 - **Sites that only know NIP-46 work too**: scan their `nostrconnect://` code the same
   way. Same one tap, same access of its own, removed the same way.
 - **About 95% of things sign at once**, by your server and your phone, without asking you.
@@ -83,6 +86,11 @@ background service is running.
   judges an event against its own copy of your lists, so one compromised member can't
   talk another into co-signing something destructive. When the phone asks you, it tells
   the server to wait the full minute; a decline ends it, and nobody else is asked.
+- **Android signer** (`Nip55Provider.kt`, `Nip55Activity.kt`, the apps section of `Phone.kt`;
+  `onCosignReq` in `server/server.ts`): the app asks the phone, so the phone runs the round
+  and a server gives the other half after checking the app's grant and judging the event
+  itself. Decryption is done in two halves and finished on the phone. `android/nip55tester`
+  is a stand-in app that runs through all of it on an emulator.
 - **Big messages** go between members in 24 KB parts (`sealParts` in `server/net.ts`,
   `send` in `Phone.kt`): NIP-44 stops at 64 KB, and a large follow list is bigger.
 - **FROST** (`frost/`, Rust): the Zcash Foundation's `frost-secp256k1-tr` (RFC 9591,
