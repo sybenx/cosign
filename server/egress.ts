@@ -33,6 +33,15 @@ export function isPrivateAddress(ip: string): boolean {
   return /^(fc|fd|fe8|fe9|fea|feb|ff)/.test(v) || v.startsWith('64:ff9b:');
 }
 
+/** A relay others could reach, by its name alone (no lookup): wss://, not loopback, private or tailnet. */
+export function looksPublic(url: string): boolean {
+  let p: URL;
+  try { p = new URL(url); } catch { return false; }
+  const h = p.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (p.protocol !== 'wss:' || h === 'localhost' || /\.(localhost|local|internal|lan|home|ts\.net)$/.test(h) || (!h.includes('.') && !h.includes(':'))) return false;
+  return !isIP(h) || !isPrivateAddress(h);
+}
+
 /** Every address this name stands for is public. An IP literal is checked as it is. */
 async function publicHost(host: string): Promise<boolean> {
   const h = host.replace(/^\[|\]$/g, '');

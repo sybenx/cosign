@@ -26,7 +26,7 @@ import { enrollers, memberSk, newMemberKey } from './core/enroll.ts';
 import { loadGroup, groupFiles, isGroupDir, createGroup, writeJson } from './files.ts';
 import { groupPage, hostPage, esc } from './page.ts';
 import { checkClock, trustedNow } from './clock.ts';
-import { relayAllowed, allowedRelays, pushAllowed } from './egress.ts';
+import { relayAllowed, allowedRelays, pushAllowed, looksPublic } from './egress.ts';
 
 const args = process.argv.slice(2);
 const opt = (name: string) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
@@ -220,6 +220,8 @@ const DISCOVERY = ['wss://syb.lol', 'wss://relay.primal.net', 'wss://nos.lol', '
 async function announce(): Promise<boolean> {
   const cfg = hostConfig();
   if (!cfg?.operator) return true;
+  // A server only reachable on this machine or network (a test's, say) is never announced.
+  if (!cfg.relays.some(looksPublic)) { console.log('not announcing: none of its relays is public'); return true; }
   const e = finalizeEvent({
     kind: 30243, created_at: Math.floor(Date.now() / 1000),
     tags: [['d', 'cosign-server'], ['p', cfg.operator, '', 'operator']],

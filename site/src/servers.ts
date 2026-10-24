@@ -51,6 +51,16 @@ export const DISCOVERY_RELAYS = ['wss://syb.lol', 'wss://relay.primal.net', 'wss
 
 const isHex = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 const isRelay = (r: unknown): r is string => typeof r === 'string' && /^wss?:\/\/[^\s]+$/.test(r);
+/** A relay a stranger's device could reach: wss://, and not a loopback, private or tailnet name or address (servers won't dial those either). */
+export function isPublicRelay(r: unknown): r is string {
+  if (typeof r !== 'string' || !/^wss:\/\/[^\s]+$/.test(r)) return false;
+  let h: string;
+  try { h = new URL(r).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch { return false; }
+  if (h === 'localhost' || /\.(localhost|local|internal|lan|home|ts\.net)$/.test(h) || !h.includes('.') && !h.includes(':')) return false;
+  const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(h);
+  if (v4) { const [a, b] = [Number(v4[1]), Number(v4[2])]; return !(a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224); }
+  return !(h.includes(':') && (h === '::1' || /^(fc|fd|fe8|fe9|fea|feb)/.test(h)));
+}
 
 /** A server's announcement, to sign with its host key. */
 export function announcement(a: { relays: string[]; https: string | null; enroll: 'open' | 'invite'; version: string; operator: string; nip05?: string }, created_at = Math.floor(Date.now() / 1000)): EventTemplate {
@@ -73,7 +83,8 @@ export function parseAnnouncement(e: Event): Server | null {
   if (!isHex(operator)) return null;
   let c: any;
   try { c = JSON.parse(e.content); } catch { return null; }
-  const relays = Array.isArray(c?.relays) ? c.relays.filter(isRelay) : [];
+  // Only relays anyone can reach: an announcement naming none (a test server's, say) isn't a server to offer.
+  const relays = Array.isArray(c?.relays) ? c.relays.filter(isPublicRelay) : [];
   if (!relays.length) return null;
   const https = typeof c.https === 'string' && /^https:\/\//.test(c.https) ? c.https : null;
   const nip05 = e.tags.find(t => t[0] === 'nip05')?.[1];

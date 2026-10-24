@@ -19,6 +19,7 @@ import { openGroup, type Group } from '../../server/core/group.ts';
 import type { Io, Loaded } from '../../server/core/io.ts';
 import { enrollers, memberSk, newMemberKey } from '../../server/core/enroll.ts';
 import { sealParts, openFrom, Parts, pubOf, KIND_MEMBER, KIND_NIP46 } from '../../server/core/seal.ts';
+import { isPublicRelay } from '../../site/src/servers.ts';
 import { checkClock, trustedNow } from '../../server/clock.ts';
 import pkg from '../../server/package.json';
 
@@ -254,7 +255,8 @@ export class CosignHost extends DurableObject {
   /** Kind 30243, signed by the host key, to the discovery relays: the only time it dials out. */
   private async announce() {
     const cfg = this.config();
-    if (!/^[0-9a-f]{64}$/.test(cfg.operator) || !cfg.url) return;
+    // Not under wrangler dev (ws://127.0.0.1…): an address nobody else can reach is never announced.
+    if (!/^[0-9a-f]{64}$/.test(cfg.operator) || !isPublicRelay(cfg.url)) return;
     const e = finalizeEvent({
       kind: 30243, created_at: Math.floor(Date.now() / 1000),
       tags: [['d', 'cosign-server'], ['p', cfg.operator, '', 'operator']],
