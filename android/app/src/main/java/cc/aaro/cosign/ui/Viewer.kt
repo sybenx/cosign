@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -72,10 +73,17 @@ fun ImageViewer(urls: List<String>, start: Int, onClose: () -> Unit) {
 private fun Zoomable(url: String, px: Int, onZoom: (Boolean) -> Unit) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
-    fun set(s: Float, o: Offset) { scale = s; offset = if (s <= 1f) Offset.Zero else o; onZoom(s > 1.01f) }
+    var box by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    // Never panned past the picture's edges.
+    fun set(s: Float, o: Offset) {
+        scale = s
+        val mx = box.width * (s - 1) / 2; val my = box.height * (s - 1) / 2
+        offset = if (s <= 1f) Offset.Zero else Offset(o.x.coerceIn(-mx, mx), o.y.coerceIn(-my, my))
+        onZoom(s > 1.01f)
+    }
     val state = rememberTransformableState { zoom, pan, _ -> set((scale * zoom).coerceIn(1f, 5f), offset + pan * scale) }
     Box(
-        Modifier.fillMaxSize()
+        Modifier.fillMaxSize().onSizeChanged { box = it }
             .pointerInput(url) { detectTapGestures(onDoubleTap = { at -> if (scale > 1f) set(1f, Offset.Zero) else set(2.5f, (Offset(size.width / 2f, size.height / 2f) - at) * 1.5f) }) }
             // Panning only once zoomed in, so an unzoomed swipe still goes to the next picture.
             .transformable(state, canPan = { scale > 1f }),

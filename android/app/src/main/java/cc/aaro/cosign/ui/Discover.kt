@@ -496,7 +496,11 @@ private class Body(val parts: List<Part>, val media: List<Media>, val mentions: 
             if (at < text.length) parts += Part.Plain(text.substring(at))
             // A video event (NIP-71) names its file only in imeta; so may any note.
             for ((url, f) in meta) if (f["m"]?.startsWith("video/") == true && images.none { it is Vid && it.v.url == url }) images += video(url)
-            // Media links are pulled out of the text: tidy the line breaks they leave behind.
+            // Media links are pulled out of the text: tidy the line breaks they leave behind
+            // (the text on either side of one is one stretch now).
+            val joined = ArrayList<Part>()
+            for (p in parts) { val last = joined.lastOrNull(); if (p is Part.Plain && last is Part.Plain) joined[joined.lastIndex] = Part.Plain(last.s + p.s) else joined += p }
+            parts.clear(); parts += joined
             val tidy = parts.mapIndexed { i, p ->
                 if (p !is Part.Plain) p else Part.Plain(p.s.replace(BREAKS, "\n\n").let { s -> if (i == 0) s.trimStart() else s }.let { s -> if (i == parts.lastIndex) s.trimEnd() else s })
             }

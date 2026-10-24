@@ -69,7 +69,11 @@ object Videos {
     val full = mutableStateOf(false)
     private var exo: ExoPlayer? = null
 
-    fun player(context: android.content.Context): ExoPlayer = exo ?: ExoPlayer.Builder(context.applicationContext).build().also { exo = it }
+    fun player(context: android.content.Context): ExoPlayer = exo ?: ExoPlayer.Builder(context.applicationContext).build().also { p ->
+        exo = p
+        // At the end, back to the picture and ▶ (full screen waits for you to close it).
+        p.addListener(object : Player.Listener { override fun onPlaybackStateChanged(state: Int) { if (state == Player.STATE_ENDED && !full.value) release() } })
+    }
 
     fun play(context: android.content.Context, v: VideoRef) {
         val p = player(context)
@@ -145,7 +149,7 @@ fun VideoFullScreen() {
     val v = Videos.playing.value ?: return
     if (!Videos.full.value) return
     val context = LocalContext.current
-    val close = { Videos.full.value = false }
+    val close = { Videos.full.value = false; if (Videos.player(context).playbackState == Player.STATE_ENDED) Videos.release() }
     BackHandler(onBack = close)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Surface(Videos.player(context), Modifier.align(Alignment.Center).fillMaxWidth())
@@ -189,7 +193,7 @@ private fun Controls(p: ExoPlayer, modifier: Modifier, onFull: () -> Unit, fullL
             colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Vault.Teal, inactiveTrackColor = Color(0x66FFFFFF)))
         Text(clock(length), color = Color.White, style = MaterialTheme.typography.labelSmall)
         Spacer(Modifier.width(4.dp))
-        Text(fullLabel, color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.clip(CircleShape).clickable(onClick = onFull).padding(8.dp))
+        Text(fullLabel, color = Color.White, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.clip(CircleShape).clickable(onClick = onFull).padding(horizontal = 8.dp))
     }
 }
 
