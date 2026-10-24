@@ -1,0 +1,10 @@
+{
+  "name": "cosign-worker",
+  "private": true,
+  "type": "module",
+  "description": "A Cosign server as a Cloudflare Worker: the server core (../server/core) in a Durable Object, shares in Workers KV",
+  "dependencies": {
+    "@noble/hashes": "^2.4.0",
+    "nostr-tools": "^2.25.2"
+  }
+}

@@ -6,10 +6,8 @@
 // partner's partial which one it used and finish the round the same way. A request
 // says `frost: 2`; a member that predates this doesn't read it and answers in scheme 1.
 
-import { createRequire } from 'node:module';
 import * as F from './frost.ts';
-
-const W = createRequire(import.meta.url)('./frost-wasm/cosign_frost.js');
+import { W } from './wasm.ts';
 
 export interface Commit { idx: number; D: string; E: string }
 export type Scheme = 1 | 2;

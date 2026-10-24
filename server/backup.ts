@@ -5,11 +5,9 @@
 // its own copy.
 
 import * as nip44 from 'nostr-tools/nip44';
-import { createRequire } from 'node:module';
 import * as F from './frost.ts';
 import { checkDelta, addDeltas } from './refresh.ts';
-
-const W = createRequire(import.meta.url)('./frost-wasm/cosign_frost.js');
+import { W } from './wasm.ts';
 
 /** What a server sends the paper's key (`backup`), and the paper's secret key. */
 export function restoreShares(sk: string, b: any): { idx: number; secret: string }[] {

@@ -10,7 +10,7 @@
 // list…) waits for your phone instead. Server A answers sites; server B answers only
 // while A has been silent for 30 s.
 
-import { createCipheriv, createDecipheriv, randomBytes as nodeRandom } from 'node:crypto';
+import { cbc } from '@noble/ciphers/aes.js';
 import { getEventHash, finalizeEvent, verifyEvent, type Event } from 'nostr-tools/pure';
 import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
@@ -695,14 +695,14 @@ export function openGroup(loaded: Loaded, io: Io) {
   const groupNip44Key = async (peerX: string) => extract(sha256, await frostEcdh(peerX), utf8ToBytes('nip44-v2'));
   async function groupNip04(peerX: string, text: string, decrypt: boolean) {
     const key = await frostEcdh(peerX);
+    const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+    const unb64 = (s: string) => Uint8Array.from(atob(s), c => c.charCodeAt(0));
     if (decrypt) {
       const [ct, iv] = text.split('?iv=');
-      const d = createDecipheriv('aes-256-cbc', key, Buffer.from(iv, 'base64'));
-      return Buffer.concat([d.update(Buffer.from(ct, 'base64')), d.final()]).toString('utf8');
+      return new TextDecoder().decode(cbc(key, unb64(iv)).decrypt(unb64(ct)));
     }
-    const iv = nodeRandom(16);
-    const c = createCipheriv('aes-256-cbc', key, iv);
-    return Buffer.concat([c.update(text, 'utf8'), c.final()]).toString('base64') + '?iv=' + iv.toString('base64');
+    const iv = F.randomBytes(16);
+    return b64(cbc(key, iv).encrypt(new TextEncoder().encode(text))) + '?iv=' + b64(iv);
   }
 
   // --- Undo --------------------------------------------------------------------

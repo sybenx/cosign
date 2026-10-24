@@ -7,9 +7,7 @@
 //
 // The same runner is used by the servers and the test phone; the app has its own copy.
 
-import { createRequire } from 'node:module';
-
-const W = createRequire(import.meta.url)('./frost-wasm/cosign_frost.js');
+import { W } from './wasm.ts';
 
 export interface DkgPlan {
   session: string;

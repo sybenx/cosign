@@ -22,3 +22,5 @@ frost/target/
 android/nip55tester/build/
 server/test-*/
 site/test/.*.ts
+worker/.wrangler/
+worker/node_modules/

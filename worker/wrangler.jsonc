@@ -1,0 +1,24 @@
+{
+  // A Cosign server as a Cloudflare Worker (../server/HOSTS.md): the same core as the Node
+  // server, in one Durable Object that is also the relay devices reach it on. It dials
+  // nothing for members, holds no NIP-46 signer key, and keeps every share and member key
+  // in Workers KV, never in the Durable Object's SQLite (which keeps 30 days of history).
+  "name": "cosign-cf",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": { "bindings": [{ "name": "HOST", "class_name": "CosignHost" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CosignHost"] }],
+  "kv_namespaces": [{ "binding": "SECRETS", "id": "REPLACE_WITH_KV_ID" }],
+  "vars": {
+    // Who may make an account here: "open", or "invite" with COSIGN_INVITES (device pubkeys, hex, comma-separated).
+    "COSIGN_ENROLL": "open",
+    // Who runs it (npub or hex): it announces itself naming them (kind 30243).
+    "COSIGN_OPERATOR": "npub175rnagjgxtvwvfrdytkqkkn4h062zf2cuwkx0jc8xc9nga895s8qgsef5g",
+    // Where devices reach it: its own address, as a relay.
+    "COSIGN_URL": "wss://cosign-cf.aaro.cc"
+  },
+  "routes": [{ "pattern": "cosign-cf.aaro.cc", "custom_domain": true }],
+  // Liveness, the clock and the announcement, on the Durable Object's alarm.
+  "observability": { "enabled": true }
+}
