@@ -21,6 +21,7 @@ import cc.aaro.cosign.core.SignerTicket
 import cc.aaro.cosign.core.SignerTicketProfile
 import cc.aaro.cosign.core.CosignMemberProfile
 import cc.aaro.cosign.core.MemberMove
+import cc.aaro.cosign.core.Refresh
 import cc.aaro.cosign.core.SystemEnv
 import cc.aaro.cosign.core.generateSecretKey
 import cc.aaro.cosign.core.hexToBytes
@@ -56,7 +57,7 @@ data class Member(val idx: Int, val name: String, val role: String, val pk: Stri
 data class Group(val groupX: String, val npub: String, val threshold: Int, val relays: List<String>, val members: List<Member>)
 /** One of this device's own shares. */
 data class Share(val idx: Int, val secret: String)
-data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group) {
+data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0) {
     /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
     val share get() = shares.first().secret
     val idxs get() = shares.map { it.idx }
@@ -116,6 +117,10 @@ data class Ui(
     val joinCode: String? = null,
     val connect: Connect? = null,
     val moveIn: MoveIn? = null,
+    /** A device you're about to report lost (the sheet asks for this phone's lock). */
+    val reporting: Member? = null,
+    /** This phone was reported lost, by this device. It can say it wasn't. */
+    val removedBy: String? = null,
     val push: String? = null,
 )
 
@@ -354,6 +359,101 @@ class Phone(private val context: Context) {
                 ui.update { it.copy(error = null, connect = Connect(params.origin ?: "This site", Connect.Stage.CONFIRM)) }
             }
         }
+    }
+
+    // --- A device reported lost, and the refresh after it (COSIGN.md §7.2–7.3) -----------------
+    //
+    // With this phone's lock, you report another device lost: every server blocks it at
+    // once. The same message carries a refresh plan, with this phone and a server as
+    // dealers (core/Refresh.kt): every remaining share moves to a new epoch of the same
+    // key, and the lost device's pieces stop combining. Devices that are away get their
+    // parts from the servers when they're back (mail).
+
+    private var refresh: Refresh? = null
+    private var refreshTicker: ScheduledFuture<*>? = null
+
+    fun askReportLost(d: Member) = ui.update { it.copy(reporting = d) }
+    fun cancelReportLost() = ui.update { it.copy(reporting = null) }
+
+    /** You unlocked this phone: block it everywhere, and refresh. */
+    fun confirmReportLost() {
+        val d = ui.value.reporting ?: return
+        ui.update { it.copy(reporting = null) }
+        val m = ui.value.member ?: return
+        val me = publicKeyHex(m.sk.hexToBytes())
+        val srv = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        val left = m.group.members.filter { it.idx != d.idx }
+        val plan = Json.parse(Json.stringify(mapOf(
+            "epoch" to m.epoch + 1, "threshold" to m.group.threshold, "dealers" to listOf(me, srv.pk),
+            "holders" to left.flatMap { mm -> mm.idxs.map { mapOf("idx" to it, "pk" to (if (mm.idx == m.idx) me else mm.pk)) } },
+            "points" to left.flatMap { it.points }.map { listOf(it.idx, it.sharePub) },
+        ))) as Map<*, *>
+        for (s in servers()) send(s.pk!!, mapOf("type" to "remove_member", "id" to env.random(8).toHex(), "idx" to d.idx, "lock" to true, "plan" to plan))
+        val run = startRefresh(plan, m) ?: return
+        // Your other devices: the plan and this phone's part, straight to them and kept on the servers for one that's away.
+        val parts = run.outgoing().toMap()
+        for (o in left.filter { it.role != "server" && it.pk != null && it.idx != m.idx }) {
+            send(o.pk!!, mapOf("type" to "refresh_plan", "plan" to plan))
+            val key = Nip44.conversationKey(m.sk.hexToBytes(), o.pk)
+            for (body in listOfNotNull(mapOf("type" to "refresh_plan", "plan" to plan), parts[o.pk]))
+                for (s in servers()) send(s.pk!!, mapOf("type" to "mail_for", "to" to o.pk, "epoch" to m.epoch + 1, "content" to Nip44.encrypt(Json.stringify(body), key, env.random(32))))
+        }
+        note("Reported ${d.name} lost. It can't sign any more; refreshing your key…", "approved")
+    }
+
+    private fun startRefresh(plan: Map<*, *>, m: Membership): Refresh? {
+        val epoch = (plan["epoch"] as? Long)?.toInt() ?: return null
+        if (epoch <= m.epoch || refresh?.epoch == epoch) return null
+        val run = try { Refresh(plan, publicKeyHex(m.sk.hexToBytes()), m.shares.map { it.idx to it.secret }, ::send, { r -> timer.execute { refreshed(r) } }, env) } catch (e: Exception) {
+            note("Couldn't refresh: ${e.message}", "denied"); return null
+        }
+        refresh = run
+        refreshTicker?.cancel(false)
+        val started = System.currentTimeMillis()
+        refreshTicker = timer.scheduleWithFixedDelay({
+            if (refresh !== run || System.currentTimeMillis() - started > 120_000) { refreshTicker?.cancel(false); return@scheduleWithFixedDelay }
+            run.tick()
+        }, 0, 4, TimeUnit.SECONDS)
+        return run
+    }
+
+    private fun refreshed(r: Refresh.Result) {
+        val m = ui.value.member ?: return
+        val at = r.points.toMap()
+        val members = m.group.members.map { mm ->
+            if (!mm.idxs.all { it in at }) return@map mm
+            val pts = mm.idxs.map { Point(it, at[it]!!) }
+            mm.copy(sharePub = pts[0].sharePub, shares = if (mm.shares != null) pts else null)
+        }
+        val updated = m.copy(shares = r.shares.map { Share(it.first, it.second) }, group = m.group.copy(members = members), epoch = r.epoch)
+        secrets.saveMembership(Json.stringify(membershipToMap(updated)))
+        ui.update { it.copy(member = updated) }
+        for (s in servers()) send(s.pk!!, mapOf("type" to "refreshed", "epoch" to r.epoch))
+        note("Your key moved to a new epoch: a lost device's pieces no longer combine with anything", "approved")
+    }
+
+    /** Refresh messages from any member, mail the servers kept, and news of a removal. True if handled. */
+    private fun onRefreshMsg(msg: Map<*, *>, from: String, m: Membership): Boolean {
+        when (msg["type"]) {
+            "mail" -> {
+                val sender = msg["from"] as? String ?: return true
+                val inner = try { Json.parse(Nip44.decrypt(msg["content"] as String, Nip44.conversationKey(m.sk.hexToBytes(), sender))) as? Map<*, *> } catch (_: Exception) { null } ?: return true
+                return onRefreshMsg(inner, sender, m)
+            }
+            "refresh_plan" -> { (msg["plan"] as? Map<*, *>)?.let { startRefresh(it, m) } }
+            "refresh_part" -> refresh?.take(msg, from)
+            "removed" -> { ui.update { it.copy(removedBy = msg["by"] as? String ?: "another device") }; note("This phone was reported lost from ${msg["by"]}", "denied") }
+            "contested" -> note("${msg["removed"]} says it wasn't lost: ${msg["by"]} is blocked too, until another device or your paper backup settles it", "denied")
+            else -> return false
+        }
+        return true
+    }
+
+    /** This phone was reported lost, but it's yours (confirmed with its lock). */
+    fun notMe() {
+        for (s in servers()) send(s.pk!!, mapOf("type" to "not_me", "lock" to true))
+        note("You said this phone wasn't lost. The device that reported it is blocked too, until it's settled.", "approved")
+        ui.update { it.copy(removedBy = null) }
     }
 
     // --- A key moving in from a web page ------------------------------------------------
@@ -896,6 +996,7 @@ class Phone(private val context: Context) {
         if ((type == "sign_req" || type == "ecdh_req") && System.currentTimeMillis() / 1000 - e.createdAt > 30) return
         if (type == "pair_offer") return onOffer(msg, e.pubkey)
         if (type == "dkg1" || type == "dkg2") { dkg?.take(msg, e.pubkey); return }
+        ui.value.member?.let { m -> if (m.group.members.any { it.pk == e.pubkey } && onRefreshMsg(msg, e.pubkey, m)) return }
         if (joinWith != null && (type == "welcome" || type == "sigma")) return onJoinPiece(msg, e.pubkey)
         val m = ui.value.member ?: return
         val from = m.group.members.firstOrNull { it.pk == e.pubkey && it.role == "server" } ?: return
@@ -1128,11 +1229,12 @@ class Phone(private val context: Context) {
         // Saved before weighted keys: one share, under "share".
         val shares = (m["shares"] as? List<*>)?.map { val s = it as Map<*, *>; Share((s["idx"] as Long).toInt(), s["secret"] as String) }
             ?: listOf(Share(idx, m["share"] as? String ?: return null))
-        return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null)
+        return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null,
+            (m["epoch"] as? Long)?.toInt() ?: 0)
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
-        "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer,
+        "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer, "epoch" to m.epoch,
         "group" to mapOf(
             "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
             "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +

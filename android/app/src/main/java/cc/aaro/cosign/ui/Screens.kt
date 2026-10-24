@@ -85,6 +85,8 @@ fun App(phone: Phone, ui: Ui) {
         ui.moveIn?.let { MoveInSheet(it, phone::acceptMove, phone::closeMove) }
         ui.summary?.let { UndoSiteSheet(it, phone::confirmUndoSite, phone::closeSummary) }
         ui.adding?.let { AddDeviceSheet(it, phone) }
+        ui.reporting?.let { ReportLostSheet(it, phone) }
+        ui.removedBy?.let { RemovedSheet(it, phone) }
     }
 }
 
@@ -296,7 +298,8 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(8.dp).background(if (d.idx == m.idx || ui.online[d.idx] == true) Vault.Teal else Vault.Field, CircleShape))
                 Spacer(Modifier.width(10.dp))
-                Text(if (d.idx == m.idx) "${d.name} (this one)" else d.name, color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
+                Text(if (d.idx == m.idx) "${d.name} (this one)" else d.name, color = Vault.Text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                if (d.idx != m.idx) TextButton({ phone.askReportLost(d) }) { Text("Report lost", color = Vault.Danger, style = MaterialTheme.typography.bodySmall) }
             }
         }
         item { TextButton(onScan, contentPadding = PaddingValues(0.dp)) { Text("Add a device", color = Vault.Teal) } }
@@ -516,6 +519,66 @@ private fun qrBitmap(text: String, size: Int): android.graphics.Bitmap {
     val m = com.google.zxing.qrcode.QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size)
     val px = IntArray(size * size) { i -> if (m[i % size, i / size]) android.graphics.Color.BLACK else android.graphics.Color.WHITE }
     return android.graphics.Bitmap.createBitmap(px, size, size, android.graphics.Bitmap.Config.ARGB_8888)
+}
+
+/** This phone's lock, asked for right then; null if it has none. */
+@Suppress("DEPRECATION") // BiometricPrompt needs a FragmentActivity; this asks for the same lock
+private fun lockIntent(context: android.content.Context, title: String, why: String) =
+    context.getSystemService(android.app.KeyguardManager::class.java).let { kg -> if (kg.isDeviceSecure) kg.createConfirmDeviceCredentialIntent(title, why) else null }
+
+/** Reporting another device lost: blocked everywhere at once, after this phone's lock. */
+@Composable
+private fun ReportLostSheet(d: cc.aaro.cosign.Member, phone: Phone) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) phone.confirmReportLost()
+    }
+    BackHandler { phone.cancelReportLost() }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            Text("Report ${d.name} lost?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Spacer(Modifier.height(10.dp))
+            Text("From now on your servers won't sign with it, and your key's shares are renewed so what it holds stops working. Your key stays the same.",
+                style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+            Spacer(Modifier.height(6.dp))
+            Text("If you find it, add it again as a new device.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+            Spacer(Modifier.height(20.dp))
+            OutlinedButton({ phone.cancelReportLost() }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Cancel", color = Vault.Text) }
+            Spacer(Modifier.height(10.dp))
+            Button({
+                val ask = lockIntent(context, "Report ${d.name} lost", "Confirm it's you to remove a device from your key")
+                if (ask == null) phone.lockMissing() else lock.launch(ask)
+            }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Danger, Vault.Ground)) { Text("Unlock and report") }
+        }
+    }
+}
+
+/** This phone was reported lost. If it's yours, say so (with its lock); the device that reported it is blocked too. */
+@Composable
+private fun RemovedSheet(by: String, phone: Phone) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) phone.notMe()
+    }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            Text("This phone was reported lost", style = MaterialTheme.typography.titleLarge, color = Vault.Danger)
+            Spacer(Modifier.height(10.dp))
+            Text("$by reported it. It can't sign any more. If that wasn't you, say so: $by is blocked too until another of your devices or your paper backup settles it.",
+                style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+            Spacer(Modifier.height(20.dp))
+            Button({
+                val ask = lockIntent(context, "This wasn't me", "Confirm it's you")
+                if (ask == null) phone.lockMissing() else lock.launch(ask)
+            }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.Ground)) { Text("This wasn't me") }
+        }
+    }
 }
 
 /** You scanned a new device's code: add it, after this phone's own lock. */
