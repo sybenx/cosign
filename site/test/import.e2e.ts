@@ -39,11 +39,12 @@ const server: Server = { pk: host.pk, relays: host.relays, https: null, enroll: 
 
 const oldKey = generateSecretKey(), oldPub = getPublicKey(oldKey);
 const phoneSk = bytesToHex(generateSecretKey()), phonePk = getPublicKey(F.hexToBytes(phoneSk));
-let phoneCode = '', member: MemberMove | null = null, answering = true, accepted = false;
+let phoneCode = '', answering = true, accepted = false;
+let member = null as MemberMove | null;
 const store = () => new Store(undefined, () => Math.floor(Date.now() / 1000), [], ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net']);
 
 function phoneScans(uri: string) {
-  const t = Transfer.join({ profile: cosignMember, store: store(), env: browserEnv(), baseUrl: 'https://cosign.aaro.cc/', check: 'type' }, parseUri(uri), { viaCamera: true });
+  const t = Transfer.join({ profile: cosignMember, store: store(), env: browserEnv(), baseUrl: 'https://cosign.aaro.cc/', origin: '', check: 'type' }, parseUri(uri), { viaCamera: true });
   t.onChange = () => {
     const v = t.view();
     if (v.session.phase === 'code' && v.session.code) phoneCode = v.session.code;
