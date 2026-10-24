@@ -43,5 +43,12 @@ grep -q "Cosign-$VERSION.apk" link/public/index.html || { echo "couldn't update 
 git add -A && git commit -q -m "Release Cosign $VERSION
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" && git push -q origin main
-gh release create "v$VERSION" "Cosign-$VERSION.apk" --title "Cosign $VERSION" --notes "Android build of Cosign $VERSION. Install over the previous version; your phone stays in your key."
+# Notes: release-notes/<version>.md if there is one, then the same lines every release has.
+NOTES="Android build of Cosign $VERSION. Install over the previous version; your phone stays in your key.
+
+Updating from 0.11.0 or older with Obtainium: 0.11.1 moved to a new signing key (Android's key rotation, which keeps your data). Obtainium warns that the certificate changed; choose Install anyway, or install this version once from https://cosign.aaro.cc. Either way your keys stay. Don't uninstall."
+[ -f "release-notes/$VERSION.md" ] && NOTES="$(cat "release-notes/$VERSION.md")
+
+$NOTES"
+gh release create "v$VERSION" "Cosign-$VERSION.apk" --title "Cosign $VERSION" --notes "$NOTES"
 echo "Cosign $VERSION is at https://cosign.aaro.cc/Cosign-$VERSION.apk"
