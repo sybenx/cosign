@@ -1,11 +1,14 @@
 # Cosign
 
-Your Nostr key split three ways — **your server, your phone, and a backup server** —
-where any two can sign and none can alone. Sites sign through your server, and your
-phone signs the other half quietly in the background. Your phone is also the remote
-control: it connects sites, removes them, approves anything destructive, and undoes
-changes.
+Your Nostr key, split so no one place ever holds it: **your phone holds 3 shares, each
+of your servers 1, and it takes 4 to sign**. Your phone and any one server sign; the
+servers together can't. Sites sign through your servers with your phone co-signing
+quietly in the background, and your phone is also the remote control: it connects sites,
+removes them, approves anything destructive, and undoes changes. Lose the phone and a
+paper backup gets your key back, after a wait your other devices can stop.
 
+- **Create a key with nobody ever holding it** (DKG with your servers), or **move the one
+  you have** out of a web app in one scan.
 - **Connecting a site** is QRST at its lowest level: the site shows a code, you scan
   it with Cosign, tap *Connect*, and the site is signed in. What crosses is a one-time
   ticket, not your key; the site redeems it with your servers for access of its own.
@@ -44,8 +47,8 @@ changes.
 Everything travels over public relays (syb.lol, nos.lol, relay.primal.net): your servers
 need no public address and your phone needs nothing but a connection.
 
-**A prototype to see how it feels.** Unaudited, hand-rolled FROST, provisional message
-kinds. Use the throwaway key `setup.ts` makes.
+**Early.** The FROST is the Zcash Foundation's audited `frost-secp256k1-tr` (refresh came
+after the audit); Cosign's own protocol and message kinds are provisional and unaudited.
 
 ## Try it
 

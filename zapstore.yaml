@@ -1,0 +1,28 @@
+# Zapstore listing (zsp publish, github.com/zapstore/zsp). The APK comes from this
+# repository's GitHub releases, signed with Cosign's release key.
+repository: https://github.com/sybenx/cosign
+name: Cosign
+summary: Your Nostr key, split between your phone and your servers. No one place holds it.
+description: |
+  Cosign keeps your Nostr key split: your phone holds three shares, each of your servers
+  one, and it takes four to sign. Your phone and any one server sign; the servers alone
+  can't, and nobody ever holds the whole key.
+
+  - Sign in to sites by scanning their code, or with nostrconnect. Apps on your phone sign
+    through Cosign as an Android signer (NIP-55).
+  - Everyday things sign at once. Anything destructive (most of your follows gone, your
+    profile wiped, a pile of deletions) waits for your OK on the phone.
+  - Every change to your lists is kept, with Undo. Deletions are held for a few seconds,
+    with copies kept.
+  - Add your other devices, report one lost, and keep a paper backup that gets your key
+    back on a new phone after a wait your other devices can stop.
+  - Create a new key with nobody ever holding it, or move the one you have out of a web
+    app in one scan.
+license: MIT
+website: https://cosign.aaro.cc
+tags:
+  - nostr
+  - signer
+  - nip-46
+  - nip-55
+  - frost
