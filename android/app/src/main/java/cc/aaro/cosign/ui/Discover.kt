@@ -400,8 +400,9 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
 @Composable
 private fun NoteMenu(n: Event, name: String, social: Social) = Box {
     var open by remember { mutableStateOf(false) }
-    IconButton({ open = true }, Modifier.size(28.dp)) { Icon(Icons.Filled.MoreVert, "More", tint = Vault.Muted, modifier = Modifier.size(18.dp)) }
-    DropdownMenu(open, { open = false }, containerColor = Vault.Surface) {
+    // A plain icon on every card (an IconButton each costs a visible frame on a slow phone); the menu only once it's open.
+    Icon(Icons.Filled.MoreVert, "More", tint = Vault.Muted, modifier = Modifier.size(28.dp).clip(CircleShape).clickable { open = true }.padding(5.dp))
+    if (open) DropdownMenu(true, { open = false }, containerColor = Vault.Surface) {
         DropdownMenuItem({ Text("Not interested", color = Vault.Text) }, { open = false; social.notInterested(n) })
         DropdownMenuItem({ Text("Mute $name", color = Vault.Text, maxLines = 1, overflow = TextOverflow.Ellipsis) }, {
             open = false; social.mute(n.pubkey); social.message.value = "You won't see $name any more."
