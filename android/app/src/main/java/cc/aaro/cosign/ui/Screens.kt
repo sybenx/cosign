@@ -119,6 +119,142 @@ fun App(phone: Phone, ui: Ui) {
         ui.paper?.let { PaperSheet(it, phone::closePaper) }
         if (ui.askPaper && ui.paper == null && ui.paperStatus == null) PaperPrompt(phone)
         ui.serverChoice?.let { ServerChoiceSheet(it, ui.paperStatus, phone) }
+        ui.takeOut?.let { TakeOutSheet(it, phone) }
+        GuardNotices(ui, phone)
+    }
+}
+
+// --- Taking your account out of Cosign ----------------------------------------------------
+
+/** Under Advanced: take it out (with the paper at once, or through a server after the wait), then optionally remove the servers' pieces. */
+@Composable
+private fun TakeOutEntry(phone: Phone, onScan: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var open by remember { mutableStateOf(false) }
+    var then by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) then?.invoke()
+    }
+    val locked = { title: String, action: () -> Unit ->
+        val ask = lockIntent(context, title, "Confirm it's you")
+        if (ask == null) phone.showError("Set a screen lock on this phone first.") else { then = action; lock.launch(ask) }
+    }
+    Column(Modifier.padding(top = 10.dp)) {
+        TextButton({ open = !open }, contentPadding = PaddingValues(0.dp)) { Text("Take my account out of Cosign", color = Vault.Teal) }
+        if (open) {
+            Muted("This puts your secret key (nsec) back together on this phone and shows it, so you can use it elsewhere. Every one of your devices is told.")
+            Spacer(Modifier.height(8.dp))
+            TextButton({ locked("Take my account out") { phone.askTakeOutPaper(true); onScan() } }, contentPadding = PaddingValues(0.dp)) {
+                Text("Now, with my paper backup", color = Vault.Teal)
+            }
+            TextButton({ locked("Take my account out") { phone.takeOutViaServers() } }, contentPadding = PaddingValues(0.dp)) {
+                Text("Without it: after a 3-day wait your other devices can stop", color = Vault.Teal)
+            }
+            Spacer(Modifier.height(6.dp))
+            Muted("Afterwards you can also remove your servers' pieces: they stop at once, and delete them after 3 days unless one of your devices stops it.")
+            TextButton({ locked("Remove my servers' pieces") { phone.forgetServers() } }, contentPadding = PaddingValues(0.dp)) {
+                Text("Remove my servers' pieces", color = Vault.Danger)
+            }
+        }
+    }
+}
+
+/** Waiting, the key itself (once, no screenshots), or why not. */
+@Composable
+private fun TakeOutSheet(t: cc.aaro.cosign.TakeOut, phone: Phone) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = context as? android.app.Activity
+    if (t.stage == cc.aaro.cosign.TakeOut.Stage.SHOWING) androidx.compose.runtime.DisposableEffect(Unit) {
+        activity?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) }
+    }
+    BackHandler { phone.closeTakeOut() }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            when (t.stage) {
+                cc.aaro.cosign.TakeOut.Stage.WAITING -> {
+                    Text("Taking your account out", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                    Spacer(Modifier.height(10.dp))
+                    Text(t.text, style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+                    t.until?.takeIf { it > 0 }?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text("Ready after ${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(it * 1000))}. Keep Cosign installed.",
+                            style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+                    }
+                }
+                cc.aaro.cosign.TakeOut.Stage.SHOWING -> {
+                    Text("Your secret key", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                    Spacer(Modifier.height(10.dp))
+                    Text(t.nsec ?: "", fontFamily = PlexMono, color = Vault.Text, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Account: ${short(t.npub ?: "")}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+                    if (t.twinUnknown) {
+                        Spacer(Modifier.height(6.dp))
+                        Muted("This may not look like the nsec you started with. It's the same account (compare the npub) and works everywhere.")
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    var copied by remember { mutableStateOf(false) }
+                    OutlinedButton({ copySecret(context, "Nostr key", t.nsec ?: ""); copied = true; clearClipLater(context) }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) {
+                        Text(if (copied) "Copied (cleared in a minute)" else "Copy", color = Vault.Text)
+                    }
+                    Muted("Anyone with this key is you. Keep it in a password manager.")
+                }
+                cc.aaro.cosign.TakeOut.Stage.FAILED -> {
+                    Text("Not taken out", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                    Spacer(Modifier.height(10.dp))
+                    Text(t.text, style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Button(phone::closeTakeOut, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
+                Text(if (t.stage == cc.aaro.cosign.TakeOut.Stage.WAITING) "Close (it keeps going)" else "Done")
+            }
+        }
+    }
+}
+
+/** Clear the clipboard a minute after a key was copied, if it still holds it. */
+private fun clearClipLater(context: android.content.Context) {
+    val cb = context.getSystemService(android.content.ClipboardManager::class.java) ?: return
+    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ try { cb.clearPrimaryClip() } catch (_: Exception) {} }, 60_000)
+}
+
+/** Another of your devices is taking the account out, or removing the servers' pieces: say so, with Stop (after this device's lock). */
+@Composable
+private fun GuardNotices(ui: cc.aaro.cosign.Ui, phone: Phone) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var hidden by remember { mutableStateOf(setOf<String>()) }
+    val g = ui.guards.firstOrNull { it.id !in hidden && it.kind != "remove" && (it.state == "waiting" || (it.state == "done" && it.paper)) && ui.takeOut == null } ?: return
+    var stopping by remember { mutableStateOf<String?>(null) }
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) stopping?.let { id -> phone.cancelGuard(id); hidden = hidden + id }
+    }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            val title = when {
+                g.kind == "take_out" && g.state == "done" -> "Your account was taken out of Cosign"
+                g.kind == "take_out" -> "Your account is being taken out of Cosign"
+                else -> "Your servers' pieces are being removed"
+            }
+            Text(title, style = MaterialTheme.typography.titleLarge, color = Vault.Amber)
+            Spacer(Modifier.height(10.dp))
+            val whenText = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(g.until * 1000))
+            Text(if (g.state == "done") "On ${g.by}, with your paper backup. If that wasn't you, someone has that device and your paper: report it lost."
+                else "From ${g.by}. It happens after $whenText unless you stop it. If that wasn't you, stop it now.",
+                style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
+            Spacer(Modifier.height(20.dp))
+            if (g.state == "waiting") Button({
+                val ask = lockIntent(context, "Stop it", "Confirm it's you")
+                if (ask == null) phone.showError("Set a screen lock on this phone first.") else { stopping = g.id; lock.launch(ask) }
+            }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.Ground)) { Text("Stop it") }
+            OutlinedButton({ hidden = hidden + g.id }, Modifier.fillMaxWidth().height(52.dp).padding(top = 8.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("It's me", color = Vault.Text) }
+        }
     }
 }
 
@@ -464,6 +600,7 @@ internal fun AccountScreen(phone: Phone, ui: Ui, onScan: () -> Unit, onProfile: 
             }
             if (m.group.threshold >= 4) item { TextButton({ phone.chooseServer() }, contentPadding = PaddingValues(0.dp)) { Text("Add a server", color = Vault.Teal) } }
             item { TranslateSetting() }
+            item { TakeOutEntry(phone, onScan) }
             item { Heading("On this phone") }
             items(ui.log.take(20)) { LogLine(it) }
             item {
@@ -967,10 +1104,6 @@ private fun ReportLostSheet(d: cc.aaro.cosign.Member, phone: Phone) {
 /** This phone was reported lost. If it's yours, say so (with its lock); the device that reported it is blocked too. */
 @Composable
 private fun RemovedSheet(by: String, phone: Phone) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == android.app.Activity.RESULT_OK) phone.notMe()
-    }
     Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
         Column(
             Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
@@ -978,13 +1111,8 @@ private fun RemovedSheet(by: String, phone: Phone) {
         ) {
             Text("This phone was reported lost", style = MaterialTheme.typography.titleLarge, color = Vault.Danger)
             Spacer(Modifier.height(10.dp))
-            Text("$by reported it. It can't sign any more. If that wasn't you, say so: $by is blocked too until another of your devices or your paper backup settles it.",
+            Text("$by reported it, so it can't sign any more. If that was a mistake, add this phone again from one of your devices, or restore it from your paper backup.",
                 style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
-            Spacer(Modifier.height(20.dp))
-            Button({
-                val ask = lockIntent(context, "This wasn't me", "Confirm it's you")
-                if (ask == null) phone.lockMissing() else lock.launch(ask)
-            }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.Ground)) { Text("This wasn't me") }
         }
     }
 }

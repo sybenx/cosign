@@ -58,7 +58,8 @@ data class Member(val idx: Int, val name: String, val role: String, val pk: Stri
 data class Group(val groupX: String, val npub: String, val threshold: Int, val relays: List<String>, val members: List<Member>)
 /** One of this device's own shares. */
 data class Share(val idx: Int, val secret: String)
-data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0) {
+/** [mirrored]: the key brought in had an odd y, so FROST holds its twin (the same npub); null if not known here. */
+data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null) {
     /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
     val share get() = shares.first().secret
     val idxs get() = shares.map { it.idx }
@@ -91,6 +92,12 @@ data class Restoring(val text: String, val until: Long? = null, val failed: Bool
 /** A key moving in from a web page (QRST `cosign-member`): its code, then whether to keep it. */
 data class MoveIn(val stage: Stage, val code: String? = null, val text: String? = null) { enum class Stage { WAITING, CODE, ACCEPT, DONE, FAILED } }
 data class Line(val ts: Long, val text: String, val kind: String = "info")
+/** Taking the account out of Cosign: waiting (until), the key shown, or why not. */
+data class TakeOut(val stage: Stage, val text: String = "", val until: Long? = null, val nsec: String? = null, val npub: String? = null, val twinUnknown: Boolean = false) {
+    enum class Stage { WAITING, SHOWING, FAILED }
+}
+/** A guarded action a server told every device about (COSIGN.md §7.6): report lost, take out, removing the servers' pieces. */
+data class GuardNote(val id: String, val kind: String, val by: String, val state: String, val until: Long, val paper: Boolean)
 /** An app on this phone that may sign as you (Android signer, NIP-55). [pk] names its grant on your servers. */
 data class AppGrant(val pkg: String, val pk: String, val label: String, val dm: Boolean)
 /** Destructive: the app has to open Cosign so you can approve it. */
@@ -136,6 +143,11 @@ data class Ui(
     val askPaper: Boolean = false,
     /** Adding a server: the ones found that this key doesn't use yet (null while looking). */
     val serverChoice: List<cc.aaro.cosign.net.Servers.Server>? = null,
+    val takeOut: TakeOut? = null,
+    /** Guarded actions on your account, newest first, as the servers announce them. */
+    val guards: List<GuardNote> = emptyList(),
+    /** Asking for the paper code, to take the account out with it. */
+    val takeOutPaper: Boolean = false,
     val push: String? = null,
 )
 
@@ -391,6 +403,7 @@ class Phone(private val context: Context, val slot: String = "0") {
             if (!isHex32(pk) || relays.isEmpty()) return ui.update { it.copy(error = "That code is damaged. Try again.") }
             return ui.update { it.copy(error = null, adding = AddingDevice(pk!!, u.getQueryParameter("name")?.take(40) ?: "A device", relays)) }
         }
+        if (t.startsWith("cosign:backup") && isMember && ui.value.takeOutPaper) return takeOutWithPaper(t)
         if (t.startsWith("cosign:backup")) return if (isMember) ui.update { it.copy(error = "This phone already holds a key. Restore a paper backup on a phone that doesn't.") } else startRestore(t)
         val params = try { PairingUri.parse(t) } catch (_: Exception) { null }
         if (params?.profile == CosignMemberProfile.id) return moveIn(params)
@@ -549,18 +562,12 @@ class Phone(private val context: Context, val slot: String = "0") {
             "removed" -> { ui.update { it.copy(removedBy = msg["by"] as? String ?: "another device") }; note("This phone was reported lost from ${msg["by"]}", "denied") }
             "recovery" -> { ui.update { it.copy(recovery = (msg["name"] as? String ?: "a new phone") to ((msg["until"] as? Long) ?: 0L)) }; note("Your paper backup is being used for ${msg["name"]}", "denied") }
             "recovery_cancelled" -> { ui.update { it.copy(recovery = null) }; note("${msg["by"]} cancelled using your paper backup", "approved") }
-            "contested" -> note("${msg["removed"]} says it wasn't lost: ${msg["by"]} is blocked too, until another device or your paper backup settles it", "denied")
             else -> return false
         }
         return true
     }
 
     /** This phone was reported lost, but it's yours (confirmed with its lock). */
-    fun notMe() {
-        for (s in servers()) send(s.pk!!, mapOf("type" to "not_me", "lock" to true))
-        note("You said this phone wasn't lost. The device that reported it is blocked too, until it's settled.", "approved")
-        ui.update { it.copy(removedBy = null) }
-    }
 
     // --- The paper backup (COSIGN.md §8) ------------------------------------------------
     //
@@ -586,7 +593,7 @@ class Phone(private val context: Context, val slot: String = "0") {
 
     /** The paper's code, for the screen, a printout or a photo: its key, your servers, their relays. */
     private fun paperCode(bsk: String, m: Membership) = "cosign:backup?k=$bsk&" +
-        (servers().map { "s=${it.pk}" } + m.group.relays.map { "r=" + Uri.encode(it) }).joinToString("&")
+        (servers().map { "s=${it.pk}" } + m.group.relays.map { "r=" + Uri.encode(it) } + listOfNotNull(m.mirrored?.let { "m=${if (it) 1 else 0}" })).joinToString("&")
 
     private fun onBackupMade() {
         val (bsk, _) = making ?: return
@@ -607,7 +614,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         val srvs = u.getQueryParameters("s").filter { isHex32(it) }
         val urls = u.getQueryParameters("r").filter { it.startsWith("wss://") || it.startsWith("ws://") }
         if (!isHex32(bsk) || srvs.isEmpty() || urls.isEmpty()) return ui.update { it.copy(error = "That paper code is damaged. Try scanning it again.") }
-        val state = mapOf("paper" to bsk, "sk" to generateSecretKey(env).toHex(), "servers" to srvs, "relays" to urls)
+        val state = mapOf("paper" to bsk, "sk" to generateSecretKey(env).toHex(), "servers" to srvs, "relays" to urls, "mirrored" to u.getQueryParameter("m")?.let { it == "1" })
         secrets.save("restoring", Json.stringify(state))
         resumeRestore(state)
     }
@@ -651,7 +658,7 @@ class Phone(private val context: Context, val slot: String = "0") {
                 val group = parseGroup(b["group"]) ?: return
                 val me = publicKeyHex((st["sk"] as String).hexToBytes())
                 val g = group.copy(members = group.members.map { if (it.idx == idx) it.copy(role = "device", pk = me, name = android.os.Build.MODEL.ifBlank { "This phone" }) else it })
-                val m = Membership(st["sk"] as String, idx, shares.map { Share(it.first, it.second) }, b["signer"] as? String ?: return, g, (b["epochNow"] as? Long)?.toInt() ?: 0)
+                val m = Membership(st["sk"] as String, idx, shares.map { Share(it.first, it.second) }, b["signer"] as? String ?: return, g, (b["epochNow"] as? Long)?.toInt() ?: 0, st["mirrored"] as? Boolean)
                 secrets.saveMembership(Json.stringify(membershipToMap(m)))
                 secrets.save("restoring", null)
                 restoreAsk?.cancel(false); restored = null
@@ -803,6 +810,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.WAITING, text = "Giving ${if (picked.size == 1) "your server" else "${picked.size} servers"} their part…")) }
 
         val idxs = IntArray(3 + picked.size) { it + 1 }
+        val mirrored = cc.aaro.cosign.core.Secp.oddY(secret)
         val dealt = Json.parse(FrostNative.dealFromSecret(secret, idxs, 4)) as Map<*, *>
         secret.fill(0)
         val shares = (dealt["shares"] as List<*>).map { it as Map<*, *> }.map { Triple((it["idx"] as Long).toInt(), it["secret"] as String, it["sharePub"] as String) }
@@ -822,13 +830,115 @@ class Phone(private val context: Context, val slot: String = "0") {
         }
         // As it would arrive over the wire (numbers as Long), the way parseGroup reads it.
         val group = parseGroup(Json.parse(Json.stringify(record))) ?: throw IllegalStateException("the account record is damaged")
-        val m = Membership(mySk, 1, mine.map { Share(it.first, it.second) }, publicKeyHex(signerSk.hexToBytes()), group)
+        val m = Membership(mySk, 1, mine.map { Share(it.first, it.second) }, publicKeyHex(signerSk.hexToBytes()), group, mirrored = mirrored)
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         connect(relays, mySk)
         ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your account is in Cosign now.")) }
         note("Moved ${group.npub.take(16)}… in", "approved")
         offerPaper()
         start()
+    }
+
+    // --- Taking your account out of Cosign (COSIGN.md §7.6) -----------------------------------
+    //
+    // After this device's lock, either with the paper (at once: the paper's 2 and this
+    // phone's 3 make the key; the servers are told first and must answer `noted` for this
+    // request before it's shown) or through a server (it seals its share to this phone
+    // after the wait every other device can stop). The key is put back together here
+    // (FROST's reconstruct) and shown once; a key brought in with an odd y is flipped back
+    // to the nsec you had. Then, if you like, the servers' pieces are removed (forget).
+
+    private var takeOutId: String? = null
+    private var takeOutPaper: Pair<String, List<Pair<Int, String>>?>? = null // the paper's key, and its shares once read
+
+    fun askTakeOutPaper(on: Boolean) = ui.update { it.copy(takeOutPaper = on, error = null) }
+
+    /** After the lock: through a server, after the wait. */
+    fun takeOutViaServers() {
+        val id = env.random(8).toHex().also { takeOutId = it }
+        for (s in servers()) send(s.pk!!, mapOf("type" to "take_out", "id" to id, "lock" to true))
+        ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.WAITING, "Asked your servers. Any of your other devices can stop this during the wait.")) }
+        note("You asked to take your account out of Cosign", "denied")
+    }
+
+    /** After the lock, with the paper code: read its shares from the servers' sealed pieces, then announce it. */
+    private fun takeOutWithPaper(code: String) {
+        val m = ui.value.member ?: return
+        val bsk = Uri.parse(code.trim().replace("cosign:backup?", "cosign://backup?")).getQueryParameter("k")
+        if (!isHex32(bsk)) return ui.update { it.copy(error = "That paper code is damaged. Try again.") }
+        takeOutPaper = bsk!! to null
+        ui.update { it.copy(takeOutPaper = false, takeOut = TakeOut(TakeOut.Stage.WAITING, "Reading your paper…")) }
+        connect(m.group.relays, m.sk, mapOf(publicKeyHex(bsk.hexToBytes()) to bsk))
+        timer.schedule({ for (s in servers()) sendAs(bsk, s.pk!!, mapOf("type" to "backup_get")) }, 2, TimeUnit.SECONDS)
+    }
+
+    private fun onTakeOutPaper(msg: Map<*, *>, m: Membership) {
+        val (bsk, read) = takeOutPaper ?: return
+        if (read != null) return
+        val shares = try { Backup.restore(bsk, msg) } catch (e: Exception) {
+            takeOutPaper = null
+            return ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "Couldn't read the paper: ${e.message}")) }
+        }
+        takeOutPaper = bsk to shares
+        // Announced before it's shown: every device hears of it, and a server answers for this request.
+        val id = env.random(8).toHex().also { takeOutId = it }
+        for (s in servers()) send(s.pk!!, mapOf("type" to "take_out", "id" to id, "lock" to true, "paper" to true))
+        ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.WAITING, "Telling your servers and devices…")) }
+        timer.schedule({
+            if (ui.value.takeOut?.stage == TakeOut.Stage.WAITING && takeOutId == id)
+                ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "None of your servers answered, so it wasn't shown. Try again when you're online.")) }
+        }, 40, TimeUnit.SECONDS)
+    }
+
+    private fun onNoted(msg: Map<*, *>, m: Membership) {
+        if (msg["id"] != takeOutId) return
+        val paper = takeOutPaper?.second ?: return
+        takeOutPaper = null
+        connect(m.group.relays, m.sk)
+        reveal(m, m.shares.map { it.idx to it.secret } + paper)
+    }
+
+    private fun onReleased(msg: Map<*, *>, m: Membership) {
+        if (msg["id"] != takeOutId) return
+        val theirs = (msg["shares"] as? List<*>)?.map { val x = it as Map<*, *>; (x["idx"] as Long).toInt() to x["secret"] as String } ?: return
+        reveal(m, m.shares.map { it.idx to it.secret } + theirs)
+    }
+
+    /** Put the key back together, as the nsec you had (flipped back if it was mirrored), and show it once. */
+    private fun reveal(m: Membership, shares: List<Pair<Int, String>>) {
+        val key = try { FrostNative.reconstruct(groupJson(m), Json.stringify(shares.map { listOf(it.first, it.second) })) } catch (e: Exception) {
+            return ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "Couldn't put the key together: ${e.message}")) }
+        }
+        val out = if (m.mirrored == true) cc.aaro.cosign.core.Secp.negate(key).also { key.fill(0) } else key
+        val nsec = Nip19.nsec(out)
+        out.fill(0)
+        takeOutId = null
+        ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.SHOWING, nsec = nsec, npub = m.group.npub, twinUnknown = m.mirrored == null)) }
+        note("Your account's key was shown on this phone", "denied")
+    }
+
+    fun closeTakeOut() { takeOutId = null; takeOutPaper = null; ui.update { it.copy(takeOut = null, takeOutPaper = false) } }
+
+    /** After the lock: the servers stop at once, and delete their pieces after the wait unless a device cancels. */
+    fun forgetServers() {
+        val id = env.random(8).toHex()
+        for (s in servers()) send(s.pk!!, mapOf("type" to "forget", "id" to id, "lock" to true))
+        note("You asked your servers to remove their pieces of your account", "denied")
+    }
+
+    /** After the lock: stop a waiting take-out or removal (yours or another device's). */
+    fun cancelGuard(id: String) { for (s in servers()) send(s.pk!!, mapOf("type" to "guard_cancel", "id" to id, "lock" to true)) }
+
+    private fun onGuard(msg: Map<*, *>) {
+        val g = GuardNote(msg["id"] as? String ?: return, msg["kind"] as? String ?: return, msg["by"] as? String ?: "a device",
+            msg["state"] as? String ?: "waiting", (msg["until"] as? Long) ?: 0L, msg["paper"] == true)
+        ui.update { u -> u.copy(guards = (listOf(g) + u.guards.filter { it.id != g.id }).take(20)) }
+        if (g.id == takeOutId) when (g.state) {
+            "waiting" -> ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.WAITING, "Your servers release their part after the wait. Any of your other devices can stop it.", g.until)) }
+            "cancelled" -> { takeOutId = null; ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "Stopped from one of your devices.")) } }
+        }
+        val what = when (g.kind) { "take_out" -> "taking your account out of Cosign"; "forget" -> "removing your servers' pieces"; else -> "reporting a device lost" }
+        if (g.state == "waiting" && g.id != takeOutId) note("${g.by} started $what", "denied")
     }
 
     // --- Creating an account here -----------------------------------------------------------
@@ -882,7 +992,7 @@ class Phone(private val context: Context, val slot: String = "0") {
                 val shares = (m["shares"] as? List<*>)?.map { (it as Map<*, *>)["idx"] as Int }
                 m + mapOf("sharePub" to pub[(m["idx"] as Int)]) + (shares?.let { mapOf("shares" to it.map { i -> mapOf("idx" to i, "sharePub" to pub[i]) }) } ?: emptyMap())
             })))) ?: throw IllegalStateException("the account record is damaged")
-        val m = Membership(mySk, 1, r.shares.map { Share(it.first, it.second) }, publicKeyHex(signerSk.hexToBytes()), group)
+        val m = Membership(mySk, 1, r.shares.map { Share(it.first, it.second) }, publicKeyHex(signerSk.hexToBytes()), group, mirrored = false)
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         connect(relays, mySk)
         ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your account is made. Nobody, this phone included, ever held all of it.")) }
@@ -1524,6 +1634,11 @@ class Phone(private val context: Context, val slot: String = "0") {
             "repair" -> onRepair(msg, from, m)
             "members" -> onMembers(msg, m)
             "backup_made" -> onBackupMade()
+            "guard" -> onGuard(msg)
+            "released" -> onReleased(msg, m)
+            "noted" -> onNoted(msg, m)
+            "backup" -> onTakeOutPaper(msg, m)
+            "take_out_failed", "forget_failed" -> { ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "Not done: ${msg["reason"]}")) } }
             "add_failed" -> { note("Couldn't add the device: ${msg["reason"]}", "denied"); ui.update { it.copy(error = "Couldn't add the device: ${msg["reason"]}") } }
             "connected" -> onConnected(msg)
             "cosign_res", "ecdh_res" -> (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }
@@ -1744,11 +1859,11 @@ class Phone(private val context: Context, val slot: String = "0") {
         val shares = (m["shares"] as? List<*>)?.map { val s = it as Map<*, *>; Share((s["idx"] as Long).toInt(), s["secret"] as String) }
             ?: listOf(Share(idx, m["share"] as? String ?: return null))
         return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null,
-            (m["epoch"] as? Long)?.toInt() ?: 0)
+            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean)
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
-        "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer, "epoch" to m.epoch,
+        "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer, "epoch" to m.epoch, "mirrored" to m.mirrored,
         "group" to mapOf(
             "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
             "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +

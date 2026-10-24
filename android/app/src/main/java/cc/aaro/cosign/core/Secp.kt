@@ -10,6 +10,12 @@ object Secp {
     /** The 32-byte x-only public key. */
     fun publicKey(secret: ByteArray): ByteArray = Secp256k1.pubkeyCreate(secret).copyOfRange(1, 33)
 
+    /** Whether this key's point has an odd y: FROST (BIP-340) uses its twin, the same npub. */
+    fun oddY(secret: ByteArray): Boolean = Secp256k1.pubkeyCreate(secret).let { p -> (p[64].toInt() and 1) == 1 }
+
+    /** The twin of a key: n − secret, the same npub (BIP-340 x-only). */
+    fun negate(secret: ByteArray): ByteArray = Secp256k1.privKeyNegate(secret)
+
     fun isValidPublicKey(xOnly: ByteArray): Boolean =
         xOnly.size == 32 && try { Secp256k1.pubkeyParse(byteArrayOf(2) + xOnly); true } catch (_: Exception) { false }
 
