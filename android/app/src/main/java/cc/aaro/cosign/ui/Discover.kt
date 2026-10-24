@@ -380,10 +380,13 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
                 Spacer(Modifier.height(4.dp))
                 Text(text, color = Vault.Text, style = MaterialTheme.typography.bodyMedium, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
             }
-            for (img in body.images.take(if (maxLines == Int.MAX_VALUE) 6 else 2)) {
+            // In a list, one picture, no taller than it is wide; a thread shows them all, whole.
+            val full = maxLines == Int.MAX_VALUE
+            for (img in body.images.take(if (full) 6 else 1)) {
                 Spacer(Modifier.height(8.dp))
-                NetImage(img.url, Modifier.fillMaxWidth().aspectRatio(img.ratio.coerceIn(0.6f, 2.2f)).heightIn(max = 420.dp).clip(RoundedCornerShape(12.dp)), 1080, description = "Picture")
+                NetImage(img.url, Modifier.fillMaxWidth().aspectRatio(img.ratio.coerceIn(if (full) 0.6f else 1f, 2.2f)).clip(RoundedCornerShape(12.dp)), 1080, description = "Picture")
             }
+            if (!full && body.images.size > 1) Text("+${body.images.size - 1} more", color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onLike, Modifier.offset(x = (-12).dp)) {
                     Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, if (liked) "Liked" else "Like", tint = if (liked) Vault.Amber else Vault.Muted, modifier = Modifier.size(20.dp))

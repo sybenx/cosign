@@ -219,7 +219,11 @@ class Social private constructor(private val phone: Phone, context: Context) {
     /** Load the feed: from the first source that has notes. [force]: even if it's fresh. */
     fun loadFeed(force: Boolean = false) {
         val f = feed.value
-        if (f.loading || (!force && f.notes.isNotEmpty() && System.currentTimeMillis() - f.at < 30 * 60_000)) return
+        if (f.loading || (!force && f.notes.isNotEmpty() && System.currentTimeMillis() - f.at < 30 * 60_000)) {
+            // The notes are fresh enough; the videos may not be loaded yet.
+            if (!f.loading && videos.value.cards.isEmpty()) loadPlaces()
+            return
+        }
         feed.update { it.copy(loading = true, failed = false) }
         scope.launch { knowFollows(); knowMutes() }
         lookedAt = 0

@@ -71,7 +71,8 @@ class TubeFeed(context: Context, slot: String, private val me: () -> String?, pr
     private fun login(): String? {
         if (me() == null) return null
         val url = "$origin/api/login"
-        val ev = try { sign(Event(me()!!, Clock.now(), 27235, listOf(listOf("u", url), listOf("method", "POST")), "").withId()) } catch (_: Exception) { return null }
+        // Couldn't sign (your servers out of reach, say): try again in a while, not on every open.
+        val ev = try { sign(Event(me()!!, Clock.now(), 27235, listOf(listOf("u", url), listOf("method", "POST")), "").withId()) } catch (_: Exception) { backOff(30 * 60_000L); return null }
         val auth = "Nostr " + Base64.getEncoder().encodeToString(ev.toJson().toByteArray())
         return try {
             http.newCall(Request.Builder().url(url).header("Authorization", auth).post(ByteArray(0).toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
