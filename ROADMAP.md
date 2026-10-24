@@ -27,6 +27,25 @@ items below "Planned, not yet specified".
 - **Listing a server as yours from cosign.aaro.cc/servers** (kind 10243, with NIP-07),
   so running one beside a relay takes no extra tool.
 
+## Required before Zapstore: Cosign as a home screen
+
+Agreed with the user, not built. Cosign is one app, and its reason to be on an ordinary
+phone is a home screen like a search app's. One screen, no tabs:
+
+- **Top:** a big search box for people, notes and hashtags (NIP-50 search relays). Top
+  right: a bell (replies, mentions and reactions to you, and Cosign's approvals) and
+  your picture, which opens everything about the signer: devices, sites and apps,
+  backups, servers.
+- **Under the search:** at most one "needs you" card (Approve?, your paper backup is
+  being used, make your paper backup), gone once handled.
+- **Below:** a scrolling Discover feed of notes from curated or trending feed relays
+  (discover.syb.lol, trending.relays.land, …), pluggable with fallbacks. A card opens
+  its thread.
+- **Actions:** react (kind 7) and follow, from a card or a profile; that's the only
+  follow management. No posting or replies. Reposts and showing zaps: to be decided.
+
+Before building it: a short screen-by-screen plan, checked with the user.
+
 ## Done, for reference
 
 Several keys on one phone (0.11.1); adding a device with two or three parties (repair

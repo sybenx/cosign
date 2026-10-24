@@ -22,6 +22,7 @@ object Servers {
     private val SEEDS = listOf(
         Server("040e022d19ed8e0ba6d83f6246b9d051f0093e59092ee6bb279730d0e4b191c8", listOf("wss://syb.lol", "wss://nos.lol", "wss://relay.primal.net"), "open", "", "f5073ea24832d8e6246d22ec0b5a75bbf4a12558e3ac67cb07360b3474e5a40e", "syb.lol"),
         Server("665dd9c0ececdb5b60868aa6c0860df9f8e9e40c65304a9ffcecc59aa1502420", listOf("wss://cosign-cf.aaro.cc"), "open", "", "f5073ea24832d8e6246d22ec0b5a75bbf4a12558e3ac67cb07360b3474e5a40e", "cosign-cf.aaro.cc"),
+        Server("b3bb4b39a719e7f647cf30aca77f54facd8634b3ae575eb3c527200ac51502ae", listOf("wss://syb.lol", "wss://nos.lol", "wss://relay.primal.net"), "open", "", "f5073ea24832d8e6246d22ec0b5a75bbf4a12558e3ac67cb07360b3474e5a40e", "Cosign server 3"),
     )
     private val DISCOVERY = listOf("wss://syb.lol", "wss://relay.primal.net", "wss://nos.lol", "wss://relay.damus.io")
     private val http = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).build()
