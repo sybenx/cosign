@@ -52,7 +52,8 @@ if (viaNc) {
   const client = await site.done;
   const note = await client.signEvent({ kind: 1, content: 'signed in with the nostrconnect half', tags: [] });
   console.log(`[site] signed in by nostrconnect; note: ${verifyEvent(note) ? 'VALID' : 'INVALID'} (${ms()})`);
-  client.close();
+  await client.logout();
+  console.log(`[site] signed out (${ms()})`);
   process.exit(verifyEvent(note) ? 0 : 1);
 }
 const params = parseUri(uri);
@@ -71,5 +72,6 @@ const client = await site.done;
 console.log(`[site] signed in as ${(await client.getPublicKey()).slice(0, 12)}… (${ms()})`);
 const note = await client.signEvent({ kind: 1, content: 'signed in with QRST', tags: [] });
 console.log(`[site] note: ${verifyEvent(note) ? 'VALID' : 'INVALID'} (${ms()})`);
-client.close(); sender.dispose();
+await client.logout(); sender.dispose();
+console.log(`[site] signed out (${ms()})`);
 process.exit(verifyEvent(note) ? 0 : 1);

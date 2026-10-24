@@ -124,5 +124,8 @@ export class SignerClient {
   nip04Encrypt = this.nip04.encrypt;
   nip04Decrypt = this.nip04.decrypt;
 
+  /** Sign out: your servers drop this site's access, so it leaves your phone's list. Then close. */
+  async logout() { try { await this.call('logout', [], 15_000); } finally { this.close(); } }
+
   close() { this.closed = true; for (const r of this.conns.values()) r?.close(); }
 }

@@ -21,6 +21,8 @@ export interface Signer {
   signEvent(t: { kind: number; content: string; tags: string[][]; created_at?: number }): Promise<Event>;
   nip44Encrypt(pubkey: string, text: string): Promise<string>;
   nip44Decrypt(pubkey: string, text: string): Promise<string>;
+  /** Sign out for good: the grant goes, and so does its line on your phone. Closes too. */
+  logout(): Promise<unknown>;
   close(): unknown;
 }
 
