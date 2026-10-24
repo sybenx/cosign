@@ -12,8 +12,8 @@ android {
         applicationId = "cc.aaro.cosign"
         minSdk = 30
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.5.1"
+        versionCode = 7
+        versionName = "0.6.0"
     }
 
     buildTypes {
@@ -34,6 +34,9 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     testOptions { unitTests.isReturnDefaultValues = true }
+    // Unit tests run the native FROST too, from a desktop build of the same library:
+    // (cd ../frost && cargo build --release --features android)
+    tasks.withType<Test> { systemProperty("java.library.path", rootProject.file("../frost/target/release").absolutePath) }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
 

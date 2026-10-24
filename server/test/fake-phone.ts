@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { getEventHash } from 'nostr-tools/pure';
 import * as F from '../frost.ts';
+import * as Sig from '../sign.ts';
 import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../net.ts';
 
 const args = process.argv.slice(2);
@@ -48,8 +49,8 @@ function handle(msg: any, from: string) {
     const reply = (r: object) => send(from, { type: 'sign_res', id: msg.id, ...r });
     if (ev.pubkey !== st.group.groupX || getEventHash(ev) !== msg.msg) return reply({ ok: false, reason: 'event mismatch' });
     if (msg.hold && !msg.undo && deny) { say(`DECLINED: ${msg.hold}`); return reply({ ok: false, reason: 'declined on the phone' }); }
-    const mine = F.commit(st.idx);
-    const z = F.partialSign({ groupX: st.group.groupX, msg: msg.msg, commits: [msg.commit, mine.commit], idx: st.idx, secret: st.share, nonces: mine.nonces });
+    const mine = Sig.commit(st.group, st.idx, st.share);
+    const z = Sig.partial(msg.frost === 2 && !process.env.OLD_MATH ? 2 : 1, st.group, st.idx, st.share, mine.nonces, msg.msg, [msg.commit, mine.commit]);
     say(msg.hold && !msg.undo ? `APPROVED: ${msg.hold}` : msg.undo ? `co-signed an undo for ${srv.name}` : `co-signed kind ${ev.kind} for ${srv.name} (a server is down)`);
     reply({ ok: true, commit: mine.commit, z });
   } else if (msg.type === 'ecdh_req') {

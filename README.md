@@ -85,9 +85,12 @@ background service is running.
   the server to wait the full minute; a decline ends it, and nobody else is asked.
 - **Big messages** go between members in 24 KB parts (`sealParts` in `server/net.ts`,
   `send` in `Phone.kt`): NIP-44 stops at 64 KB, and a large follow list is bigger.
-- **FROST** (`server/frost.ts`, `android/.../core/Frost.kt`): two nonces per signer,
-  binding factors over the commitment list, BIP-340 challenge. Final signatures are plain
-  BIP-340. `android/app/src/test/resources/frost.json` pins the two implementations.
+- **FROST** (`frost/`, Rust): the Zcash Foundation's `frost-secp256k1-tr` (RFC 9591,
+  BIP-340 signatures), built to WebAssembly for the server (`server/frost-wasm`, used by
+  `server/sign.ts`) and to a native library for the phone (`core/FrostNative.kt`). Requests
+  say `frost: 2`; the earlier hand-rolled math (`server/frost.ts`, `core/Frost.kt`) is
+  kept only so members not updated yet keep working — a coordinator finishes each round
+  in whichever math its partner used.
 - **Push**: the servers POST "cosign:approve" to the phone's ntfy endpoint — nothing
   else; the request itself comes over relays, sealed.
 
@@ -107,8 +110,8 @@ cd server && node test/policy-vectors.ts                 # policy cases for the 
 
 ## What's rough
 
-- **The FROST is hand-rolled**, not RFC 9591's hashing, so it interoperates with nothing
-  else. Trusted dealer: `setup.ts` sees the whole key once.
+- **Trusted dealer:** `setup.ts` sees the whole key once. (Signing now uses the Zcash
+  Foundation's audited FROST library; its DKG would remove the dealer.)
 - **A lost phone can't be replaced** without a new key yet: there's no re-sharing.
 - **The phone only knows the lists it has seen signed** (from your servers, or on your
   relays). If it missed the latest version, it judges against an older one.

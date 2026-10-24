@@ -22,6 +22,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import QRCode from 'qrcode';
 import * as F from './frost.ts';
+import * as Sig from './sign.ts';
 import { Pool, sealParts, openFrom, Parts, normRelay, dial, KIND_MEMBER, KIND_NIP46 } from './net.ts';
 import { ARCHIVED, assess, keyOf, kindName } from './policy.ts';
 import { Archive } from './archive.ts';
@@ -354,19 +355,20 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string } = {}
     const asking = isPhone && !!hold && !opts.undo;
     const wait = isPhone ? phoneWait(asking, order.slice(i + 1)) : online(m) ? 8_000 : 3_000; // a silent server gets a last quick try
     if (isPhone && (asking || (wait > 3_000 && !online(m)))) pushPhone();
-    const mine = F.commit(me.idx); // fresh every attempt; ours are used only once we have a valid partner
-    const res = await ask(m.pk!, { type: 'sign_req', id: rid(), event: ev, msg: id, participants, commit: mine.commit, app: by, hold: hold ?? null, undo: opts.undo ?? null }, wait);
+    const mine = Sig.commit(S.group, me.idx, S.self.share); // fresh every attempt; ours are used only once we have a valid partner
+    const res = await ask(m.pk!, { type: 'sign_req', id: rid(), event: ev, msg: id, participants, commit: mine.commit, frost: 2, app: by, hold: hold ?? null, undo: opts.undo ?? null }, wait);
     if (!res.ok) {
       tried.push(`${m.name}: ${res.reason}`);
       if (isPhone && String(res.reason).includes('declined')) break; // your no stands: nobody else gets asked
       continue;
     }
     const commits = [mine.commit, res.commit];
-    if (res.commit?.idx !== m.idx || !F.verifyPartial({ groupX, msg: id, commits, idx: m.idx, sharePub: m.sharePub, z: res.z })) {
-      tried.push(`${m.name}: bad partial`); continue;
-    }
-    const z = F.partialSign({ groupX, msg: id, commits, idx: me.idx, secret: S.self.share, nonces: mine.nonces });
-    const signed = { ...ev, id, sig: F.aggregate({ groupX, msg: id, commits, partials: [z, res.z] }) } as Event;
+    // Whichever math the partner used (it may not be updated yet), finish the round in it.
+    const scheme = res.commit?.idx === m.idx ? Sig.schemeOf(S.group, id, commits, m.idx, res.z) : null;
+    if (!scheme) { tried.push(`${m.name}: bad partial`); continue; }
+    if (process.env.DEBUG) console.log(`[${me.name}] ${m.name} signed with ${scheme === 2 ? 'FROST (RFC 9591)' : 'the earlier math'}`);
+    const z = Sig.partial(scheme, S.group, me.idx, S.self.share, mine.nonces, id, commits);
+    const signed = { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [[me.idx, z], [m.idx, res.z]]) } as Event;
     note(`signed ${kindName(ev.kind)} for ${by} with ${m.name}${hold && !opts.undo ? ' — you approved' : ''}`);
     keep(signed, judged.change ?? hold, by, !!hold && !opts.undo);
     return signed;
@@ -421,8 +423,8 @@ function onSignReq(msg: any, from: Member): object {
     note(`refused to co-sign for ${from.name}: ${hold} needs your phone`);
     return respond({ ok: false, reason: `${hold} needs your phone` });
   }
-  const mine = F.commit(me.idx);
-  const z = F.partialSign({ groupX, msg: msg.msg, commits: [msg.commit, mine.commit], idx: me.idx, secret: S.self.share, nonces: mine.nonces });
+  const mine = Sig.commit(S.group, me.idx, S.self.share);
+  const z = Sig.partial(msg.frost === 2 ? 2 : 1, S.group, me.idx, S.self.share, mine.nonces, msg.msg, [msg.commit, mine.commit]);
   return respond({ ok: true, commit: mine.commit, z });
 }
 

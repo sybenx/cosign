@@ -16,3 +16,4 @@ site/public/app.js.map
 *.apk
 android/.kotlin/
 deploy/local/state/
+frost/target/

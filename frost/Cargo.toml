@@ -1,0 +1,33 @@
+[package]
+name = "cosign-frost"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Cosign's signing math, on the Zcash Foundation's FROST (RFC 9591, secp256k1, BIP-340)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+frost-secp256k1-tr = "2.2"
+k256 = { version = "0.13", features = ["arithmetic"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+getrandom = { version = "0.2" }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = { version = "0.2", optional = true }
+frost-core = "2.2"
+jni = { version = "0.21", optional = true }
+
+[features]
+wasm = ["dep:wasm-bindgen", "getrandom/js"]
+android = ["dep:jni"]
+jni = ["dep:jni"]
+
+[dev-dependencies]
+k256 = { version = "0.13", features = ["arithmetic", "schnorr"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

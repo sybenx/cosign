@@ -7,6 +7,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY *.ts start.sh ./
+COPY frost-wasm ./frost-wasm
 # uid 1000 is "node" here, and owns the data directory on the host.
 USER 1000:1000
 ENV HOST=0.0.0.0

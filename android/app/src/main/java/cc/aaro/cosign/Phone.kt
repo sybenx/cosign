@@ -5,6 +5,7 @@ import android.net.Uri
 import cc.aaro.cosign.core.CodeCheck
 import cc.aaro.cosign.core.Event
 import cc.aaro.cosign.core.Frost
+import cc.aaro.cosign.core.FrostNative
 import cc.aaro.cosign.core.Json
 import cc.aaro.cosign.core.Mode
 import cc.aaro.cosign.core.Nip44
@@ -39,7 +40,8 @@ data class Group(val groupX: String, val npub: String, val threshold: Int, val r
 data class Membership(val sk: String, val idx: Int, val share: String, val signer: String, val group: Group)
 data class Offer(val fromPk: String, val token: String, val idx: Int, val share: String, val signer: String, val group: Group)
 /** Something destructive, waiting for you. */
-data class Ask(val id: String, val fromPk: String, val via: String, val app: String, val event: Event, val msg: String, val commit: Frost.Commit, val hold: String, val expiresAt: Long)
+/** [frost]: which signing math the server asked for (2 = the library, 1 = the earlier one). */
+data class Ask(val id: String, val fromPk: String, val via: String, val app: String, val event: Event, val msg: String, val commit: Frost.Commit, val hold: String, val expiresAt: Long, val frost: Int = 1)
 /** A grant. [parent]: the connected site (the extension) that added it; [via]: what connected it. */
 data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long, val parent: String? = null, val via: String? = null)
 data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean)
@@ -408,7 +410,7 @@ class Phone(private val context: Context) {
         // Your server's judgement, or this phone's own: either one is enough to ask you.
         val hold = msg["hold"] as? String ?: Policy.hold(ev, lists.latest(Policy.keyOf(ev)))
         val undo = msg["undo"] as? String
-        val ask = Ask(id, from.pk!!, from.name, app, ev, digest, commit, hold ?: "", System.currentTimeMillis() + 55_000)
+        val ask = Ask(id, from.pk!!, from.name, app, ev, digest, commit, hold ?: "", System.currentTimeMillis() + 55_000, if (msg["frost"] == 2L) 2 else 1)
         val myUndo = undo != null && System.currentTimeMillis() - (myUndos[undo] ?: 0) < 120_000
         if (hold == null || myUndo) {
             sign(ask, m, reply)
@@ -437,6 +439,15 @@ class Phone(private val context: Context) {
     }
 
     private fun sign(ask: Ask, m: Membership, reply: (Map<String, Any?>) -> Unit) {
+        if (ask.frost == 2) {
+            val group = Json.stringify(mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold,
+                "members" to m.group.members.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+            val c = Json.parse(FrostNative.commit(group, m.idx, m.share)) as Map<*, *>
+            val mine = c["commit"] as Map<*, *>
+            val theirs = mapOf("idx" to ask.commit.idx, "D" to ask.commit.D, "E" to ask.commit.E)
+            val z = FrostNative.sign(group, m.idx, m.share, c["nonces"] as String, ask.msg, Json.stringify(listOf(theirs, mine)))
+            return reply(mapOf("ok" to true, "z" to z, "commit" to mine))
+        }
         val (nonces, mine) = Frost.commit(m.idx, env)
         val z = Frost.partialSign(m.group.groupX, ask.msg, listOf(ask.commit, mine), m.idx, m.share, nonces)
         reply(mapOf("ok" to true, "z" to z, "commit" to mapOf("idx" to mine.idx, "D" to mine.D, "E" to mine.E)))
