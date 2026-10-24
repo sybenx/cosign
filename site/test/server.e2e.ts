@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { verifyEvent } from 'nostr-tools/pure';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import { SignerClient, newSession } from '../src/client.ts';
-import { Pool, sealTo, openFrom, KIND_MEMBER } from '../../server/net.ts';
+import { Pool, sealTo, openFrom, Parts, KIND_MEMBER } from '../../server/net.ts';
 
 const phone = JSON.parse(readFileSync('/tmp/cosign-fake-phone.json', 'utf8'));
 const servers = phone.group.members.filter((m: any) => m.role === 'server');
@@ -17,9 +17,10 @@ const want = (s: string) => steps.length === 0 || steps.includes(s);
 
 // Talk as the phone's control half.
 let latestState: any = null;
+const parts = new Parts(); // big state messages come in parts
 const ctl = new Pool(phone.group.relays, e => {
   if (e.kind !== KIND_MEMBER) return;
-  const m = openFrom(phone.sk, e);
+  const m = parts.take(e.pubkey, openFrom(phone.sk, e));
   if (m?.type === 'state') latestState = m;
 });
 ctl.start([{ kinds: [KIND_MEMBER], '#p': [require_pk()] }]);

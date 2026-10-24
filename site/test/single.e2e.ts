@@ -1,6 +1,7 @@
 // Single-server mode: your phone co-signs everyday things, the backup server steps in
-// when the phone doesn't answer, and with neither the site gets a clear error. Also a
-// follow list too big for one NIP-44 message.
+// when the phone doesn't answer, and with neither the site gets a clear error. Notes race
+// the phone and the backup (whichever answers first); list changes go to the phone first.
+// Also a follow list too big for one NIP-44 message.
 //
 //   (test servers running, fake phone paired)   node test/single.e2e.ts
 //
@@ -38,8 +39,10 @@ const site = new SignerClient(newSession(phone.signer, phone.group.relays));
 await site.connect(t);
 const note = (text: string) => site.signEvent({ kind: 1, content: text, tags: [] });
 
-const [n1, ms1] = await time(() => note('phone co-signs'));
-check('a note signs, with the phone', verifyEvent(n1) && (await lastSigned()).includes('with Phone'), `${ms1} ms, ${await lastSigned()}`);
+const [n1, ms1] = await time(() => note('whoever answers first'));
+check('a note signs, raced between the phone and the backup', verifyEvent(n1) && ms1 < 3000, `${ms1} ms, ${await lastSigned()}`);
+const [f1, msf] = await time(() => site.signEvent({ kind: 3, content: '', tags: [['p', bytesToHex(randomBytes(32))]] }));
+check('a follow-list change goes to the phone first', verifyEvent(f1) && (await lastSigned()).includes('with Phone'), `${msf} ms`);
 
 const big = Array.from({ length: 1500 }, () => ['p', bytesToHex(randomBytes(32))]);
 const [f, ms2] = await time(() => site.signEvent({ kind: 3, content: '', tags: big }));
@@ -49,7 +52,7 @@ check('a 1500-follow list signs (in parts)', verifyEvent(f) && f.tags.length ===
 kill('test/fake-phone.ts');
 await sleep(1000);
 const [n2, ms3] = await time(() => note('phone asleep'));
-check('phone silent: the backup server signs after ~3 s', verifyEvent(n2) && (await lastSigned()).includes('with Server B') && ms3 >= 2500 && ms3 < 8000, `${ms3} ms`);
+check('phone silent: the backup server signs', verifyEvent(n2) && (await lastSigned()).includes('with Server B') && ms3 < 8000, `${ms3} ms`);
 
 // Neither: a clear error after ~15 s.
 kill('server.ts test-data/b');
@@ -61,7 +64,7 @@ check('phone and backup both gone: the site gets an error', !!err && /phone/i.te
 run(['server.ts', 'test-data/b']);
 run(['test/fake-phone.ts']);
 await sleep(14_000);
-const [n3, ms5] = await time(() => note('phone back'));
+const [n3, ms5] = await time(() => site.signEvent({ kind: 3, content: '', tags: [['p', bytesToHex(randomBytes(32))], ['p', bytesToHex(randomBytes(32))]] }));
 check('phone back: it co-signs again', verifyEvent(n3) && (await lastSigned()).includes('with Phone'), `${ms5} ms`);
 
 site.close();

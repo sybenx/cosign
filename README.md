@@ -19,7 +19,17 @@ changes.
   wiped, your relay list emptied, a pile of deletions, a request to vanish. Judged by
   what the event does compared with the version it replaces — adding one follow is
   routine, replacing your whole follow list isn't.
-- **Every change to your lists is archived**, with Undo on the phone.
+- **Every change to your lists is archived**, with Undo on the phone, and every version is
+  kept on your phone too.
+- **Undo everything a site did**, in one go: its access goes, every list it changed goes
+  back to how it was before it touched it, and everything else it posted is deleted.
+- **Deletions can't be taken back on Nostr, so Cosign keeps a copy first**, holds each one
+  for 10 seconds with Undo on your phone, asks once for a batch (5 or more, or one that
+  touches a list), and keeps the copies with **Post again**.
+- **Nothing is ever signed dated in the future** if it's a list or profile: on a relay
+  that took it, it would beat every later change. "Now" is the network's time, so a phone
+  or server with its clock set ahead doesn't change that. A future-dated version already
+  out there is flagged on your phone with a one-tap fix.
 - **Remove a site** on the phone or on either server's page; it stops immediately.
 - **Any one of the three can be down.** If your phone doesn't answer within 3 s, the
   backup server signs instead (never for anything destructive). If your server is down,
@@ -91,6 +101,11 @@ background service is running.
   and a server gives the other half after checking the app's grant and judging the event
   itself. Decryption is done in two halves and finished on the phone. `android/nip55tester`
   is a stand-in app that runs through all of it on an emulator.
+- **History** (`server/history.ts`): everything signed, for which site or app, with the
+  version a list change replaced, and copies of everything deleted. Shared between the
+  servers and with the phone (`signed.jsonl`), so undoing a site never depends on how
+  many list versions the archive keeps.
+- **Time** (`server/clock.ts`, `core/Clock.kt`): the median Date header of a few HTTPS sites.
 - **Big messages** go between members in 24 KB parts (`sealParts` in `server/net.ts`,
   `send` in `Phone.kt`): NIP-44 stops at 64 KB, and a large follow list is bigger.
 - **FROST** (`frost/`, Rust): the Zcash Foundation's `frost-secp256k1-tr` (RFC 9591,
@@ -112,6 +127,9 @@ cd site && node test/server.e2e.ts                      # tickets, signing, hold
 cd site && node --experimental-transform-types test/pair.e2e.ts   # QRST sign-in, end to end
 cd site && node test/nostrconnect.e2e.ts [relay]         # a plain nostr-tools site, by nostrconnect
 cd site && node test/single.e2e.ts                       # phone co-signs; backup steps in; big lists
+cd site && node test/deletion.e2e.ts                     # copies kept, 10 s Undo, one approval per batch
+cd site && node test/undo-site.e2e.ts                    # undo everything one site did
+cd site && NSEC=… node test/future.e2e.ts                # dated ahead: refused, held, found and removed
 cd server && node test/policy-vectors.ts                 # policy cases for the phone's copy
 # a second group beside yours for these: node setup.ts --dir test-data --port 8721
 ```

@@ -7,10 +7,8 @@ import type { Event } from 'nostr-tools/pure';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { BunkerSigner, createNostrConnectURI, type BunkerPointer } from 'nostr-tools/nip46';
 import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
-import { pair, restore, forget, DEFAULT_RELAYS } from './pair.ts';
+import { pair, restore, forget, DEFAULT_RELAYS, type Signer } from './pair.ts';
 
-/** What the page needs from either way of signing in. */
-interface Signer { getPublicKey(): Promise<string>; signEvent(t: { kind: number; content: string; tags: string[][] }): Promise<Event>; close(): unknown }
 
 const $ = (id: string) => document.getElementById(id)!;
 const storage = window.localStorage;
@@ -109,6 +107,14 @@ async function signedIn(c: Signer) {
 }
 
 const randomPk = () => bytesToHex(randomBytes(32));
+// Notes this page posted, newest last, so the delete buttons delete real ones.
+const posted: string[] = JSON.parse(storage.getItem('demo.posted') ?? '[]');
+const deleteNotes = (n: number) => {
+  const ids = posted.splice(-n, n);
+  while (ids.length < n) ids.push(randomPk());
+  storage.setItem('demo.posted', JSON.stringify(posted));
+  return { kind: 5, content: '', tags: [...ids.map(id => ['e', id]), ['k', '1']] };
+};
 
 const actions: Record<string, () => { kind: number; content: string; tags: string[][] }> = {
   note: () => ({ kind: 1, content: ($('text') as HTMLTextAreaElement).value || 'gm from the cosign demo', tags: [] }),
@@ -118,7 +124,8 @@ const actions: Record<string, () => { kind: number; content: string; tags: strin
   unfollow: () => ({ kind: 3, content: '', tags: [] }),
   name: () => ({ kind: 0, content: JSON.stringify({ name: `demo-${Math.floor(Math.random() * 1000)}`, about: 'trying cosign', picture: 'https://robohash.org/cosign' }), tags: [] }),
   wipe: () => ({ kind: 0, content: '{}', tags: [] }),
-  delete6: () => ({ kind: 5, content: '', tags: Array.from({ length: 6 }, () => ['e', randomPk()]) }),
+  delete1: () => deleteNotes(1),
+  delete6: () => deleteNotes(6),
 };
 
 async function act(name: string, button: HTMLButtonElement) {
@@ -131,6 +138,7 @@ async function act(name: string, button: HTMLButtonElement) {
   try {
     const ev: Event = await client.signEvent(template);
     if (ev.kind === 3) { follows = ev.tags.filter(t => t[0] === 'p'); saveFollows(); $('follows').textContent = String(follows.length); }
+    if (ev.kind === 1) { posted.push(ev.id); storage.setItem('demo.posted', JSON.stringify(posted)); }
     line.textContent = `${button.textContent}: signed in ${((Date.now() - started) / 1000).toFixed(1)} s`;
     line.className = 'ok';
   } catch (e: any) {
@@ -147,7 +155,7 @@ function show(which: 'in' | 'out') { $('signedin').hidden = which !== 'in'; $('s
 
 for (const b of document.querySelectorAll<HTMLButtonElement>('button[data-act]')) b.onclick = () => act(b.dataset.act!, b);
 $('again').onclick = () => { $('again').hidden = true; signIn(); };
-$('signout').onclick = () => { client?.close(); forget(storage); for (const k of ['demo.follows', 'demo.nc']) storage.removeItem(k); follows = []; signIn(); };
+$('signout').onclick = () => { void client?.logout().catch(() => {}); forget(storage); for (const k of ['demo.follows', 'demo.nc', 'demo.posted']) storage.removeItem(k); follows = []; signIn(); };
 $('mode').onclick = () => { useNostrConnect = !useNostrConnect; $('again').hidden = true; signIn(); };
 
 const previous = restore(storage) ?? restoreNostrConnect();

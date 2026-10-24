@@ -45,7 +45,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cc.aaro.cosign.Ask
 import cc.aaro.cosign.Change
+import cc.aaro.cosign.BatchAsk
 import cc.aaro.cosign.Connect
+import cc.aaro.cosign.Deleted
+import cc.aaro.cosign.Deleting
+import cc.aaro.cosign.SiteSummary
 import cc.aaro.cosign.Future
 import cc.aaro.cosign.Line
 import cc.aaro.cosign.Offer
@@ -74,6 +78,7 @@ fun App(phone: Phone, ui: Ui) {
             else -> Home(phone, ui) { phone.clearError(); scanning = true }
         }
         ui.connect?.let { ConnectSheet(it, phone::confirmConnect, phone::closeConnect) }
+        ui.summary?.let { UndoSiteSheet(it, phone::confirmUndoSite, phone::closeSummary) }
     }
 }
 
@@ -198,19 +203,26 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             }
             ui.error?.let { Text(it, color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp)) }
         }
-        items(ui.future, key = { it.id }) { f -> FutureCard(f) { phone.removeFuture(f) } }
-        items(ui.asks, key = { it.id }) { ask -> AskCard(ask, now) { approve -> phone.decide(ask.id, approve) } }
+        items(ui.future, key = { "future:" + it.id }) { f -> FutureCard(f) { phone.removeFuture(f) } }
+        items(ui.deleting, key = { "deleting:" + it.batch }) { d -> DeletingCard(d, now) { phone.cancelDeletion(d.batch) } }
+        items(ui.batchAsks, key = { "batch:" + it.batch }) { b -> BatchCard(b, now) { approve -> phone.decideBatch(b.batch, approve) } }
+        items(ui.asks, key = { "ask:" + it.id }) { ask -> AskCard(ask, now) { approve -> phone.decide(ask.id, approve) } }
 
         item { Heading("Sites that can sign as you") }
         if (ui.sites.isEmpty()) item { Muted("None yet. Tap Connect a site and scan a site's sign-in code.") }
         // One entry per website, with each way it's connected inside.
-        items(ui.sites.groupBy { it.origin }.toList(), key = { it.first }) { (origin, grants) ->
-            SiteGroup(origin, grants, onRemove = phone::removeSite)
+        items(ui.sites.groupBy { it.origin }.toList(), key = { "site:" + it.first }) { (origin, grants) ->
+            SiteGroup(origin, grants, onRemove = phone::removeSite, onUndo = phone::askUndoSite)
         }
 
         item { Heading("Recent changes to your lists") }
         if (ui.changes.isEmpty()) item { Muted("Follows, profile, relays, bookmarks… every change shows up here, with Undo.") }
-        items(ui.changes.take(12), key = { it.id }) { ChangeRow(it) { phone.undo(it) } }
+        items(ui.changes.take(12), key = { "change:" + it.id }) { ChangeRow(it) { phone.undo(it) } }
+
+        if (ui.deleted.isNotEmpty()) {
+            item { Heading("Deleted — copies kept") }
+            items(ui.deleted, key = { "deleted:" + it.id }) { DeletedRow(it) { phone.repost(it) } }
+        }
 
         item { Heading("On this phone") }
         items(ui.log.take(20)) { LogLine(it) }
@@ -262,7 +274,7 @@ private fun AskCard(ask: Ask, now: Long, onDecide: (Boolean) -> Unit) = Card(Vau
 }
 
 @Composable
-private fun SiteGroup(origin: String, grants: List<Site>, onRemove: (Site) -> Unit) = Column(
+private fun SiteGroup(origin: String, grants: List<Site>, onRemove: (Site) -> Unit, onUndo: (Site) -> Unit) = Column(
     Modifier.fillMaxWidth().background(Vault.Surface, RoundedCornerShape(12.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(12.dp)).padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -274,7 +286,77 @@ private fun SiteGroup(origin: String, grants: List<Site>, onRemove: (Site) -> Un
             "${g.via ?: if (g.parent == null) "Connected by code" else "Connected"} · used ${ago(g.lastUsed)}",
             color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
         )
+        TextButton({ onUndo(g) }) { Text("Undo all", color = Vault.Teal) }
         TextButton({ onRemove(g) }) { Text("Remove", color = Vault.AmberText) }
+    }
+}
+
+@Composable
+private fun DeletingCard(d: Deleting, now: Long, onUndo: () -> Unit) = Card(Vault.Line, Vault.Surface) {
+    val left = ((d.until - now) / 1000).coerceAtLeast(0)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Deleting ${d.count} event${if (d.count == 1) "" else "s"} for ${d.by.removePrefix("https://")}", style = MaterialTheme.typography.titleSmall, color = Vault.Text)
+            Text("in ${left}s · Cosign keeps a copy", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+        }
+        Button(onUndo, colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Undo") }
+    }
+}
+
+@Composable
+private fun BatchCard(b: BatchAsk, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
+    val left = ((b.expiresAt - now) / 1000).coerceAtLeast(0)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Approve?", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText, modifier = Modifier.weight(1f))
+        Text("${left}s", fontFamily = PlexMono, color = Vault.AmberText, style = MaterialTheme.typography.bodySmall)
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(b.text, style = MaterialTheme.typography.titleMedium, color = Vault.Text)
+    Spacer(Modifier.height(6.dp))
+    Text("Nostr can't take a deletion back. Cosign keeps copies, so you can post them again.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+    Spacer(Modifier.height(14.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedButton({ onDecide(false) }, Modifier.weight(1f).height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Deny", color = Vault.Text) }
+        Button({ onDecide(true) }, Modifier.weight(1f).height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.OnAmber)) { Text("Approve", fontWeight = FontWeight.SemiBold) }
+    }
+}
+
+@Composable
+private fun DeletedRow(d: Deleted, onRepost: () -> Unit) = Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.weight(1f)) {
+        Text(d.text.ifBlank { "(no text)" }, style = MaterialTheme.typography.bodyMedium, color = Vault.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text("${d.kind} · ${ago(d.at)}", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+    }
+    TextButton(onRepost) { Text("Post again", color = Vault.Teal) }
+}
+
+/** Before undoing a site: what it did, and what undoing it will do. */
+@Composable
+fun UndoSiteSheet(sum: SiteSummary, onUndo: () -> Unit, onClose: () -> Unit) {
+    BackHandler { onClose() }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            val origin = sum.origin.removePrefix("https://")
+            Text("Undo everything $origin did?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Spacer(Modifier.height(10.dp))
+            val did = sum.counts.entries.sortedByDescending { it.value }.joinToString(", ") { (k, n) -> "$n $k${if (n == 1) "" else if (k.endsWith("s")) "" else "s"}" }
+            Text(if (sum.total == 0) "It hasn't signed anything yet." else "Since it connected, it signed ${sum.total}: $did.", style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
+            Spacer(Modifier.height(8.dp))
+            val parts = buildList {
+                add("removes its access")
+                if (sum.lists.isNotEmpty()) add("puts your ${sum.lists.joinToString(" and ")} back to how ${if (sum.lists.size == 1) "it was" else "they were"} before it changed ${if (sum.lists.size == 1) "it" else "them"}")
+                if (sum.deletable > 0) add("deletes the other ${sum.deletable} it posted")
+            }
+            Text("This ${if (parts.size > 1) parts.dropLast(1).joinToString(", ") + " and " + parts.last() else parts.first()}." + if (sum.deletable > 0) " Nostr can't take a deletion back; Cosign keeps copies." else "",
+                style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+            Spacer(Modifier.height(20.dp))
+            OutlinedButton(onClose, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Cancel", color = Vault.Text) }
+            Spacer(Modifier.height(10.dp))
+            Button(onUndo, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.OnAmber)) { Text("Undo everything", fontWeight = FontWeight.SemiBold) }
+        }
     }
 }
 

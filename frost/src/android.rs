@@ -57,3 +57,40 @@ pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_aggregate(mut env: J
     })();
     out(&mut env, r)
 }
+
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_sharePubAt(mut env: JNIEnv, _: JClass, g: JString, k: jint) -> jstring {
+    let r = (|| super::share_pub_at(&group(&s(&mut env, &g)?)?, k as u16).map_err(|e| e.0))();
+    out(&mut env, r)
+}
+
+/// `helpers`: JSON `[idx, …]`. Returns `[[helperIdx, delta], …]`.
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_repairStep1(mut env: JNIEnv, _: JClass, g: JString, idx: jint, secret: JString, helpers: JString, participant: jint) -> jstring {
+    let r = (|| {
+        let h: Vec<u16> = serde_json::from_str(&s(&mut env, &helpers)?).map_err(|e| format!("helpers: {e}"))?;
+        let d = super::repair_step1(&group(&s(&mut env, &g)?)?, idx as u16, &s(&mut env, &secret)?, &h, participant as u16).map_err(|e| e.0)?;
+        Ok(serde_json::to_string(&d).unwrap())
+    })();
+    out(&mut env, r)
+}
+
+/// `deltas`: JSON `[hex, …]`.
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_repairStep2(mut env: JNIEnv, _: JClass, deltas: JString) -> jstring {
+    let r = (|| {
+        let d: Vec<String> = serde_json::from_str(&s(&mut env, &deltas)?).map_err(|e| format!("deltas: {e}"))?;
+        super::repair_step2(&d).map_err(|e| e.0)
+    })();
+    out(&mut env, r)
+}
+
+/// `sigmas`: JSON `[hex, …]`. Throws unless the share matches the group.
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_repairStep3(mut env: JNIEnv, _: JClass, g: JString, sigmas: JString, participant: jint) -> jstring {
+    let r = (|| {
+        let sg: Vec<String> = serde_json::from_str(&s(&mut env, &sigmas)?).map_err(|e| format!("sigmas: {e}"))?;
+        super::repair_step3(&group(&s(&mut env, &g)?)?, &sg, participant as u16).map_err(|e| e.0)
+    })();
+    out(&mut env, r)
+}

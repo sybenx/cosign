@@ -52,6 +52,14 @@ data class Ask(val id: String, val fromPk: String, val via: String, val app: Str
 /** A grant. [parent]: the connected site (the extension) that added it; [via]: what connected it. */
 data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long, val parent: String? = null, val via: String? = null)
 data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean)
+/** Deletions held for a few seconds, with Undo. */
+data class Deleting(val batch: String, val by: String, val count: Int, val until: Long)
+/** One approval for a batch of deletions. */
+data class BatchAsk(val batch: String, val text: String, val by: String, val expiresAt: Long)
+/** A deleted event a server kept a copy of: it can be posted again. */
+data class Deleted(val id: String, val kind: String, val at: Long, val text: String)
+/** What undoing a site would do, for you to confirm. */
+data class SiteSummary(val pk: String, val origin: String, val total: Int, val counts: Map<String, Int>, val lists: List<String>, val deletable: Int)
 /** A version of one of your lists dated in the future, found on relays: it blocks every change. */
 data class Future(val id: String, val text: String)
 data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
@@ -75,6 +83,10 @@ data class Ui(
     val sites: List<Site> = emptyList(),
     val changes: List<Change> = emptyList(),
     val future: List<Future> = emptyList(),
+    val deleting: List<Deleting> = emptyList(),
+    val batchAsks: List<BatchAsk> = emptyList(),
+    val deleted: List<Deleted> = emptyList(),
+    val summary: SiteSummary? = null,
     val connect: Connect? = null,
     val push: String? = null,
 )
@@ -87,7 +99,11 @@ data class Ui(
  * co-signs routine things itself only while one of your servers is down.
  */
 class Phone(private val context: Context) {
-    interface Listener { fun onAsk(ask: Ask); fun onAskGone(id: String); fun onStatus() }
+    interface Listener {
+        fun onAsk(ask: Ask); fun onAskGone(id: String); fun onStatus()
+        fun onDeleting(d: Deleting) {}; fun onDeletingGone(batch: String) {}
+        fun onBatch(b: BatchAsk) {}; fun onBatchGone(batch: String) {}
+    }
 
     private val secrets = Secrets(context)
     private val lists = Lists(context)
@@ -110,6 +126,10 @@ class Phone(private val context: Context) {
     private val asking = ConcurrentHashMap.newKeySet<String>()
     private val pendingReplies = ConcurrentHashMap<String, (Map<String, Any?>) -> Unit>()
     private val myUndos = ConcurrentHashMap<String, Long>()
+    /** What you just removed here (sites, flagged versions, reposted copies). Your two servers each
+     *  send their list; the one that hasn't heard yet would bring it back for a moment. */
+    private val justRemoved = ConcurrentHashMap<String, Long>()
+    private fun removedHere(id: String) = System.currentTimeMillis() - (justRemoved[id] ?: 0) < 60_000
     private var lastEcdhNote = 0L
 
     private val qrstStore = Store(object : KeyValue {
@@ -212,7 +232,7 @@ class Phone(private val context: Context) {
     fun clearError() = ui.update { it.copy(error = null) }
 
     fun leave() {
-        stop(); secrets.clear(); lists.clear(); lastSeen.clear()
+        stop(); secrets.clear(); lists.clear(); lastSeen.clear(); signedLog.delete(); apps.edit().clear().apply()
         context.getSharedPreferences("cosign", Context.MODE_PRIVATE).edit().clear().apply()
         ui.value = Ui()
     }
@@ -347,6 +367,7 @@ class Phone(private val context: Context) {
     // --- What's connected, and what changed --------------------------------------
 
     fun removeSite(site: Site) {
+        justRemoved[site.pk] = System.currentTimeMillis()
         for (s in servers()) send(s.pk!!, mapOf("type" to "revoke", "pk" to site.pk))
         appByPk(site.pk)?.let { apps.edit().remove(it.pkg).apply() }
         // Removing the extension removes every site it added; your servers do the same.
@@ -362,10 +383,63 @@ class Phone(private val context: Context) {
         note("Undoing: ${change.text}")
     }
 
+    // --- Deletions, and undoing a site -------------------------------------------------
+
+    private val signedLog = java.io.File(context.filesDir, "signed.jsonl")
+    private val approvedBatches = ConcurrentHashMap.newKeySet<String>()
+    private val decidedBatches = ConcurrentHashMap.newKeySet<String>()
+
+    /** Undo, during a deletion's few seconds. */
+    fun cancelDeletion(batch: String) {
+        for (s in servers()) send(s.pk!!, mapOf("type" to "cancel_batch", "batch" to batch))
+        ui.update { u -> u.copy(deleting = u.deleting.filter { it.batch != batch }) }
+        listener?.onDeletingGone(batch)
+        note("Stopped a deletion", "denied")
+    }
+
+    fun decideBatch(batch: String, approve: Boolean) {
+        val b = ui.value.batchAsks.firstOrNull { it.batch == batch } ?: return
+        decidedBatches.add(batch)
+        if (approve) approvedBatches.add(batch)
+        for (s in servers()) send(s.pk!!, mapOf("type" to "batch_decision", "batch" to batch, "approve" to approve))
+        ui.update { u -> u.copy(batchAsks = u.batchAsks.filter { it.batch != batch }) }
+        listener?.onBatchGone(batch)
+        note(if (approve) "You approved: ${b.text}" else "You declined: ${b.text}", if (approve) "approved" else "denied")
+    }
+
+    /** Ask a server what undoing this site would do; the answer opens the confirm sheet. */
+    fun askUndoSite(site: Site) {
+        val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        send(target.pk!!, mapOf("type" to "site_summary", "pk" to site.pk))
+    }
+
+    fun confirmUndoSite() {
+        val sum = ui.value.summary ?: return
+        val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        myUndos["site:${sum.pk}"] = System.currentTimeMillis()
+        send(target.pk!!, mapOf("type" to "undo_site", "pk" to sum.pk))
+        appByPk(sum.pk)?.let { apps.edit().remove(it.pkg).apply() }
+        justRemoved[sum.pk] = System.currentTimeMillis()
+        ui.update { u -> u.copy(summary = null, sites = u.sites.filter { it.pk != sum.pk && it.parent != sum.pk }) }
+        note("Undoing everything ${sum.origin} did…")
+    }
+
+    fun closeSummary() = ui.update { it.copy(summary = null) }
+
+    fun repost(d: Deleted) {
+        val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        myUndos["repost:${d.id}"] = System.currentTimeMillis()
+        justRemoved[d.id] = System.currentTimeMillis()
+        send(target.pk!!, mapOf("type" to "repost", "id" to d.id))
+        ui.update { u -> u.copy(deleted = u.deleted.filter { it.id != d.id }) }
+        note("Posting a deleted ${d.kind} again")
+    }
+
     /** Delete a version dated in the future, by its id. You asked, so this phone co-signs it without asking again. */
     fun removeFuture(f: Future) {
         val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
         myUndos[f.id] = System.currentTimeMillis()
+        justRemoved[f.id] = System.currentTimeMillis()
         send(target.pk!!, mapOf("type" to "remove_future", "id" to f.id))
         ui.update { it.copy(future = it.future.filter { x -> x.id != f.id }) }
         note("Removing a version dated in the future")
@@ -448,7 +522,8 @@ class Phone(private val context: Context) {
             val z = FrostNative.sign(group, m.idx, m.share, c["nonces"] as String, ev.id, commits)
             val signed = ev.copy(sig = FrostNative.aggregate(group, ev.id, commits, Json.stringify(listOf(listOf(m.idx, z), listOf(srv.idx, z2)))))
             send(srv.pk!!, mapOf("type" to "phone_signed", "event" to signed.toMap(), "grant" to g.pk, "approved" to approved))
-            note("Signed ${Describe.kind(ev.kind)} for ${g.label}", if (approved) "approved" else "auto")
+            // Relay logins happen once per relay an app connects to: not worth a line each.
+            if (ev.kind != 22242 || approved) note("Signed ${Describe.kind(ev.kind)} for ${g.label}", if (approved) "approved" else "auto")
             return signed
         }
         throw IllegalStateException("Couldn't reach your servers (${tried.joinToString("; ")})")
@@ -534,23 +609,56 @@ class Phone(private val context: Context) {
         when (type) {
             "sign_req" -> onSignReq(msg, from, m)
             "ecdh_req" -> onEcdhReq(msg, from, m)
-            "state" -> onState(msg)
+            "state" -> onState(msg, from.pk!!)
             "connected" -> onConnected(msg)
             "cosign_res", "ecdh_res" -> (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }
+            "logged" -> (msg["entry"] as? Map<*, *>)?.let { signedLog.appendText(Json.stringify(it) + "\n") }
+            "deleting" -> {
+                val d = Deleting(msg["batch"] as? String ?: return, msg["by"] as? String ?: "a site", (msg["count"] as? Long)?.toInt() ?: 1, msg["until"] as? Long ?: 0)
+                ui.update { u -> u.copy(deleting = u.deleting.filter { it.batch != d.batch } + d) }
+                listener?.onDeleting(d)
+            }
+            "deleting_done" -> (msg["batch"] as? String)?.let { b -> ui.update { u -> u.copy(deleting = u.deleting.filter { it.batch != b }) }; listener?.onDeletingGone(b) }
+            "approve_batch" -> {
+                val b = BatchAsk(msg["batch"] as? String ?: return, msg["text"] as? String ?: "Delete several events", msg["by"] as? String ?: "a site", msg["expires"] as? Long ?: (System.currentTimeMillis() + 55_000))
+                if (ui.value.batchAsks.none { it.batch == b.batch } && b.batch !in decidedBatches) { ui.update { it.copy(batchAsks = it.batchAsks + b) }; listener?.onBatch(b) }
+            }
+            "site_summary" -> {
+                val counts = (msg["counts"] as? Map<*, *>)?.entries?.associate { (k, v) -> k.toString() to ((v as? Long)?.toInt() ?: 0) } ?: emptyMap()
+                ui.update { it.copy(summary = SiteSummary(msg["pk"] as? String ?: return, msg["origin"] as? String ?: "that site", (msg["total"] as? Long)?.toInt() ?: 0,
+                    counts, (msg["lists"] as? List<*>)?.map { it.toString() } ?: emptyList(), (msg["deletable"] as? Long)?.toInt() ?: 0)) }
+            }
+            "undone_site" -> note("Undid ${msg["origin"]}: ${msg["restored"]} list(s) put back, ${msg["deleted"]} event(s) deleted (copies kept)", "approved")
             "signed" -> Event.fromMap(msg["event"])?.let { lists.record(it, m.group.groupX) }
             "undo_failed" -> note("Couldn't undo: ${msg["reason"]}", "denied")
         }
         status()
     }
 
-    private fun onState(msg: Map<*, *>) {
+    private class ServerState(val sites: List<Site>, val changes: List<Change>, val deleted: List<Deleted>, val future: List<Future>)
+    /** The newest state from each server. One that hasn't heard of something yet mustn't hide
+     *  what the other has, so the phone shows them together. */
+    private val states = ConcurrentHashMap<String, ServerState>()
+
+    private fun onState(msg: Map<*, *>, fromPk: String) {
         val sites = (msg["sites"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
             Site(it["pk"] as? String ?: return@let null, it["origin"] as? String ?: "a site", it["added"] as? Long ?: 0, it["lastUsed"] as? Long ?: 0,
                 it["parent"] as? String, it["via"] as? String) } } ?: return
         val changes = (msg["changes"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
             Change(it["id"] as? String ?: return@let null, it["text"] as? String ?: "", it["by"] as? String ?: "", it["at"] as? Long ?: 0, it["held"] == true, it["undone"] == true) } } ?: emptyList()
+        val deleted = (msg["deleted"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
+            Deleted(it["id"] as? String ?: return@let null, it["kind"] as? String ?: "event", it["at"] as? Long ?: 0, it["text"] as? String ?: "") } } ?: emptyList()
         val future = (msg["future"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let { Future(it["id"] as? String ?: return@let null, it["text"] as? String ?: "") } } ?: emptyList()
-        ui.update { it.copy(sites = sites.sortedByDescending { s -> s.lastUsed }, changes = changes, future = future) }
+        states[fromPk] = ServerState(sites, changes, deleted, future)
+        val all = states.values
+        val mergedSites = all.flatMap { it.sites }.groupBy { it.pk }.values.map { same -> same.maxBy { it.lastUsed } }
+        val mergedChanges = all.flatMap { it.changes }.groupBy { it.id }.values.map { same -> same.first().copy(undone = same.any { it.undone }) }
+        ui.update { it.copy(
+            sites = mergedSites.filter { s -> !removedHere(s.pk) && !(s.parent != null && removedHere(s.parent)) }.sortedByDescending { s -> s.lastUsed },
+            changes = mergedChanges.sortedByDescending { c -> c.at },
+            deleted = all.flatMap { s -> s.deleted }.distinctBy { d -> d.id }.filter { d -> !removedHere(d.id) }.sortedByDescending { d -> d.at }.take(20),
+            future = all.flatMap { s -> s.future }.distinctBy { f -> f.id }.filter { f -> !removedHere(f.id) },
+        ) }
     }
 
     private fun onSignReq(msg: Map<*, *>, from: Member, m: Membership) {
@@ -573,7 +681,10 @@ class Phone(private val context: Context) {
         val hold = msg["hold"] as? String ?: Policy.hold(ev, lists.latest(Policy.keyOf(ev)))
         val undo = msg["undo"] as? String
         val ask = Ask(id, from.pk!!, from.name, app, ev, digest, commit, hold ?: "", System.currentTimeMillis() + 55_000, if (msg["frost"] == 2L) 2 else 1)
-        val myUndo = undo != null && System.currentTimeMillis() - (myUndos[undo] ?: 0) < 120_000
+        // Something you asked for on this phone (Undo, Post again, undoing a site), or a
+        // batch of deletions you already approved: signed without asking again.
+        val myUndo = undo != null && System.currentTimeMillis() - (myUndos[undo] ?: 0) < 600_000 ||
+            (msg["batch"] as? String)?.let { it in approvedBatches } == true
         if (hold == null || myUndo) {
             sign(ask, m, reply)
             if (myUndo) note("Undone", "approved")

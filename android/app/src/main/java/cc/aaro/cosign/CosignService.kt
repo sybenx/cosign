@@ -98,6 +98,49 @@ class CosignService : Service(), Phone.Listener {
 
     override fun onAskGone(id: String) = NotificationManagerCompat.from(this).cancel(id.hashCode())
 
+    private fun action(key: String, value: String, approve: Boolean = false) = PendingIntent.getBroadcast(
+        this, (key + value + approve).hashCode(),
+        Intent(this, DecisionReceiver::class.java).putExtra(key, value).putExtra("approve", approve),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    /** A deletion in its few seconds: Undo stops it. */
+    override fun onDeleting(d: Deleting) {
+        if (!canNotify()) return
+        val what = "Deleting ${d.count} event${if (d.count == 1) "" else "s"} for ${d.by}"
+        val n = NotificationCompat.Builder(this, ASKS)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle(what)
+            .setContentText("Nostr can't take a deletion back. Cosign keeps a copy.")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOnlyAlertOnce(true)
+            .setTimeoutAfter((d.until - System.currentTimeMillis()).coerceAtLeast(1000))
+            .setContentIntent(openApp())
+            .addAction(NotificationCompat.Action.Builder(0, "Undo", action("cancel", d.batch)).build())
+            .build()
+        NotificationManagerCompat.from(this).notify(("del" + d.batch).hashCode(), n)
+    }
+    override fun onDeletingGone(batch: String) = NotificationManagerCompat.from(this).cancel(("del" + batch).hashCode())
+
+    /** One approval for a batch of deletions. */
+    override fun onBatch(b: BatchAsk) {
+        if (!canNotify()) return
+        val n = NotificationCompat.Builder(this, ASKS)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("Approve?")
+            .setContentText(b.text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("${b.text}\nNostr can't take a deletion back. Cosign keeps copies."))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setTimeoutAfter((b.expiresAt - System.currentTimeMillis()).coerceAtLeast(1000))
+            .setAutoCancel(true)
+            .setContentIntent(openApp())
+            .addAction(NotificationCompat.Action.Builder(0, "Deny", action("batch", b.batch, false)).build())
+            .addAction(NotificationCompat.Action.Builder(0, "Approve", action("batch", b.batch, true)).setAuthenticationRequired(true).build())
+            .build()
+        NotificationManagerCompat.from(this).notify(("batch" + b.batch).hashCode(), n)
+    }
+    override fun onBatchGone(batch: String) = NotificationManagerCompat.from(this).cancel(("batch" + batch).hashCode())
+
     private fun canNotify() = Build.VERSION.SDK_INT < 33 ||
         ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
 

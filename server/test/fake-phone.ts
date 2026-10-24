@@ -55,6 +55,12 @@ function handle(msg: any, from: string) {
     reply({ ok: true, commit: mine.commit, z });
   } else if (msg.type === 'ecdh_req') {
     send(from, { type: 'ecdh_res', id: msg.id, ok: true, point: F.ecdhPartial({ idx: st.idx, secret: st.share, participants: msg.participants, peerX: msg.peerX }) });
+  } else if (msg.type === 'deleting') {
+    say(`deleting ${msg.count} for ${msg.by}`);
+    if (process.env.CANCEL_DELETES) { send(from, { type: 'cancel_batch', batch: msg.batch }); say('UNDO tapped'); }
+  } else if (msg.type === 'approve_batch') {
+    say(`${deny ? 'DECLINED' : 'APPROVED'} batch: ${msg.text}`);
+    send(from, { type: 'batch_decision', batch: msg.batch, approve: !deny });
   } else if (msg.type === 'state') {
     say(`state: ${msg.sites.length} site(s), ${msg.changes.length} change(s)`);
   }

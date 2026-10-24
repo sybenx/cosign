@@ -10,14 +10,15 @@ import { finalizeEvent, verifyEvent } from 'nostr-tools/pure';
 import { decode } from 'nostr-tools/nip19';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import { SignerClient, newSession } from '../src/client.ts';
-import { Pool, sealTo, openFrom, KIND_MEMBER } from '../../server/net.ts';
+import { Pool, sealTo, openFrom, Parts, KIND_MEMBER } from '../../server/net.ts';
 
 const phone = JSON.parse(readFileSync('/tmp/cosign-fake-phone.json', 'utf8'));
 const servers = phone.group.members.filter((m: any) => m.role === 'server');
 const stateB = JSON.parse(readFileSync(new URL('../../server/test-data/b/state.json', import.meta.url), 'utf8'));
 const groupSk = decode(process.env.NSEC!).data as Uint8Array;
-let latestState: any = null;
-const ctl = new Pool(phone.group.relays, e => { const m = openFrom(phone.sk, e); if (m?.type === 'state') latestState = m; });
+const states = new Map<string, any>(); // the newest from each server: the phone shows them together
+const parts = new Parts(); // big state messages come in parts
+const ctl = new Pool(phone.group.relays, e => { const m = parts.take(e.pubkey, openFrom(phone.sk, e)); if (m?.type === 'state') states.set(e.pubkey, m); });
 ctl.start([{ kinds: [KIND_MEMBER], '#p': [phone.group.members.find((m: any) => m.idx === phone.idx).pk] }]);
 const asPhone = (msg: object) => { for (const s of servers) ctl.publish(sealTo(phone.sk, s.pk, msg)); };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -45,12 +46,12 @@ for (const s of servers) if (s.idx !== stateB.self.idx) ctl.publish(sealTo(state
 await sleep(3000);
 asPhone({ type: 'state_req' });
 await sleep(2500);
-const flagged = latestState?.future?.find((f: any) => f.id === leaked.id);
+const flagged = [...states.values()].flatMap(st => st.future ?? []).find((f: any) => f.id === leaked.id);
 check('the server finds it and tells the phone', !!flagged, flagged?.text);
 
 asPhone({ type: 'remove_future', id: leaked.id });
 let gone = false;
-for (let i = 0; i < 8 && !gone; i++) { await sleep(2500); asPhone({ type: 'state_req' }); await sleep(1000); gone = !latestState?.future?.some((f: any) => f.id === leaked.id); }
+for (let i = 0; i < 8 && !gone; i++) { await sleep(2500); asPhone({ type: 'state_req' }); await sleep(1000); gone = ![...states.values()].some(st => st.future?.some((f: any) => f.id === leaked.id)); }
 check('one tap removes it (a deletion by its id)', gone);
 
 site.close();

@@ -10,16 +10,17 @@ import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { BunkerSigner, createNostrConnectURI } from 'nostr-tools/nip46';
 import * as nip44 from 'nostr-tools/nip44';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
-import { Pool, sealTo, openFrom, KIND_MEMBER } from '../../server/net.ts';
+import { Pool, sealTo, openFrom, Parts, KIND_MEMBER } from '../../server/net.ts';
 
 const phone = JSON.parse(readFileSync('/tmp/cosign-fake-phone.json', 'utf8'));
 const servers = phone.group.members.filter((m: any) => m.role === 'server');
 const siteRelay = process.argv[2] ?? 'wss://relay.ditto.pub';
 
 let latestState: any = null, connected: any = null;
+const parts = new Parts(); // big state messages come in parts
 const ctl = new Pool(phone.group.relays, e => {
   if (e.kind !== KIND_MEMBER) return;
-  const m = openFrom(phone.sk, e);
+  const m = parts.take(e.pubkey, openFrom(phone.sk, e));
   if (m?.type === 'state') latestState = m;
   if (m?.type === 'connected') connected = m;
 });

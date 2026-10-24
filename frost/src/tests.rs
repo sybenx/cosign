@@ -77,3 +77,39 @@ fn ecdh_two_parts_make_the_shared_secret() {
     let expect = (ProjectivePoint::GENERATOR * (group_secret * peer_secret)).to_affine().to_encoded_point(false);
     assert_eq!(shared, hex::encode(expect.x().unwrap()));
 }
+
+#[test]
+fn repair_makes_a_new_member_that_signs() {
+    let (group, secrets) = group_of(&vectors());
+    let sec = |i: u16| secrets.iter().find(|s| s.0 == i).unwrap().1.clone();
+    // Helpers 1 and 3 make member 4's share.
+    let d1 = repair_step1(&group, 1, &sec(1), &[1, 3], 4).unwrap();
+    let d3 = repair_step1(&group, 3, &sec(3), &[1, 3], 4).unwrap();
+    let get = |d: &Vec<(u16, String)>, i: u16| d.iter().find(|x| x.0 == i).unwrap().1.clone();
+    let sigma1 = repair_step2(&[get(&d1, 1), get(&d3, 1)]).unwrap();
+    let sigma3 = repair_step2(&[get(&d1, 3), get(&d3, 3)]).unwrap();
+    let s4 = repair_step3(&group, &[sigma1, sigma3], 4).unwrap();
+    assert_eq!(share_pub(&s4).unwrap(), share_pub_at(&group, 4).unwrap());
+    // Neither helper's sigma is the share.
+    assert_ne!(s4, get(&d1, 1));
+    // And it signs with an old member.
+    let mut g = group.clone();
+    g.members.push(Member { idx: 4, share_pub: share_pub(&s4).unwrap() });
+    let msg = hex::encode([7u8; 32]);
+    let c4 = commit(&g, 4, &s4).unwrap();
+    let c2 = commit(&g, 2, &sec(2)).unwrap();
+    let commits = vec![c4.commit.clone(), c2.commit.clone()];
+    let z4 = sign(&g, 4, &s4, &c4.nonces, &msg, &commits).unwrap();
+    let z2 = sign(&g, 2, &sec(2), &c2.nonces, &msg, &commits).unwrap();
+    let sig = aggregate(&g, &msg, &commits, &[(4, z4), (2, z2)]).unwrap();
+    assert!(bip340_ok(&g.group_x, &msg, &sig));
+}
+
+#[test]
+fn a_wrong_sigma_is_caught() {
+    let (group, secrets) = group_of(&vectors());
+    let sec = |i: u16| secrets.iter().find(|s| s.0 == i).unwrap().1.clone();
+    let d1 = repair_step1(&group, 1, &sec(1), &[1, 3], 4).unwrap();
+    let sigma1 = repair_step2(&[d1[0].1.clone()]).unwrap(); // missing the other helper's delta
+    assert!(repair_step3(&group, &[sigma1, hex::encode([1u8; 32])], 4).is_err());
+}

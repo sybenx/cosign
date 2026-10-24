@@ -15,7 +15,18 @@ export function ecdhCombine(parts: string[]): string;
 
 export function ecdhPartial(idx: number, secret: string, participants: Uint16Array, peer_x: string): string;
 
+/**
+ * Returns `[[helperIdx, delta], …]`.
+ */
+export function repairStep1(group_json: string, idx: number, secret: string, helpers: Uint16Array, participant: number): string;
+
+export function repairStep2(deltas: string[]): string;
+
+export function repairStep3(group_json: string, sigmas: string[], participant: number): string;
+
 export function sharePub(secret: string): string;
+
+export function sharePubAt(group_json: string, k: number): string;
 
 export function sign(group_json: string, idx: number, secret: string, nonces: string, msg: string, commits_json: string): string;
 

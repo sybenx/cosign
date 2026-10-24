@@ -7,12 +7,13 @@ import { readFileSync } from 'node:fs';
 import { getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
 import { SignerClient, newSession } from '../src/client.ts';
-import { Pool, sealTo, openFrom, KIND_MEMBER } from '../../server/net.ts';
+import { Pool, sealTo, openFrom, Parts, KIND_MEMBER } from '../../server/net.ts';
 
 const phone = JSON.parse(readFileSync('/tmp/cosign-fake-phone.json', 'utf8'));
 const servers = phone.group.members.filter((m: any) => m.role === 'server');
 let latestState: any = null;
-const ctl = new Pool(phone.group.relays, e => { const m = openFrom(phone.sk, e); if (m?.type === 'state') latestState = m; });
+const parts = new Parts(); // big state messages come in parts
+const ctl = new Pool(phone.group.relays, e => { const m = parts.take(e.pubkey, openFrom(phone.sk, e)); if (m?.type === 'state') latestState = m; });
 ctl.start([{ kinds: [KIND_MEMBER], '#p': [phone.group.members.find((m: any) => m.idx === phone.idx).pk] }]);
 const asPhone = (msg: object) => { for (const s of servers) ctl.publish(sealTo(phone.sk, s.pk, msg)); };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));

@@ -92,6 +92,17 @@ function ask(toPk: string, msg: any, ms: number): Promise<any> {
   });
 }
 
+/** Stop asking: another partner already answered. */
+function cancelAsk(id: string) {
+  const p = pending.get(id);
+  if (!p) return;
+  clearTimeout(p.timer); if (p.again) clearInterval(p.again);
+  pending.delete(id);
+  p.resolve({ ok: false, reason: 'not needed' });
+}
+
+interface Attempt { m: Member; signed?: Event; reason?: string }
+
 /** The phone is asking you about this one: give it the full minute. */
 function waitLonger(id: string) {
   const p = pending.get(id);
@@ -158,6 +169,15 @@ async function onMember(msg: any, fromPk: string) {
     case 'cosign_req': return answerOnce(from, msg.id, () => onCosignReq(msg, from));
     case 'phone_signed': { if (fromPhone) onPhoneSigned(msg); return; }
     case 'app_grant': { if (fromPhone) grantApp(msg); return; }
+    case 'cancel_batch': { // Undo on a deletion in its 10 s
+      const b = fromPhone ? batchById(String(msg.batch)) : undefined;
+      if (b) { b.cancelled = true; clearTimeout(b.timer); const site = [...batches].find(([, x]) => x === b)?.[0]; if (site) void closeBatch(site, b); }
+      return;
+    }
+    case 'repost': { if (fromPhone) repost(String(msg.id)).catch(err => toPhone({ type: 'undo_failed', id: msg.id, reason: err.message })); return; }
+    case 'site_summary': { if (fromPhone) toPhone({ type: 'site_summary', pk: msg.pk, ...siteSummary(String(msg.pk)) }); return; }
+    case 'undo_site': { if (fromPhone) undoSite(String(msg.pk)).catch(err => { note(`couldn't undo ${msg.pk}: ${err.message}`); toPhone({ type: 'undo_failed', id: msg.pk, reason: err.message }); }); return; }
+    case 'batch_decision': { if (fromPhone) decisions.get(String(msg.batch))?.(msg.approve === true); return; }
     case 'remove_future': { if (fromPhone) removeFuture(String(msg.id)).catch(err => { note(`couldn't remove it: ${err.message}`); toPhone({ type: 'undo_failed', id: msg.id, reason: err.message }); }); return; }
     case 'ecdh_req': return answerOnce(from, msg.id, () => onEcdhReq(msg, from));
 
@@ -358,33 +378,64 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?
   const prev = archive.latest(keyOf(ev));
   const judged = assess(ev, prev);
   if (judged.refuse) { note(`refused ${kindName(ev.kind)} for ${by}: ${judged.refuse}`); throw new Error(`refused: ${judged.refuse}`); }
-  const hold = judged.hold;
+  // A deletion can't be taken back: keep what it deletes, give you a moment to stop it,
+  // and ask once for a batch of them.
+  let batch: string | undefined;
+  if (ev.kind === 5 && !opts.undo) {
+    await saveTargets(ev);
+    const touchesList = ev.tags.some((t: string[]) => t[0] === 'a' || (t[0] === 'k' && ARCHIVED.has(Number(t[1]))));
+    const b = await deletionWindow(opts.site || by, by, ev, touchesList);
+    if (b.approved) batch = b.id;
+  }
+  const hold = judged.hold; // an approved batch still goes to the phone, which won't ask twice
   const order = partners(hold ? [phone()] : [phone(), other()]);
   const tried: string[] = [];
+  const done = (r: Attempt) => {
+    note(`signed ${kindName(ev.kind)} for ${by} with ${r.m.name}${hold && !opts.undo ? ' — you approved' : ''}`);
+    keep(r.signed!, judged.change ?? hold, by, !!hold && !opts.undo, opts.site ?? '', prev);
+    return r.signed!;
+  };
 
-  for (const [i, m] of order.entries()) {
+  /** One round with one partner: its commitment and partial, then ours, then the signature. */
+  async function attempt(m: Member, wait: number, reqId = rid()): Promise<Attempt> {
     const participants = [me.idx, m.idx].sort((a, b) => a - b);
-    const isPhone = m.role === 'phone';
-    const asking = isPhone && !!hold && !opts.undo;
-    const wait = isPhone ? phoneWait(asking, order.slice(i + 1)) : online(m) ? 8_000 : 3_000; // a silent server gets a last quick try
-    if (isPhone && (asking || (wait > 3_000 && !online(m)))) pushPhone();
-    const mine = Sig.commit(S.group, me.idx, S.self.share); // fresh every attempt; ours are used only once we have a valid partner
-    const res = await ask(m.pk!, { type: 'sign_req', id: rid(), event: ev, msg: id, participants, commit: mine.commit, frost: 2, app: by, hold: hold ?? null, undo: opts.undo ?? null }, wait);
-    if (!res.ok) {
-      tried.push(`${m.name}: ${res.reason}`);
-      if (isPhone && String(res.reason).includes('declined')) break; // your no stands: nobody else gets asked
-      continue;
-    }
+    const mine = Sig.commit(S.group, me.idx, S.self.share); // fresh every round; used only once we have a valid partner
+    const res = await ask(m.pk!, { type: 'sign_req', id: reqId, event: ev, msg: id, participants, commit: mine.commit, frost: 2, app: by, hold: hold ?? null, undo: opts.undo ?? null, batch: batch ?? null }, wait);
+    if (!res.ok) return { m, reason: String(res.reason) };
     const commits = [mine.commit, res.commit];
     // Whichever math the partner used (it may not be updated yet), finish the round in it.
     const scheme = res.commit?.idx === m.idx ? Sig.schemeOf(S.group, id, commits, m.idx, res.z) : null;
-    if (!scheme) { tried.push(`${m.name}: bad partial`); continue; }
+    if (!scheme) return { m, reason: 'bad partial' };
     if (process.env.DEBUG) console.log(`[${me.name}] ${m.name} signed with ${scheme === 2 ? 'FROST (RFC 9591)' : 'the earlier math'}`);
     const z = Sig.partial(scheme, S.group, me.idx, S.self.share, mine.nonces, id, commits);
-    const signed = { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [[me.idx, z], [m.idx, res.z]]) } as Event;
-    note(`signed ${kindName(ev.kind)} for ${by} with ${m.name}${hold && !opts.undo ? ' — you approved' : ''}`);
-    keep(signed, judged.change ?? hold, by, !!hold && !opts.undo, opts.site ?? '', prev);
-    return signed;
+    return { m, signed: { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [[me.idx, z], [m.idx, res.z]]) } as Event };
+  }
+
+  // Everyday, with your phone and your other server both awake: ask both at once, each in
+  // a round of its own. The first good answer signs; the other round is dropped, its
+  // nonces never used. Only for events every member judges the same way whatever lists
+  // it has seen (notes, reactions, DMs…): a list change goes to the phone first, since
+  // its own copy of your lists is what catches a server that has the wrong one. Nothing
+  // held, undone or batched races either.
+  const sameForAll = !ARCHIVED.has(ev.kind) && ev.kind !== 5 && ev.kind !== 62;
+  if (sameForAll && !hold && !opts.undo && !batch && order.length >= 2 && online(order[0]) && online(order[1])) {
+    const ids = [rid(), rid()];
+    const runs = order.slice(0, 2).map((m, i) => attempt(m, m.role === 'phone' ? 10_000 : 8_000, ids[i]));
+    const first = await new Promise<Attempt | null>(resolve => {
+      let left = runs.length;
+      for (const r of runs) void r.then(a => { if (a.signed) resolve(a); else { tried.push(`${a.m.name}: ${a.reason}`); if (--left === 0) resolve(null); } });
+    });
+    ids.forEach(cancelAsk);
+    if (first) { if (process.env.DEBUG) console.log(`[${me.name}] ${first.m.name} answered first`); return done(first); }
+  } else for (const [i, m] of order.entries()) {
+    const isPhone = m.role === 'phone';
+    const asking = isPhone && !!hold && !opts.undo && !batch; // an approved batch: the phone already said yes
+    const wait = isPhone ? phoneWait(asking, order.slice(i + 1)) : online(m) ? 8_000 : 3_000; // a silent server gets a last quick try
+    if (isPhone && (asking || (wait > 3_000 && !online(m)))) pushPhone();
+    const a = await attempt(m, wait);
+    if (a.signed) return done(a);
+    tried.push(`${m.name}: ${a.reason}`);
+    if (isPhone && a.reason!.includes('declined')) break; // your no stands: nobody else gets asked
   }
   const declined = tried.some(t => t.includes('declined'));
   note(`did not sign ${kindName(ev.kind)} for ${by}: ${tried.join('; ') || 'nobody to ask'}`);
@@ -393,6 +444,70 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?
     : tried.length && tried.every(t => t.endsWith('no answer'))
       ? (other().pk ? 'Neither your phone nor your backup server answered. Is Cosign running on your phone?' : 'Your phone didn’t answer. Is Cosign running on it?')
     : `Couldn't sign: ${tried.join('; ') || 'nobody to ask'}`);
+}
+
+// --- Deletions ---------------------------------------------------------------------
+//
+// Nostr can't take a deletion back, so: keep a copy of what's being deleted (from the
+// history, or the relays), hold each site's deletions for 10 s with Undo on your phone,
+// and if together they delete 5 or more, or touch a list, ask once for all of them.
+
+const WINDOW = 10_000;
+interface Batch { id: string; by: string; requests: number; targets: number; held: boolean; cancelled: boolean;
+  until: number; done: Promise<{ id: string; approved: boolean }>; settle: (v: { id: string; approved: boolean } | Error) => void; timer?: NodeJS.Timeout }
+const batches = new Map<string, Batch>();
+const batchById = (id: string) => [...batches.values()].find(b => b.id === id);
+const decisions = new Map<string, (approve: boolean) => void>();
+
+async function saveTargets(ev: Ev) {
+  const ids = ev.tags.filter(t => t[0] === 'e').map(t => t[1]);
+  for (const t of ev.tags.filter(t => t[0] === 'a')) { const [k, , d] = t[1].split(':'); const e = archive.latest(Number(k) >= 30000 ? `${k}:${d ?? ''}` : k); if (e) history.save(e); }
+  const missing: string[] = [];
+  for (const id of ids) { const e = history.event(id); if (e) history.save(e); else missing.push(id); }
+  if (missing.length) {
+    const p = new SimplePool();
+    const relays = [...new Set([...S.group.relays, ...ourWriteRelays()].map(dial))];
+    try {
+      for (const e of await p.querySync(relays, { ids: missing }, { maxWait: 4000 })) if (e.pubkey === groupX && verifyEvent(e)) history.save(e);
+    } catch { /* keep what we have */ }
+    p.close(relays);
+  }
+  const copies = ids.map(id => history.savedCopy(id)).filter(Boolean);
+  if (copies.length) toOther({ type: 'saved', events: copies });
+}
+
+function deletionWindow(site: string, by: string, ev: Ev, held: boolean): Promise<{ id: string; approved: boolean }> {
+  let b = batches.get(site);
+  if (!b) {
+    let settle!: Batch['settle'];
+    const done = new Promise<{ id: string; approved: boolean }>((res, rej) => { settle = v => (v instanceof Error ? rej(v) : res(v)); });
+    b = { id: rid(), by, requests: 0, targets: 0, held: false, cancelled: false, until: Date.now() + WINDOW, done, settle };
+    batches.set(site, b);
+    const batch = b;
+    b.timer = setTimeout(() => void closeBatch(site, batch), WINDOW);
+  }
+  b.requests++;
+  b.targets += ev.tags.filter(t => t[0] === 'e' || t[0] === 'a').length;
+  b.held ||= held;
+  toPhone({ type: 'deleting', batch: b.id, by, count: b.targets, until: b.until });
+  return b.done;
+}
+
+async function closeBatch(site: string, b: Batch) {
+  if (batches.get(site) === b) batches.delete(site);
+  toPhone({ type: 'deleting_done', batch: b.id });
+  if (b.cancelled) return b.settle(new Error('You stopped this deletion on your phone.'));
+  if (b.targets < 5 && !b.held) return b.settle({ id: b.id, approved: false });
+  const text = `Delete ${b.targets} event${b.targets === 1 ? '' : 's'} for ${b.by}${b.held ? ', including one of your lists' : ''}`;
+  pushPhone();
+  const ok = await new Promise<boolean>(resolve => {
+    const t = setTimeout(() => { decisions.delete(b.id); resolve(false); }, 60_000);
+    decisions.set(b.id, approve => { clearTimeout(t); decisions.delete(b.id); resolve(approve); });
+    const askNow = () => { if (decisions.has(b.id)) toPhone({ type: 'approve_batch', batch: b.id, text, by: b.by, expires: Date.now() + 55_000 }); };
+    askNow(); setTimeout(askNow, 4000);
+  });
+  note(`${ok ? 'you approved' : 'you declined'}: ${text}`);
+  b.settle(ok ? { id: b.id, approved: true } : new Error('You declined this on your phone.'));
 }
 
 /** Who to ask, in order; anyone who's been silent goes last. */
@@ -561,6 +676,7 @@ function checkFuture() {
   for (const e of archive.future()) {
     if (flagged.has(e.id!)) continue;
     flagged.add(e.id!);
+    toOther({ type: 'sync', archive: [e] }); // so both servers warn the phone, not just this one
     note(`found your ${kindName(e.kind)} dated ${new Date(e.created_at * 1000).toISOString().slice(0, 10)} on relays: it blocks every change`);
   }
   if (archive.future().length) pushState();
@@ -577,11 +693,78 @@ async function removeFuture(id: string) {
   note(`removed the ${kindName(target.kind)} dated in the future`);
 }
 
+// --- Undo everything a site did ----------------------------------------------------
+//
+// From the history: put every list it changed back to the version before its first
+// change, and delete everything else it signed (one deletion per 500 events). The
+// copies stay in the history. Your phone confirmed it, so it co-signs without asking.
+
+const kept = (k: number) => !(k === 5 || k === 62 || (k >= 20000 && k < 30000) || k === 22242 || k === 27235 || k === 24242);
+/** Everything one grant did, with whatever it added under itself (the extension's websites). */
+function siteEntries(pk: string): Entry[] {
+  const pks = new Set([pk, ...(S.sites as Site[]).filter(c => c.parent === pk).map(c => c.pk)]);
+  return [...pks].flatMap(p => history.bySite(p));
+}
+
+function siteSummary(pk: string) {
+  const entries = siteEntries(pk);
+  const counts: Record<string, number> = {};
+  for (const e of entries) counts[kindName(e.event.kind)] = (counts[kindName(e.event.kind)] ?? 0) + 1;
+  const lists = [...new Set(entries.filter(e => ARCHIVED.has(e.event.kind)).map(e => kindName(e.event.kind)))];
+  const deletable = entries.filter(e => !ARCHIVED.has(e.event.kind) && kept(e.event.kind)).length;
+  return { origin: site(pk)?.origin ?? 'that site', total: entries.length, counts, lists, deletable };
+}
+
+async function undoSite(pk: string) {
+  const s = site(pk);
+  if (!s) throw new Error('no such site');
+  const entries = siteEntries(pk).sort((a, b) => a.at - b.at);
+  revoke(pk, 'to undo it');
+  const tag = `site:${pk}`;
+  let restored = 0, deleted = 0;
+  // Lists: back to the version before this site's first change to each one.
+  const firstByKey = new Map<string, Entry>();
+  for (const e of entries) if (ARCHIVED.has(e.event.kind) && !firstByKey.has(keyOf(e.event))) firstByKey.set(keyOf(e.event), e);
+  for (const [key, first] of firstByKey) {
+    const before = first.prev;
+    if (!before && first.event.kind === 0) continue; // there was no profile before it: nothing to go back to
+    const d = first.event.tags.find(t => t[0] === 'd');
+    const signed = await frostSign({ kind: first.event.kind, content: before?.content ?? '', tags: before?.tags ?? (d ? [d] : []), created_at: now() }, 'Undo on your phone', { undo: tag });
+    await publishOut(signed);
+    restored++;
+    void key;
+  }
+  // Everything else: deleted, 500 at a time.
+  const others = entries.filter(e => !ARCHIVED.has(e.event.kind) && kept(e.event.kind)).map(e => e.event);
+  for (let i = 0; i < others.length; i += 500) {
+    const chunk = others.slice(i, i + 500);
+    const kinds = [...new Set(chunk.map(e => String(e.kind)))];
+    const deletion = await frostSign({ kind: 5, content: `Undoing what ${s.origin} did`, created_at: now(), tags: [...chunk.map(e => ['e', e.id!]), ...kinds.map(k => ['k', k])] }, 'Undo on your phone', { undo: tag });
+    await publishOut(deletion);
+    deleted += chunk.length;
+  }
+  note(`undid ${s.origin}: ${restored} list${restored === 1 ? '' : 's'} put back, ${deleted} event${deleted === 1 ? '' : 's'} deleted (copies kept)`);
+  toPhone({ type: 'undone_site', pk, origin: s.origin, restored, deleted });
+  pushState();
+}
+
+/** Post a deleted event again, from its kept copy: same words, a new event (Nostr can't undelete). */
+async function repost(id: string) {
+  const copy = history.savedCopy(id);
+  if (!copy) throw new Error('no copy of that one');
+  const signed = await frostSign({ kind: copy.kind, content: copy.content, tags: copy.tags, created_at: now() }, 'Posted again on your phone', { undo: `repost:${id}` });
+  await publishOut(signed);
+  reposted.add(id);
+  note(`posted a deleted ${kindName(copy.kind)} again`);
+  pushState();
+}
+const reposted = new Set<string>();
+
+const ourWriteRelays = () => (archive.latest('10002')?.tags ?? []).filter(t => t[0] === 'r' && t[2] !== 'read').map(t => t[1]);
+
 /** Your relays: the write relays in your archived relay list, plus the group's. */
 async function publishOut(e: Event) {
-  const list = archive.latest('10002');
-  const mine = (list?.tags ?? []).filter(t => t[0] === 'r' && t[2] !== 'read').map(t => t[1]);
-  const targets = [...new Set([...mine, ...S.group.relays].map(dial))];
+  const targets = [...new Set([...ourWriteRelays(), ...S.group.relays].map(dial))];
   const p = new SimplePool();
   await Promise.allSettled(p.publish(targets, e as any));
   p.close(targets);
@@ -620,6 +803,9 @@ function pushState() {
     type: 'state',
     sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: siteName(s.origin), added: s.added, lastUsed: s.lastUsed, parent: s.parent ?? null, via: s.via ?? null })),
     changes: (S.changes as Change[]).slice(0, 30),
+    // Deleted, with a copy kept: the newest 20, for "Post again".
+    deleted: history.allSaved().filter(e => !ARCHIVED.has(e.kind) && !reposted.has(e.id!)).sort((a, b) => b.created_at - a.created_at).slice(0, 20)
+      .map(e => ({ id: e.id, kind: kindName(e.kind), at: e.created_at, text: e.content.slice(0, 140) })),
     future: archive.future().map(e => ({ id: e.id, kind: e.kind, at: e.created_at, text: `Your ${kindName(e.kind)} has a version dated ${new Date(e.created_at * 1000).toISOString().slice(0, 10)}. On relays that took it, it blocks every change you make.` })),
   });
 }

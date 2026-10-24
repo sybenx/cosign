@@ -5,7 +5,11 @@ export const aggregate: (a: number, b: number, c: number, d: number, e: number, 
 export const commit: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const ecdhCombine: (a: number, b: number) => [number, number, number, number];
 export const ecdhPartial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const repairStep1: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+export const repairStep2: (a: number, b: number) => [number, number, number, number];
+export const repairStep3: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const sharePub: (a: number, b: number) => [number, number, number, number];
+export const sharePubAt: (a: number, b: number, c: number) => [number, number, number, number];
 export const sign: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number, number];
 export const verifyPartial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const __wbindgen_malloc: (a: number, b: number) => number;

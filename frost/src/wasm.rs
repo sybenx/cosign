@@ -40,3 +40,20 @@ pub fn ecdh_partial(idx: u16, secret: &str, participants: Vec<u16>, peer_x: &str
 
 #[wasm_bindgen(js_name = ecdhCombine)]
 pub fn ecdh_combine(parts: Vec<String>) -> Result<String, JsError> { js(super::ecdh_combine(&parts)) }
+
+#[wasm_bindgen(js_name = sharePubAt)]
+pub fn share_pub_at(group_json: &str, k: u16) -> Result<String, JsError> { js(super::share_pub_at(&group(group_json)?, k)) }
+
+/// Returns `[[helperIdx, delta], …]`.
+#[wasm_bindgen(js_name = repairStep1)]
+pub fn repair_step1(group_json: &str, idx: u16, secret: &str, helpers: Vec<u16>, participant: u16) -> Result<String, JsError> {
+    Ok(serde_json::to_string(&js(super::repair_step1(&group(group_json)?, idx, secret, &helpers, participant))?).unwrap())
+}
+
+#[wasm_bindgen(js_name = repairStep2)]
+pub fn repair_step2(deltas: Vec<String>) -> Result<String, JsError> { js(super::repair_step2(&deltas)) }
+
+#[wasm_bindgen(js_name = repairStep3)]
+pub fn repair_step3(group_json: &str, sigmas: Vec<String>, participant: u16) -> Result<String, JsError> {
+    js(super::repair_step3(&group(group_json)?, &sigmas, participant))
+}

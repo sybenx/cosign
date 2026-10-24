@@ -172,6 +172,61 @@ pub fn aggregate(group: &Group, msg: &str, commits: &[Commit], partials: &[(u16,
     Ok(hex::encode(sig.serialize().map_err(err("signature"))?))
 }
 
+// --- Adding a device: repair (RTS, frost-core's `repairable`) ------------------------
+//
+// Two members make a new member's share at a fresh index without either learning it:
+// each splits its Lagrange-weighted part of f(k) into random deltas (step 1), sends one
+// to the other helper, adds what it holds into a sigma (step 2), and seals the sigma to
+// the new device, which adds them (step 3) and checks the result against the group.
+
+/// The group polynomial's public coefficients, rebuilt from the group key and one member's
+/// share point. Exact for a 2-of-N group: f(x) = a0 + a1·x, so a1·G = (S_i − Y) / i.
+fn vss_commitment(group: &Group) -> R<frost::keys::VerifiableSecretSharingCommitment> {
+    if group.threshold != 2 { return Err(Error("repair needs a 2-of-N group".into())); }
+    let x: [u8; 32] = bytes(&group.group_x, "groupX")?;
+    let y = point(&[&[0x02u8][..], &x[..]].concat(), "groupX")?;
+    let m = group.members.first().ok_or(Error("no members".into()))?;
+    let si = point(&hex::decode(&m.share_pub).map_err(err("sharePub"))?, "sharePub")?;
+    let inv = Option::<Scalar>::from(Scalar::from(m.idx as u64).invert()).ok_or(Error("bad index".into()))?;
+    let a1 = (si - y) * inv;
+    let enc = |p: ProjectivePoint| p.to_affine().to_encoded_point(true).as_bytes().to_vec();
+    frost::keys::VerifiableSecretSharingCommitment::deserialize(vec![enc(y), enc(a1)]).map_err(err("commitment"))
+}
+
+fn secret_share(group: &Group, idx: u16, secret: &str) -> R<frost::keys::SecretShare> {
+    let s: [u8; 32] = bytes(secret, "share")?;
+    Ok(frost::keys::SecretShare::new(id(idx)?, SigningShare::deserialize(&s).map_err(err("share"))?, vss_commitment(group)?))
+}
+
+/// The share point index `k` will have: the group's commitment evaluated at k.
+pub fn share_pub_at(group: &Group, k: u16) -> R<String> {
+    let c = vss_commitment(group)?;
+    let vs = VerifyingShare::from_commitment(id(k)?, &c);
+    Ok(hex::encode(vs.serialize().map_err(err("share point"))?))
+}
+
+/// Step 1, by each helper: its deltas, one per helper (keep yours, send the other's).
+pub fn repair_step1(group: &Group, idx: u16, secret: &str, helpers: &[u16], participant: u16) -> R<Vec<(u16, String)>> {
+    let ids = helpers.iter().map(|h| id(*h)).collect::<R<Vec<_>>>()?;
+    let share = secret_share(group, idx, secret)?;
+    let deltas = frost::keys::repairable::repair_share_step_1::<Suite, OsRng>(&ids, &share, &mut OsRng, id(participant)?).map_err(err("repair"))?;
+    helpers.iter().map(|h| Ok((*h, hex::encode(deltas.get(&id(*h)?).ok_or(Error("delta missing".into()))?.to_bytes())))).collect()
+}
+
+/// Step 2, by each helper: its sigma, from the deltas meant for it (its own and the other's).
+pub fn repair_step2(deltas: &[String]) -> R<String> {
+    let d = deltas.iter().map(|h| scalar(h, "delta")).collect::<R<Vec<_>>>()?;
+    Ok(hex::encode(frost::keys::repairable::repair_share_step_2(&d).to_bytes()))
+}
+
+/// Step 3, by the new device: its share, from the helpers' sigmas, checked against the group.
+pub fn repair_step3(group: &Group, sigmas: &[String], participant: u16) -> R<String> {
+    let s = sigmas.iter().map(|h| scalar(h, "sigma")).collect::<R<Vec<_>>>()?;
+    let share = frost::keys::repairable::repair_share_step_3(&s, id(participant)?, &vss_commitment(group)?);
+    share.verify().map_err(|_| Error("the repaired share doesn't match the group".into()))?;
+    Ok(hex::encode(share.signing_share().serialize()))
+}
+
 // --- Decryption: threshold ECDH (not part of FROST) --------------------------------
 //
 // Each of two members returns λ_i·s_i·P for the peer's key P; the sum is s·P, the shared

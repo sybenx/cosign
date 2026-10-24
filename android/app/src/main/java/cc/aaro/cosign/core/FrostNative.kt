@@ -17,4 +17,14 @@ object FrostNative {
     @JvmStatic external fun verifyPartial(group: String, msg: String, commits: String, idx: Int, z: String): Boolean
     /** `partials`: `[[idx, z], …]`. */
     @JvmStatic external fun aggregate(group: String, msg: String, commits: String, partials: String): String
+
+    // Adding a device (repair): see frost/src/lib.rs.
+    /** The share point index [k] will have. */
+    @JvmStatic external fun sharePubAt(group: String, k: Int): String
+    /** `helpers`: `[idx, …]`. Returns `[[helperIdx, delta], …]`. */
+    @JvmStatic external fun repairStep1(group: String, idx: Int, secret: String, helpers: String, participant: Int): String
+    /** `deltas`: `[hex, …]`. */
+    @JvmStatic external fun repairStep2(deltas: String): String
+    /** `sigmas`: `[hex, …]`. Throws unless the share matches the group. */
+    @JvmStatic external fun repairStep3(group: String, sigmas: String, participant: Int): String
 }
