@@ -236,7 +236,7 @@ async function onSiteRequest(e: Event) {
       ticket.used = true;
       S.sites.push({ pk: e.pubkey, origin: ticket.origin, added: now(), lastUsed: now() } satisfies Site);
       save(); syncTo(); pushState();
-      note(`${ticket.origin} connected`);
+      note(`${siteName(ticket.origin)} connected`);
       return answer({ result: 'ack' });
     }
     if (req.method === 'ping') return answer({ result: 'pong' });
@@ -306,6 +306,16 @@ function addChild(parent: Site, params: unknown[]): object {
   save(); syncTo(); pushState();
   note(`${origin} connected, through ${via || parent.origin}`);
   return { result: 'ack' };
+}
+
+// A browser extension can only claim an http(s) origin in its code, so it uses one like
+// https://chrome-on-mac.extension. Show that as "Chrome on Mac (browser extension)".
+const WORDS: Record<string, string> = { iphone: 'iPhone', ipad: 'iPad', macbook: 'MacBook', macos: 'macOS', ios: 'iOS', pc: 'PC', on: 'on', in: 'in', for: 'for' };
+function siteName(origin: string) {
+  const m = /^https?:\/\/([a-z0-9-]+)\.extension\/?$/i.exec(origin);
+  if (!m) return origin;
+  const name = m[1].toLowerCase().split('-').filter(Boolean).map(w => WORDS[w] ?? w[0].toUpperCase() + w.slice(1)).join(' ');
+  return `${name} (browser extension)`;
 }
 
 function revoke(pk: string, where: string, quiet = false) {
@@ -511,7 +521,7 @@ function mergeSync(msg: any) {
 function pushState() {
   toPhone({
     type: 'state',
-    sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: s.origin, added: s.added, lastUsed: s.lastUsed, parent: s.parent ?? null, via: s.via ?? null })),
+    sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: siteName(s.origin), added: s.added, lastUsed: s.lastUsed, parent: s.parent ?? null, via: s.via ?? null })),
     changes: (S.changes as Change[]).slice(0, 30),
   });
 }
@@ -587,7 +597,7 @@ function status() {
     members: members.map(m => ({ name: m.name, online: !!m.pk && online(m), paired: !!m.pk, self: m.idx === me.idx })),
     relays: pool.status(), pairing: !!S.pairing,
     sites: (S.sites as Site[]).filter(s => !s.revoked).sort((a, b) => b.lastUsed - a.lastUsed)
-      .map(s => ({ pk: s.pk, origin: esc(s.origin), via: esc(s.via ?? (s.parent ? 'Connected' : 'Connected by code')), lastUsed: ago(s.lastUsed) })),
+      .map(s => ({ pk: s.pk, origin: esc(siteName(s.origin)), via: esc(s.via ?? (s.parent ? 'Connected' : 'Connected by code')), lastUsed: ago(s.lastUsed) })),
     changes: (S.changes as Change[]).slice(0, 15).map(c => ({ text: esc(c.text), by: esc(c.by), when: ago(c.at), held: !!c.held, undone: !!c.undone })),
     activity: activity.map(a => ({ ts: a.ts, text: esc(a.text) })),
   };
