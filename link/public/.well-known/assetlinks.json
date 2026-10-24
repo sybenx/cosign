@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "cc.aaro.cosign",
+      "sha256_cert_fingerprints": ["45:87:63:71:86:3E:72:1D:35:74:D2:D5:90:92:B8:08:FF:A8:03:55:83:DB:3D:64:23:25:E8:5E:51:7C:CC:EE"]
+    }
+  }
+]

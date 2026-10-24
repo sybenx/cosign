@@ -95,6 +95,9 @@ class Phone(private val context: Context) {
     })
     private var transfer: Transfer<SignerTicket>? = null
     private var connecting: PairingParams? = null
+    /** A nostrconnect:// code being connected: the raw code, and the site's key in it. */
+    private var nostrConnect: Pair<String, String>? = null
+    private var nostrConnectTries: ScheduledFuture<*>? = null
 
     init {
         secrets.loadMembership()?.let { parseMembership(Json.parse(it)) }?.let { m -> ui.update { it.copy(member = m) } }
@@ -194,6 +197,7 @@ class Phone(private val context: Context) {
             if (isMember) ui.update { it.copy(error = "This phone is already part of your key. That code is for adding a phone.") } else joinGroup(t)
             return
         }
+        if (t.startsWith("nostrconnect:")) return scannedNostrConnect(t)
         val params = try { PairingUri.parse(t) } catch (_: Exception) { null }
         when {
             params == null -> ui.update { it.copy(error = "That isn't a code Cosign understands.") }
@@ -201,7 +205,7 @@ class Phone(private val context: Context) {
             params.profile != SignerTicketProfile.id -> ui.update { it.copy(error = "That code is for something else (${params.profile}).") }
             params.mode != Mode.OFFER -> ui.update { it.copy(error = "That code isn't asking to sign in.") }
             else -> {
-                connecting = params
+                connecting = params; nostrConnect = null
                 ui.update { it.copy(error = null, connect = Connect(params.origin ?: "This site", Connect.Stage.CONFIRM)) }
             }
         }
@@ -214,6 +218,7 @@ class Phone(private val context: Context) {
     // it without your servers, who take it once and only for 15 minutes.
 
     fun confirmConnect() {
+        if (nostrConnect != null) return confirmNostrConnect()
         val params = connecting ?: return
         val m = ui.value.member ?: return
         val origin = params.origin ?: "a site"
@@ -251,8 +256,58 @@ class Phone(private val context: Context) {
     fun closeConnect() {
         val stage = ui.value.connect?.stage
         if (stage == Connect.Stage.CONFIRM || stage == Connect.Stage.WORKING) transfer?.cancel()
-        connecting = null
+        connecting = null; nostrConnect = null; nostrConnectTries?.cancel(false)
         ui.update { it.copy(connect = null) }
+    }
+
+    // --- Connecting a site by nostrconnect ----------------------------------------
+    //
+    // For a site that only knows NIP-46: its nostrconnect:// code names its own key, its
+    // relays and a secret. This phone passes the code to your servers, they give the site
+    // access of its own, and the one answering sites sends the secret back to say hello.
+    // Same access as a QRST sign-in, removed the same way.
+
+    private fun scannedNostrConnect(text: String) {
+        val uri = Uri.parse(text.replaceFirst(Regex("^nostrconnect:(?!//)"), "nostrconnect://"))
+        val client = uri.host?.lowercase()
+        val relayList = uri.getQueryParameters("relay").filter { it.startsWith("wss://") || it.startsWith("ws://") }
+        when {
+            !isMember -> ui.update { it.copy(error = "Add this phone to your servers first: scan the code on your server's page.") }
+            !isHex32(client) || relayList.isEmpty() || uri.getQueryParameter("secret").isNullOrBlank() ->
+                ui.update { it.copy(error = "That nostrconnect code is incomplete. Ask the site for a new one.") }
+            else -> {
+                // What the site says it is: its web address if it gave one, else its name.
+                val site = uri.getQueryParameter("url")?.let { Uri.parse(it).let { u -> u.host?.let { h -> if (u.port > 0) "$h:${u.port}" else h } } }
+                    ?: uri.getQueryParameter("name")?.take(40)?.trim()?.ifBlank { null } ?: "This app"
+                nostrConnect = text to client!!; connecting = null
+                ui.update { it.copy(error = null, connect = Connect(site, Connect.Stage.CONFIRM)) }
+            }
+        }
+    }
+
+    private fun confirmNostrConnect() {
+        val (code, client) = nostrConnect ?: return
+        val origin = ui.value.connect?.origin ?: "a site"
+        ui.update { it.copy(connect = Connect(origin, Connect.Stage.WORKING, "Telling your servers…")) }
+        val started = System.currentTimeMillis()
+        nostrConnectTries?.cancel(false)
+        // Say it again until a server answers: relays drop things.
+        nostrConnectTries = timer.scheduleWithFixedDelay({
+            if (nostrConnect?.second != client) { nostrConnectTries?.cancel(false); return@scheduleWithFixedDelay }
+            if (System.currentTimeMillis() - started > 20_000) {
+                nostrConnectTries?.cancel(false); nostrConnect = null
+                ui.update { it.copy(connect = Connect(origin, Connect.Stage.FAILED, "Your servers didn't answer. Are they running?")) }
+                return@scheduleWithFixedDelay
+            }
+            for (s in servers()) send(s.pk!!, mapOf("type" to "nostrconnect", "uri" to code, "origin" to origin))
+        }, 0, 4, TimeUnit.SECONDS)
+    }
+
+    private fun onConnected(msg: Map<*, *>) {
+        val (_, client) = nostrConnect ?: return
+        if (msg["pk"] != client) return
+        nostrConnectTries?.cancel(false); nostrConnect = null
+        finishConnect(ui.value.connect?.origin ?: "The site", Outcome.DELIVERED)
     }
 
     // --- What's connected, and what changed --------------------------------------
@@ -307,6 +362,7 @@ class Phone(private val context: Context) {
             "sign_req" -> onSignReq(msg, from, m)
             "ecdh_req" -> onEcdhReq(msg, from, m)
             "state" -> onState(msg)
+            "connected" -> onConnected(msg)
             "undo_failed" -> note("Couldn't undo: ${msg["reason"]}", "denied")
         }
         status()

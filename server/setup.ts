@@ -3,6 +3,7 @@
 //   node setup.ts                 fresh throwaway key
 //   node setup.ts --nsec nsec1... split a key you already have
 //   node setup.ts --force         overwrite existing data/
+//   node setup.ts --dir test-data --port 8721   a second group beside it, for tests
 //
 // Share 1 goes to server A, share 2 to server B, and share 3 waits on server A
 // until your phone scans A's pairing code. Once the phone has it, A deletes it.
@@ -18,10 +19,13 @@ import { pubOf } from './net.ts';
 const args = process.argv.slice(2);
 const force = args.includes('--force');
 const nsecArg = args[args.indexOf('--nsec') + 1];
-const root = join(import.meta.dirname, 'data');
+const opt = (name: string) => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
+const name = opt('--dir') ?? 'data';
+const root = join(import.meta.dirname, name);
+const port = Number(opt('--port') ?? 8711);
 
 if (existsSync(join(root, 'a', 'state.json')) && !force) {
-  console.error('data/ already has a group. Pass --force to replace it (the old key is gone for good).');
+  console.error(`${name}/ already has a group. Pass --force to replace it (the old key is gone for good).`);
   process.exit(1);
 }
 if (force) rmSync(root, { recursive: true, force: true });
@@ -58,15 +62,15 @@ const write = (dir: string, state: object) => {
 };
 const common = { group, signer, sites: [], tickets: [], changes: [] };
 
-write('a', { port: 8711, self: { idx: 1, sk: skA, share: dealt.shares[0].secret }, ...common,
+write('a', { port, self: { idx: 1, sk: skA, share: dealt.shares[0].secret }, ...common,
   pairing: { token: bytesToHex(randomBytes(16)), idx: 3, share: dealt.shares[2].secret } });
-write('b', { port: 8712, self: { idx: 2, sk: skB, share: dealt.shares[1].secret }, ...common, pairing: null });
+write('b', { port: port + 1, self: { idx: 2, sk: skB, share: dealt.shares[1].secret }, ...common, pairing: null });
 
 console.log(`
 Your key: ${group.npub}
   split 2 of 3: Server A, Server B, your phone (not added yet)
 
 Start the servers:
-  node server.ts data/a      http://localhost:8711   (shows the code to add your phone)
-  node server.ts data/b      http://localhost:8712
+  node server.ts ${name}/a      http://localhost:${port}   (shows the code to add your phone)
+  node server.ts ${name}/b      http://localhost:${port + 1}
 `);

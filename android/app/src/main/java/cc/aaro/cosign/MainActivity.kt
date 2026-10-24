@@ -24,7 +24,7 @@ class MainActivity : ComponentActivity() {
         // The app is always dark; keep the system bar icons light whatever the phone's theme.
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         val phone = CosignApp.instance.phone
-        testHook(intent)
+        if (savedInstanceState == null) opened(intent)
         setContent {
             CosignTheme {
                 val ui by phone.ui.collectAsState()
@@ -45,6 +45,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        opened(intent)
+    }
+
+    /** A code handed over by the camera app or a link; the app asks before doing anything with it. */
+    private fun opened(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW) intent.dataString?.let { CosignApp.instance.phone.scanned(it) }
         testHook(intent)
     }
 

@@ -1,0 +1,8 @@
+{
+  // cosign.aaro.cc: where a site's Cosign sign-in code points, so the phone's camera
+  // opens Cosign (App Links), not another QRST app. Static assets only.
+  "name": "cosign-link",
+  "compatibility_date": "2026-09-21",
+  "assets": { "directory": "./public" },
+  "routes": [{ "pattern": "cosign.aaro.cc", "custom_domain": true }]
+}

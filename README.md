@@ -8,6 +8,8 @@ changes.
 - **Connecting a site** is QRST at its lowest level: the site shows a code, you scan
   it with Cosign, tap *Connect*, and the site is signed in. What crosses is a one-time
   ticket, not your key; the site redeems it with your servers for access of its own.
+- **Sites that only know NIP-46 work too**: scan their `nostrconnect://` code the same
+  way. Same one tap, same access of its own, removed the same way.
 - **About 95% of things sign at once**, by the two servers, without asking you.
 - **Destructive things wait for your phone**: most of your follows gone, your profile
   wiped, your relay list emptied, a pile of deletions, a request to vanish. Judged by
@@ -34,12 +36,15 @@ node server.ts data/b       # http://localhost:8712
 cd ../site && npm install && node build.mjs && node serve.mjs   # http://localhost:8790 — a demo site
 ```
 
-1. Install `Cosign-0.2.0.apk` on your phone. Tap **Scan your server's code** and scan the
+1. Install `Cosign-0.3.0.apk` on your phone. Tap **Scan your server's code** and scan the
    code on http://localhost:8711. Tap **Add this phone**.
 2. Open http://localhost:8790. In Cosign tap **Connect a site**, scan the demo's code,
    tap **Connect**. On the demo, tap **Sign in**.
 3. Press buttons. Everyday ones sign in about 0.4 s. *Follow 30 people*, then *Unfollow
    everyone*: your phone buzzes.
+4. Sign out, tap **Show a nostrconnect code instead**, and do it again: that's an ordinary
+   NIP-46 site (nostr-tools, nothing of Cosign's). Real sites work the same way; Jumble's
+   *Remote signer* login has been tried.
 
 For push when Android has put Cosign to sleep, install **ntfy** on the phone (it becomes
 the UnifiedPush distributor); without it, approvals still arrive while Cosign's
@@ -59,6 +64,10 @@ background service is running.
   about the ticket and hands it over; the site redeems it as the NIP-46 `connect` secret
   and keeps a key of its own, which is what removing it revokes. QRST itself is the
   reference implementation (vendored in `site/vendor`, ported in `android/.../core`).
+- **nostrconnect** (`connectByUri` in `server/server.ts`, `scannedNostrConnect` in `Phone.kt`):
+  the phone passes the site's code to both servers; both add the site and listen on its
+  relays, and the one answering sites sends the site's secret back from the signer key.
+  When the site asks `switch_relays`, the servers move it onto their own relays.
 - **Signing** (`server/server.ts`, `site/src/client.ts`): NIP-46 over relays to a signer
   key both servers hold. The site re-sends each request until answered; the servers keep
   their answers and send them again to a repeat (freshly wrapped — strfry refuses a
@@ -81,6 +90,8 @@ cd android && ./gradlew :app:testDebugUnitTest          # Kotlin FROST against t
 # with both servers running and test/fake-phone.ts paired:
 cd site && node test/server.e2e.ts                      # tickets, signing, hold, undo, removal
 cd site && node --experimental-transform-types test/pair.e2e.ts   # QRST sign-in, end to end
+cd site && node test/nostrconnect.e2e.ts [relay]         # a plain nostr-tools site, by nostrconnect
+# a second group beside yours for these: node setup.ts --dir test-data --port 8721
 ```
 
 ## What's rough
@@ -96,5 +107,12 @@ cd site && node --experimental-transform-types test/pair.e2e.ts   # QRST sign-in
 - **ntfy is wired but untested end to end**: the test emulator has no distributor.
 - **Both servers on one machine** is a demo; put `data/b` on another box. Nothing cares.
 - **Kinds 28001 (member traffic) and the `signer-ticket` profile are made up here.**
-- **Sites need this client library.** No real site shows a `signer-ticket` code yet;
-  the nostrconnect fallback (next) is what makes existing sites work.
+- **No real site shows a `signer-ticket` code yet**; existing sites come in by nostrconnect.
+- **nostrconnect is less sure-footed than the QRST sign-in.** Ordinary sites send each
+  request once and wait forever; if every relay drops it, the site hangs. The servers
+  answer twice and move sites onto relays known to work, which covers lost answers, not
+  lost requests. A site waiting for your phone just looks busy: it can't say why.
+- **Phone cameras open QRST codes in whichever app owns the link's host.** The demo's
+  codes point at qrst.aaro.cc, which belongs to qrst-signer. `link/` is a tiny site for
+  cosign.aaro.cc that hands them to Cosign instead; once it's deployed, the demo's
+  `baseUrl` changes to it.

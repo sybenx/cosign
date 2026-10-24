@@ -2,8 +2,9 @@
 //
 //   node server.ts data/a
 //
-// Sites connect with a one-time ticket your phone hands them over QRST, then ask for
-// signatures over relays. Almost everything signs at once, with the other server. A
+// Sites connect with a one-time ticket your phone hands them over QRST (or, for a site
+// that only knows NIP-46, by your phone scanning its nostrconnect:// code), then ask
+// for signatures over relays. Almost everything signs at once, with the other server. A
 // change that would destroy something (most of your follows, your profile, your relay
 // list…) waits for your phone instead. Server A answers sites; server B answers only
 // while A has been silent for 30 s.
@@ -21,14 +22,14 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import QRCode from 'qrcode';
 import * as F from './frost.ts';
-import { Pool, sealTo, openFrom, KIND_MEMBER, KIND_NIP46 } from './net.ts';
+import { Pool, sealTo, openFrom, normRelay, KIND_MEMBER, KIND_NIP46 } from './net.ts';
 import { ARCHIVED, assess, keyOf, kindName } from './policy.ts';
 import { Archive } from './archive.ts';
 
 // --- State -------------------------------------------------------------------
 
 interface Member { idx: number; name: string; role: 'server' | 'phone'; pk: string | null; sharePub: string; push?: string | null }
-interface Site { pk: string; origin: string; added: number; lastUsed: number; revoked?: number }
+interface Site { pk: string; origin: string; added: number; lastUsed: number; revoked?: number; relays?: string[] }
 interface Ticket { t: string; origin: string; expires: number; used?: boolean }
 interface Change { id: string; key: string; kind: number; at: number; text: string; by: string; held?: boolean; undone?: boolean }
 
@@ -151,6 +152,7 @@ async function onMember(msg: any, fromPk: string) {
       }
       return;
     }
+    case 'nostrconnect': { if (fromPhone) connectByUri(String(msg.uri), String(msg.origin ?? 'an app')).catch(err => console.error(err)); return; }
     case 'revoke': return revoke(String(msg.pk), fromPhone ? 'on your phone' : `on ${from.name}`, !fromPhone);
     case 'undo': { if (fromPhone) undo(String(msg.id)).catch(err => { note(`undo failed: ${err.message}`); toPhone({ type: 'undo_failed', id: msg.id, reason: err.message }); }); return; }
     case 'state_req': { if (fromPhone) pushState(); return; }
@@ -201,6 +203,9 @@ async function onSiteRequest(e: Event) {
     answers.set(k, { at: Date.now(), body: text, scheme });
     working.delete(k);
     reply(e.pubkey, scheme, text);
+    // Most sites send a request once and never again, so a lost answer would leave them
+    // hanging. Say it twice; a site takes the first and ignores the other.
+    setTimeout(() => reply(e.pubkey, scheme, text), 3000);
   };
 
   try {
@@ -217,12 +222,16 @@ async function onSiteRequest(e: Event) {
       return answer({ result: 'ack' });
     }
     if (req.method === 'ping') return answer({ result: 'pong' });
+    // Signing out of a site is removing it.
+    if (req.method === 'logout') { if (s && !s.revoked) revoke(s.pk, 'by signing out'); return answer({ result: 'ack' }); }
     if (!s) return answer({ error: 'Not connected. Scan this site’s code with your phone.' });
     if (s.revoked) return answer({ error: 'Access for this site was removed on your phone.' });
     s.lastUsed = now();
 
     switch (req.method) {
       case 'get_public_key': return answer({ result: groupX });
+      // Move the site onto the relays your servers already use: the ones known to carry this.
+      case 'switch_relays': return answer({ result: JSON.stringify(S.group.relays) });
       case 'get_relays': return answer({ result: JSON.stringify(Object.fromEntries(S.group.relays.map((r: string) => [r, { read: true, write: true }]))) });
       case 'sign_event': return answer({ result: JSON.stringify(await frostSign(JSON.parse(req.params[0]), s.origin)) });
       case 'nip44_encrypt': return answer({ result: nip44.v2.encrypt(req.params[1], await groupNip44Key(req.params[0])) });
@@ -234,6 +243,32 @@ async function onSiteRequest(e: Event) {
   } catch (err: any) {
     answer({ error: err?.message ?? String(err) });
   }
+}
+
+// nostrconnect: the site showed a nostrconnect:// code and your phone scanned it. Both
+// servers take the site on and listen on its relays; whichever is answering sites tells
+// it who to talk to by sending its secret back, from the signer key.
+async function connectByUri(uri: string, origin: string) {
+  let u: URL;
+  try { u = new URL(uri); } catch { return; }
+  const client = (u.host || u.pathname.replace(/^\/+/, '')).toLowerCase();
+  const relays = [...new Set(u.searchParams.getAll('relay').filter(r => /^wss?:\/\//.test(r)).map(normRelay))];
+  const secret = u.searchParams.get('secret');
+  if (u.protocol !== 'nostrconnect:' || !/^[0-9a-f]{64}$/.test(client) || !relays.length || !secret) return note('ignored a damaged nostrconnect code');
+  const s = site(client);
+  if (!s || s.revoked) { // the phone repeats itself until it hears back; only the first counts
+    if (!s) S.sites.push({ pk: client, origin, added: now(), lastUsed: now(), relays } satisfies Site);
+    else { delete s.revoked; s.relays = relays; } // scanned again: that's you letting it back in
+    note(`${origin} connected${s ? ' again' : ''}, by nostrconnect`);
+    save(); syncTo();
+  }
+  pushState();
+  await pool.add(relays);
+  if (!coordinating()) return;
+  // Twice, in case a relay drops the first; the site takes whichever arrives.
+  const answer = () => reply(client, 'nip44', JSON.stringify({ id: rid(), result: secret }));
+  answer(); setTimeout(answer, 4000);
+  toPhone({ type: 'connected', pk: client, origin });
 }
 
 function revoke(pk: string, where: string, quiet = false) {
@@ -394,7 +429,7 @@ function mergeSync(msg: any) {
   let dirty = false;
   for (const s of (msg.sites ?? []) as Site[]) {
     const mine = site(s.pk);
-    if (!mine) { S.sites.push(s); dirty = true; continue; }
+    if (!mine) { S.sites.push(s); dirty = true; if (s.relays && !s.revoked) void pool.add(s.relays); continue; }
     if (s.revoked && !mine.revoked) { mine.revoked = s.revoked; dirty = true; }
     if (s.lastUsed > mine.lastUsed) { mine.lastUsed = s.lastUsed; dirty = true; }
   }
@@ -543,4 +578,6 @@ createServer(async (req, res) => {
 }).listen(S.port, process.env.HOST ?? '127.0.0.1', () => console.log(`[${me.name}] http://localhost:${S.port}`));
 
 pool.start([{ kinds: [KIND_MEMBER], '#p': [me.pk!] }, { kinds: [KIND_NIP46], '#p': [S.signer.pk] }]);
+// Sites that came by nostrconnect may be listening on relays of their own.
+void pool.add((S.sites as Site[]).filter(s => !s.revoked).flatMap(s => s.relays ?? []), 0);
 note('started');

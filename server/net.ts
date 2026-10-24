@@ -16,6 +16,8 @@ export const KIND_MEMBER = 28001;
 export const KIND_NIP46 = 24133;
 
 const now = () => Math.floor(Date.now() / 1000);
+/** One spelling per relay, so a site's "wss://x/" and our "wss://x" share a connection. */
+export const normRelay = (u: string) => u.trim().replace(/\/+$/, '').toLowerCase();
 
 export class Pool {
   private conns = new Map<string, Relay | null>();
@@ -25,12 +27,20 @@ export class Pool {
   private onEvent: (e: Event, relay: string) => void;
   private log: (t: string) => void;
   constructor(urls: string[], onEvent: (e: Event, relay: string) => void, log: (t: string) => void = () => {}) {
-    this.urls = urls; this.onEvent = onEvent; this.log = log;
+    this.urls = [...urls]; this.onEvent = onEvent; this.log = log;
   }
 
   start(filters: Filter[]) {
     this.filters = filters;
     for (const url of this.urls) this.connect(url);
+  }
+
+  /** Listen on more relays too (a site's own). Resolves once they're up, or after `ms`. */
+  async add(urls: string[], ms = 6000) {
+    const want = [...new Set(urls.map(normRelay))];
+    for (const u of want) if (!this.conns.has(u)) { this.urls.push(u); this.connect(u); }
+    const until = Date.now() + ms;
+    while (want.some(u => !this.conns.get(u)) && Date.now() < until) await new Promise(r => setTimeout(r, 200));
   }
 
   private async connect(url: string) {

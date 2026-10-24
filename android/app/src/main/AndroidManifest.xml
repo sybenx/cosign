@@ -29,6 +29,22 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- A site's Cosign sign-in code (a QRST link): the camera app opens Cosign directly
+                 once cosign.aaro.cc/.well-known/assetlinks.json names this app (link/ in this repo). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="cosign.aaro.cc" />
+            </intent-filter>
+            <!-- A site's nostrconnect:// code, from the camera app or a link on this phone.
+                 Another signer app may claim it too; Android then asks which. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nostrconnect" />
+            </intent-filter>
         </activity>
 
         <!-- Keeps the relay connection open so a request can reach the phone while the

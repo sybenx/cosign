@@ -4,9 +4,13 @@
 import encodeQR from 'qr';
 import { nip19 } from 'nostr-tools';
 import type { Event } from 'nostr-tools/pure';
-import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
-import { pair, restore, forget } from './pair.ts';
-import type { SignerClient } from './client.ts';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { BunkerSigner, createNostrConnectURI, type BunkerPointer } from 'nostr-tools/nip46';
+import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
+import { pair, restore, forget, DEFAULT_RELAYS } from './pair.ts';
+
+/** What the page needs from either way of signing in. */
+interface Signer { getPublicKey(): Promise<string>; signEvent(t: { kind: number; content: string; tags: string[][] }): Promise<Event>; close(): unknown }
 
 const $ = (id: string) => document.getElementById(id)!;
 const storage = window.localStorage;
@@ -25,8 +29,13 @@ function qrSvg(text: string): string {
 // --- Signed out ----------------------------------------------------------------
 
 let cancelPairing: (() => void) | undefined;
+let useNostrConnect = false;
 
 function signIn() {
+  cancelPairing?.();
+  if (useNostrConnect) return signInNostrConnect();
+  $('mode').textContent = 'Show a nostrconnect code instead';
+  $('modeText').textContent = 'Most sites only know NIP-46.';
   show('out');
   $('qr').innerHTML = '';
   $('status').textContent = '';
@@ -51,13 +60,39 @@ function signIn() {
   p.done.then(signedIn, err => { $('status').textContent = err.message; $('again').hidden = false; });
 }
 
+// The way an ordinary NIP-46 site does it, with nostr-tools and nothing of Cosign's: a
+// nostrconnect:// code, which the phone scans too.
+function signInNostrConnect() {
+  $('mode').textContent = 'Show the QRST code';
+  $('modeText').textContent = 'This is the code an ordinary NIP-46 site shows.';
+  show('out');
+  $('status').textContent = 'Scan this with Cosign on your phone.';
+  $('confirm').hidden = true;
+  const sk = generateSecretKey();
+  const uri = createNostrConnectURI({ clientPubkey: getPublicKey(sk), relays: DEFAULT_RELAYS, secret: bytesToHex(randomBytes(8)), name: 'Cosign demo', url: location.origin });
+  $('qr').innerHTML = qrSvg(uri); $('qr').dataset.uri = uri;
+  const abort = new AbortController();
+  cancelPairing = () => abort.abort();
+  BunkerSigner.fromURI(sk, uri, {}, abort.signal).then(signer => {
+    storage.setItem('demo.nc', JSON.stringify({ sk: bytesToHex(sk), bp: signer.bp }));
+    void signedIn(signer);
+  }, err => { if (!abort.signal.aborted) { $('status').textContent = err.message; $('again').hidden = false; } });
+}
+
+function restoreNostrConnect(): Signer | undefined {
+  try {
+    const saved = JSON.parse(storage.getItem('demo.nc') ?? 'null') as { sk: string; bp: BunkerPointer } | null;
+    return saved ? BunkerSigner.fromBunker(hexToBytes(saved.sk), saved.bp) : undefined;
+  } catch { return undefined; }
+}
+
 // --- Signed in -----------------------------------------------------------------
 
-let client: SignerClient;
+let client: Signer;
 let follows: string[][] = JSON.parse(storage.getItem('demo.follows') ?? '[]');
 const saveFollows = () => storage.setItem('demo.follows', JSON.stringify(follows));
 
-async function signedIn(c: SignerClient) {
+async function signedIn(c: Signer) {
   client = c;
   show('in');
   $('who').textContent = 'checking…';
@@ -97,7 +132,7 @@ async function act(name: string, button: HTMLButtonElement) {
     line.textContent = `${button.textContent}: signed in ${((Date.now() - started) / 1000).toFixed(1)} s`;
     line.className = 'ok';
   } catch (e: any) {
-    line.textContent = `${button.textContent}: ${e.message}`;
+    line.textContent = `${button.textContent}: ${e?.message ?? e}`;
     line.className = 'no';
   } finally {
     clearTimeout(slow);
@@ -110,8 +145,8 @@ function show(which: 'in' | 'out') { $('signedin').hidden = which !== 'in'; $('s
 
 for (const b of document.querySelectorAll<HTMLButtonElement>('button[data-act]')) b.onclick = () => act(b.dataset.act!, b);
 $('again').onclick = () => { $('again').hidden = true; signIn(); };
-$('signout').onclick = () => { client?.close(); forget(storage); storage.removeItem('demo.follows'); follows = []; signIn(); };
+$('signout').onclick = () => { client?.close(); forget(storage); for (const k of ['demo.follows', 'demo.nc']) storage.removeItem(k); follows = []; signIn(); };
+$('mode').onclick = () => { useNostrConnect = !useNostrConnect; $('again').hidden = true; signIn(); };
 
-const previous = restore(storage);
+const previous = restore(storage) ?? restoreNostrConnect();
 if (previous) void signedIn(previous); else signIn();
-void cancelPairing;
