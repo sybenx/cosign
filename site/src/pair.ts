@@ -3,14 +3,36 @@
 //
 // This is all a site needs. It never sees a key of yours: what it keeps is its own
 // key, which your servers recognise until your phone removes it.
+//
+// With `nostrconnect`, the same code also carries a nostrconnect:// sign-in (`nc` in the
+// link's fragment), for people whose signer app isn't Cosign: their camera opens the
+// link's page, which hands `nc` to their signer. Whichever answers first signs you in.
 
+import { generateSecretKey, getPublicKey, type Event } from 'nostr-tools/pure';
+import { BunkerSigner, createNostrConnectURI, type BunkerPointer } from 'nostr-tools/nip46';
+import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
 import { Store, Transfer, browserEnv, type KeyValue } from '../vendor/qrst-web/index.ts';
 import { signerTicket, type Ticket } from './ticket.ts';
 import { SignerClient, newSession, type Session } from './client.ts';
 
+/** What a signed-in site can do, whichever way it signed in. */
+export interface Signer {
+  getPublicKey(): Promise<string>;
+  signEvent(t: { kind: number; content: string; tags: string[][]; created_at?: number }): Promise<Event>;
+  nip44Encrypt(pubkey: string, text: string): Promise<string>;
+  nip44Decrypt(pubkey: string, text: string): Promise<string>;
+  close(): unknown;
+}
+
 /** Relays a site tries first when it shows a code. Your phone uses whichever pass. */
 export const DEFAULT_RELAYS = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'];
 const SESSION_KEY = 'cosign.session';
+const NC_KEY = 'cosign.nostrconnect';
+
+/** One link for both: the Cosign sign-in, with a nostrconnect:// fallback in its fragment. */
+export function signInLink(cosignUri: string, nostrconnectUri: string): string {
+  return `${cosignUri}&nc=${encodeURIComponent(nostrconnectUri)}`;
+}
 
 export interface PairUi {
   /** Draw this as a QR code (and offer it as a link). Called again if it changes. */
@@ -27,11 +49,34 @@ export interface PairOptions {
   baseUrl: string;
   storage?: KeyValue;
   relays?: string[];
+  /** Also offer a nostrconnect sign-in in the same code, for any NIP-46 signer app. */
+  nostrconnect?: { name: string; url?: string; image?: string };
   ui: PairUi;
 }
 
 /** Show a code, wait for your phone, redeem what it sends. Resolves signed in. */
-export function pair(o: PairOptions): { done: Promise<SignerClient>; cancel(): void } {
+export function pair(o: PairOptions): { done: Promise<Signer>; cancel(): void } {
+  if (!o.nostrconnect) return pairCosign(o);
+  // Both at once, under one code. The first to finish wins; the other is stopped.
+  const sk = generateSecretKey();
+  const nc = createNostrConnectURI({
+    clientPubkey: getPublicKey(sk), relays: o.relays ?? DEFAULT_RELAYS, secret: bytesToHex(randomBytes(8)),
+    name: o.nostrconnect.name, url: o.nostrconnect.url ?? o.origin, image: o.nostrconnect.image,
+  });
+  const abort = new AbortController();
+  const cosign = pairCosign({ ...o, ui: { ...o.ui, code: uri => o.ui.code(signInLink(uri, nc)) } });
+  const other = BunkerSigner.fromURI(sk, nc, {}, abort.signal).then(signer => {
+    o.storage?.setItem(NC_KEY, JSON.stringify({ sk: bytesToHex(sk), bp: signer.bp }));
+    return signer as Signer;
+  });
+  const done = Promise.any([cosign.done, other]).then(
+    signer => { cosign.cancel(); abort.abort(); return signer; },
+    (e: AggregateError) => { throw e.errors[0]; },
+  );
+  return { done, cancel: () => { cosign.cancel(); abort.abort(); } };
+}
+
+function pairCosign(o: PairOptions): { done: Promise<SignerClient>; cancel(): void } {
   const store = new Store(o.storage, () => Math.floor(Date.now() / 1000), [], o.relays ?? DEFAULT_RELAYS);
   const t = Transfer.show({ profile: signerTicket, store, env: browserEnv(), baseUrl: o.baseUrl, origin: o.origin, check: 'none' }, 'receiver');
   let shown = '', asked = false;
@@ -68,11 +113,13 @@ export function pair(o: PairOptions): { done: Promise<SignerClient>; cancel(): v
 }
 
 /** Pick up where a previous visit left off. Your phone may have removed it since. */
-export function restore(storage: KeyValue): SignerClient | undefined {
+export function restore(storage: KeyValue): Signer | undefined {
   try {
     const s = JSON.parse(storage.getItem(SESSION_KEY) ?? 'null') as Session | null;
-    return s?.sk && s.signer ? new SignerClient(s) : undefined;
+    if (s?.sk && s.signer) return new SignerClient(s);
+    const n = JSON.parse(storage.getItem(NC_KEY) ?? 'null') as { sk: string; bp: BunkerPointer } | null;
+    return n ? BunkerSigner.fromBunker(hexToBytes(n.sk), n.bp) : undefined;
   } catch { return undefined; }
 }
 
-export function forget(storage: KeyValue) { storage.removeItem(SESSION_KEY); }
+export function forget(storage: KeyValue) { storage.removeItem(SESSION_KEY); storage.removeItem(NC_KEY); }

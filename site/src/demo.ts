@@ -45,6 +45,8 @@ function signIn() {
     origin: location.origin,
     baseUrl: 'https://cosign.aaro.cc/',
     storage,
+    // One code for everyone: Cosign uses the ticket, any other signer app the nostrconnect half.
+    nostrconnect: { name: 'Cosign demo' },
     ui: {
       code: uri => { $('qr').innerHTML = qrSvg(uri); $('qr').dataset.uri = uri; },
       confirm: (rendering, yes, no) => {

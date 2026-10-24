@@ -118,6 +118,11 @@ export class SignerClient {
     encrypt: (pk: string, text: string) => this.call('nip04_encrypt', [pk, text]),
     decrypt: (pk: string, text: string) => this.call('nip04_decrypt', [pk, text]),
   };
+  // The same, under nostr-tools' BunkerSigner names, so a site can hold either.
+  nip44Encrypt = this.nip44.encrypt;
+  nip44Decrypt = this.nip44.decrypt;
+  nip04Encrypt = this.nip04.encrypt;
+  nip04Decrypt = this.nip04.decrypt;
 
   close() { this.closed = true; for (const r of this.conns.values()) r?.close(); }
 }

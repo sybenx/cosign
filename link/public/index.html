@@ -7,14 +7,34 @@
 <title>Cosign</title>
 <style>
   :root { color-scheme: dark; }
-  body { font: 16px/1.5 system-ui, sans-serif; background: #13110f; color: #ede6da; max-width: 560px; margin: 0 auto; padding: 32px 20px; }
-  h1 { font-size: 24px; margin: 0 0 12px; } .muted { color: #a69d90; }
+  body { font: 16px/1.5 system-ui, sans-serif; background: #13110f; color: #ede6da; max-width: 520px; margin: 0 auto; padding: 32px 20px; }
+  h1 { font-size: 26px; margin: 0 0 12px; } .muted { color: #a69d90; } .small { font-size: 14px; }
+  a.button, button { display: block; box-sizing: border-box; width: 100%; text-align: center; font: inherit; border-radius: 12px; padding: 14px; margin: 10px 0; text-decoration: none; cursor: pointer; }
+  .primary { background: #7fc8c0; color: #13110f; border: 0; font-weight: 600; }
+  .secondary { background: none; color: #ede6da; border: 1px solid #34302b; padding: 11px; }
+  .row { display: flex; gap: 10px; } .row > * { flex: 1; }
 </style>
 </head>
 <body>
-  <h1>Cosign</h1>
-  <p>This is a site's sign-in code for <b>Cosign</b>, the Android app that holds one share of your Nostr key and lets sites sign through your own servers.</p>
-  <p>If you're seeing this page, Cosign isn't installed on this phone, or the camera opened the browser instead. Open Cosign, tap <b>Connect a site</b>, and scan the code again.</p>
-  <p class="muted">Nothing after the <code>#</code> in this link ever reached this server.</p>
+  <section id="signin" hidden>
+    <h1>Sign in with your phone</h1>
+    <p>This code signs you in to <b id="site">a site</b>. Your phone does it for you, so you don't type anything there.</p>
+    <a class="button primary" href="/cosign.apk">Get Cosign</a>
+    <p class="muted small">Android. Once it's installed, scan the code again with your camera.</p>
+    <div class="row">
+      <a class="button secondary" id="other" href="#">Use another signer app</a>
+      <button class="secondary" id="copy" type="button">Copy link</button>
+    </div>
+    <p class="muted small" id="copied" hidden>Copied. Paste it into your signer app.</p>
+  </section>
+
+  <section id="about">
+    <h1>Cosign</h1>
+    <p>This is a site's sign-in code for <b>Cosign</b>, the Android app that holds one share of your Nostr key and lets sites sign through your own servers.</p>
+    <p>If you're seeing this page, Cosign isn't installed on this phone, or the camera opened the browser instead. Open Cosign, tap <b>Connect a site</b>, and scan the code again.</p>
+  </section>
+
+  <p class="muted small">Nothing after the <code>#</code> in this link ever reached this server.</p>
+  <script src="bounce.js"></script>
 </body>
 </html>

@@ -204,6 +204,11 @@ class Phone(private val context: Context) {
         }
         if (t.startsWith("nostrconnect:")) return scannedNostrConnect(t)
         val params = try { PairingUri.parse(t) } catch (_: Exception) { null }
+        // A sign-in code that carries a nostrconnect:// fallback (`nc`, site/src/pair.ts):
+        // use the ticket if it's one for us, the fallback if not.
+        val nc = t.substringAfter('#', "").split('&').firstOrNull { it.startsWith("nc=") }?.let { Uri.decode(it.removePrefix("nc=")) }
+        if (nc != null && nc.startsWith("nostrconnect:") && (params == null || params.profile != SignerTicketProfile.id || params.mode != Mode.OFFER))
+            return scannedNostrConnect(nc)
         when {
             params == null -> ui.update { it.copy(error = "That isn't a code Cosign understands.") }
             !isMember -> ui.update { it.copy(error = "Add this phone to your servers first: scan the code on your server's page.") }
