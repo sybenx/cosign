@@ -227,7 +227,11 @@ class Social private constructor(private val phone: Phone, context: Context) {
         scope.launch {
             for (src in Sources.FEEDS) {
                 // The curated feed comes first and wins whenever it has enough to show.
-                val notes = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 100), 8000).filter { it.kind == 1 && forDiscover(it) }
+                Startup.mark("feed asked")
+                val got = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 100), 8000)
+                Startup.mark("feed fetched ${got.size}")
+                val notes = got.filter { it.kind == 1 && forDiscover(it) }
+                Startup.mark("feed filtered ${notes.size}")
                 if (notes.size < 3) continue
                 remember(notes)
                 feed.value = Feed(rank(notes), source = src, at = System.currentTimeMillis())

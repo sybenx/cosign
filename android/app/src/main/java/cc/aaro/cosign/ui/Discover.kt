@@ -94,6 +94,7 @@ import cc.aaro.cosign.Phone
 import cc.aaro.cosign.PlaceCard
 import cc.aaro.cosign.Ref
 import cc.aaro.cosign.Social
+import cc.aaro.cosign.Startup
 import cc.aaro.cosign.Ui
 import cc.aaro.cosign.appName
 import cc.aaro.cosign.core.Event
@@ -185,6 +186,8 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
         }
     }
     val context = LocalContext.current
+    LaunchedEffect(Unit) { Startup.mark("home composed", once = false) }
+    if (mixed.isNotEmpty()) LaunchedEffect(Unit) { androidx.compose.runtime.withFrameNanos { }; Startup.mark("first cards painted", once = false) }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {

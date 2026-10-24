@@ -41,6 +41,7 @@ class CosignService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Startup.mark("service")
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(STATUS, "Connection", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) })
         nm.createNotificationChannel(NotificationChannel(ASKS, "Signing requests", NotificationManager.IMPORTANCE_HIGH))
@@ -48,6 +49,7 @@ class CosignService : Service() {
         else startForeground(STATUS_ID, statusNote())
         listenAll()
         for (p in accounts.all) if (p.isMember) p.start()
+        Startup.mark("service done")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

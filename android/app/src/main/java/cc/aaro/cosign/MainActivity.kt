@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Startup.mark("activity", once = false)
         // The app is always dark; keep the system bar icons light whatever the phone's theme.
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         val accounts = CosignApp.instance.accounts
