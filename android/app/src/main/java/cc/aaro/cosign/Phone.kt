@@ -12,6 +12,7 @@ import cc.aaro.cosign.core.Outcome
 import cc.aaro.cosign.core.PairingParams
 import cc.aaro.cosign.core.PairingUri
 import cc.aaro.cosign.core.Phase
+import cc.aaro.cosign.core.Policy
 import cc.aaro.cosign.core.SignerTicket
 import cc.aaro.cosign.core.SignerTicketProfile
 import cc.aaro.cosign.core.SystemEnv
@@ -70,6 +71,9 @@ class Phone(private val context: Context) {
     interface Listener { fun onAsk(ask: Ask); fun onAskGone(id: String); fun onStatus() }
 
     private val secrets = Secrets(context)
+    private val lists = Lists(context)
+    /** Big messages arrive in parts (NIP-44 stops at 64 KB); these are the ones still coming in. */
+    private val parts = ConcurrentHashMap<String, Pair<Long, Array<String?>>>()
     private val env = SystemEnv
     val ui = MutableStateFlow(Ui())
     @Volatile var listener: Listener? = null
@@ -114,6 +118,7 @@ class Phone(private val context: Context) {
     fun start() {
         val m = ui.value.member ?: return
         if (relays == null || sk != m.sk) connect(m.group.relays, m.sk)
+        relays?.watch(mapOf("kinds" to Policy.ARCHIVED.toList(), "authors" to listOf(m.group.groupX)))
         if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status() }, 0, 10, TimeUnit.SECONDS)
         timer.schedule({ requestState(); ui.value.push?.let { tellPush(it) } }, 2, TimeUnit.SECONDS)
     }
@@ -183,7 +188,7 @@ class Phone(private val context: Context) {
     fun clearError() = ui.update { it.copy(error = null) }
 
     fun leave() {
-        stop(); secrets.clear(); lastSeen.clear()
+        stop(); secrets.clear(); lists.clear(); lastSeen.clear()
         context.getSharedPreferences("cosign", Context.MODE_PRIVATE).edit().clear().apply()
         ui.value = Ui()
     }
@@ -349,8 +354,8 @@ class Phone(private val context: Context) {
     }
 
     private fun onEvent(e: Event) {
-        if (e.kind != KIND_MEMBER) return
-        val msg = open(e) ?: return
+        if (e.kind != KIND_MEMBER) { ui.value.member?.let { lists.record(e, it.group.groupX) }; return }
+        val msg = whole(e.pubkey, open(e) ?: return) ?: return
         val type = msg["type"] as? String ?: return
         // Relays replay recent ephemeral events to a new subscription; the sender has given up on those.
         if ((type == "sign_req" || type == "ecdh_req") && System.currentTimeMillis() / 1000 - e.createdAt > 30) return
@@ -363,6 +368,7 @@ class Phone(private val context: Context) {
             "ecdh_req" -> onEcdhReq(msg, from, m)
             "state" -> onState(msg)
             "connected" -> onConnected(msg)
+            "signed" -> Event.fromMap(msg["event"])?.let { lists.record(it, m.group.groupX) }
             "undo_failed" -> note("Couldn't undo: ${msg["reason"]}", "denied")
         }
         status()
@@ -391,17 +397,19 @@ class Phone(private val context: Context) {
         // Sign only what we were shown: the digest must be this event's id under your key.
         if (ev.pubkey != m.group.groupX || ev.computeId() != digest) return reply(mapOf("ok" to false, "reason" to "event does not match the message"))
         val app = msg["app"] as? String ?: "a site"
-        val hold = msg["hold"] as? String
+        // Your server's judgement, or this phone's own: either one is enough to ask you.
+        val hold = msg["hold"] as? String ?: Policy.hold(ev, lists.latest(Policy.keyOf(ev)))
         val undo = msg["undo"] as? String
         val ask = Ask(id, from.pk!!, from.name, app, ev, digest, commit, hold ?: "", System.currentTimeMillis() + 55_000)
         val myUndo = undo != null && System.currentTimeMillis() - (myUndos[undo] ?: 0) < 120_000
         if (hold == null || myUndo) {
             sign(ask, m, reply)
             if (myUndo) note("Undone", "approved")
-            else note("Signed ${Describe.kind(ev.kind)} for $app with ${from.name} (the other server is down)", "auto")
+            else note("Signed ${Describe.kind(ev.kind)} for $app", "auto")
             return
         }
         asking.add(id)
+        send(from.pk!!, mapOf("type" to "asking", "id" to id)) // so the server waits for you, not just a moment
         pendingReplies[id] = reply
         ui.update { it.copy(asks = it.asks + ask, connect = if (it.connect?.stage == Connect.Stage.DONE) null else it.connect) }
         listener?.onAsk(ask)
@@ -446,7 +454,7 @@ class Phone(private val context: Context) {
         send(from.pk!!, body)
         if (System.currentTimeMillis() - lastEcdhNote > 60_000) {
             lastEcdhNote = System.currentTimeMillis()
-            note("Helped ${from.name} read messages (the other server is down)", "auto")
+            note("Helped ${from.name} read your messages", "auto")
         }
     }
 
@@ -472,9 +480,33 @@ class Phone(private val context: Context) {
     // --- Sealed messages ----------------------------------------------------
 
     private fun send(toPk: String, body: Map<String, Any?>) {
+        val text = Json.stringify(body)
+        if (text.length <= PART) return seal(toPk, text)
+        val id = env.random(8).toHex(); val n = (text.length + PART - 1) / PART
+        for (i in 0 until n) seal(toPk, Json.stringify(mapOf("type" to "part", "id" to id, "i" to i, "n" to n, "data" to text.substring(i * PART, minOf(text.length, (i + 1) * PART)))))
+    }
+
+    private fun seal(toPk: String, text: String) {
         val secret = sk?.hexToBytes() ?: return
-        val content = Nip44.encrypt(Json.stringify(body), Nip44.conversationKey(secret, toPk), env.random(32))
+        val content = Nip44.encrypt(text, Nip44.conversationKey(secret, toPk), env.random(32))
         relays?.publish(Event.sign(publicKeyHex(secret), env.now(), KIND_MEMBER, listOf(listOf("p", toPk)), content, secret, env))
+    }
+
+    /** The message, once all its parts are in (server/net.ts sealParts is the other half). */
+    private fun whole(fromPk: String, msg: Map<*, *>): Map<*, *>? {
+        if (msg["type"] != "part") return msg
+        val id = msg["id"] as? String ?: return null
+        val i = (msg["i"] as? Long)?.toInt() ?: return null
+        val n = (msg["n"] as? Long)?.toInt() ?: return null
+        if (n !in 1..64 || i !in 0 until n) return null
+        val now = System.currentTimeMillis()
+        parts.entries.removeIf { now - it.value.first > 120_000 }
+        val got = parts.getOrPut("$fromPk:$id") { now to arrayOfNulls(n) }.second
+        if (got.size != n) return null
+        got[i] = msg["data"] as? String ?: return null
+        if (got.any { it == null }) return null
+        parts.remove("$fromPk:$id")
+        return try { Json.parse(got.joinToString("")) as? Map<*, *> } catch (_: Exception) { null }
     }
 
     private fun open(e: Event): Map<*, *>? = try {
@@ -507,7 +539,7 @@ class Phone(private val context: Context) {
         ),
     )
 
-    companion object { const val KIND_MEMBER = 28001 }
+    companion object { const val KIND_MEMBER = 28001; private const val PART = 24_000 }
 }
 
 object Describe {

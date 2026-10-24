@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { getEventHash } from 'nostr-tools/pure';
 import * as F from '../frost.ts';
-import { Pool, sealTo, openFrom, pubOf, KIND_MEMBER } from '../net.ts';
+import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../net.ts';
 
 const args = process.argv.slice(2);
 const deny = args.includes('--deny');
@@ -22,12 +22,13 @@ const relays = st?.group.relays ?? pairUri!.searchParams.getAll('r');
 
 const pool = new Pool(relays, e => {
   if (e.kind !== KIND_MEMBER) return;
-  const msg = openFrom(sk, e);
+  const msg = parts.take(e.pubkey, openFrom(sk, e));
   if (!msg) return;
   if ((msg.type === 'sign_req' || msg.type === 'ecdh_req') && Date.now() / 1000 - e.created_at > 30) return; // replayed
   handle(msg, e.pubkey);
 });
-const send = (to: string, m: object) => pool.publish(sealTo(sk, to, m));
+const send = (to: string, m: object) => { for (const e of sealParts(sk, to, m)) pool.publish(e); };
+const parts = new Parts();
 const servers = () => st.group.members.filter((m: any) => m.role === 'server');
 
 function handle(msg: any, from: string) {

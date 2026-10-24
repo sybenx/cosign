@@ -22,7 +22,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import QRCode from 'qrcode';
 import * as F from './frost.ts';
-import { Pool, sealTo, openFrom, normRelay, KIND_MEMBER, KIND_NIP46 } from './net.ts';
+import { Pool, sealParts, openFrom, Parts, normRelay, KIND_MEMBER, KIND_NIP46 } from './net.ts';
 import { ARCHIVED, assess, keyOf, kindName } from './policy.ts';
 import { Archive } from './archive.ts';
 
@@ -66,20 +66,30 @@ const note = (text: string) => {
 // --- Relays ------------------------------------------------------------------
 
 const pool = new Pool(S.group.relays, onEvent, t => console.log(`[${me.name}] ${t}`));
-const send = (toPk: string | null | undefined, msg: object) => { if (toPk) pool.publish(sealTo(S.self.sk, toPk, msg)); };
+const send = (toPk: string | null | undefined, msg: object) => { if (toPk) for (const e of sealParts(S.self.sk, toPk, msg)) pool.publish(e); };
+const parts = new Parts();
 const toOther = (msg: object) => send(other().pk, msg);
 const toPhone = (msg: object) => send(phone().pk, msg);
 
-const pending = new Map<string, { resolve: (v: any) => void; timer: NodeJS.Timeout }>();
+const pending = new Map<string, { resolve: (v: any) => void; timer: NodeJS.Timeout; giveUp?: () => void; again?: NodeJS.Timeout }>();
 const rid = () => F.bytesToHex(F.randomBytes(8));
 /** Ask a member, and keep asking (freshly wrapped) until it answers or time runs out. */
 function ask(toPk: string, msg: any, ms: number): Promise<any> {
   return new Promise(resolve => {
     const again = setInterval(() => send(toPk, msg), 4000);
-    const timer = setTimeout(() => { clearInterval(again); pending.delete(msg.id); resolve({ ok: false, reason: 'no answer' }); }, ms);
-    pending.set(msg.id, { resolve: v => { clearInterval(again); resolve(v); }, timer });
+    const giveUp = () => { clearInterval(again); pending.delete(msg.id); resolve({ ok: false, reason: 'no answer' }); };
+    const timer = setTimeout(giveUp, ms);
+    pending.set(msg.id, { resolve: v => { clearInterval(again); resolve(v); }, timer, giveUp, again });
     send(toPk, msg);
   });
+}
+
+/** The phone is asking you about this one: give it the full minute. */
+function waitLonger(id: string) {
+  const p = pending.get(id);
+  if (!p?.giveUp) return;
+  clearTimeout(p.timer); clearInterval(p.again);
+  p.timer = setTimeout(p.giveUp, 60_000);
 }
 
 // A request asked again gets the same answer: never a second partial with new nonces.
@@ -99,12 +109,15 @@ function onEvent(e: Event) {
   const age = now() - e.created_at;
   if (age > 120) return;
   if (e.kind === KIND_MEMBER) {
-    const msg = openFrom(S.self.sk, e);
+    const msg = parts.take(e.pubkey, openFrom(S.self.sk, e));
     // Relays replay recent "ephemeral" events to a new subscription; a request that
     // old has been given up on by whoever sent it.
     if (msg && (msg.type === 'sign_req' || msg.type === 'ecdh_req') && age > 30) return;
     if (msg) onMember(msg, e.pubkey).catch(err => console.error(err));
   } else if (e.kind === KIND_NIP46) {
+    // Same for sites: after a restart, relays replay requests this server already
+    // answered before it went down, and it no longer remembers them.
+    if (age > 30) return;
     onSiteRequest(e).catch(err => console.error(err));
   }
 }
@@ -131,6 +144,7 @@ async function onMember(msg: any, fromPk: string) {
   const fromPhone = from.role === 'phone';
   switch (msg.type) {
     case 'ping': return;
+    case 'asking': { if (fromPhone) waitLonger(String(msg.id)); return; }
     case 'sign_req': return answerOnce(from, msg.id, () => onSignReq(msg, from));
     case 'ecdh_req': return answerOnce(from, msg.id, () => onEcdhReq(msg, from));
 
@@ -282,7 +296,11 @@ function revoke(pk: string, where: string, quiet = false) {
 
 // --- Signing -----------------------------------------------------------------
 
-/** Ask the other server; if it's away, the phone. Something destructive goes only to the phone. */
+/**
+ * Your phone signs the other half, quietly. If it doesn't answer in 3 s and the backup
+ * server is there, the backup does. Something destructive goes only to the phone, which
+ * asks you.
+ */
 async function frostSign(unsigned: any, by: string, opts: { undo?: string } = {}): Promise<Event> {
   const ev = {
     pubkey: groupX, kind: Number(unsigned.kind), created_at: Number(unsigned.created_at ?? now()),
@@ -291,17 +309,22 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string } = {}
   const id = getEventHash(ev);
   const judged = assess(ev, archive.latest(keyOf(ev)));
   const hold = judged.hold;
-  const order = (hold ? [phone()] : [other(), phone()]).filter(m => m.pk).sort((a, b) => Number(online(b)) - Number(online(a)));
+  const order = partners(hold ? [phone()] : [phone(), other()]);
   const tried: string[] = [];
 
-  for (const m of order) {
+  for (const [i, m] of order.entries()) {
     const participants = [me.idx, m.idx].sort((a, b) => a - b);
     const isPhone = m.role === 'phone';
-    if (isPhone && hold && !opts.undo) pushPhone();
+    const asking = isPhone && !!hold && !opts.undo;
+    const wait = isPhone ? phoneWait(asking, order.slice(i + 1)) : online(m) ? 8_000 : 3_000; // a silent server gets a last quick try
+    if (isPhone && (asking || (wait > 3_000 && !online(m)))) pushPhone();
     const mine = F.commit(me.idx); // fresh every attempt; ours are used only once we have a valid partner
-    const wait = isPhone ? (hold && !opts.undo ? 60_000 : online(m) ? 20_000 : 10_000) : 8_000;
     const res = await ask(m.pk!, { type: 'sign_req', id: rid(), event: ev, msg: id, participants, commit: mine.commit, app: by, hold: hold ?? null, undo: opts.undo ?? null }, wait);
-    if (!res.ok) { tried.push(`${m.name}: ${res.reason}`); continue; }
+    if (!res.ok) {
+      tried.push(`${m.name}: ${res.reason}`);
+      if (isPhone && String(res.reason).includes('declined')) break; // your no stands: nobody else gets asked
+      continue;
+    }
     const commits = [mine.commit, res.commit];
     if (res.commit?.idx !== m.idx || !F.verifyPartial({ groupX, msg: id, commits, idx: m.idx, sharePub: m.sharePub, z: res.z })) {
       tried.push(`${m.name}: bad partial`); continue;
@@ -314,8 +337,18 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string } = {}
   }
   const declined = tried.some(t => t.includes('declined'));
   note(`did not sign ${kindName(ev.kind)} for ${by}: ${tried.join('; ') || 'nobody to ask'}`);
-  throw new Error(declined ? 'You declined this on your phone.' : hold ? `Waiting for your phone timed out: ${hold}.` : `Couldn't sign: ${tried.join('; ') || 'nobody to ask'}`);
+  throw new Error(declined ? 'You declined this on your phone.'
+    : hold ? `Waiting for your phone timed out: ${hold}.`
+    : tried.length && tried.every(t => t.endsWith('no answer'))
+      ? (other().pk ? 'Neither your phone nor your backup server answered. Is Cosign running on your phone?' : 'Your phone didn’t answer. Is Cosign running on it?')
+    : `Couldn't sign: ${tried.join('; ') || 'nobody to ask'}`);
 }
+
+/** Who to ask, in order; anyone who's been silent goes last. */
+const partners = (want: Member[]) => want.filter(m => m.pk).sort((a, b) => Number(online(b)) - Number(online(a)));
+
+/** How long to give the phone: a quick try if someone else can step in, else long enough to wake it. */
+const phoneWait = (asking: boolean, after: Member[]) => asking ? 60_000 : after.some(online) ? 3_000 : 15_000;
 
 /** Archive what was signed, note the change, and tell the other server and the phone. */
 function keep(signed: Event, text: string | undefined, by: string, held: boolean) {
@@ -324,6 +357,8 @@ function keep(signed: Event, text: string | undefined, by: string, held: boolean
   const change: Change | undefined = text ? { id: signed.id, key: keyOf(signed), kind: signed.kind, at: signed.created_at, text, by, held } : undefined;
   if (change) addChange(change, false);
   toOther({ type: 'signed', event: signed, change });
+  // The phone judges for itself too, against the latest version it has seen signed.
+  if (ARCHIVED.has(signed.kind)) toPhone({ type: 'signed', event: signed });
 }
 
 function addChange(c: Change, quiet: boolean) {
@@ -367,9 +402,10 @@ async function frostEcdh(peerX: string): Promise<Uint8Array> {
   const hit = ecdhCache.get(peerX);
   if (hit && Date.now() - hit.at < 600_000) return hit.x;
   const tried: string[] = [];
-  for (const m of [other(), phone()].filter(m => m.pk).sort((a, b) => Number(online(b)) - Number(online(a)))) {
+  const order = partners([phone(), other()]);
+  for (const [i, m] of order.entries()) {
     const participants = [me.idx, m.idx].sort((a, b) => a - b);
-    const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, m.role === 'phone' ? 15_000 : 6_000);
+    const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, m.role === 'phone' ? phoneWait(false, order.slice(i + 1)) : 6_000);
     if (!res.ok) { tried.push(`${m.name}: ${res.reason}`); continue; }
     const x = F.ecdhCombine([F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants, peerX }), res.point]);
     ecdhCache.set(peerX, { x, at: Date.now() });

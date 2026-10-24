@@ -27,6 +27,7 @@ class Relays(
     private val seen = Collections.synchronizedSet(LinkedHashSet<String>())
     private val timer = Executors.newSingleThreadScheduledExecutor()
     @Volatile private var filter: Map<String, Any> = emptyMap()
+    @Volatile private var stored: Map<String, Any>? = null
     @Volatile private var stopped = false
 
     fun start(filter: Map<String, Any>) {
@@ -44,6 +45,13 @@ class Relays(
 
     fun up(): Int = open.size
 
+    /** Also ask for these in full, stored ones included (your lists), now and after every reconnect. */
+    fun watch(stored: Map<String, Any>) {
+        this.stored = stored
+        val frame = Json.stringify(listOf("REQ", "lists", stored))
+        for (url in open) sockets[url]?.send(frame)
+    }
+
     fun publish(e: Event) {
         val frame = Json.stringify(listOf("EVENT", e.toMap()))
         for (url in open) sockets[url]?.send(frame)
@@ -57,6 +65,7 @@ class Relays(
                 // Member traffic is live; ask only for the last minute.
                 val f = filter + ("since" to System.currentTimeMillis() / 1000 - 60)
                 webSocket.send(Json.stringify(listOf("REQ", "cosign", f)))
+                stored?.let { webSocket.send(Json.stringify(listOf("REQ", "lists", it))) }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {

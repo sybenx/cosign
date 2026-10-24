@@ -1,7 +1,8 @@
 # Cosign
 
-Your Nostr key split three ways — **two servers and your phone** — where any two can
-sign and none can alone. Sites sign through your servers. Your phone is the remote
+Your Nostr key split three ways — **your server, your phone, and a backup server** —
+where any two can sign and none can alone. Sites sign through your server, and your
+phone signs the other half quietly in the background. Your phone is also the remote
 control: it connects sites, removes them, approves anything destructive, and undoes
 changes.
 
@@ -10,15 +11,19 @@ changes.
   ticket, not your key; the site redeems it with your servers for access of its own.
 - **Sites that only know NIP-46 work too**: scan their `nostrconnect://` code the same
   way. Same one tap, same access of its own, removed the same way.
-- **About 95% of things sign at once**, by the two servers, without asking you.
+- **About 95% of things sign at once**, by your server and your phone, without asking you.
 - **Destructive things wait for your phone**: most of your follows gone, your profile
   wiped, your relay list emptied, a pile of deletions, a request to vanish. Judged by
   what the event does compared with the version it replaces — adding one follow is
   routine, replacing your whole follow list isn't.
 - **Every change to your lists is archived**, with Undo on the phone.
 - **Remove a site** on the phone or on either server's page; it stops immediately.
-- **Any one of the three can be down.** Server B takes over from A after 30 s; with a
-  server down, the phone co-signs routine things in the background.
+- **Any one of the three can be down.** If your phone doesn't answer within 3 s, the
+  backup server signs instead (never for anything destructive). If your server is down,
+  the backup takes over from it after 30 s. With neither phone nor backup, the site gets
+  an error after about 15 s rather than hanging.
+- **Your phone judges for itself.** It keeps the latest signed version of each of your
+  lists and asks you about anything destructive even if the server didn't flag it.
 
 Everything travels over public relays (syb.lol, nos.lol, relay.primal.net): your servers
 need no public address and your phone needs nothing but a connection.
@@ -36,7 +41,7 @@ node server.ts data/b       # http://localhost:8712
 cd ../site && npm install && node build.mjs && node serve.mjs   # http://localhost:8790 — a demo site
 ```
 
-1. Install `Cosign-0.3.0.apk` on your phone. Tap **Scan your server's code** and scan the
+1. Install `Cosign-0.4.0.apk` on your phone. Tap **Scan your server's code** and scan the
    code on http://localhost:8711. Tap **Add this phone**.
 2. Open http://localhost:8790. In Cosign tap **Connect a site**, scan the demo's code,
    tap **Connect**. On the demo, tap **Sign in**.
@@ -73,9 +78,13 @@ background service is running.
   their answers and send them again to a repeat (freshly wrapped — strfry refuses a
   repeated event id). Member-to-member requests are re-sent the same way, and a repeated
   request gets the same answer, never a second partial.
-- **Policy** (`server/policy.ts`): `assess(event, previousVersion)`. Each co-signing server
-  judges an event against its own archive, so one compromised server can't talk the
-  other into co-signing something destructive without the phone.
+- **Policy** (`server/policy.ts`, and its copy `android/.../core/Policy.kt`, kept in step
+  by `server/test/policy-vectors.ts`): `assess(event, previousVersion)`. Every co-signer
+  judges an event against its own copy of your lists, so one compromised member can't
+  talk another into co-signing something destructive. When the phone asks you, it tells
+  the server to wait the full minute; a decline ends it, and nobody else is asked.
+- **Big messages** go between members in 24 KB parts (`sealParts` in `server/net.ts`,
+  `send` in `Phone.kt`): NIP-44 stops at 64 KB, and a large follow list is bigger.
 - **FROST** (`server/frost.ts`, `android/.../core/Frost.kt`): two nonces per signer,
   binding factors over the commitment list, BIP-340 challenge. Final signatures are plain
   BIP-340. `android/app/src/test/resources/frost.json` pins the two implementations.
@@ -91,6 +100,8 @@ cd android && ./gradlew :app:testDebugUnitTest          # Kotlin FROST against t
 cd site && node test/server.e2e.ts                      # tickets, signing, hold, undo, removal
 cd site && node --experimental-transform-types test/pair.e2e.ts   # QRST sign-in, end to end
 cd site && node test/nostrconnect.e2e.ts [relay]         # a plain nostr-tools site, by nostrconnect
+cd site && node test/single.e2e.ts                       # phone co-signs; backup steps in; big lists
+cd server && node test/policy-vectors.ts                 # policy cases for the phone's copy
 # a second group beside yours for these: node setup.ts --dir test-data --port 8721
 ```
 
@@ -99,9 +110,10 @@ cd site && node test/nostrconnect.e2e.ts [relay]         # a plain nostr-tools s
 - **The FROST is hand-rolled**, not RFC 9591's hashing, so it interoperates with nothing
   else. Trusted dealer: `setup.ts` sees the whole key once.
 - **A lost phone can't be replaced** without a new key yet: there's no re-sharing.
-- **The phone trusts the coordinating server's "this is destructive"** when it co-signs
-  because the *other* server is down. A compromised server plus the other one down is a
-  double failure this doesn't cover.
+- **The phone only knows the lists it has seen signed** (from your servers, or on your
+  relays). If it missed the latest version, it judges against an older one.
+- **The two servers are one key share each, not one server and a spare.** The backup can
+  co-sign with the main server when the phone is quiet, for everyday things only.
 - **One tap to connect a site.** QRST §9.1 says a web origin SHOULD get a deliberate act
   beyond one tap; this deliberately doesn't, per "no more complex than lowest-level QRST".
 - **ntfy is wired but untested end to end**: the test emulator has no distributor.
