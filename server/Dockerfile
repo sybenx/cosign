@@ -12,7 +12,9 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY *.ts start.sh ./
 COPY core ./core
 COPY frost-wasm ./frost-wasm
-# uid 1000 is "node" here, and owns the data directory on the host.
+# uid 1000 is "node" here, and owns the data directory: a bind mount owned by uid 1000
+# on the host, or a named volume, which takes this directory's owner when it's created.
+RUN mkdir -p /data && chown 1000:1000 /data
 USER 1000:1000
 ENV HOST=0.0.0.0
 EXPOSE 8711
