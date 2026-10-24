@@ -2,8 +2,11 @@
 # repository's GitHub releases, signed with Cosign's release key.
 repository: https://github.com/sybenx/cosign
 name: Cosign
-summary: Your Nostr key, split between your phone and your servers. No one place holds it.
+summary: "Beta: your Nostr key, split between your phone and your servers. No one place holds it."
 description: |
+  Beta. The signing library is the Zcash Foundation's audited FROST; Cosign's protocol
+  around it hasn't had an outside review yet.
+
   Cosign keeps your Nostr key split: your phone holds three shares, each of your servers
   one, and it takes four to sign. Your phone and any one server sign; the servers alone
   can't, and nobody ever holds the whole key.

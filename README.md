@@ -1,4 +1,4 @@
-# Cosign
+# Cosign (beta)
 
 Your Nostr key, split so no one place ever holds it: **your phone holds 3 shares, each
 of your servers 1, and it takes 4 to sign**. Your phone and any one server sign; the
@@ -53,8 +53,9 @@ wanted: running your own (public or private) is encouraged, not required.
 Everything travels over public relays (syb.lol, nos.lol, relay.primal.net): your servers
 need no public address and your phone needs nothing but a connection.
 
-**Early.** The FROST is the Zcash Foundation's audited `frost-secp256k1-tr` (refresh came
-after the audit); Cosign's own protocol and message kinds are provisional and unaudited.
+**Beta.** The FROST is the Zcash Foundation's audited `frost-secp256k1-tr` (refresh came
+after the audit); Cosign's own protocol around it, and its message kinds, haven't had an
+outside review yet.
 
 ## Try it
 
