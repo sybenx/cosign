@@ -371,6 +371,8 @@ class Phone(private val context: Context, val slot: String = "0") {
             return
         }
         if (t.startsWith("nostrconnect:")) return scannedNostrConnect(t)
+        // Another of your devices (a browser extension, say) invites this phone: ask it to vouch for us.
+        if (t.startsWith("cosign:invite")) return if (isMember) ui.update { it.copy(error = "This phone already holds a key. Use Add another key first.") } else joinByInvite(t)
         if (t.startsWith("cosign:join")) {
             if (!isMember) return ui.update { it.copy(error = "That's a new device's code. Scan it with a device that's already part of your key.") }
             val u = Uri.parse(t.replace("cosign:join?", "cosign://join?"))
@@ -956,15 +958,38 @@ class Phone(private val context: Context, val slot: String = "0") {
     private var joinWith: String? = null
     private val joinPieces = ConcurrentHashMap<String, Any>()
 
-    fun startJoin() {
+    fun startJoin(relays: List<String> = listOf("wss://syb.lol", "wss://nos.lol", "wss://relay.primal.net")) {
         val sk = generateSecretKey(env).toHex()
         joinWith = sk; joinPieces.clear()
-        val relays = listOf("wss://syb.lol", "wss://nos.lol", "wss://relay.primal.net")
         connect(relays, sk)
         val name = android.os.Build.MODEL.ifBlank { "A device" }
         val code = "cosign:join?pk=${publicKeyHex(sk.hexToBytes())}&name=${Uri.encode(name)}&" + relays.joinToString("&") { "r=" + Uri.encode(it) }
         ui.update { it.copy(joinCode = code, error = null) }
         android.util.Log.d("Cosign", "join code: $code") // for testing on an emulator, where nothing can scan the screen
+    }
+
+    /**
+     * An invite from a device already in a key (`cosign:invite?pk=<its member key>&r=…`): the
+     * same as showing our own join code, except we send it to that device (`join_request`),
+     * again until a server's welcome arrives. It asks you, with its lock, then adds us.
+     */
+    private fun joinByInvite(code: String) {
+        val u = Uri.parse(code.trim().replace("cosign:invite?", "cosign://invite?"))
+        val inviter = u.getQueryParameter("pk")
+        val urls = u.getQueryParameters("r").filter { it.startsWith("wss://") || it.startsWith("ws://") }
+        if (!isHex32(inviter) || urls.isEmpty()) return ui.update { it.copy(error = "That invite is damaged. Ask for a new one.") }
+        startJoin(urls)
+        val sk = joinWith ?: return
+        val name = android.os.Build.MODEL.ifBlank { "A phone" }
+        val ask = mapOf("type" to "join_request", "pk" to publicKeyHex(sk.hexToBytes()), "name" to name, "relays" to urls)
+        val started = System.currentTimeMillis()
+        timer.scheduleWithFixedDelay(object : Runnable {
+            override fun run() {
+                if (joinWith != sk || System.currentTimeMillis() - started > 180_000) throw RuntimeException("done") // stops the schedule
+                if (joinPieces["welcome"] == null) send(inviter!!, ask)
+            }
+        }, 1, 5, TimeUnit.SECONDS)
+        note("Asked your other device to add this phone")
     }
 
     fun cancelJoin() { joinWith = null; relays?.stop(); relays = null; sk = null; ui.update { it.copy(joinCode = null) } }
