@@ -12,10 +12,10 @@ import java.io.File
  * this phone has seen signed under your key, so it can judge a change itself. Only
  * events with a valid signature count: a server can't make one up on its own.
  */
-class Lists(context: Context) {
-    private val file = File(context.filesDir, "lists.json")
+class Lists(context: Context, slot: String = "0") {
+    private val file = File(context.filesDir, if (slot == "0") "lists.json" else "lists.$slot.json")
     /** Every version, as what changed from the one before: small enough to keep them all. */
-    private val history = File(context.filesDir, "lists-history.jsonl")
+    private val history = File(context.filesDir, if (slot == "0") "lists-history.jsonl" else "lists-history.$slot.jsonl")
     private val latest = HashMap<String, Event>()
 
     init {

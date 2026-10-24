@@ -19,10 +19,13 @@ class Nip55Provider : ContentProvider() {
         val type = uri.authority?.substringAfterLast('.') ?: return null
         // NIP-55 puts [payload, pubkey, current_user] in the projection; some apps use selectionArgs.
         val args = projection?.takeIf { it.isNotEmpty() } ?: selectionArgs ?: return null
-        val phone = CosignApp.instance.phone
-        val member = phone.ui.value.member ?: return null
-        val grant = phone.appGrant(callingPackage ?: return null) ?: return null
         val current = args.getOrNull(2)
+        // The key this app connected to: the one it names, if it does, else the one holding its grant.
+        val accounts = CosignApp.instance.accounts
+        val pkg = callingPackage ?: return null
+        val phone = accounts.all.firstOrNull { it.ui.value.member?.group?.groupX == current && it.appGrant(pkg) != null } ?: accounts.forApp(pkg) ?: return null
+        val member = phone.ui.value.member ?: return null
+        val grant = phone.appGrant(pkg) ?: return null
         if (!current.isNullOrBlank() && current.length == 64 && current != member.group.groupX) return null
         val payload = args.getOrNull(0) ?: ""
         val peer = args.getOrNull(1) ?: ""

@@ -3,6 +3,7 @@ package cc.aaro.cosign.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -49,6 +51,7 @@ import cc.aaro.cosign.Ask
 import cc.aaro.cosign.Change
 import cc.aaro.cosign.BatchAsk
 import cc.aaro.cosign.Connect
+import cc.aaro.cosign.CosignApp
 import cc.aaro.cosign.MoveIn
 import cc.aaro.cosign.Deleted
 import cc.aaro.cosign.Deleting
@@ -79,10 +82,18 @@ fun App(phone: Phone, ui: Ui) {
             ui.joining != null -> Joining(ui.joining, phone::decline)
             ui.joinCode != null && ui.member == null -> JoinCode(ui.joinCode, ui.error, phone::cancelJoin)
             ui.restoring != null && ui.member == null -> RestoringScreen(ui.restoring, phone::cancelRestore)
-            ui.member == null -> Welcome(ui.error, onJoin = phone::startJoin) { phone.clearError(); scanning = true }
+            ui.member == null -> Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f)) { Welcome(ui.error, onJoin = phone::startJoin) { phone.clearError(); scanning = true } }
+                // A place for another key: the ones you have are a tap away.
+                val others = CosignApp.instance.accounts.all.filter { it !== phone && it.isMember }
+                if (others.isNotEmpty()) TextButton({ CosignApp.instance.accounts.forget(phone.slot); CosignApp.instance.accounts.show(others.first().slot) },
+                    Modifier.align(Alignment.CenterHorizontally).safeDrawingPadding().padding(bottom = 12.dp)) { Text("Back to ${others.first().label}", color = Vault.Muted) }
+            }
             else -> Home(phone, ui) { phone.clearError(); scanning = true }
         }
-        ui.connect?.let { ConnectSheet(it, phone::confirmConnect, phone::closeConnect) }
+        // With several keys, every question says which one it's about.
+        val which = if (CosignApp.instance.accounts.all.count { it.isMember } > 1) phone.label else null
+        ui.connect?.let { ConnectSheet(it, which, phone::confirmConnect, phone::closeConnect) }
         ui.moveIn?.let { MoveInSheet(it, phone::acceptMove, phone::closeMove) }
         ui.summary?.let { UndoSiteSheet(it, phone::confirmUndoSite, phone::closeSummary) }
         ui.adding?.let { AddDeviceSheet(it, phone) }
@@ -222,7 +233,7 @@ private fun MoveInSheet(m: MoveIn, onKeep: () -> Unit, onClose: () -> Unit) {
 
 /** Connecting a site: the one-tap consent of QRST at its lowest check, then progress. */
 @Composable
-private fun ConnectSheet(c: Connect, onConnect: () -> Unit, onClose: () -> Unit) {
+private fun ConnectSheet(c: Connect, which: String?, onConnect: () -> Unit, onClose: () -> Unit) {
     BackHandler { onClose() }
     Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
         Column(
@@ -232,6 +243,7 @@ private fun ConnectSheet(c: Connect, onConnect: () -> Unit, onClose: () -> Unit)
             when (c.stage) {
                 Connect.Stage.CONFIRM -> {
                     Text("Let ${c.origin} sign as you?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                    which?.let { Text("as $it", fontFamily = PlexMono, color = Vault.Teal, style = MaterialTheme.typography.bodyMedium) }
                     Spacer(Modifier.height(10.dp))
                     Text("It gets its own access, through your servers — not your key. Everyday things sign automatically; anything destructive comes to this phone first.",
                         style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
@@ -279,7 +291,18 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
         item {
             Text("Cosign", style = MaterialTheme.typography.labelMedium, color = Vault.Muted)
             Spacer(Modifier.height(4.dp))
-            Text(short(m.group.npub), fontFamily = PlexMono, style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            var switching by remember { mutableStateOf(false) }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { switching = true }) {
+                Text(short(m.group.npub), fontFamily = PlexMono, style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                Text("  ▾", color = Vault.Muted, style = MaterialTheme.typography.titleMedium)
+            }
+            if (switching) KeysSheet(phone) { switching = false }
+            // Another key of yours with something waiting: say so here too, not only in notifications.
+            val waiting = CosignApp.instance.accounts.all.filter { it !== phone }.map { it to it.ui.collectAsState().value }
+                .filter { (_, u) -> u.asks.isNotEmpty() || u.batchAsks.isNotEmpty() }
+            for ((p, u) in waiting) TextButton({ CosignApp.instance.accounts.show(p.slot) }, contentPadding = PaddingValues(0.dp)) {
+                Text("${p.label}: ${u.asks.size + u.batchAsks.size} waiting for you. Switch", color = Vault.AmberText, style = MaterialTheme.typography.bodySmall)
+            }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (mem in m.group.members) Chip(if (mem.idx == m.idx) "This phone" else mem.name, ui.online[mem.idx] == true, Modifier.weight(1f))
@@ -524,6 +547,28 @@ private fun qrBitmap(text: String, size: Int): android.graphics.Bitmap {
     val m = com.google.zxing.qrcode.QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size)
     val px = IntArray(size * size) { i -> if (m[i % size, i / size]) android.graphics.Color.BLACK else android.graphics.Color.WHITE }
     return android.graphics.Bitmap.createBitmap(px, size, size, android.graphics.Bitmap.Config.ARGB_8888)
+}
+
+/** Your keys on this phone: switch between them, or add another. */
+@Composable
+private fun KeysSheet(current: Phone, onClose: () -> Unit) {
+    val accounts = CosignApp.instance.accounts
+    BackHandler { onClose() }
+    androidx.compose.ui.window.Dialog(onClose) {
+        Column(Modifier.background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp)) {
+            Text("Your keys on this phone", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Spacer(Modifier.height(12.dp))
+            for (p in accounts.all.filter { it.isMember || it === current }) {
+                TextButton({ accounts.show(p.slot); onClose() }, Modifier.fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
+                    Text((if (p === current) "● " else "○ ") + p.label, fontFamily = PlexMono, color = if (p === current) Vault.Teal else Vault.Text, modifier = Modifier.fillMaxWidth())
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Each key has its own servers, sites and history; adding one doesn't touch the others.", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(12.dp))
+            Button({ accounts.add(); onClose() }, Modifier.fillMaxWidth().height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Add another key") }
+        }
+    }
 }
 
 /** The paper backup: whether there is one, and making one (after this phone's lock). */

@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -29,10 +30,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // The app is always dark; keep the system bar icons light whatever the phone's theme.
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
-        val phone = CosignApp.instance.phone
+        val accounts = CosignApp.instance.accounts
         if (savedInstanceState == null) opened(intent)
         setContent {
             CosignTheme {
+                // The key on screen; switching keys swaps everything below.
+                val slot by accounts.activeSlot.collectAsState()
+                val phone = accounts.phone(slot) ?: accounts.active
+                key(slot) {
                 val ui by phone.ui.collectAsState()
                 val notify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                 // Once in a group: stay reachable, and be allowed to say so.
@@ -62,6 +67,7 @@ class MainActivity : ComponentActivity() {
                     if (stage == null) hadConnect = false
                 }
                 App(phone, ui)
+                }
             }
         }
     }

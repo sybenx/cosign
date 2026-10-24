@@ -11,15 +11,16 @@ import org.unifiedpush.android.connector.data.PushMessage
  * the request comes over relays, sealed, once the phone is listening again.
  */
 class Push : PushService() {
-    private val phone get() = CosignApp.instance.phone
+    /** Every key's servers wake the phone through the same endpoint. */
+    private val phones get() = CosignApp.instance.accounts.all
 
-    override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) = phone.setPushEndpoint(endpoint.url)
+    override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) { for (p in phones) p.setPushEndpoint(endpoint.url) }
 
     override fun onMessage(message: PushMessage, instance: String) {
         try { CosignService.start(this) } catch (_: Exception) { }
-        phone.start()
+        for (p in phones) if (p.isMember) p.start()
     }
 
-    override fun onRegistrationFailed(reason: FailedReason, instance: String) = phone.setPushEndpoint(null)
-    override fun onUnregistered(instance: String) = phone.setPushEndpoint(null)
+    override fun onRegistrationFailed(reason: FailedReason, instance: String) { for (p in phones) p.setPushEndpoint(null) }
+    override fun onUnregistered(instance: String) { for (p in phones) p.setPushEndpoint(null) }
 }

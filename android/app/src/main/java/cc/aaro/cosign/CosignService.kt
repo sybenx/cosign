@@ -18,30 +18,47 @@ import androidx.core.content.ContextCompat
  * for a signature while the app isn't on screen. Shows an ongoing notification
  * (Android requires one) and a heads-up notification for each request.
  */
-class CosignService : Service(), Phone.Listener {
-    private val phone get() = CosignApp.instance.phone
+class CosignService : Service() {
+    private val accounts get() = CosignApp.instance.accounts
     private var lastStatus = ""
+
+    /** One key's side: its notifications say which key they're for when there's more than one, and act on that key. */
+    private inner class For(val p: Phone) : Phone.Listener {
+        override fun onAsk(ask: Ask) = ask(p, ask)
+        override fun onAskGone(id: String) = NotificationManagerCompat.from(this@CosignService).cancel(id.hashCode())
+        override fun onStatus() = status()
+        override fun onDeleting(d: Deleting) = deleting(p, d)
+        override fun onDeletingGone(batch: String) = NotificationManagerCompat.from(this@CosignService).cancel(("del" + batch).hashCode())
+        override fun onBatch(b: BatchAsk) = batch(p, b)
+        override fun onBatchGone(batch: String) = NotificationManagerCompat.from(this@CosignService).cancel(("batch" + batch).hashCode())
+        override fun onNotice(title: String, text: String) = notice(p, title, text)
+    }
+
+    /** "for npub1…" when there's more than one key here; nothing when there's one. */
+    private fun forKey(p: Phone) = if (accounts.all.count { it.isMember } > 1) " · ${p.label}" else ""
+
+    private fun listenAll() { for (p in accounts.all) if (p.listener !is For) p.listener = For(p) }
 
     override fun onCreate() {
         super.onCreate()
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(STATUS, "Connection", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) })
         nm.createNotificationChannel(NotificationChannel(ASKS, "Signing requests", NotificationManager.IMPORTANCE_HIGH))
-        if (Build.VERSION.SDK_INT >= 34) startForeground(STATUS_ID, status(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        else startForeground(STATUS_ID, status())
-        phone.listener = this
-        phone.start()
+        if (Build.VERSION.SDK_INT >= 34) startForeground(STATUS_ID, statusNote(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        else startForeground(STATUS_ID, statusNote())
+        listenAll()
+        for (p in accounts.all) if (p.isMember) p.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!phone.isMember) { stopSelf(); return START_NOT_STICKY }
-        phone.start()
+        if (accounts.all.none { it.isMember }) { stopSelf(); return START_NOT_STICKY }
+        listenAll()
+        for (p in accounts.all) if (p.isMember) p.start()
         return START_STICKY
     }
 
     override fun onDestroy() {
-        if (phone.listener === this) phone.listener = null
-        if (!phone.isMember) phone.stop()
+        for (p in accounts.all) { if (p.listener is For) p.listener = null; if (!p.isMember) p.stop() }
         super.onDestroy()
     }
 
@@ -50,13 +67,16 @@ class CosignService : Service(), Phone.Listener {
     private fun openApp() = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
 
     private fun statusText(): String {
-        val u = phone.ui.value
-        val m = u.member ?: return "Not in a group"
+        val keys = accounts.all.filter { it.isMember }
+        if (keys.isEmpty()) return "Not in a group"
+        if (keys.size > 1) return "${keys.size} keys · " + keys.joinToString(" · ") { p -> "${p.label} ${if (p.ui.value.relaysUp == 0) "offline" else "connected"}" }
+        val u = keys[0].ui.value
+        val m = u.member!!
         val servers = m.group.members.filter { it.role == "server" }.joinToString(" · ") { "${it.name} ${if (u.online[it.idx] == true) "online" else "offline"}" }
         return if (u.relaysUp == 0) "No relay connection · retrying" else servers
     }
 
-    private fun status() = NotificationCompat.Builder(this, STATUS)
+    private fun statusNote() = NotificationCompat.Builder(this, STATUS)
         .setSmallIcon(R.drawable.ic_stat)
         .setContentTitle("Cosign")
         .setContentText(statusText())
@@ -64,23 +84,23 @@ class CosignService : Service(), Phone.Listener {
         .setContentIntent(openApp())
         .build()
 
-    override fun onStatus() {
+    private fun status() {
         val text = statusText()
         if (text == lastStatus) return
         lastStatus = text
-        if (canNotify()) NotificationManagerCompat.from(this).notify(STATUS_ID, status())
+        if (canNotify()) NotificationManagerCompat.from(this).notify(STATUS_ID, statusNote())
     }
 
-    override fun onAsk(ask: Ask) {
+    private fun ask(p: Phone, ask: Ask) {
         if (!canNotify()) return
         fun decision(approve: Boolean) = PendingIntent.getBroadcast(
             this, (ask.id + approve).hashCode(),
-            Intent(this, DecisionReceiver::class.java).putExtra("id", ask.id).putExtra("approve", approve),
+            Intent(this, DecisionReceiver::class.java).putExtra("id", ask.id).putExtra("approve", approve).putExtra("slot", p.slot),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val n = NotificationCompat.Builder(this, ASKS)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("Approve?")
+            .setContentTitle("Approve?" + forKey(p))
             .setContentText(ask.hold)
             .setStyle(NotificationCompat.BigTextStyle().bigText("${ask.hold}\n${ask.app} asked."))
             .setSubText(ask.app)
@@ -96,18 +116,17 @@ class CosignService : Service(), Phone.Listener {
         NotificationManagerCompat.from(this).notify(ask.id.hashCode(), n)
     }
 
-    override fun onAskGone(id: String) = NotificationManagerCompat.from(this).cancel(id.hashCode())
 
-    private fun action(key: String, value: String, approve: Boolean = false) = PendingIntent.getBroadcast(
+    private fun action(p: Phone, key: String, value: String, approve: Boolean = false) = PendingIntent.getBroadcast(
         this, (key + value + approve).hashCode(),
-        Intent(this, DecisionReceiver::class.java).putExtra(key, value).putExtra("approve", approve),
+        Intent(this, DecisionReceiver::class.java).putExtra(key, value).putExtra("approve", approve).putExtra("slot", p.slot),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
     /** A deletion in its few seconds: Undo stops it. */
-    override fun onDeleting(d: Deleting) {
+    private fun deleting(p: Phone, d: Deleting) {
         if (!canNotify()) return
-        val what = "Deleting ${d.count} event${if (d.count == 1) "" else "s"} for ${d.by}"
+        val what = "Deleting ${d.count} event${if (d.count == 1) "" else "s"} for ${d.by}" + forKey(p)
         val n = NotificationCompat.Builder(this, ASKS)
             .setSmallIcon(R.drawable.ic_stat)
             .setContentTitle(what)
@@ -116,35 +135,33 @@ class CosignService : Service(), Phone.Listener {
             .setOnlyAlertOnce(true)
             .setTimeoutAfter((d.until - System.currentTimeMillis()).coerceAtLeast(1000))
             .setContentIntent(openApp())
-            .addAction(NotificationCompat.Action.Builder(0, "Undo", action("cancel", d.batch)).build())
+            .addAction(NotificationCompat.Action.Builder(0, "Undo", action(p, "cancel", d.batch)).build())
             .build()
         NotificationManagerCompat.from(this).notify(("del" + d.batch).hashCode(), n)
     }
-    override fun onDeletingGone(batch: String) = NotificationManagerCompat.from(this).cancel(("del" + batch).hashCode())
 
     /** One approval for a batch of deletions. */
-    override fun onBatch(b: BatchAsk) {
+    private fun batch(p: Phone, b: BatchAsk) {
         if (!canNotify()) return
         val n = NotificationCompat.Builder(this, ASKS)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("Approve?")
+            .setContentTitle("Approve?" + forKey(p))
             .setContentText(b.text)
             .setStyle(NotificationCompat.BigTextStyle().bigText("${b.text}\nNostr can't take a deletion back. Cosign keeps copies."))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setTimeoutAfter((b.expiresAt - System.currentTimeMillis()).coerceAtLeast(1000))
             .setAutoCancel(true)
             .setContentIntent(openApp())
-            .addAction(NotificationCompat.Action.Builder(0, "Deny", action("batch", b.batch, false)).build())
-            .addAction(NotificationCompat.Action.Builder(0, "Approve", action("batch", b.batch, true)).setAuthenticationRequired(true).build())
+            .addAction(NotificationCompat.Action.Builder(0, "Deny", action(p, "batch", b.batch, false)).build())
+            .addAction(NotificationCompat.Action.Builder(0, "Approve", action(p, "batch", b.batch, true)).setAuthenticationRequired(true).build())
             .build()
         NotificationManagerCompat.from(this).notify(("batch" + b.batch).hashCode(), n)
     }
-    override fun onBatchGone(batch: String) = NotificationManagerCompat.from(this).cancel(("batch" + batch).hashCode())
 
-    override fun onNotice(title: String, text: String) {
+    private fun notice(p: Phone, title: String, text: String) {
         if (!canNotify()) return
         NotificationManagerCompat.from(this).notify((title + text).hashCode(), NotificationCompat.Builder(this, ASKS)
-            .setSmallIcon(R.drawable.ic_stat).setContentTitle(title).setContentText(text)
+            .setSmallIcon(R.drawable.ic_stat).setContentTitle(title + forKey(p)).setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text)).setAutoCancel(true).setContentIntent(openApp()).build())
     }
 

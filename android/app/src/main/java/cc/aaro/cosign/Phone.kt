@@ -142,7 +142,9 @@ data class Ui(
  * and removes what's connected, approves anything destructive, and undoes changes. It
  * co-signs routine things itself only while one of your servers is down.
  */
-class Phone(private val context: Context) {
+class Phone(private val context: Context, val slot: String = "0") {
+    /** This key's own storage names; the first key keeps the ones it always had. */
+    private fun named(base: String) = if (slot == "0") base else "$base.$slot"
     interface Listener {
         fun onAsk(ask: Ask); fun onAskGone(id: String); fun onStatus()
         fun onDeleting(d: Deleting) {}; fun onDeletingGone(batch: String) {}
@@ -151,13 +153,18 @@ class Phone(private val context: Context) {
         fun onNotice(title: String, text: String) {}
     }
 
-    private val secrets = Secrets(context)
-    private val lists = Lists(context)
+    private val secrets = Secrets(context, slot)
+    private val lists = Lists(context, slot)
     /** Big messages arrive in parts (NIP-44 stops at 64 KB); these are the ones still coming in. */
     private val parts = ConcurrentHashMap<String, Pair<Long, Array<String?>>>()
     private val env = SystemEnv
     val ui = MutableStateFlow(Ui())
     @Volatile var listener: Listener? = null
+    /** Called when this key is left, so the app can forget it (Accounts). */
+    @Volatile var onLeft: ((Phone) -> Unit)? = null
+
+    /** Which key this is, for a notification or a list: its npub, shortened. */
+    val label get() = ui.value.member?.group?.npub?.let { if (it.length > 20) it.take(12) + "…" + it.takeLast(6) else it } ?: "New key"
 
     private var relays: Relays? = null
     private var sk: String? = null
@@ -333,8 +340,8 @@ class Phone(private val context: Context) {
 
     fun leave() {
         stop(); secrets.clear(); lists.clear(); lastSeen.clear(); signedLog.delete(); apps.edit().clear().apply()
-        context.getSharedPreferences("cosign", Context.MODE_PRIVATE).edit().clear().apply()
-        ui.value = Ui()
+        ui.value = Ui(push = ui.value.push)
+        onLeft?.invoke(this)
     }
 
     // --- Scanning ------------------------------------------------------------
@@ -927,7 +934,7 @@ class Phone(private val context: Context) {
 
     // --- Deletions, and undoing a site -------------------------------------------------
 
-    private val signedLog = java.io.File(context.filesDir, "signed.jsonl")
+    private val signedLog = java.io.File(context.filesDir, named("signed") + ".jsonl")
     private val approvedBatches = ConcurrentHashMap.newKeySet<String>()
     private val decidedBatches = ConcurrentHashMap.newKeySet<String>()
 
@@ -1006,7 +1013,7 @@ class Phone(private val context: Context) {
     // destructive needs you to approve it here first, and the server checks the app still
     // has access. Decrypting is done in two halves and finished here, never on a server.
 
-    private val apps = context.getSharedPreferences("apps", Context.MODE_PRIVATE)
+    private val apps = context.getSharedPreferences(named("apps"), Context.MODE_PRIVATE)
     private val waiting = ConcurrentHashMap<String, CompletableFuture<Map<*, *>>>()
     private val sharedXs = ConcurrentHashMap<String, Pair<Long, ByteArray>>()
 

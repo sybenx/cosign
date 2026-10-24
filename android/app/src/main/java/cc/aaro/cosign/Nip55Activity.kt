@@ -53,7 +53,8 @@ class Nip55Activity : ComponentActivity() {
         data class Failed(val text: String) : Stage
     }
 
-    private val phone get() = CosignApp.instance.phone
+    /** The key this app connected to, or (to connect one) the key on screen. */
+    private val phone get() = CosignApp.instance.accounts.let { a -> a.forApp(pkg) ?: a.active }
     private val work = Executors.newSingleThreadExecutor()
     private val stage = mutableStateOf<Stage>(Stage.Working("…"))
     private lateinit var type: String
@@ -189,6 +190,9 @@ class Nip55Activity : ComponentActivity() {
 
     private fun fail(text: String) { stage.value = Stage.Failed(text) }
 
+    /** With several keys on this phone: which one this is about. */
+    private fun whichKey() = if (CosignApp.instance.accounts.all.count { it.isMember } > 1) ", as ${phone.label}" else ""
+
     @Composable
     private fun Sheet(s: Stage) {
         BackHandler { reject() }
@@ -199,7 +203,7 @@ class Nip55Activity : ComponentActivity() {
             ) {
                 when (s) {
                     Stage.Connect -> Ask(
-                        "Let $label sign as you?",
+                        "Let $label sign as you?" + (if (CosignApp.instance.accounts.all.count { it.isMember } > 1) " (${phone.label})" else ""),
                         "It gets its own access, through your servers — not your key. Everyday things sign automatically; anything destructive comes to this phone first.",
                         "Remove it in Cosign any time.",
                         no = "Don't connect", yes = "Connect $label",
@@ -210,7 +214,7 @@ class Nip55Activity : ComponentActivity() {
                         null, no = "Not now", yes = "Allow",
                     ) { phone.allowDms(phone.appGrant(pkg)!!); crypt() }
                     is Stage.Approve -> Ask(
-                        "Approve?", s.what, "$label asked. This can't be signed without you.",
+                        "Approve?", s.what, "$label asked${whichKey()}. This can't be signed without you.",
                         no = "Deny", yes = "Approve", amber = true,
                     ) { sign(event!!, approved = true) }
                     is Stage.Working -> {
