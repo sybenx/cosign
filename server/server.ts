@@ -32,7 +32,9 @@ import { checkClock } from './clock.ts';
 // --- State -------------------------------------------------------------------
 
 /** A member: one of the two servers, your phone, or another device of yours (a tablet, a second phone, the extension). */
-interface Member { idx: number; name: string; role: 'server' | 'phone' | 'device'; pk: string | null; sharePub: string; push?: string | null; removed?: number }
+interface Member { idx: number; name: string; role: 'server' | 'phone' | 'device'; pk: string | null; sharePub: string; push?: string | null; removed?: number;
+  /** In a weighted key a member holds several shares (a device 3, a server 1). `idx`/`sharePub` are the first. */
+  shares?: { idx: number; sharePub: string }[] }
 /**
  * A grant. `parent` is set for one a connected site added under itself (the browser
  * extension adds one per website it signs for); `via` names what connected it.
@@ -52,6 +54,12 @@ const history = new History(join(dir, 'history.jsonl'), join(dir, 'saved.jsonl')
 
 const members: Member[] = S.group.members;
 const me = members.find(m => m.idx === S.self.idx)!;
+/** This server's own shares (one, today, for a server). */
+const myShares: Sig.Share[] = S.self.shares ?? [{ idx: S.self.idx, secret: S.self.share }];
+const myIdxs = myShares.map(s => s.idx);
+const sharesOf = (m: Member) => m.shares?.map(s => s.idx) ?? [m.idx];
+const ownerOf = (idx: number) => members.find(m => sharesOf(m).includes(idx));
+const sameSet = (a: number[], b: number[]) => [...a].sort((x, y) => x - y).join() === [...b].sort((x, y) => x - y).join();
 const other = () => members.find(m => m.role === 'server' && m.idx !== me.idx)!;
 /** The phone your server's code added first: pairing only. Everything else is any device. */
 const phone = () => members.find(m => m.role === 'phone')!;
@@ -409,17 +417,23 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?
 
   /** One round with one partner: its commitment and partial, then ours, then the signature. */
   async function attempt(m: Member, wait: number, reqId = rid()): Promise<Attempt> {
-    const participants = [me.idx, m.idx].sort((a, b) => a - b);
-    const mine = Sig.commit(S.group, me.idx, S.self.share); // fresh every round; used only once we have a valid partner
-    const res = await ask(m.pk!, { type: 'sign_req', id: reqId, event: ev, msg: id, participants, commit: mine.commit, frost: 2, app: by, hold: hold ?? null, undo: opts.undo ?? null, batch: batch ?? null }, wait);
+    // Every share of ours and of the partner's: together they must reach the threshold.
+    const participants = [...myIdxs, ...sharesOf(m)].sort((a, b) => a - b);
+    if (participants.length < S.group.threshold) return { m, reason: `not enough shares with ${m.name}` };
+    const mine = Sig.commitAll(S.group, myShares); // fresh every round; used only once we have a valid partner
+    const res = await ask(m.pk!, { type: 'sign_req', id: reqId, event: ev, msg: id, participants, commits: mine.commits, commit: mine.commits[0], frost: 2, app: by, hold: hold ?? null, undo: opts.undo ?? null, batch: batch ?? null }, wait);
     if (!res.ok) return { m, reason: String(res.reason) };
-    const commits = [mine.commit, res.commit];
+    // A partner with one share may answer the earlier way: one commit, one z.
+    const theirs: Sig.Commit[] = res.commits ?? (res.commit ? [res.commit] : []);
+    const theirZs: [number, string][] = res.zs ?? (res.commit ? [[res.commit.idx, res.z]] : []);
+    if (!sameSet(theirs.map(c => c.idx), sharesOf(m)) || !sameSet(theirZs.map(z => z[0]), sharesOf(m))) return { m, reason: 'bad partial' };
+    const commits = [...mine.commits, ...theirs];
     // Whichever math the partner used (it may not be updated yet), finish the round in it.
-    const scheme = res.commit?.idx === m.idx ? Sig.schemeOf(S.group, id, commits, m.idx, res.z) : null;
+    const scheme = Sig.schemeOfAll(S.group, id, commits, theirZs);
     if (!scheme) return { m, reason: 'bad partial' };
     if (process.env.DEBUG) console.log(`[${me.name}] ${m.name} signed with ${scheme === 2 ? 'FROST (RFC 9591)' : 'the earlier math'}`);
-    const z = Sig.partial(scheme, S.group, me.idx, S.self.share, mine.nonces, id, commits);
-    return { m, signed: { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [[me.idx, z], [m.idx, res.z]]) } as Event };
+    const zs = Sig.partialAll(scheme, S.group, myShares, mine.nonces, id, commits);
+    return { m, signed: { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [...zs, ...theirZs]) } as Event };
   }
 
   // Everyday, with your phone and your other server both awake: ask both at once, each in
@@ -556,27 +570,35 @@ function onSignReq(msg: any, from: Member): object {
   const ev = msg.event;
   const participants: number[] = msg.participants;
   if (from.role !== 'server') return respond({ ok: false, reason: 'only servers coordinate' });
-  if (participants.length !== 2 || !participants.includes(me.idx) || !participants.includes(from.idx)) return respond({ ok: false, reason: 'bad participants' });
+  if (!Array.isArray(participants) || !sameSet(participants, [...sharesOf(from), ...myIdxs])) return respond({ ok: false, reason: 'bad participants' });
   if (ev.pubkey !== groupX || getEventHash(ev) !== msg.msg) return respond({ ok: false, reason: 'event does not match the message' });
   // Our own archive, not the coordinator's word: a compromised server can't talk us
   // into co-signing something destructive without the phone.
   const { hold, refuse } = assess(ev, archive.latest(keyOf(ev)));
   if (refuse) { note(`refused to co-sign for ${from.name}: ${refuse}`); return respond({ ok: false, reason: `refused: ${refuse}` }); }
-  if (hold && !participants.some(i => isDevice(members.find(m => m.idx === i)))) {
+  if (hold && !participants.some(i => isDevice(ownerOf(i)))) {
     note(`refused to co-sign for ${from.name}: ${hold} needs your phone`);
     return respond({ ok: false, reason: `${hold} needs your phone` });
   }
-  const mine = Sig.commit(S.group, me.idx, S.self.share);
-  const z = Sig.partial(msg.frost === 2 ? 2 : 1, S.group, me.idx, S.self.share, mine.nonces, msg.msg, [msg.commit, mine.commit]);
-  return respond({ ok: true, commit: mine.commit, z });
+  return respond(cosign(msg, msg.frost === 2 ? 2 : 1));
+}
+
+/** Our commitments and partials for a round someone else runs, over its commitments and ours. */
+function cosign(msg: any, scheme: Sig.Scheme) {
+  const theirs: Sig.Commit[] = msg.commits ?? [msg.commit];
+  const mine = Sig.commitAll(S.group, myShares);
+  const zs = Sig.partialAll(scheme, S.group, myShares, mine.nonces, msg.msg, [...theirs, ...mine.commits]);
+  // The first ones again the earlier way, for a coordinator that predates several shares.
+  return { ok: true, commits: mine.commits, zs, commit: mine.commits[0], z: zs[0][1] };
 }
 
 function onEcdhReq(msg: any, from: Member): object {
   const respond = (r: object) => ({ type: 'ecdh_res', id: msg.id, ...r });
-  if (!msg.participants?.includes(me.idx) || !msg.participants.includes(from.idx)) return respond({ ok: false, reason: 'bad request' });
+  if (!Array.isArray(msg.participants) || !sameSet(msg.participants, [...sharesOf(from), ...myIdxs])) return respond({ ok: false, reason: 'bad request' });
   // The phone asks on behalf of an app it has let read your messages; that app must still have access.
   if (isDevice(from) && !liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
-  return respond({ ok: true, point: F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants: msg.participants, peerX: msg.peerX }) });
+  const points = myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
+  return respond({ ok: true, points, point: points[0] });
 }
 
 // --- Apps on your phone (Android signer, NIP-55) ------------------------------------
@@ -603,7 +625,7 @@ function onCosignReq(msg: any, from: Member): object {
   const ev = msg.event;
   if (!isDevice(from)) return respond({ ok: false, reason: 'only your devices do this' });
   const participants: number[] = msg.participants ?? [];
-  if (participants.length !== 2 || !participants.includes(me.idx) || !participants.includes(from.idx)) return respond({ ok: false, reason: 'bad participants' });
+  if (!Array.isArray(participants) || !sameSet(participants, [...sharesOf(from), ...myIdxs])) return respond({ ok: false, reason: 'bad participants' });
   if (ev?.pubkey !== groupX || getEventHash(ev) !== msg.msg) return respond({ ok: false, reason: 'event does not match the message' });
   const grant = liveGrant(msg.grant);
   if (!grant) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
@@ -611,9 +633,7 @@ function onCosignReq(msg: any, from: Member): object {
   if (refuse) return respond({ ok: false, reason: `refused: ${refuse}` });
   if (hold && !msg.approved) return respond({ ok: false, reason: `needs-approval: ${hold}` });
   grant.lastUsed = now();
-  const mine = Sig.commit(S.group, me.idx, S.self.share);
-  const z = Sig.partial(2, S.group, me.idx, S.self.share, mine.nonces, msg.msg, [msg.commit, mine.commit]);
-  return respond({ ok: true, commit: mine.commit, z });
+  return respond(cosign(msg, 2));
 }
 
 /** The phone finished a round for an app: keep it like anything else signed here. */
@@ -635,10 +655,11 @@ async function frostEcdh(peerX: string): Promise<Uint8Array> {
   const tried: string[] = [];
   const order = partners([...devices(), other()]);
   for (const [i, m] of order.entries()) {
-    const participants = [me.idx, m.idx].sort((a, b) => a - b);
+    const participants = [...myIdxs, ...sharesOf(m)].sort((a, b) => a - b);
+    if (participants.length < S.group.threshold) { tried.push(`${m.name}: not enough shares`); continue; }
     const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, isDevice(m) ? phoneWait(false, order.slice(i + 1)) : 6_000);
     if (!res.ok) { tried.push(`${m.name}: ${res.reason}`); continue; }
-    const x = F.ecdhCombine([F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants, peerX }), res.point]);
+    const x = F.ecdhCombine([...myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants, peerX })), ...(res.points ?? [res.point])]);
     ecdhCache.set(peerX, { x, at: Date.now() });
     return x;
   }
@@ -848,7 +869,7 @@ async function addDevice(msg: any, by: Member) {
   if (msg.lock !== true) throw new Error('adding a device needs this phone’s lock');
   const k = Math.max(...members.map(m => m.idx)) + 1;
   const helpers = [by.idx, me.idx].sort((a, b) => a - b);
-  const deltas = Sig.repairStep1(S.group, me.idx, S.self.share, helpers, k);
+  const deltas = Sig.repairStep1(S.group, me.idx, myShares[0].secret, helpers, k);
   adding.set(String(msg.id), { k, pk, name: String(msg.name ?? 'A device').slice(0, 40), by, mine: deltas.find(d => d[0] === me.idx)![1], at: Date.now() });
   const relays = (msg.relays ?? []).filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r));
   if (relays.length) await pool.add(relays);
