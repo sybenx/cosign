@@ -731,6 +731,91 @@ class Phone(private val context: Context, val slot: String = "0") {
         }
     }
 
+    // --- An account you already have, dealt on this phone ---------------------------------
+    //
+    // "I already have an account": you paste its nsec, and this phone deals it as a page
+    // would (site/src/import.ts): its own three shares, one for each server it picks (one
+    // per operator first), any four sign. Each server gets its share (enroll, how
+    // 'dealt'), the key is wiped, and the paper backup is offered at once. The nsec never
+    // becomes a String: it's read as characters and decoded to bytes, and both are wiped.
+
+    /** The key in [chars] (nsec1… or 64 hex), as bytes, or null. Wipes [chars]. */
+    fun secretFrom(chars: CharArray): ByteArray? = try {
+        val t = chars.filter { !it.isWhitespace() }.toCharArray()
+        try {
+            when {
+                t.size == 64 && t.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' } ->
+                    ByteArray(32) { ((Character.digit(t[2 * it], 16) shl 4) or Character.digit(t[2 * it + 1], 16)).toByte() }
+                else -> cc.aaro.cosign.core.Bech32.decodeNsec(t)
+            }
+        } finally { t.fill(' ') }
+    } finally { chars.fill(' ') }
+
+    /** Deal [secret] here and give each picked server its share. Wipes [secret]. */
+    fun importKey(secret: ByteArray) {
+        if (isMember) { secret.fill(0); return ui.update { it.copy(error = "This phone already holds an account. Use Add another account first.") } }
+        ui.update { it.copy(error = null, moveIn = MoveIn(MoveIn.Stage.WAITING, text = "Finding servers…")) }
+        // Its own thread: it waits on servers for a while, and asks them all at once.
+        Thread {
+            try { importNow(secret) } catch (e: Exception) {
+                ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.FAILED, text = "Not moved: ${e.message ?: "something went wrong"}. Nothing was kept.")) }
+            } finally { secret.fill(0) }
+        }.start()
+    }
+
+    private fun importNow(secret: ByteArray) {
+        val found = cc.aaro.cosign.net.Servers.find()
+        val mySk = generateSecretKey(env).toHex()
+        connect(found.flatMap { it.relays }.distinct().take(8), mySk)
+        Thread.sleep(2500)
+        val ask = { s: cc.aaro.cosign.net.Servers.Server, body: Map<String, Any?>, tries: Int ->
+            val id = env.random(8).toHex()
+            val f = CompletableFuture<Map<*, *>>()
+            waiting[id] = f
+            var reply: Map<*, *>? = null
+            for (i in 0 until tries) { send(s.pk, body + ("id" to id)); reply = try { f.get(4, TimeUnit.SECONDS) } catch (_: Exception) { null }; if (reply != null) break }
+            waiting.remove(id); reply
+        }
+        // Up to three that answer, one per operator first (servers.ts pickServers).
+        val pool = Executors.newFixedThreadPool(found.size.coerceIn(1, 8))
+        val answering = try {
+            found.map { s -> s to CompletableFuture.supplyAsync({ ask(s, mapOf("type" to "enroll_key"), 3) }, pool) }
+                .mapNotNull { (s, f) -> f.get().takeIf { it?.get("type") == "enroll_key" }?.let { s to it } }
+        } finally { pool.shutdown() }
+        val picked = mutableListOf<Pair<cc.aaro.cosign.net.Servers.Server, Map<*, *>>>()
+        for (a in answering) if (picked.size < 3 && picked.none { it.first.operator == a.first.operator }) picked += a
+        for (a in answering) if (picked.size < 3 && a !in picked) picked += a
+        if (picked.isEmpty()) throw IllegalStateException("no Cosign server answered; try again in a minute")
+        ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.WAITING, text = "Giving ${if (picked.size == 1) "your server" else "${picked.size} servers"} their part…")) }
+
+        val idxs = IntArray(3 + picked.size) { it + 1 }
+        val dealt = Json.parse(FrostNative.dealFromSecret(secret, idxs, 4)) as Map<*, *>
+        secret.fill(0)
+        val shares = (dealt["shares"] as List<*>).map { it as Map<*, *> }.map { Triple((it["idx"] as Long).toInt(), it["secret"] as String, it["sharePub"] as String) }
+        val groupX = dealt["groupX"] as String
+        val me = publicKeyHex(mySk.hexToBytes())
+        val relays = picked.flatMap { it.first.relays }.distinct().take(4)
+        val signerSk = generateSecretKey(env).toHex()
+        val mine = shares.take(3)
+        val record = mapOf("groupX" to groupX, "npub" to Nip19.npub(groupX), "threshold" to 4, "relays" to relays,
+            "members" to listOf(mapOf("idx" to 1, "name" to android.os.Build.MODEL.ifBlank { "Phone" }.take(40), "role" to "phone", "pk" to me, "sharePub" to mine[0].third,
+                "shares" to mine.map { mapOf("idx" to it.first, "sharePub" to it.third) })) +
+                picked.mapIndexed { i, (s, key) -> mapOf("idx" to 4 + i, "name" to s.name, "role" to "server", "pk" to key["pk"], "sharePub" to shares[3 + i].third) })
+        for ((i, p) in picked.withIndex()) {
+            val r = ask(p.first, mapOf("type" to "enroll", "how" to "dealt", "key" to p.second["key"], "group" to record, "share" to shares[3 + i].second,
+                "signer" to mapOf("sk" to signerSk, "pk" to publicKeyHex(signerSk.hexToBytes()))), 6)
+            if (r?.get("type") != "enrolled") throw IllegalStateException("${p.first.name} ${r?.get("reason") ?: "didn't answer"}")
+        }
+        val group = parseGroup(record) ?: throw IllegalStateException("the account record is damaged")
+        val m = Membership(mySk, 1, mine.map { Share(it.first, it.second) }, publicKeyHex(signerSk.hexToBytes()), group)
+        secrets.saveMembership(Json.stringify(membershipToMap(m)))
+        connect(relays, mySk)
+        ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your account is in Cosign now.")) }
+        note("Moved ${group.npub.take(16)}… in", "approved")
+        offerPaper()
+        start()
+    }
+
     // --- A key moving in from a web page ------------------------------------------------
     //
     // The page that held the key dealt it: each server already has its share (and a claim

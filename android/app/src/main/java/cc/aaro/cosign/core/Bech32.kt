@@ -48,6 +48,25 @@ object Bech32 {
         return hrp + "1" + (words + checksum).joinToString("") { CHARSET[it].toString() }
     }
 
+    /**
+     * An nsec's 32 bytes, read from characters without ever making a String of them (so
+     * the secret isn't left in an immutable copy). Null if it isn't a valid nsec. The
+     * caller wipes [input] and the result.
+     */
+    fun decodeNsec(input: CharArray): ByteArray? {
+        val n = input.size
+        if (n != 63 || !(input.all { !it.isUpperCase() } || input.all { !it.isLowerCase() })) return null
+        val c = CharArray(n) { input[it].lowercaseChar() }
+        try {
+            if (String(c, 0, 5) != "nsec1") return null // the prefix is public
+            val values = IntArray(n - 5) { CHARSET.indexOf(c[5 + it]).also { v -> if (v < 0) return null } }
+            if (polymod(hrpExpand("nsec") + values) != 1) return null
+            val words = ByteArray(values.size - 6) { values[it].toByte() }
+            val out = try { convert(words, 5, 8, false) } finally { words.fill(0); values.fill(0) }
+            return if (out.size == 32) out else { out.fill(0); null }
+        } finally { c.fill(' ') }
+    }
+
     /** Returns (hrp, data). Throws on a bad checksum, mixed case, or anything malformed. */
     fun decode(input: String): Pair<String, ByteArray> {
         require(input.length <= 90) { "bech32: too long" }
