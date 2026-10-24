@@ -17,7 +17,7 @@
 services:
   cosign:
     build: ./server
-    image: cosign-server:0.9.0
+    image: cosign-server:0.10.3
     pull_policy: build
     user: "1000:1000"
     environment:
@@ -25,6 +25,8 @@ services:
       COSIGN_RELAYS: wss://syb.lol,wss://nos.lol,wss://relay.primal.net
       # COSIGN_ENROLL: open
       # COSIGN_INVITES: <device pubkey hex>,<device pubkey hex>
+      # Announce it (kind 30243) so devices can find it, naming who runs it:
+      # COSIGN_OPERATOR: <your npub>
     volumes:
       - /data/cosign:/data
     ports:
