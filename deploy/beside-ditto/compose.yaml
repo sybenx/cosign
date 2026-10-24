@@ -17,7 +17,7 @@
 services:
   cosign:
     build: ./server
-    image: cosign-server:0.10.3
+    image: cosign-server:0.11.0
     pull_policy: build
     user: "1000:1000"
     environment:
