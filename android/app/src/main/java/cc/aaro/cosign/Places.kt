@@ -42,8 +42,8 @@ class TubeFeed(context: Context, slot: String, private val me: () -> String?, pr
     private val http = Fetch.http.newBuilder().callTimeout(8, TimeUnit.SECONDS).followRedirects(false).build()
 
     override suspend fun fetch(): List<PlaceCard>? = withContext(Dispatchers.IO) {
-        // Turned away lately: don't sign another login every time Discover opens.
-        if (System.currentTimeMillis() - prefs.getLong("tube.denied", 0) < 86_400_000) return@withContext null
+        // Turned away lately, or the login didn't work: don't sign another one every time Discover opens.
+        if (System.currentTimeMillis() < prefs.getLong("tube.wait", 0)) return@withContext null
         // Ask first; sign a login only when Tube says who are you. Not there yet, or down: nothing, and no signing.
         var session = prefs.getString("tube.session", null)
         repeat(2) { attempt ->
@@ -69,15 +69,16 @@ class TubeFeed(context: Context, slot: String, private val me: () -> String?, pr
         return try {
             http.newCall(Request.Builder().url(url).header("Authorization", auth).post(ByteArray(0).toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
                 if (r.code == 401 || r.code == 403) { denied(); return null }
-                if (!r.isSuccessful) return null
-                val cookie = r.headers("Set-Cookie").joinToString("; ") { it.substringBefore(';') }.ifEmpty { return null }
-                prefs.edit().putString("tube.session", cookie).remove("tube.denied").apply()
+                val cookie = r.headers("Set-Cookie").joinToString("; ") { it.substringBefore(';') }
+                if (!r.isSuccessful || cookie.isEmpty()) { backOff(6 * 3_600_000L); return null }
+                prefs.edit().putString("tube.session", cookie).remove("tube.wait").apply()
                 cookie
             }
         } catch (_: Exception) { null }
     }
 
-    private fun denied() = prefs.edit().putLong("tube.denied", System.currentTimeMillis()).remove("tube.session").apply()
+    private fun denied() { backOff(86_400_000L); prefs.edit().remove("tube.session").apply() }
+    private fun backOff(ms: Long) = prefs.edit().putLong("tube.wait", System.currentTimeMillis() + ms).apply()
 
     private fun parse(body: String): List<PlaceCard> {
         val root = try { Json.parse(body) } catch (_: Exception) { return emptyList() }
