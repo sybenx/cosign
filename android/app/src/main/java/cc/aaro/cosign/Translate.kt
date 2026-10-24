@@ -20,6 +20,9 @@ import java.util.concurrent.TimeUnit
 object Translate {
     private val prefs by lazy { CosignApp.instance.getSharedPreferences("translate", Context.MODE_PRIVATE) }
     val url by lazy { MutableStateFlow(prefs.getString("url", "") ?: "") }
+    /** LibreTranslate's `api_key`, for a server that asks for one; empty if yours doesn't. */
+    val key by lazy { MutableStateFlow(prefs.getString("key", "") ?: "") }
+    fun setKey(k: String) { key.value = k.trim(); prefs.edit().putString("key", key.value).apply(); waitUntil = 0; status.value = null }
     /** How the last request went, for the setting to show. */
     val status = MutableStateFlow<String?>(null)
     @Volatile private var waitUntil = 0L
@@ -43,7 +46,7 @@ object Translate {
     /** Each text translated into [target], with the language it was in; null when the server is off, resting, down, slow or wrong. */
     suspend fun batch(texts: List<String>, target: String): List<Pair<String, String?>>? = withContext(Dispatchers.IO) {
         if (!on || texts.isEmpty() || System.currentTimeMillis() < waitUntil) return@withContext null
-        val body = Json.stringify(mapOf("q" to texts, "source" to "auto", "target" to target, "format" to "text"))
+        val body = Json.stringify(mapOf("q" to texts, "source" to "auto", "target" to target, "format" to "text") + (key.value.takeIf { it.isNotEmpty() }?.let { mapOf("api_key" to it) } ?: emptyMap()))
         try {
             http.newCall(Request.Builder().url(url.value + "/translate").post(body.toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
                 if (!r.isSuccessful) return@withContext fail("answered ${r.code}")

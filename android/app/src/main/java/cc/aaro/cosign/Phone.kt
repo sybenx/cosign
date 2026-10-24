@@ -764,29 +764,42 @@ class Phone(private val context: Context, val slot: String = "0") {
         }.start()
     }
 
-    private fun importNow(secret: ByteArray) {
+    /** One question to a server's host key, asked again every 4 s: its answer, or null. */
+    private fun askHost(s: cc.aaro.cosign.net.Servers.Server, body: Map<String, Any?>, tries: Int): Map<*, *>? {
+        val id = env.random(8).toHex()
+        val f = CompletableFuture<Map<*, *>>()
+        waiting[id] = f
+        var reply: Map<*, *>? = null
+        for (i in 0 until tries) { send(s.pk, body + ("id" to id)); reply = try { f.get(4, TimeUnit.SECONDS) } catch (_: Exception) { null }; if (reply != null) break }
+        waiting.remove(id)
+        return reply
+    }
+
+    /**
+     * Connect as a new member key and find servers taking new accounts: up to three that
+     * answer, one per operator first (servers.ts pickServers), each with the member key it
+     * gives this account. At least two, or it throws.
+     */
+    private fun pickServers(mySk: String): List<Pair<cc.aaro.cosign.net.Servers.Server, Map<*, *>>> {
         val found = cc.aaro.cosign.net.Servers.find()
-        val mySk = generateSecretKey(env).toHex()
         connect(found.flatMap { it.relays }.distinct().take(8), mySk)
         Thread.sleep(2500)
-        val ask = { s: cc.aaro.cosign.net.Servers.Server, body: Map<String, Any?>, tries: Int ->
-            val id = env.random(8).toHex()
-            val f = CompletableFuture<Map<*, *>>()
-            waiting[id] = f
-            var reply: Map<*, *>? = null
-            for (i in 0 until tries) { send(s.pk, body + ("id" to id)); reply = try { f.get(4, TimeUnit.SECONDS) } catch (_: Exception) { null }; if (reply != null) break }
-            waiting.remove(id); reply
-        }
-        // Up to three that answer, one per operator first (servers.ts pickServers).
         val pool = Executors.newFixedThreadPool(found.size.coerceIn(1, 8))
         val answering = try {
-            found.map { s -> s to CompletableFuture.supplyAsync({ ask(s, mapOf("type" to "enroll_key"), 3) }, pool) }
+            found.map { s -> s to CompletableFuture.supplyAsync({ askHost(s, mapOf("type" to "enroll_key"), 3) }, pool) }
                 .mapNotNull { (s, f) -> f.get().takeIf { it?.get("type") == "enroll_key" }?.let { s to it } }
         } finally { pool.shutdown() }
         val picked = mutableListOf<Pair<cc.aaro.cosign.net.Servers.Server, Map<*, *>>>()
         for (a in answering) if (picked.size < 3 && picked.none { it.first.operator == a.first.operator }) picked += a
         for (a in answering) if (picked.size < 3 && a !in picked) picked += a
-        if (picked.isEmpty()) throw IllegalStateException("no Cosign server answered; try again in a minute")
+        if (picked.size < 2) throw IllegalStateException(if (picked.isEmpty()) "no Cosign server answered; try again in a minute" else "only one Cosign server answered, and an account needs two; try again in a minute")
+        return picked
+    }
+
+    private fun importNow(secret: ByteArray) {
+        val mySk = generateSecretKey(env).toHex()
+        val picked = pickServers(mySk)
+        val ask = { s: cc.aaro.cosign.net.Servers.Server, body: Map<String, Any?>, tries: Int -> askHost(s, body, tries) }
         ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.WAITING, text = "Giving ${if (picked.size == 1) "your server" else "${picked.size} servers"} their part…")) }
 
         val idxs = IntArray(3 + picked.size) { it + 1 }
@@ -814,6 +827,66 @@ class Phone(private val context: Context, val slot: String = "0") {
         connect(relays, mySk)
         ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your account is in Cosign now.")) }
         note("Moved ${group.npub.take(16)}… in", "approved")
+        offerPaper()
+        start()
+    }
+
+    // --- Creating an account here -----------------------------------------------------------
+    //
+    // "Create your account" with no code: this phone picks servers taking new accounts (as
+    // for an account you already have), enrolls an account with no key yet on each (enroll,
+    // how 'dkg'), and they make the key together (DKG): its 3 shares, each server's 1, any
+    // 4 sign, and nobody ever holds the whole key. Then the paper backup.
+
+    fun createAccount() {
+        if (isMember) return ui.update { it.copy(error = "This phone already holds an account. Use Add another account first.") }
+        ui.update { it.copy(error = null, moveIn = MoveIn(MoveIn.Stage.WAITING, text = "Finding servers…")) }
+        Thread {
+            try { createNow() } catch (e: Exception) {
+                dkg = null; dkgTicker?.cancel(false)
+                ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.FAILED, text = "Not made: ${e.message ?: "something went wrong"}.")) }
+            }
+        }.start()
+    }
+
+    private fun createNow() {
+        val mySk = generateSecretKey(env).toHex()
+        val me = publicKeyHex(mySk.hexToBytes())
+        val picked = pickServers(mySk)
+        ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.WAITING, text = "Making your account with ${picked.size} servers…")) }
+        val relays = picked.flatMap { it.first.relays }.distinct().take(4)
+        val signerSk = generateSecretKey(env).toHex()
+        val name = android.os.Build.MODEL.ifBlank { "Phone" }.take(40)
+        val record = mapOf("threshold" to 4, "relays" to relays,
+            "members" to listOf(mapOf("idx" to 1, "name" to name, "role" to "phone", "pk" to me, "sharePub" to "", "shares" to (1..3).map { mapOf("idx" to it, "sharePub" to "") })) +
+                picked.mapIndexed { i, (s, key) -> mapOf("idx" to 4 + i, "name" to s.name, "role" to "server", "pk" to key["pk"], "sharePub" to "") })
+        val plan = mapOf("session" to env.random(16).toHex(), "threshold" to 4,
+            "holders" to (1..3).map { mapOf("idx" to it, "pk" to me) } + picked.mapIndexed { i, (_, key) -> mapOf("idx" to 4 + i, "pk" to key["pk"]) })
+        for ((s, key) in picked) {
+            val r = askHost(s, mapOf("type" to "enroll", "how" to "dkg", "key" to key["key"], "group" to record, "plan" to plan,
+                "signer" to mapOf("sk" to signerSk, "pk" to publicKeyHex(signerSk.hexToBytes()))), 6)
+            if (r?.get("type") != "enrolled") throw IllegalStateException("${s.name} ${r?.get("reason") ?: "didn't answer"}")
+        }
+        // The key, made together: as the plan arrives over the wire (numbers as Long), for Dkg.
+        val made = CompletableFuture<Dkg.Result>()
+        val run = Dkg(Json.parse(Json.stringify(plan)) as Map<*, *>, me, ::send) { made.complete(it) }
+        dkg = run
+        dkgTicker?.cancel(false)
+        dkgTicker = timer.scheduleWithFixedDelay({ if (dkg === run) run.tick() }, 0, 4, TimeUnit.SECONDS)
+        val r = try { made.get(90, TimeUnit.SECONDS) } catch (_: Exception) { throw IllegalStateException("the servers didn't finish making the key; try again") }
+        // Keep sending a little longer: a server may still be waiting for ours.
+        timer.schedule({ if (dkg === run) { dkgTicker?.cancel(false); dkg = null } }, 20, TimeUnit.SECONDS)
+        val pub = r.members.toMap()
+        val group = parseGroup(Json.parse(Json.stringify(record + mapOf("groupX" to r.groupX, "npub" to Nip19.npub(r.groupX),
+            "members" to (record["members"] as List<*>).map { it as Map<*, *> }.map { m ->
+                val shares = (m["shares"] as? List<*>)?.map { (it as Map<*, *>)["idx"] as Int }
+                m + mapOf("sharePub" to pub[(m["idx"] as Int)]) + (shares?.let { mapOf("shares" to it.map { i -> mapOf("idx" to i, "sharePub" to pub[i]) }) } ?: emptyMap())
+            })))) ?: throw IllegalStateException("the account record is damaged")
+        val m = Membership(mySk, 1, r.shares.map { Share(it.first, it.second) }, publicKeyHex(signerSk.hexToBytes()), group)
+        secrets.saveMembership(Json.stringify(membershipToMap(m)))
+        connect(relays, mySk)
+        ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your account is made. Nobody, this phone included, ever held all of it.")) }
+        note("Made ${group.npub.take(16)}…", "approved")
         offerPaper()
         start()
     }

@@ -29,6 +29,7 @@ object Servers {
 
     /** Seeds, then any announced server whose operator is a seed's (no operator lists in the app yet), newest announcement each. */
     fun find(): List<Server> {
+        debugServers()?.let { return it }
         val found = ConcurrentHashMap<String, Pair<Long, Server>>()
         val latch = CountDownLatch(DISCOVERY.size)
         for (url in DISCOVERY) {
@@ -52,6 +53,20 @@ object Servers {
         val announced = found.values.map { it.second }.filter { it.operator in operators }
         return (SEEDS.map { seed -> announced.firstOrNull { it.pk == seed.pk } ?: seed } + announced.filter { a -> SEEDS.none { it.pk == a.pk } })
             .filter { it.enroll == "open" }
+    }
+
+    /**
+     * Debug builds only: servers listed in files/debug-servers.json (`[{"pk", "relays", "name",
+     * "operator"}]`, written with `adb shell run-as`), instead of the public ones, so trying
+     * Create or an import leaves nothing on real servers.
+     */
+    private fun debugServers(): List<Server>? {
+        val app = cc.aaro.cosign.CosignApp.instance
+        if (app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return null
+        val f = java.io.File(app.filesDir, "debug-servers.json").takeIf { it.exists() } ?: return null
+        return (Json.parse(f.readText()) as? List<*>)?.mapNotNull { it as? Map<*, *> }?.map {
+            Server(it["pk"] as String, (it["relays"] as List<*>).map { r -> r as String }, "open", "", it["operator"] as? String ?: it["pk"] as String, it["name"] as? String ?: "Test server")
+        }
     }
 
     private fun parse(e: Event): Pair<Long, Server>? {

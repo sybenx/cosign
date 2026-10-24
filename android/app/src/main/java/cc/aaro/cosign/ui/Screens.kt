@@ -79,9 +79,18 @@ fun App(phone: Phone, ui: Ui) {
         when {
             scanning -> {
                 BackHandler { scanning = false }
+                val context = androidx.compose.ui.platform.LocalContext.current
                 Box(Modifier.fillMaxSize()) {
                     QrScanner(Modifier.fillMaxSize()) { scanning = false; phone.scanned(it) }
-                    TextButton({ scanning = false }, Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(24.dp)) { Text("Cancel", color = Vault.Text) }
+                    // A code copied instead of shown (nostrconnect://, cosign:, a sign-in link): the same as scanning it.
+                    Row(Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(24.dp)) {
+                        TextButton({
+                            val t = pasted(context).trim()
+                            if (t.isEmpty()) phone.showError("Copy the site's code first, then tap Paste a code.") else { scanning = false; phone.scanned(t) }
+                        }) { Text("Paste a code", color = Vault.Teal) }
+                        Spacer(Modifier.width(16.dp))
+                        TextButton({ scanning = false }) { Text("Cancel", color = Vault.Text) }
+                    }
                 }
             }
             ui.offer != null -> JoinPrompt(ui.offer, phone::accept, phone::decline)
@@ -90,7 +99,7 @@ fun App(phone: Phone, ui: Ui) {
             ui.restoring != null && ui.member == null -> RestoringScreen(ui.restoring, phone::cancelRestore)
             ui.member == null -> Column(Modifier.fillMaxSize()) {
                 var importing by remember { mutableStateOf(false) }
-                Box(Modifier.weight(1f)) { Welcome(ui.error, onJoin = phone::startJoin, onScan = { phone.clearError(); scanning = true }, onPaste = phone::pastedBackup, onHave = { phone.clearError(); importing = true }) }
+                Box(Modifier.weight(1f)) { Welcome(ui.error, onCreate = phone::createAccount, onJoin = phone::startJoin, onScan = { phone.clearError(); scanning = true }, onPaste = phone::pastedBackup, onHave = { phone.clearError(); importing = true }) }
                 if (importing) ImportSheet({ importing = false }) { chars -> importing = false; phone.secretFrom(chars)?.let(phone::importKey) ?: phone.showError("That isn't an nsec (or a 64-character hex key). Nothing was kept.") }
                 // A place for another key: the ones you have are a tap away.
                 val others = CosignApp.instance.accounts.all.filter { it !== phone && it.isMember }
@@ -118,7 +127,7 @@ private fun Page(content: @Composable ColumnScope.() -> Unit) =
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp, vertical = 16.dp), content = content)
 
 @Composable
-private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit, onPaste: (String) -> Unit, onHave: () -> Unit) = Page {
+private fun Welcome(error: String?, onCreate: () -> Unit, onJoin: () -> Unit, onScan: () -> Unit, onPaste: (String) -> Unit, onHave: () -> Unit) = Page {
     val context = androidx.compose.ui.platform.LocalContext.current
     Spacer(Modifier.weight(1f))
     Text(appName, style = MaterialTheme.typography.headlineMedium, color = Vault.Text)
@@ -130,17 +139,18 @@ private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit, onPa
     )
     error?.let { Spacer(Modifier.height(16.dp)); Text(it, color = Vault.Danger, style = MaterialTheme.typography.bodyMedium) }
     Spacer(Modifier.weight(1f))
-    Button(onScan, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
+    Button(onCreate, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
         Text("Create your account", style = MaterialTheme.typography.labelLarge)
     }
     Spacer(Modifier.height(8.dp))
-    Text("Scan the code on the page where you're setting it up, under “Add your phone”.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted,
+    Text("Made with Cosign's servers; no one, this phone included, ever holds all of it.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted,
         modifier = Modifier.align(Alignment.CenterHorizontally))
     Spacer(Modifier.height(8.dp))
     TextButton(onJoin, Modifier.align(Alignment.CenterHorizontally)) { Text("Sign in with another device", color = Vault.Teal) }
     TextButton(onHave, Modifier.align(Alignment.CenterHorizontally)) { Text("I already have an account", color = Vault.Teal) }
     TextButton(onScan, Modifier.align(Alignment.CenterHorizontally)) { Text("Restore from your backup", color = Vault.Muted) }
     TextButton({ onPaste(pasted(context)) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Paste your backup code instead", color = Vault.Muted) }
+    TextButton(onScan, Modifier.align(Alignment.CenterHorizontally)) { Text("Set up with a server's code", color = Vault.Muted) }
 }
 
 /**
@@ -281,7 +291,7 @@ private fun MoveInSheet(m: MoveIn, onKeep: () -> Unit, onClose: () -> Unit) {
                     Button(onKeep, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Keep it") }
                 }
                 MoveIn.Stage.DONE, MoveIn.Stage.FAILED -> {
-                    Text(if (m.stage == MoveIn.Stage.DONE) "Moved in" else "Not moved", style = MaterialTheme.typography.titleLarge,
+                    Text(if (m.stage == MoveIn.Stage.DONE) "All set" else "Not done", style = MaterialTheme.typography.titleLarge,
                         color = if (m.stage == MoveIn.Stage.DONE) Vault.Teal else Vault.Danger)
                     Spacer(Modifier.height(8.dp))
                     Text(m.text ?: "", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
@@ -478,19 +488,26 @@ internal fun AccountScreen(phone: Phone, ui: Ui, onScan: () -> Unit, onProfile: 
 @Composable
 private fun TranslateSetting() {
     val url by cc.aaro.cosign.Translate.url.collectAsState()
+    val key by cc.aaro.cosign.Translate.key.collectAsState()
+    var typedKey by remember(key) { mutableStateOf(key) }
     val status by cc.aaro.cosign.Translate.status.collectAsState()
     var typed by remember(url) { mutableStateOf(url) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     Column(Modifier.padding(top = 6.dp)) {
-        Text("Translate other languages", style = MaterialTheme.typography.titleSmall, color = Vault.Text)
+        Text("Use your own LibreTranslate server", style = MaterialTheme.typography.titleSmall, color = Vault.Text)
         Muted(if (url.isEmpty()) "Off: notes in other languages are left out of Discover. Set your LibreTranslate server to translate them instead."
             else "Notes in other languages are translated by your server. If it's down or slow, they're left out.")
         Spacer(Modifier.height(8.dp))
         androidx.compose.material3.OutlinedTextField(typed, { typed = it }, Modifier.fillMaxWidth(), singleLine = true,
             placeholder = { Text("https://translate.example.com", color = Vault.Muted) },
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = Vault.Text))
+        Spacer(Modifier.height(6.dp))
+        androidx.compose.material3.OutlinedTextField(typedKey, { typedKey = it }, Modifier.fillMaxWidth(), singleLine = true,
+            placeholder = { Text("API key (only if your server asks for one)", color = Vault.Muted) },
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = Vault.Text))
         Row {
-            TextButton({ cc.aaro.cosign.Translate.setUrl(typed); scope.launch { cc.aaro.cosign.Translate.check() } }, contentPadding = PaddingValues(0.dp)) {
+            TextButton({ cc.aaro.cosign.Translate.setKey(typedKey); cc.aaro.cosign.Translate.setUrl(typed); scope.launch { cc.aaro.cosign.Translate.check() } }, contentPadding = PaddingValues(0.dp)) {
                 Text(if (typed.isBlank()) "Turn off" else "Save", color = Vault.Teal)
             }
         }
