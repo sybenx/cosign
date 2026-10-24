@@ -14,11 +14,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import cc.aaro.cosign.ui.App
 import cc.aaro.cosign.ui.CosignTheme
 import org.unifiedpush.android.connector.UnifiedPush
 
 class MainActivity : ComponentActivity() {
+    /** A sign-in that came by a link from another app (a browser, the extension): when it's over, go back there. */
+    private var backToCaller = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // The app is always dark; keep the system bar icons light whatever the phone's theme.
@@ -38,6 +44,13 @@ class MainActivity : ComponentActivity() {
                         UnifiedPush.tryUseCurrentOrDefaultDistributor(this@MainActivity) { ok -> if (ok) UnifiedPush.register(this@MainActivity) }
                     }
                 }
+                // Connected, cancelled or failed and closed: the sign-in sheet is gone. If a link
+                // from another app brought it, that app is where the site is waiting.
+                var hadConnect by remember { mutableStateOf(false) }
+                LaunchedEffect(ui.connect == null) {
+                    if (ui.connect != null) hadConnect = true
+                    else if (hadConnect) { hadConnect = false; if (backToCaller) { backToCaller = false; moveTaskToBack(true) } }
+                }
                 App(phone, ui)
             }
         }
@@ -53,7 +66,11 @@ class MainActivity : ComponentActivity() {
         // Reopened from Recents, Android hands back the link that first opened Cosign, maybe
         // hours old: that's not something you just scanned.
         if (intent == null || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
-        if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let { CosignApp.instance.phone.scanned(it) }
+        if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let {
+            val phone = CosignApp.instance.phone
+            phone.scanned(it)
+            backToCaller = phone.ui.value.connect != null
+        }
         testHook(intent)
     }
 
