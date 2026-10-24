@@ -1,12 +1,11 @@
-# Dockge stack `cosign` on xumbrel: the Cosign server as a sidecar to syb.lol's relay,
+# Dockge stack `cosign`: the Cosign server as a sidecar to a Ditto relay (syb.lol here),
 # in a stack of its own so no button here (Deploy, Update, Stop, Restart) can touch the
 # relay's stack, and no button there can touch this one.
 #
 # It joins the relay stack's network to reach Ditto at ws://relay:13131, and tells
 # phones and sites wss://syb.lol. On first start it makes a throwaway key in
-# /data/cosign (= ~/umbrel/app-data/dockge/data/docker/cosign, owned by uid 1000).
-# Its page (pairing code, sites, Remove) has no login: port 8711 is for the LAN and
-# tailnet only; syb.lol's tunnel goes to the relay's 13131, never here.
+# /data/cosign (a directory owned by uid 1000 on the host). Its page (pairing code,
+# sites, Remove) has no login: keep port 8711 off the internet.
 #
 # Press Deploy to start or update it. The image is built here from ./server, never
 # downloaded (pull_policy: build), so Update rebuilds it instead of failing.

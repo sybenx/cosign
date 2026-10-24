@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build Cosign for Android and publish it on cosign.aaro.cc, where Obtainium picks it up.
+# Build Cosign for Android and publish it as a GitHub release (which Obtainium follows:
+# github.com/sybenx/cosign) and on cosign.aaro.cc.
 #
 #   ./release.sh        (bump versionCode and versionName in android/app/build.gradle.kts first)
 #
@@ -24,4 +25,5 @@ grep -q "Cosign-$VERSION.apk" link/public/index.html || { echo "couldn't update 
 git add -A && git commit -q -m "Release Cosign $VERSION
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" && git push -q origin main
+gh release create "v$VERSION" "Cosign-$VERSION.apk" --title "Cosign $VERSION" --notes "Android build of Cosign $VERSION. Install over the previous version; your phone stays in your key."
 echo "Cosign $VERSION is at https://cosign.aaro.cc/Cosign-$VERSION.apk"

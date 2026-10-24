@@ -127,3 +127,13 @@ cd server && node test/policy-vectors.ts                 # policy cases for the 
 - **Phone cameras open QRST codes in whichever app owns the link's host**, so the demo's
   codes point at cosign.aaro.cc (`link/`, deployed with `wrangler deploy`), whose App
   Links file names Cosign. Android checks that file when the app is installed.
+
+## Getting the app
+
+Releases are on GitHub (github.com/sybenx/cosign/releases), so Obtainium can follow them:
+add `https://github.com/sybenx/cosign` as an app. The newest build is also at
+https://cosign.aaro.cc/cosign.apk. `./release.sh` publishes both.
+
+## License
+
+MIT. The QRST code in `site/vendor` and `android/.../core` is MIT too (`site/vendor/QRST-LICENSE`).
