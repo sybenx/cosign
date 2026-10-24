@@ -24,3 +24,4 @@ server/test-*/
 site/test/.*.ts
 worker/.wrangler/
 worker/node_modules/
+worker/wrangler.prod.jsonc

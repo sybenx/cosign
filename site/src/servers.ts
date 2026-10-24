@@ -43,6 +43,8 @@ export interface Seed { pubkey: string; relays: string[]; operator: string }
 export const SEEDS: Seed[] = [
   // syb.lol, run by the author of Cosign.
   { pubkey: '040e022d19ed8e0ba6d83f6246b9d051f0093e59092ee6bb279730d0e4b191c8', relays: ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'], operator: 'f5073ea24832d8e6246d22ec0b5a75bbf4a12558e3ac67cb07360b3474e5a40e' },
+  // cosign-cf.aaro.cc, the Cloudflare Worker server (../../worker), the same operator: its own relay.
+  { pubkey: '665dd9c0ececdb5b60868aa6c0860df9f8e9e40c65304a9ffcecc59aa1502420', relays: ['wss://cosign-cf.aaro.cc'], operator: 'f5073ea24832d8e6246d22ec0b5a75bbf4a12558e3ac67cb07360b3474e5a40e' },
 ];
 /** Where announcements are looked for, besides the seeds' own relays and the user's. */
 export const DISCOVERY_RELAYS = ['wss://syb.lol', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.damus.io'];
