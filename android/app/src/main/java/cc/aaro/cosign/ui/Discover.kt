@@ -88,6 +88,7 @@ import cc.aaro.cosign.Notice
 import cc.aaro.cosign.People
 import cc.aaro.cosign.Person
 import cc.aaro.cosign.Phone
+import cc.aaro.cosign.PlaceCard
 import cc.aaro.cosign.Ref
 import cc.aaro.cosign.Social
 import cc.aaro.cosign.Ui
@@ -166,8 +167,19 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
     val liked by social.liked.collectAsState()
     val notices by social.notices.collectAsState()
     val seen by social.seenAt.collectAsState()
+    val videos by social.videos.collectAsState()
     val me = ui.member!!.group.groupX
     LaunchedEffect(me) { People.want(listOf(me)) }
+    val mixed = remember(feed.notes, videos) { mix(feed.notes, videos) }
+    // How far down you've looked, in notes: a video that comes late goes below it.
+    val notesNow by androidx.compose.runtime.rememberUpdatedState(feed.notes)
+    LaunchedEffect(state) {
+        snapshotFlow { state.layoutInfo.visibleItemsInfo.lastOrNull()?.key }.collect { key ->
+            val i = notesNow.indexOfFirst { it.id == key }
+            if (i > social.lookedAt) social.lookedAt = i
+        }
+    }
+    val context = LocalContext.current
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -211,8 +223,9 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
                 if (feed.notes.isNotEmpty()) item(key = "title") {
                     Text("Discover", style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 4.dp))
                 }
-                items(feed.notes, key = { it.id }) { n ->
-                    NoteCard(n, people, n.id in liked, nav, onLike = { social.like(n) }, maxLines = 12)
+                items(mixed, key = { if (it is Event) it.id else "place:" + (it as PlaceCard).id }) { item ->
+                    if (item is PlaceCard) VideoCard(item) { openInBrowser(context, item.url) }
+                    else (item as Event).let { n -> NoteCard(n, people, n.id in liked, nav, onLike = { social.like(n) }, maxLines = 12) }
                     HorizontalDivider(color = Vault.Edge)
                 }
                 if (feed.notes.isNotEmpty()) item(key = "end") {
@@ -224,6 +237,52 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
             }
         }
     }
+}
+
+/** Notes, with a place's cards between them: from [Social.Videos.start] on, one every 4 to 6 notes, never two together. */
+private fun mix(notes: List<Event>, v: Social.Videos): List<Any> {
+    if (v.cards.isEmpty() || v.start < 0) return notes
+    val out = ArrayList<Any>(notes.size + v.cards.size)
+    var next = v.start; var shown = 0
+    notes.forEachIndexed { i, n ->
+        if (i == next && shown < v.cards.size) { out += v.cards[shown]; next += 4 + shown % 3; shown++ }
+        out += n
+    }
+    return out
+}
+
+/** A video from a place you're signed in to: a big picture with its length, the title, the channel, and where it's from. */
+@Composable
+private fun VideoCard(c: PlaceCard, onOpen: () -> Unit) = Column(Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 12.dp)) {
+    Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp))) {
+        NetImage(c.thumb, Modifier.fillMaxSize(), 1080, description = c.title)
+        c.duration?.let { d ->
+            Text(length(d), color = Color.White, style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color(0xCC000000), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp))
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    Text(c.title, color = Vault.Text, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    Spacer(Modifier.height(4.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(c.label, color = Vault.Teal, style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.border(1.dp, Vault.TealEdge, RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(c.channel, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+private fun length(s: Int) = if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+
+/**
+ * Open a page in a Custom Tab, inside this app, when the browser has them. These two extras
+ * are what androidx.browser's CustomTabsIntent sets; any other browser just opens the page.
+ */
+private fun openInBrowser(context: android.content.Context, url: String) {
+    val i = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+    i.putExtras(android.os.Bundle().apply { putBinder("android.support.customtabs.extra.SESSION", null) })
+    i.putExtra("android.support.customtabs.extra.TOOLBAR_COLOR", android.graphics.Color.rgb(0x13, 0x11, 0x0F))
+    try { context.startActivity(i) } catch (_: android.content.ActivityNotFoundException) {}
 }
 
 /** At most one card: the thing that needs you most. The rest are behind the bell. */

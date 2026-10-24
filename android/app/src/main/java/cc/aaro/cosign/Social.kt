@@ -220,6 +220,8 @@ class Social private constructor(private val phone: Phone, context: Context) {
         if (f.loading || (!force && f.notes.isNotEmpty() && System.currentTimeMillis() - f.at < 30 * 60_000)) return
         feed.update { it.copy(loading = true, failed = false) }
         scope.launch { knowFollows() }
+        lookedAt = 0
+        loadPlaces()
         scope.launch {
             for (src in Sources.FEEDS) {
                 val notes = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 50), 8000).filter { it.kind == 1 }
@@ -253,6 +255,50 @@ class Social private constructor(private val phone: Phone, context: Context) {
         val (top, replies) = notes.sortedByDescending { it.createdAt }.partition { parentOf(it) == null }
         return if (top.size >= 15) top else top + replies
     }
+
+    // --- Places: a few videos from sites you're signed in to, mixed into Discover ---------
+
+    /** The cards, and the note they go before (-1: not placed). Placed once, never moved. */
+    data class Videos(val cards: List<PlaceCard> = emptyList(), val start: Int = -1)
+    val videos = MutableStateFlow(Videos())
+    /** How far down Discover you've looked, in notes: cards that come late go below it. */
+    @Volatile var lookedAt = 0
+    private val tube by lazy { TubeFeed(CosignApp.instance, phone.slot + "." + (me?.take(16) ?: ""), { me }, { phone.signOwn(it) }) }
+    private val places: List<PlaceFeed> get() = if (Places.fake) listOf(FakeTube()) else listOf(tube)
+
+    private fun loadPlaces() {
+        val opened = System.currentTimeMillis()
+        // Last time's cards show at once; this time's are kept for next time unless they're on time.
+        val cached = cachedCards()
+        videos.value = if (cached.isEmpty()) Videos() else Videos(cached, 1)
+        scope.launch {
+            val got = kotlinx.coroutines.withTimeoutOrNull(8000) {
+                places.map { p -> async { try { p.fetch() } catch (_: Exception) { emptyList() } } }.awaitAll()
+            } ?: return@launch
+            // Every place turned this account away, or has nothing: no cards at all.
+            val cards = got.filterNotNull().flatten()
+            if (got.all { it == null } || cards.isEmpty()) { prefs.edit().remove("places").apply(); videos.value = Videos(); return@launch }
+            prefs.edit().putString("places", Json.stringify(cards.map { mapOf("id" to it.id, "title" to it.title, "channel" to it.channel, "thumb" to it.thumb,
+                "url" to it.url, "duration" to it.duration, "published" to it.published, "label" to it.label) })).apply()
+            if (videos.value.cards.isNotEmpty()) return@launch // never reshuffle what's on screen
+            val late = System.currentTimeMillis() - opened
+            val start = when {
+                // Within the budget, or before Discover had anything to show: near the top.
+                late <= 1500 || feed.value.notes.isEmpty() -> 1
+                // A little late: below what you've looked at.
+                else -> lookedAt + 4
+            }
+            videos.value = Videos(cards, start)
+        }
+    }
+
+    private fun cachedCards(): List<PlaceCard> = try {
+        (Json.parse(prefs.getString("places", null) ?: "[]") as List<*>).mapNotNull { x ->
+            val m = x as? Map<*, *> ?: return@mapNotNull null
+            PlaceCard(m["id"] as String, m["title"] as String, m["channel"] as String, m["thumb"] as? String, m["url"] as String,
+                (m["duration"] as? Long)?.toInt(), m["published"] as? Long, m["label"] as? String ?: "")
+        }
+    } catch (_: Exception) { emptyList() }
 
     // --- Search ---------------------------------------------------------------------
 

@@ -98,5 +98,7 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra("pair")?.let { CosignApp.instance.phone.scanned(it) }
         // A relay of the test's own (a local one, say) for the home screen to read from too.
         intent?.getStringExtra("relay")?.let { cc.aaro.cosign.Sources.extra.value = it.split(',').filter(String::isNotBlank) }
+        // Stand-in videos from "Tube" in Discover, until its endpoint is live (--es places fake).
+        if (intent?.getStringExtra("places") == "fake") Places.fake = true
     }
 }
