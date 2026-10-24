@@ -3,6 +3,7 @@ server/data/
 server/data-*/
 server/test-data/
 server/test-emu/
+server/test-weighted/
 server/logs/
 node_modules/
 android/.gradle/

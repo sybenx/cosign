@@ -94,3 +94,28 @@ pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_repairStep3(mut env:
     })();
     out(&mut env, r)
 }
+
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_dkgPart1(mut env: JNIEnv, _: JClass, idx: jint, max: jint, min: jint) -> jstring {
+    let r = super::dkg_part1(idx as u16, max as u16, min as u16).map(|d| serde_json::to_string(&d).unwrap()).map_err(|e| e.0);
+    out(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_dkgPart2(mut env: JNIEnv, _: JClass, secret: JString, others: JString) -> jstring {
+    let r = (|| {
+        let o: Vec<(u16, String)> = serde_json::from_str(&s(&mut env, &others)?).map_err(|e| format!("packages: {e}"))?;
+        super::dkg_part2(&s(&mut env, &secret)?, &o).map(|d| serde_json::to_string(&d).unwrap()).map_err(|e| e.0)
+    })();
+    out(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_dkgPart3(mut env: JNIEnv, _: JClass, idx: jint, secret2: JString, round1: JString, round2: JString) -> jstring {
+    let r = (|| {
+        let r1: Vec<(u16, String)> = serde_json::from_str(&s(&mut env, &round1)?).map_err(|e| format!("round 1: {e}"))?;
+        let r2: Vec<(u16, String)> = serde_json::from_str(&s(&mut env, &round2)?).map_err(|e| format!("round 2: {e}"))?;
+        super::dkg_part3(idx as u16, &s(&mut env, &secret2)?, &r1, &r2).map(|d| serde_json::to_string(&d).unwrap()).map_err(|e| e.0)
+    })();
+    out(&mut env, r)
+}

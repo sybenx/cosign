@@ -122,7 +122,7 @@ private fun Joining(text: String, onCancel: () -> Unit) = Page {
 }
 
 @Composable
-private fun JoinPrompt(offer: Offer, onJoin: () -> Unit, onCancel: () -> Unit) = Page {
+private fun JoinPrompt(offer: Offer, onJoin: () -> Unit, onCancel: () -> Unit) = if (offer.plan != null) MakeKeyPrompt(onJoin, onCancel) else Page {
     Spacer(Modifier.height(24.dp))
     Text("Add this phone?", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
     Spacer(Modifier.height(12.dp))
@@ -137,6 +137,25 @@ private fun JoinPrompt(offer: Offer, onJoin: () -> Unit, onCancel: () -> Unit) =
         color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
     Spacer(Modifier.weight(1f))
     Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Add this phone", style = MaterialTheme.typography.labelLarge) }
+    Spacer(Modifier.height(8.dp))
+    TextButton(onCancel, Modifier.fillMaxWidth()) { Text("Not now", color = Vault.Muted) }
+}
+
+/** A weighted key isn't made yet: this phone and your servers make it together. */
+@Composable
+private fun MakeKeyPrompt(onJoin: () -> Unit, onCancel: () -> Unit) = Page {
+    Spacer(Modifier.height(24.dp))
+    Text("Make your key?", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+    Spacer(Modifier.height(20.dp))
+    Text(
+        "This phone and your servers make a new key together. Nobody ever holds all of it, not even this phone. This phone and either server can sign; your servers alone can't.",
+        color = Vault.Text, style = MaterialTheme.typography.bodyLarge,
+    )
+    Spacer(Modifier.height(12.dp))
+    Text("Almost everything signs without asking. Anything destructive — most of your follows gone, your profile wiped, a pile of deletions — waits for you here.",
+        color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
+    Spacer(Modifier.weight(1f))
+    Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Make my key", style = MaterialTheme.typography.labelLarge) }
     Spacer(Modifier.height(8.dp))
     TextButton(onCancel, Modifier.fillMaxWidth()) { Text("Not now", color = Vault.Muted) }
 }

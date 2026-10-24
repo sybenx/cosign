@@ -8,11 +8,13 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { getEventHash } from 'nostr-tools/pure';
 import * as F from '../frost.ts';
 import * as Sig from '../sign.ts';
+import { DkgRun } from '../dkg.ts';
+import { nip19 } from 'nostr-tools';
 import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../net.ts';
 
 const args = process.argv.slice(2);
 const deny = args.includes('--deny');
-const stateFile = '/tmp/cosign-fake-phone.json';
+const stateFile = process.env.PHONE_STATE ?? '/tmp/cosign-fake-phone.json';
 const say = (t: string) => console.log(`[phone] ${t}`);
 
 const pairUri = args[0]?.startsWith('cosign:') ? new URL(args[0].replace('cosign:', 'cosign://')) : null;
@@ -33,8 +35,35 @@ const parts = new Parts();
 const decided = new Set<string>();
 const servers = () => st.group.members.filter((m: any) => m.role === 'server');
 
+let dkg: DkgRun | null = null;
+/** My shares: one from the earlier dealer, three in a weighted key. */
+const myShares = (): Sig.Share[] => st.shares ?? [{ idx: st.idx, secret: st.share }];
+
 function handle(msg: any, from: string) {
-  if (msg.type === 'pair_offer' && !st && from === pairUri?.searchParams.get('pk')) {
+  if (msg.type === 'dkg1' || msg.type === 'dkg2') return dkg?.take(msg, from);
+  if (msg.type === 'pair_offer' && msg.weighted && !st && !dkg && from === pairUri?.searchParams.get('pk')) {
+    // No key yet: make it with both servers, then tell this one.
+    const offer = msg;
+    dkg = new DkgRun(offer.plan, pk, send, r => {
+      const group = { ...offer.group, groupX: r.groupX, npub: nip19.npubEncode(r.groupX) };
+      const mine = r.shares.map(s => s.idx);
+      for (const m of group.members) {
+        const idxs: number[] = m.shares?.map((s: any) => s.idx) ?? [m.idx];
+        const pts = idxs.map(idx => ({ idx, sharePub: r.members.find(x => x.idx === idx)!.sharePub }));
+        m.sharePub = pts[0].sharePub; if (m.shares) m.shares = pts;
+        if (idxs.includes(mine[0])) m.pk = pk;
+      }
+      st = { sk, idx: mine[0], shares: r.shares, signer: offer.signer, group };
+      writeFileSync(stateFile, JSON.stringify(st, null, 2));
+      const ack = () => send(from, { type: 'pair_ack', token: offer.token, groupX: r.groupX });
+      ack(); setTimeout(ack, 4000);
+      say(`made ${group.npub} with the servers; holding shares ${mine.join(', ')}`);
+    });
+    dkg.start();
+    say('making the key with the servers');
+    return;
+  }
+  if (msg.type === 'pair_offer' && !msg.weighted && !st && from === pairUri?.searchParams.get('pk')) {
     st = { sk, idx: msg.idx, share: msg.share, signer: msg.signer, group: msg.group };
     st.group.members.find((m: any) => m.idx === msg.idx).pk = pk;
     writeFileSync(stateFile, JSON.stringify(st, null, 2));
@@ -50,12 +79,14 @@ function handle(msg: any, from: string) {
     const reply = (r: object) => send(from, { type: 'sign_res', id: msg.id, ...r });
     if (ev.pubkey !== st.group.groupX || getEventHash(ev) !== msg.msg) return reply({ ok: false, reason: 'event mismatch' });
     if (msg.hold && !msg.undo && deny) { say(`DECLINED: ${msg.hold}`); return reply({ ok: false, reason: 'declined on the phone' }); }
-    const mine = Sig.commit(st.group, st.idx, st.share);
-    const z = Sig.partial(msg.frost === 2 && !process.env.OLD_MATH ? 2 : 1, st.group, st.idx, st.share, mine.nonces, msg.msg, [msg.commit, mine.commit]);
+    const shares = myShares();
+    const mine = Sig.commitAll(st.group, shares);
+    const zs = Sig.partialAll(msg.frost === 2 && !process.env.OLD_MATH ? 2 : 1, st.group, shares, mine.nonces, msg.msg, [...(msg.commits ?? [msg.commit]), ...mine.commits]);
     say(msg.hold && !msg.undo ? `APPROVED: ${msg.hold}` : msg.undo ? `co-signed an undo for ${srv.name}` : `co-signed kind ${ev.kind} for ${srv.name} (a server is down)`);
-    reply({ ok: true, commit: mine.commit, z });
+    reply({ ok: true, commits: mine.commits, zs, commit: mine.commits[0], z: zs[0][1] });
   } else if (msg.type === 'ecdh_req') {
-    send(from, { type: 'ecdh_res', id: msg.id, ok: true, point: F.ecdhPartial({ idx: st.idx, secret: st.share, participants: msg.participants, peerX: msg.peerX }) });
+    const points = myShares().map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
+    send(from, { type: 'ecdh_res', id: msg.id, ok: true, points, point: points[0] });
   } else if (msg.type === 'repair') {
     // Vouching for a new device: our part of its share, half to the server, half to it.
     const d = Sig.repairStep1(st.group, st.idx, st.share, msg.helpers, msg.k);
@@ -81,6 +112,7 @@ function handle(msg: any, from: string) {
 }
 
 pool.start([{ kinds: [KIND_MEMBER], '#p': [pk] }]);
-setTimeout(() => { if (!st && pairUri) send(pairUri.searchParams.get('pk')!, { type: 'pair_hello', token: pairUri.searchParams.get('t') }); }, 1500);
+const hello = () => { if (!st && !dkg && pairUri) send(pairUri.searchParams.get('pk')!, { type: 'pair_hello', token: pairUri.searchParams.get('t') }); };
+setTimeout(hello, 1500); setInterval(hello, 6000);
 const ping = () => { if (st) for (const s of servers()) send(s.pk, { type: 'ping', idx: st.idx, ts: Date.now() }); };
 setInterval(ping, 10_000); setTimeout(ping, 2500);

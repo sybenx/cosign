@@ -27,4 +27,12 @@ object FrostNative {
     @JvmStatic external fun repairStep2(deltas: String): String
     /** `sigmas`: `[hex, …]`. Throws unless the share matches the group. */
     @JvmStatic external fun repairStep3(group: String, sigmas: String, participant: Int): String
+
+    // Making a key nobody holds (DKG): see frost/src/lib.rs and Dkg.kt.
+    /** `{"secret", "package"}`. */
+    @JvmStatic external fun dkgPart1(idx: Int, max: Int, min: Int): String
+    /** `others`: `[[idx, package], …]`. Returns `{"secret", "packages": [[toIdx, package], …]}`. */
+    @JvmStatic external fun dkgPart2(secret: String, others: String): String
+    /** Returns `{"share", "groupX", "members": [{"idx", "sharePub"}, …]}`. */
+    @JvmStatic external fun dkgPart3(idx: Int, secret2: String, round1: String, round2: String): String
 }

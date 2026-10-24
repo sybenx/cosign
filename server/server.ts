@@ -28,6 +28,8 @@ import { ARCHIVED, assess, keyOf, kindName, type Ev } from './policy.ts';
 import { Archive } from './archive.ts';
 import { History, type Entry } from './history.ts';
 import { checkClock } from './clock.ts';
+import { DkgRun, type DkgPlan, type DkgResult } from './dkg.ts';
+import { nip19 } from 'nostr-tools';
 
 // --- State -------------------------------------------------------------------
 
@@ -54,9 +56,9 @@ const history = new History(join(dir, 'history.jsonl'), join(dir, 'saved.jsonl')
 
 const members: Member[] = S.group.members;
 const me = members.find(m => m.idx === S.self.idx)!;
-/** This server's own shares (one, today, for a server). */
-const myShares: Sig.Share[] = S.self.shares ?? [{ idx: S.self.idx, secret: S.self.share }];
-const myIdxs = myShares.map(s => s.idx);
+/** This server's own shares (one, for a server). None yet in a weighted group whose key your phone hasn't made with us. */
+let myShares: Sig.Share[] = S.self.shares ?? [{ idx: S.self.idx, secret: S.self.share }];
+let myIdxs = myShares.map(s => s.idx);
 const sharesOf = (m: Member) => m.shares?.map(s => s.idx) ?? [m.idx];
 const ownerOf = (idx: number) => members.find(m => sharesOf(m).includes(idx));
 const sameSet = (a: number[], b: number[]) => [...a].sort((x, y) => x - y).join() === [...b].sort((x, y) => x - y).join();
@@ -67,7 +69,7 @@ const isDevice = (m?: Member) => !!m && (m.role === 'phone' || m.role === 'devic
 /** Your devices that can sign: the phone, and any added since. */
 const devices = () => members.filter(m => isDevice(m) && m.pk);
 const byPk = (pk: string) => members.find(m => m.pk === pk);
-const groupX: string = S.group.groupX;
+let groupX: string = S.group.groupX; // null until a weighted key is made
 const site = (pk: string) => (S.sites as Site[]).find(s => s.pk === pk);
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -174,6 +176,9 @@ async function onMember(msg: any, fromPk: string) {
   if (msg.type === 'pair_hello') return onPairHello(msg, fromPk);
   if (msg.type === 'pair_ack') return onPairAck(msg, fromPk);
   if (msg.type === 'joined') return onJoined(msg, fromPk); // a new device, not a member until this lands
+  // Making the key: your phone isn't a member yet, so these come before that check.
+  if (msg.type === 'dkg1' || msg.type === 'dkg2') return dkg?.take(msg, fromPk);
+  if (msg.type === 'dkg_start') return onDkgStart(msg, from);
   if (!from) return;
 
   const fromPhone = isDevice(from); // any of your devices
@@ -254,7 +259,7 @@ function reply(clientPk: string, scheme: 'nip44' | 'nip04', body: string) {
 }
 
 async function onSiteRequest(e: Event) {
-  if (!coordinating()) return;
+  if (!groupX || !coordinating()) return; // no key yet
   const sk = F.hexToBytes(S.signer.sk);
   let scheme: 'nip44' | 'nip04' = 'nip44', req: any;
   try { req = JSON.parse(nip44.v2.decrypt(e.content, nip44.v2.utils.getConversationKey(sk, e.pubkey))); }
@@ -407,7 +412,9 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?
     if (b.approved) batch = b.id;
   }
   const hold = judged.hold; // an approved batch still goes to the phone, which won't ask twice
-  const order = partners(hold ? devices() : [...devices(), other()]);
+  // Only partners that make the threshold with us: in a weighted key, not the other server.
+  const enough = (m: Member) => new Set([...myIdxs, ...sharesOf(m)]).size >= S.group.threshold;
+  const order = partners((hold ? devices() : [...devices(), other()]).filter(enough));
   const tried: string[] = [];
   const done = (r: Attempt) => {
     note(`signed ${kindName(ev.kind)} for ${by} with ${r.m.name}${hold && !opts.undo ? ' — you approved' : ''}`);
@@ -902,7 +909,7 @@ function onJoined(msg: any, fromPk: string) {
   note(`${a.name} joined, vouched for by ${a.by.name}`);
 }
 
-const publicMembers = () => members.filter(m => !m.removed).map(m => ({ idx: m.idx, name: m.name, role: m.role, pk: m.pk, sharePub: m.sharePub }));
+const publicMembers = () => members.filter(m => !m.removed).map(m => ({ idx: m.idx, name: m.name, role: m.role, pk: m.pk, sharePub: m.sharePub, ...(m.shares ? { shares: m.shares } : {}) }));
 
 /** The other server's member list: take anything new, and every removal. */
 function mergeMembers(list: Member[]) {
@@ -925,6 +932,7 @@ const pairingUri = () => S.pairing
 
 function onPairHello(msg: any, fromPk: string) {
   if (!S.pairing || msg.token !== S.pairing.token) return;
+  if (S.pairing.weighted) return offerWeighted(fromPk);
   offeredTo = fromPk;
   send(fromPk, {
     type: 'pair_offer', token: S.pairing.token, idx: S.pairing.idx, share: S.pairing.share,
@@ -937,6 +945,11 @@ function onPairHello(msg: any, fromPk: string) {
 
 function onPairAck(msg: any, fromPk: string) {
   if (!S.pairing || fromPk !== offeredTo || msg.token !== S.pairing.token) return;
+  if (S.pairing.weighted) {
+    // The phone may finish making the key before we do; take its word once we have.
+    if (!groupX) { earlyAck = msg; return; }
+    if (msg.groupX !== groupX) return note('your phone made a different key; not added');
+  }
   const p = phone();
   p.pk = fromPk;
   S.pairing = null; // the phone has its share; this server no longer does
@@ -944,6 +957,66 @@ function onPairAck(msg: any, fromPk: string) {
   lastSeen.set(p.idx, Date.now());
   toOther({ type: 'member', idx: p.idx, pk: fromPk });
   note('your phone joined');
+}
+
+// A weighted group starts with no key at all: your phone (3 shares) and both servers
+// (1 each) make it together when the phone scans the code, and nobody ever holds it
+// (dkg.ts). This server runs the plan and tells the other one to join in.
+
+let dkg: DkgRun | null = null;
+let earlyAck: any = null;
+let startTimer: NodeJS.Timeout | undefined;
+
+function offerWeighted(fromPk: string) {
+  if (groupX) return; // made already; waiting for the phone's ack
+  if (!dkg || offeredTo !== fromPk) {
+    dkg?.stop(); clearInterval(startTimer);
+    offeredTo = fromPk;
+    const plan: DkgPlan = {
+      session: F.bytesToHex(F.randomBytes(16)), threshold: S.group.threshold,
+      holders: members.filter(m => !m.removed).flatMap(m => sharesOf(m).map(idx => ({ idx, pk: (m.idx === phone().idx ? fromPk : m.pk)! }))),
+    };
+    dkg = new DkgRun(plan, me.pk!, send, onDkgDone);
+    dkg.start();
+    // Keep telling the other server until we're done: its packages are what we wait for.
+    const tell = () => { if (dkg?.done) clearInterval(startTimer); else toOther({ type: 'dkg_start', plan }); };
+    tell(); startTimer = setInterval(tell, 4000);
+    note('a phone scanned the code; making your key');
+  }
+  send(fromPk, {
+    type: 'pair_offer', token: S.pairing.token, weighted: true, plan: dkg.plan, signer: S.signer.pk,
+    group: { threshold: S.group.threshold, relays: S.group.relays, members: publicMembers().map(m => ({ ...m, pk: isDevice(m as Member) ? null : m.pk })) },
+  });
+}
+
+/** The other server started making the key with your phone. */
+function onDkgStart(msg: any, from?: Member) {
+  if (groupX || from?.role !== 'server') return;
+  const plan = msg.plan as DkgPlan;
+  if (dkg?.plan.session === plan?.session) return;
+  // It must give us exactly our shares, and the threshold we were set up with.
+  if (plan.threshold !== S.group.threshold || !sameSet(plan.holders.filter(h => h.pk === me.pk).map(h => h.idx), sharesOf(me))) return;
+  dkg?.stop();
+  dkg = new DkgRun(plan, me.pk!, send, onDkgDone);
+  dkg.start();
+  note(`making your key with ${from.name} and your phone`);
+}
+
+function onDkgDone(r: DkgResult) {
+  for (const m of members) {
+    const pts = sharesOf(m).map(idx => ({ idx, sharePub: r.members.find(x => x.idx === idx)!.sharePub }));
+    m.sharePub = pts[0].sharePub;
+    if (m.shares) m.shares = pts;
+  }
+  S.group.groupX = groupX = r.groupX;
+  S.group.npub = nip19.npubEncode(r.groupX);
+  S.self.shares = myShares = r.shares;
+  myIdxs = myShares.map(s => s.idx);
+  delete S.self.share;
+  save();
+  note(`your key was made: ${S.group.npub}`);
+  if (earlyAck) { const a = earlyAck; earlyAck = null; onPairAck(a, offeredTo!); }
+  setTimeout(fetchArchive, 1000);
 }
 
 // --- Liveness ----------------------------------------------------------------
@@ -956,6 +1029,7 @@ setTimeout(syncTo, 4000);
 // Pick up what's already published under your key, so the first change is judged
 // against something.
 async function fetchArchive() {
+  if (!groupX) return;
   const p = new SimplePool();
   const relays = [...new Set([...S.group.relays, 'wss://relay.damus.io'].map(dial))];
   try {
@@ -1005,7 +1079,7 @@ const page = async () => {
  .open{display:inline-block;background:#7fc8c0;color:#13110f;border-radius:8px;padding:8px 14px;text-decoration:none;font-weight:600;margin-top:6px}
  .held{color:#f2b33d} ul{padding-left:18px;margin:4px 0} li{margin:3px 0}
 </style>
-<h1>${me.name}</h1><div class=muted>${S.group.npub} · 2 of 3</div>
+<h1>${me.name}</h1><div class=muted>${S.group.npub ?? 'No key yet: add your phone to make it'} · ${S.group.threshold === 4 ? 'your phone + a server' : '2 of 3'}</div>
 <div class=card><div id=members></div><div class=muted id=coord style="margin-top:6px"></div></div>
 ${pu ? `<div class=card id=pair><h2>Add your phone</h2><div class=grid><div class=qr>${pairQr}</div>
 <div style="flex:1;min-width:220px">Open <b>Cosign</b> on your phone and scan this. It becomes the third member and your remote control.<br><br>

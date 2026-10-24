@@ -11,6 +11,21 @@ export function aggregate(group_json: string, msg: string, commits_json: string,
  */
 export function commit(group_json: string, idx: number, secret: string): string;
 
+/**
+ * DKG part 1 for one share: `{"secret", "package"}`.
+ */
+export function dkgPart1(idx: number, max_signers: number, min_signers: number): string;
+
+/**
+ * DKG part 2: `others` is `[[idx, package], …]`. Returns `{"secret", "packages": [[toIdx, package], …]}`.
+ */
+export function dkgPart2(secret: string, others_json: string): string;
+
+/**
+ * DKG part 3: returns `{"share", "groupX", "members": [{idx, sharePub}, …]}`.
+ */
+export function dkgPart3(idx: number, secret2: string, others_round1_json: string, round2_json: string): string;
+
 export function ecdhCombine(parts: string[]): string;
 
 export function ecdhPartial(idx: number, secret: string, participants: Uint16Array, peer_x: string): string;

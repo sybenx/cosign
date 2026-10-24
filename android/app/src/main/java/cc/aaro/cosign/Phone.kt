@@ -7,6 +7,8 @@ import cc.aaro.cosign.core.CodeCheck
 import cc.aaro.cosign.core.Event
 import cc.aaro.cosign.core.Frost
 import cc.aaro.cosign.core.FrostNative
+import cc.aaro.cosign.core.Dkg
+import cc.aaro.cosign.core.Nip19
 import cc.aaro.cosign.core.Json
 import cc.aaro.cosign.core.Mode
 import cc.aaro.cosign.core.Nip44
@@ -42,13 +44,28 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-data class Member(val idx: Int, val name: String, val role: String, val pk: String?, val sharePub: String)
+/** One share point of the key. */
+data class Point(val idx: Int, val sharePub: String)
+/** A member holds one share (a server) or, in a weighted key, several (a device holds 3). [idx]/[sharePub] are its first. */
+data class Member(val idx: Int, val name: String, val role: String, val pk: String?, val sharePub: String, val shares: List<Point>? = null) {
+    val points get() = shares ?: listOf(Point(idx, sharePub))
+    val idxs get() = points.map { it.idx }
+}
 data class Group(val groupX: String, val npub: String, val threshold: Int, val relays: List<String>, val members: List<Member>)
-data class Membership(val sk: String, val idx: Int, val share: String, val signer: String, val group: Group)
-data class Offer(val fromPk: String, val token: String, val idx: Int, val share: String, val signer: String, val group: Group)
+/** One of this device's own shares. */
+data class Share(val idx: Int, val secret: String)
+data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group) {
+    /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
+    val share get() = shares.first().secret
+    val idxs get() = shares.map { it.idx }
+}
+/** A server's offer to join. [plan]: a weighted key not made yet, which this phone and the servers make together; then there's no [share]. */
+data class Offer(val fromPk: String, val token: String, val idx: Int, val share: String?, val signer: String, val group: Group, val plan: Map<*, *>? = null)
 /** Something destructive, waiting for you. */
 /** [frost]: which signing math the server asked for (2 = the library, 1 = the earlier one). */
-data class Ask(val id: String, val fromPk: String, val via: String, val app: String, val event: Event, val msg: String, val commit: Frost.Commit, val hold: String, val expiresAt: Long, val frost: Int = 1)
+data class Ask(val id: String, val fromPk: String, val via: String, val app: String, val event: Event, val msg: String, val commit: Frost.Commit, val hold: String, val expiresAt: Long, val frost: Int = 1,
+    /** The server's commitments, one per share it holds (one, for a server). */
+    val commits: List<Frost.Commit> = listOf(commit))
 /** A grant. [parent]: the connected site (the extension) that added it; [via]: what connected it. */
 data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long, val parent: String? = null, val via: String? = null)
 data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean)
@@ -203,9 +220,19 @@ class Phone(private val context: Context) {
         val p = pairing ?: return
         if (fromPk != p.getQueryParameter("pk") || msg["token"] != p.getQueryParameter("t") || ui.value.offer != null) return
         val group = parseGroup(msg["group"]) ?: return
+        val signer = msg["signer"] as? String ?: return
+        if (msg["weighted"] == true) {
+            // No key yet: it's made when you say yes. Which member we'll be is in the plan.
+            val plan = msg["plan"] as? Map<*, *> ?: return
+            val me = publicKeyHex((sk ?: return).hexToBytes())
+            val first = (plan["holders"] as? List<*>)?.mapNotNull { it as? Map<*, *> }?.firstOrNull { it["pk"] == me }?.let { (it["idx"] as Long).toInt() } ?: return
+            val idx = group.members.firstOrNull { first in it.idxs }?.idx ?: return
+            helloer?.cancel(false)
+            ui.update { it.copy(joining = null, offer = Offer(fromPk, msg["token"] as String, idx, null, signer, group, plan)) }
+            return
+        }
         val idx = (msg["idx"] as? Long)?.toInt() ?: return
         val share = msg["share"] as? String ?: return
-        val signer = msg["signer"] as? String ?: return
         if (group.members.firstOrNull { it.idx == idx }?.sharePub != Frost.sharePub(share)) {
             ui.update { it.copy(joining = null, error = "Your server sent a share that doesn't match its group. Nothing was kept.") }
             return
@@ -218,15 +245,57 @@ class Phone(private val context: Context) {
         val o = ui.value.offer ?: return
         val mySk = sk ?: return
         val me = publicKeyHex(mySk.hexToBytes())
+        if (o.plan != null) return makeKey(o, mySk, me)
         val group = o.group.copy(members = o.group.members.map { if (it.idx == o.idx) it.copy(pk = me) else it })
-        val m = Membership(mySk, o.idx, o.share, o.signer, group)
+        joined(o, Membership(mySk, o.idx, listOf(Share(o.idx, o.share!!)), o.signer, group), "Joined. This phone holds 1 of ${group.members.size} shares.")
+    }
+
+    private fun joined(o: Offer, m: Membership, line: String, ack: Map<String, Any?> = emptyMap()) {
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
-        send(o.fromPk, mapOf("type" to "pair_ack", "token" to o.token))
+        val ackMsg = mapOf("type" to "pair_ack", "token" to o.token) + ack
+        send(o.fromPk, ackMsg)
+        if (ack.isNotEmpty()) timer.schedule({ send(o.fromPk, ackMsg) }, 4, TimeUnit.SECONDS) // the server may still be finishing the key
         pairing = null
-        ui.update { it.copy(member = m, offer = null) }
-        note("Joined. This phone holds 1 of ${group.members.size} shares.")
-        lastSeen[group.members.first { it.pk == o.fromPk }.idx] = System.currentTimeMillis()
+        ui.update { it.copy(member = m, offer = null, joining = null) }
+        note(line)
+        lastSeen[m.group.members.first { it.pk == o.fromPk }.idx] = System.currentTimeMillis()
         start()
+    }
+
+    // A weighted key: this phone and both servers make it together (Dkg.kt); nobody ever
+    // holds all of it. This phone ends up with 3 shares, each server 1, and it takes 4.
+    private var dkg: Dkg? = null
+    private var dkgTicker: ScheduledFuture<*>? = null
+
+    private fun makeKey(o: Offer, mySk: String, me: String) {
+        ui.update { it.copy(offer = null, joining = "Making your key with your servers…") }
+        val started = System.currentTimeMillis()
+        val run = try { Dkg(o.plan!!, me, ::send) { r -> timer.execute { keyMade(o, mySk, me, r) } } } catch (e: Exception) {
+            return ui.update { it.copy(joining = null, error = "Couldn't start making your key: ${e.message}") }
+        }
+        dkg = run
+        dkgTicker?.cancel(false)
+        dkgTicker = timer.scheduleWithFixedDelay({
+            val doneFor = run.done?.let { System.currentTimeMillis() - started } ?: 0
+            if (dkg !== run || doneFor > 80_000) { dkgTicker?.cancel(false); return@scheduleWithFixedDelay }
+            if (run.done == null && System.currentTimeMillis() - started > 60_000) {
+                dkgTicker?.cancel(false); dkg = null
+                ui.update { it.copy(joining = null, error = "Your servers didn't finish making the key. Scan the code again.") }
+                return@scheduleWithFixedDelay
+            }
+            run.tick()
+        }, 0, 4, TimeUnit.SECONDS)
+    }
+
+    private fun keyMade(o: Offer, mySk: String, me: String, r: Dkg.Result) {
+        val pub = r.members.toMap()
+        val members = o.group.members.map { m ->
+            val pts = m.idxs.map { Point(it, pub[it] ?: return) }
+            m.copy(sharePub = pts[0].sharePub, shares = if (m.shares != null) pts else null, pk = if (m.idx == o.idx) me else m.pk)
+        }
+        val group = o.group.copy(groupX = r.groupX, npub = Nip19.npub(r.groupX), members = members)
+        val m = Membership(mySk, o.idx, r.shares.map { Share(it.first, it.second) }, o.signer, group)
+        joined(o, m, "Your key was made. This phone holds ${m.shares.size} of ${pub.size} shares; it and either server can sign.", mapOf("groupX" to r.groupX))
     }
 
     fun decline() {
@@ -432,8 +501,7 @@ class Phone(private val context: Context) {
 
     /** Who's in your key now: a server added or removed someone. */
     private fun onMembers(msg: Map<*, *>, m: Membership) {
-        val list = (msg["members"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
-            Member((it["idx"] as Long).toInt(), it["name"] as? String ?: "?", it["role"] as? String ?: "device", it["pk"] as? String, it["sharePub"] as? String ?: return@let null) } } ?: return
+        val list = (msg["members"] as? List<*>)?.mapNotNull { parseMember(it) } ?: return
         if (list.none { it.idx == m.idx }) return // a list without this phone isn't one to take
         val members = list.map { if (it.idx == m.idx) it.copy(pk = publicKeyHex(m.sk.hexToBytes())) else it }
         val updated = m.copy(group = m.group.copy(members = members))
@@ -467,12 +535,12 @@ class Phone(private val context: Context) {
         val mySk = joinWith ?: return
         val group = parseGroup(w["group"]) ?: return
         val k = (w["k"] as? Long)?.toInt() ?: return
-        val g = Json.stringify(mapOf("groupX" to group.groupX, "threshold" to group.threshold, "members" to group.members.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+        val g = groupJson(group)
         val share = try { FrostNative.repairStep3(g, Json.stringify(listOf(w["sigma"], sigma2)), k) } catch (e: Exception) {
             return ui.update { it.copy(error = "The pieces didn't add up to a share of that key. Nothing was kept.") }
         }
         val me = Member(k, w["name"] as? String ?: "This device", "device", publicKeyHex(mySk.hexToBytes()), Frost.sharePub(share))
-        val m = Membership(mySk, k, share, w["signer"] as? String ?: return, group.copy(members = group.members + me))
+        val m = Membership(mySk, k, listOf(Share(k, share)), w["signer"] as? String ?: return, group.copy(members = group.members + me))
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         send(joinPieces["server"] as String, mapOf("type" to "joined", "id" to w["id"], "sharePub" to me.sharePub))
         joinWith = null
@@ -601,11 +669,11 @@ class Phone(private val context: Context) {
         awake()
         val group = groupJson(m)
         val tried = mutableListOf<String>()
-        for (srv in servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }) {
-            val c = Json.parse(FrostNative.commit(group, m.idx, m.share)) as Map<*, *>
-            val mine = c["commit"] as Map<*, *>
+        for (srv in partners(m)) {
+            val cs = m.shares.map { it to (Json.parse(FrostNative.commit(group, it.idx, it.secret)) as Map<*, *>) }
+            val mine = cs.map { it.second["commit"] as Map<*, *> }
             val res = askServer(srv, mapOf("type" to "cosign_req", "id" to env.random(8).toHex(), "event" to ev.toMap(), "msg" to ev.id,
-                "participants" to listOf(m.idx, srv.idx).sorted(), "commit" to mine, "frost" to 2, "grant" to g.pk, "approved" to approved))
+                "participants" to (m.idxs + srv.idxs).sorted(), "commits" to mine, "commit" to mine[0], "frost" to 2, "grant" to g.pk, "approved" to approved))
                 ?: run { tried += "${srv.name}: no answer"; null } ?: continue
             if (res["ok"] != true) {
                 val why = res["reason"] as? String ?: "refused"
@@ -613,12 +681,14 @@ class Phone(private val context: Context) {
                 if (why.startsWith("needs-approval:")) throw NeedsApproval(why.removePrefix("needs-approval:").trim())
                 tried += "${srv.name}: $why"; continue
             }
-            val theirs = res["commit"] as Map<*, *>
-            val z2 = res["z"] as String
-            val commits = Json.stringify(listOf(mine, theirs))
-            if (!FrostNative.verifyPartial(group, ev.id, commits, srv.idx, z2)) { tried += "${srv.name}: bad partial"; continue }
-            val z = FrostNative.sign(group, m.idx, m.share, c["nonces"] as String, ev.id, commits)
-            val signed = ev.copy(sig = FrostNative.aggregate(group, ev.id, commits, Json.stringify(listOf(listOf(m.idx, z), listOf(srv.idx, z2)))))
+            // A server holds one share; it may answer the earlier way, one commit and one z.
+            val theirs = (res["commits"] as? List<*>)?.map { it as Map<*, *> } ?: listOf(res["commit"] as Map<*, *>)
+            val theirZs = (res["zs"] as? List<*>)?.map { val l = it as List<*>; (l[0] as Long).toInt() to l[1] as String } ?: listOf(srv.idx to res["z"] as String)
+            if (theirs.map { (it["idx"] as Long).toInt() }.sorted() != srv.idxs.sorted() || theirZs.map { it.first }.sorted() != srv.idxs.sorted()) { tried += "${srv.name}: bad partial"; continue }
+            val commits = Json.stringify(mine + theirs)
+            if (!theirZs.all { (i, z) -> FrostNative.verifyPartial(group, ev.id, commits, i, z) }) { tried += "${srv.name}: bad partial"; continue }
+            val zs = cs.map { (s, c) -> listOf(s.idx, FrostNative.sign(group, s.idx, s.secret, c["nonces"] as String, ev.id, commits)) }
+            val signed = ev.copy(sig = FrostNative.aggregate(group, ev.id, commits, Json.stringify(zs + theirZs.map { listOf(it.first, it.second) })))
             send(srv.pk!!, mapOf("type" to "phone_signed", "event" to signed.toMap(), "grant" to g.pk, "approved" to approved))
             // Relay logins happen once per relay an app connects to: not worth a line each.
             if (ev.kind != 22242 || approved) note("Signed ${Describe.kind(ev.kind)} for ${g.label}", if (approved) "approved" else "auto")
@@ -632,12 +702,13 @@ class Phone(private val context: Context) {
         sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) return x }
         val m = ui.value.member ?: error("Cosign isn't set up yet")
         awake()
-        for (srv in servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }) {
-            val participants = listOf(m.idx, srv.idx).sorted()
+        for (srv in partners(m)) {
+            val participants = (m.idxs + srv.idxs).sorted()
             val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk)) ?: continue
             if (res["ok"] != true) { if ((res["reason"] as? String)?.startsWith("revoked") == true) throw Revoked(); continue }
-            val mine = Frost.ecdhPartial(m.idx, m.share, participants, peerX).hexToBytes()
-            val x = Secp256k1.pubKeyCombine(arrayOf(mine, (res["point"] as String).hexToBytes())).copyOfRange(1, 33)
+            val mine = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX).hexToBytes() }
+            val theirs = ((res["points"] as? List<*>) ?: listOf(res["point"])).map { (it as String).hexToBytes() }
+            val x = Secp256k1.pubKeyCombine((mine + theirs).toTypedArray()).copyOfRange(1, 33)
             sharedXs[peerX] = System.currentTimeMillis() to x
             return x
         }
@@ -663,8 +734,14 @@ class Phone(private val context: Context) {
         return String(c.doFinal(Base64.getDecoder().decode(ct)))
     }
 
-    private fun groupJson(m: Membership) = Json.stringify(mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold,
-        "members" to m.group.members.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+    private fun groupJson(m: Membership) = groupJson(m.group)
+    /** The group as the library takes it: every share point, whoever holds it. */
+    private fun groupJson(g: Group) = Json.stringify(mapOf("groupX" to g.groupX, "threshold" to g.threshold,
+        "members" to g.members.flatMap { it.points }.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+
+    /** Your servers that make the threshold with this device, the ones online first. */
+    private fun partners(m: Membership) = servers().filter { (m.idxs + it.idxs).toSet().size >= m.group.threshold }
+        .sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }
 
     /** Ask a server and wait for its answer, saying it again once in case a relay dropped it. */
     private fun askServer(srv: Member, msg: Map<String, Any?>): Map<*, *>? {
@@ -701,6 +778,7 @@ class Phone(private val context: Context) {
         // Relays replay recent ephemeral events to a new subscription; the sender has given up on those.
         if ((type == "sign_req" || type == "ecdh_req") && System.currentTimeMillis() / 1000 - e.createdAt > 30) return
         if (type == "pair_offer") return onOffer(msg, e.pubkey)
+        if (type == "dkg1" || type == "dkg2") { dkg?.take(msg, e.pubkey); return }
         if (joinWith != null && (type == "welcome" || type == "sigma")) return onJoinPiece(msg, e.pubkey)
         val m = ui.value.member ?: return
         val from = m.group.members.firstOrNull { it.pk == e.pubkey && it.role == "server" } ?: return
@@ -770,11 +848,12 @@ class Phone(private val context: Context) {
         val reply = { body: Map<String, Any?> -> val full = mapOf("type" to "sign_res", "id" to id) + body; answered[id] = full; send(from.pk!!, full) }
         val ev = Event.fromMap(msg["event"]) ?: return reply(mapOf("ok" to false, "reason" to "malformed event"))
         val participants = (msg["participants"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: emptyList()
-        val c = msg["commit"] as? Map<*, *>
-        val commit = c?.let { Frost.Commit((it["idx"] as Long).toInt(), it["D"] as String, it["E"] as String) }
+        val cs = (msg["commits"] as? List<*>) ?: listOfNotNull(msg["commit"])
+        val commits = cs.mapNotNull { c -> (c as? Map<*, *>)?.let { Frost.Commit((it["idx"] as Long).toInt(), it["D"] as String, it["E"] as String) } }
         val digest = msg["msg"] as? String
-        if (commit == null || digest == null || commit.idx != from.idx || participants.sorted() != listOf(from.idx, m.idx).sorted())
+        if (commits.isEmpty() || digest == null || commits.map { it.idx }.sorted() != from.idxs.sorted() || participants.sorted() != (from.idxs + m.idxs).sorted())
             return reply(mapOf("ok" to false, "reason" to "bad participants"))
+        val commit = commits[0]
         // Sign only what we were shown: the digest must be this event's id under your key.
         if (ev.pubkey != m.group.groupX || ev.computeId() != digest) return reply(mapOf("ok" to false, "reason" to "event does not match the message"))
         Policy.refuse(ev)?.let { note("Refused: $it", "denied"); return reply(mapOf("ok" to false, "reason" to "refused: $it")) }
@@ -782,7 +861,7 @@ class Phone(private val context: Context) {
         // Your server's judgement, or this phone's own: either one is enough to ask you.
         val hold = msg["hold"] as? String ?: Policy.hold(ev, lists.latest(Policy.keyOf(ev)))
         val undo = msg["undo"] as? String
-        val ask = Ask(id, from.pk!!, from.name, app, ev, digest, commit, hold ?: "", System.currentTimeMillis() + 55_000, if (msg["frost"] == 2L) 2 else 1)
+        val ask = Ask(id, from.pk!!, from.name, app, ev, digest, commit, hold ?: "", System.currentTimeMillis() + 55_000, if (msg["frost"] == 2L) 2 else 1, commits)
         // Something you asked for on this phone (Undo, Post again, undoing a site), or a
         // batch of deletions you already approved: signed without asking again.
         val myUndo = undo != null && System.currentTimeMillis() - (myUndos[undo] ?: 0) < 600_000 ||
@@ -815,14 +894,15 @@ class Phone(private val context: Context) {
 
     private fun sign(ask: Ask, m: Membership, reply: (Map<String, Any?>) -> Unit) {
         if (ask.frost == 2) {
-            val group = Json.stringify(mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold,
-                "members" to m.group.members.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
-            val c = Json.parse(FrostNative.commit(group, m.idx, m.share)) as Map<*, *>
-            val mine = c["commit"] as Map<*, *>
-            val theirs = mapOf("idx" to ask.commit.idx, "D" to ask.commit.D, "E" to ask.commit.E)
-            val z = FrostNative.sign(group, m.idx, m.share, c["nonces"] as String, ask.msg, Json.stringify(listOf(theirs, mine)))
-            return reply(mapOf("ok" to true, "z" to z, "commit" to mine))
+            val group = groupJson(m)
+            val cs = m.shares.map { it to (Json.parse(FrostNative.commit(group, it.idx, it.secret)) as Map<*, *>) }
+            val mine = cs.map { it.second["commit"] as Map<*, *> }
+            val theirs = ask.commits.map { mapOf("idx" to it.idx, "D" to it.D, "E" to it.E) }
+            val all = Json.stringify(theirs + mine)
+            val zs = cs.map { (s, c) -> listOf(s.idx, FrostNative.sign(group, s.idx, s.secret, c["nonces"] as String, ask.msg, all)) }
+            return reply(mapOf("ok" to true, "commits" to mine, "zs" to zs, "commit" to mine[0], "z" to zs[0][1]))
         }
+        if (m.shares.size > 1 || ask.commits.size > 1) return reply(mapOf("ok" to false, "reason" to "a weighted key signs only with the library"))
         val (nonces, mine) = Frost.commit(m.idx, env)
         val z = Frost.partialSign(m.group.groupX, ask.msg, listOf(ask.commit, mine), m.idx, m.share, nonces)
         reply(mapOf("ok" to true, "z" to z, "commit" to mapOf("idx" to mine.idx, "D" to mine.D, "E" to mine.E)))
@@ -842,8 +922,9 @@ class Phone(private val context: Context) {
         answered[id]?.let { send(from.pk!!, it); return }
         val participants = (msg["participants"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
         val peerX = msg["peerX"] as? String ?: return
-        if (!isHex32(peerX) || participants.sorted() != listOf(from.idx, m.idx).sorted()) return
-        val body = mapOf("type" to "ecdh_res", "id" to id, "ok" to true, "point" to Frost.ecdhPartial(m.idx, m.share, participants, peerX))
+        if (!isHex32(peerX) || participants.sorted() != (from.idxs + m.idxs).sorted()) return
+        val points = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX) }
+        val body = mapOf("type" to "ecdh_res", "id" to id, "ok" to true, "points" to points, "point" to points[0])
         answered[id] = body
         send(from.pk!!, body)
         if (System.currentTimeMillis() - lastEcdhNote > 60_000) {
@@ -912,24 +993,33 @@ class Phone(private val context: Context) {
 
     private fun parseGroup(v: Any?): Group? {
         val g = v as? Map<*, *> ?: return null
-        val members = (g["members"] as? List<*>)?.mapNotNull { x ->
-            val mm = x as? Map<*, *> ?: return@mapNotNull null
-            Member((mm["idx"] as Long).toInt(), mm["name"] as String, mm["role"] as String, mm["pk"] as? String, mm["sharePub"] as String)
-        } ?: return null
-        return Group(g["groupX"] as? String ?: return null, g["npub"] as? String ?: "", (g["threshold"] as? Long)?.toInt() ?: 2,
+        val members = (g["members"] as? List<*>)?.mapNotNull { parseMember(it) } ?: return null
+        // A weighted offer has no key yet: it's made after you say yes.
+        return Group(g["groupX"] as? String ?: "", g["npub"] as? String ?: "", (g["threshold"] as? Long)?.toInt() ?: 2,
             (g["relays"] as? List<*>)?.filterIsInstance<String>() ?: return null, members)
+    }
+
+    private fun parseMember(x: Any?): Member? {
+        val mm = x as? Map<*, *> ?: return null
+        val shares = (mm["shares"] as? List<*>)?.mapNotNull { s -> (s as? Map<*, *>)?.let { Point((it["idx"] as Long).toInt(), it["sharePub"] as? String ?: "") } }
+        return Member((mm["idx"] as Long).toInt(), mm["name"] as? String ?: "?", mm["role"] as? String ?: "device", mm["pk"] as? String, mm["sharePub"] as? String ?: return null, shares)
     }
 
     private fun parseMembership(v: Any?): Membership? {
         val m = v as? Map<*, *> ?: return null
-        return Membership(m["sk"] as String, (m["idx"] as Long).toInt(), m["share"] as String, m["signer"] as? String ?: return null, parseGroup(m["group"]) ?: return null)
+        val idx = (m["idx"] as Long).toInt()
+        // Saved before weighted keys: one share, under "share".
+        val shares = (m["shares"] as? List<*>)?.map { val s = it as Map<*, *>; Share((s["idx"] as Long).toInt(), s["secret"] as String) }
+            ?: listOf(Share(idx, m["share"] as? String ?: return null))
+        return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null)
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
-        "sk" to m.sk, "idx" to m.idx, "share" to m.share, "signer" to m.signer,
+        "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer,
         "group" to mapOf(
             "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
-            "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) },
+            "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
+                (it.shares?.let { s -> mapOf("shares" to s.map { p -> mapOf("idx" to p.idx, "sharePub" to p.sharePub) }) } ?: emptyMap()) },
         ),
     )
 

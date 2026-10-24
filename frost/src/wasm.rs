@@ -57,3 +57,24 @@ pub fn repair_step2(deltas: Vec<String>) -> Result<String, JsError> { js(super::
 pub fn repair_step3(group_json: &str, sigmas: Vec<String>, participant: u16) -> Result<String, JsError> {
     js(super::repair_step3(&group(group_json)?, &sigmas, participant))
 }
+
+/// DKG part 1 for one share: `{"secret", "package"}`.
+#[wasm_bindgen(js_name = dkgPart1)]
+pub fn dkg_part1(idx: u16, max_signers: u16, min_signers: u16) -> Result<String, JsError> {
+    Ok(serde_json::to_string(&js(super::dkg_part1(idx, max_signers, min_signers))?).unwrap())
+}
+
+/// DKG part 2: `others` is `[[idx, package], …]`. Returns `{"secret", "packages": [[toIdx, package], …]}`.
+#[wasm_bindgen(js_name = dkgPart2)]
+pub fn dkg_part2(secret: &str, others_json: &str) -> Result<String, JsError> {
+    let others: Vec<(u16, String)> = serde_json::from_str(others_json).map_err(|e| JsError::new(&format!("packages: {e}")))?;
+    Ok(serde_json::to_string(&js(super::dkg_part2(secret, &others))?).unwrap())
+}
+
+/// DKG part 3: returns `{"share", "groupX", "members": [{idx, sharePub}, …]}`.
+#[wasm_bindgen(js_name = dkgPart3)]
+pub fn dkg_part3(idx: u16, secret2: &str, others_round1_json: &str, round2_json: &str) -> Result<String, JsError> {
+    let r1: Vec<(u16, String)> = serde_json::from_str(others_round1_json).map_err(|e| JsError::new(&format!("round 1: {e}")))?;
+    let r2: Vec<(u16, String)> = serde_json::from_str(round2_json).map_err(|e| JsError::new(&format!("round 2: {e}")))?;
+    Ok(serde_json::to_string(&js(super::dkg_part3(idx, secret2, &r1, &r2))?).unwrap())
+}

@@ -117,6 +117,15 @@ background service is running.
   say `frost: 2`; the earlier hand-rolled math (`server/frost.ts`, `core/Frost.kt`) is
   kept only so members not updated yet keep working — a coordinator finishes each round
   in whichever math its partner used.
+- **Weighted keys** (`server/dkg.ts`, `core/Dkg.kt`; `setup.ts --weighted`): no dealer.
+  Your phone holds 3 shares and each server 1, and it takes 4 to sign: the phone and either
+  server can, the two servers can't. The key is made by DKG when the phone scans server A's
+  code: A sends `pair_offer {weighted, plan}` (the session, threshold, and which member
+  key holds each share index) and `dkg_start {plan}` to B; every holder sends `dkg1`
+  (its part-1 packages) to all and `dkg2` (part-2 packages, `[from, to, package]`) to each
+  share's holder, re-sent every 4 s until done. The phone then sends `pair_ack {groupX}`.
+  A round is every share of the members taking part (`commits`/`zs` lists in `sign_req`,
+  `cosign_req`, and their answers; `points` in `ecdh_res`).
 - **Push**: the servers POST "cosign:approve" to the phone's ntfy endpoint — nothing
   else; the request itself comes over relays, sealed.
 
@@ -134,6 +143,7 @@ cd site && node test/deletion.e2e.ts                     # copies kept, 10 s Und
 cd site && node test/undo-site.e2e.ts                    # undo everything one site did
 cd site && NSEC=… node test/future.e2e.ts                # dated ahead: refused, held, found and removed
 cd site && node test/devices.e2e.ts                      # add a device by repair; it co-signs
+cd site && node test/weighted.e2e.ts                     # a key nobody held: phone 3 + server 1 sign
 cd server && node test/policy-vectors.ts                 # policy cases for the phone's copy
 # a second group beside yours for these: node setup.ts --dir test-data --port 8721
 ```
