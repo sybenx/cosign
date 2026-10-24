@@ -132,6 +132,8 @@ data class Ui(
     val restoring: Restoring? = null,
     /** Your paper backup is being used somewhere: for whom, and until when it can be cancelled. */
     val recovery: Pair<String, Long>? = null,
+    /** Just made, imported or joined, with one device and no paper: offer the paper now (once; "Later" is fine). */
+    val askPaper: Boolean = false,
     val push: String? = null,
 )
 
@@ -207,11 +209,25 @@ class Phone(private val context: Context, val slot: String = "0") {
     }
 
     val isMember get() = ui.value.member != null
+
+    /** One device and no paper backup: lose this phone and the key is gone. */
+    val needsPaper get() = ui.value.member?.group?.let { g -> g.threshold >= 4 && g.members.none { it.role == "backup" } && g.members.count { it.role == "phone" || it.role == "device" } <= 1 } ?: false
+    private val nudges = context.getSharedPreferences(named("nudges"), Context.MODE_PRIVATE)
+
+    /** Right after the key arrives on this phone: the paper, once, if it's the only device. */
+    private fun offerPaper() { if (needsPaper && !nudges.getBoolean("asked", false)) { nudges.edit().putBoolean("asked", true).apply(); ui.update { it.copy(askPaper = true) } } }
+    fun laterPaper() = ui.update { it.copy(askPaper = false) }
     private fun servers() = ui.value.member?.group?.members?.filter { it.role == "server" && it.pk != null } ?: emptyList()
 
     /** Start answering, if this phone is in a group. Called by the service. */
     fun start() {
         val m = ui.value.member ?: return
+        // A day on, still one device and no paper: say so once, outside the app too.
+        if (!nudges.contains("since")) nudges.edit().putLong("since", System.currentTimeMillis()).apply()
+        if (needsPaper && !nudges.getBoolean("told", false) && System.currentTimeMillis() - nudges.getLong("since", 0) > 86_400_000) {
+            nudges.edit().putBoolean("told", true).apply()
+            listener?.onNotice("Make your paper backup", "If you lose this phone, your key can't be recovered without it. Open Cosign to make one.")
+        }
         if (relays == null || sk != m.sk) connect(m.group.relays, m.sk)
         relays?.watch(mapOf("kinds" to Policy.ARCHIVED.toList(), "authors" to listOf(m.group.groupX)))
         if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status() }, 0, 10, TimeUnit.SECONDS)
@@ -290,6 +306,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         pairing = null
         ui.update { it.copy(member = m, offer = null, joining = null) }
         note(line)
+        offerPaper()
         lastSeen[m.group.members.first { it.pk == o.fromPk }.idx] = System.currentTimeMillis()
         start()
     }
@@ -706,6 +723,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         connect(group.relays, mySk)
         ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your key is in Cosign now. This phone holds ${m.shares.size} of its shares.")) }
+        offerPaper()
         note("Moved ${group.npub.take(16)}… in from a web page", "approved")
         // Claim this member's place with each server, again in case a relay drops it.
         val claim = { for (srv in servers()) send(srv.pk!!, mapOf("type" to "pair_ack", "token" to mv.claim, "name" to android.os.Build.MODEL.ifBlank { "Phone" })) }

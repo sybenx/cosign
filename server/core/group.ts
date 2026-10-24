@@ -34,6 +34,8 @@ import { nip19 } from 'nostr-tools';
 export interface Member { idx: number; name: string; role: 'server' | 'phone' | 'device' | 'backup'; pk: string | null; sharePub: string; push?: string | null; removed?: number;
   /** Who reported it lost (a member idx), and whether it answered "This wasn't me". */
   removedBy?: number; contested?: number;
+  /** A server with no NIP-46 signer key (a public Worker, say): it never answers sites. */
+  noSites?: boolean;
   /** In a weighted key a member holds several shares (a device 3, a server 1). `idx`/`sharePub` are the first. */
   shares?: { idx: number; sharePub: string }[] }
 /**
@@ -264,8 +266,8 @@ export function openGroup(loaded: Loaded, io: Io) {
   // refuses an event id it has already seen, even an ephemeral one.
 
   // The first server answers sites; another steps in once it has been gone 30 s.
-  const firstServer = () => members.filter(m => m.role === 'server' && !m.removed).sort((a, b) => a.idx - b.idx)[0];
-  const coordinating = () => firstServer().idx === me.idx || (io.now() - startedAt > 30_000 && !online(firstServer()));
+  const firstServer = () => members.filter(m => m.role === 'server' && !m.removed && !m.noSites).sort((a, b) => a.idx - b.idx)[0];
+  const coordinating = () => !!S.signer && !!firstServer() && (firstServer().idx === me.idx || (io.now() - startedAt > 30_000 && !online(firstServer())));
   const answers = new Map<string, { at: number; body: string; scheme: 'nip44' | 'nip04' }>();
   const working = new Set<string>();
 
@@ -907,6 +909,8 @@ export function openGroup(loaded: Loaded, io: Io) {
     const backup = msg.backup === true;
     const next = Math.max(...members.flatMap(sharesOf)) + 1;
     const count = backup ? (members.filter(m => m.role === 'server' && !m.removed).length < 2 ? 3 : 2) : grow ? 3 : sharesOf(by).length;
+    // A paper must never be enough to sign alone (keys made before weighted ones have threshold 2).
+    if (backup && count >= S.group.threshold) throw new Error('this key is too old for a paper backup: its paper could sign on its own');
     const ks = Array.from({ length: count }, (_, i) => next + i);
     // The vouching device and this server, and if that's short of the threshold (a device
     // restored from a 2-share paper, say), other servers too.
@@ -1041,6 +1045,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       if (!mine.pk && m.pk) { mine.pk = m.pk; dirty = true; }
       // A paper backup that became the phone it restored (after the wait, at the other server).
       if (mine.role === 'backup' && m.role === 'device' && !m.removed) { Object.assign(mine, { role: 'device', pk: m.pk, name: m.name }); dirty = true; }
+      if (m.noSites && !mine.noSites) { mine.noSites = true; dirty = true; }
       // A device that grew its shares (after a paper recovery), at the other server.
       // Only a change of which shares it holds: points move by refresh, which each server works out itself.
       if (m.shares && !m.removed && mine.role !== 'server' && !sameSet(m.shares.map(x => x.idx), sharesOf(mine))) { Object.assign(mine, { shares: m.shares, sharePub: m.sharePub }); dirty = true; }
@@ -1359,6 +1364,8 @@ export function openGroup(loaded: Loaded, io: Io) {
 
   /** Once, when the host starts serving this group. */
   function start() {
+    // Without a signer key this server never answers sites; the others must know not to wait for it.
+    if (!S.signer && !me.noSites) { me.noSites = true; save(); setTimeout(() => toOther({ type: 'members', members }), 4000); }
     // Enrolled to make a key that doesn't exist yet (core/enroll.ts): run the plan with the others.
     if (S.dkg && !groupX) { dkg = new DkgRun(S.dkg, me.pk!, send, onDkgDone); dkg.start(); }
     // Sites that came by nostrconnect may be listening on relays of their own.

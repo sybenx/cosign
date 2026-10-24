@@ -100,6 +100,7 @@ fun App(phone: Phone, ui: Ui) {
         ui.reporting?.let { ReportLostSheet(it, phone) }
         ui.removedBy?.let { RemovedSheet(it, phone) }
         ui.paper?.let { PaperSheet(it, phone::closePaper) }
+        if (ui.askPaper && ui.paper == null && ui.paperStatus == null) PaperPrompt(phone)
         ui.recovery?.let { RecoverySheet(it.first, it.second, phone) }
     }
 }
@@ -309,6 +310,8 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             }
             if (ui.relaysUp == 0) Text("No relay connection. Retrying…", color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
         }
+        // Until there's a paper or a second device, this stays at the top.
+        if (phone.needsPaper) item { PaperCard(phone) }
         item {
             Button(onScan, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
                 Text("Connect a site", style = MaterialTheme.typography.labelLarge)
@@ -330,7 +333,8 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             }
         }
         item { TextButton(onScan, contentPadding = PaddingValues(0.dp)) { Text("Add a device", color = Vault.Teal) } }
-        item { PaperRow(m.group.members.any { it.role == "backup" }, ui.paperStatus, phone) }
+        // Keys from before weighted ones (threshold 2) can't have a paper: it could sign alone.
+        if (m.group.threshold >= 4) item { PaperRow(m.group.members.any { it.role == "backup" }, ui.paperStatus, phone) }
 
         item { Heading("Sites that can sign as you") }
         if (ui.sites.isEmpty()) item { Muted("None yet. Tap Connect a site and scan a site's sign-in code.") }
@@ -569,6 +573,50 @@ private fun KeysSheet(current: Phone, onClose: () -> Unit) {
             Button({ accounts.add(); onClose() }, Modifier.fillMaxWidth().height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Add another key") }
         }
     }
+}
+
+/** One device and no paper: a card at the top until there's one or the other. */
+@Composable
+private fun PaperCard(phone: Phone) = Card(Vault.AmberEdge, Vault.AmberGround) {
+    Text("Make your paper backup", style = MaterialTheme.typography.titleMedium, color = Vault.AmberText)
+    Spacer(Modifier.height(4.dp))
+    Text("If you lose this phone, your key can't be recovered without it. Or add another device.", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
+    PaperButton(phone, "Make it now")
+}
+
+/** Right after the key arrives: the paper, once. Skipping is fine. */
+@Composable
+private fun PaperPrompt(phone: Phone) {
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            Text("Make your paper backup", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Spacer(Modifier.height(10.dp))
+            Text("If you lose this phone, your key can't be recovered without it. It takes a minute: print it or photograph it onto something offline.",
+                style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+            Spacer(Modifier.height(16.dp))
+            OutlinedButton({ phone.laterPaper() }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Later", color = Vault.Text) }
+            Spacer(Modifier.height(10.dp))
+            PaperButton(phone, "Make it now", filled = true) { phone.laterPaper() }
+        }
+    }
+}
+
+/** Make a paper backup, after this phone's lock. */
+@Composable
+private fun PaperButton(phone: Phone, text: String, filled: Boolean = false, after: () -> Unit = {}) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) { after(); phone.makePaper() }
+    }
+    val go = {
+        val ask = lockIntent(context, "Make a paper backup", "Confirm it's you to make a backup of your key")
+        if (ask == null) phone.lockMissing() else lock.launch(ask)
+    }
+    if (filled) Button(go, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text(text) }
+    else TextButton(go, contentPadding = PaddingValues(0.dp)) { Text(text, color = Vault.Teal) }
 }
 
 /** The paper backup: whether there is one, and making one (after this phone's lock). */
