@@ -141,6 +141,13 @@ class CosignService : Service(), Phone.Listener {
     }
     override fun onBatchGone(batch: String) = NotificationManagerCompat.from(this).cancel(("batch" + batch).hashCode())
 
+    override fun onNotice(title: String, text: String) {
+        if (!canNotify()) return
+        NotificationManagerCompat.from(this).notify((title + text).hashCode(), NotificationCompat.Builder(this, ASKS)
+            .setSmallIcon(R.drawable.ic_stat).setContentTitle(title).setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text)).setAutoCancel(true).setContentIntent(openApp()).build())
+    }
+
     private fun canNotify() = Build.VERSION.SDK_INT < 33 ||
         ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
 

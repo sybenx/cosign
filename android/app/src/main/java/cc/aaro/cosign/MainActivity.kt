@@ -46,10 +46,20 @@ class MainActivity : ComponentActivity() {
                 }
                 // Connected, cancelled or failed and closed: the sign-in sheet is gone. If a link
                 // from another app brought it, that app is where the site is waiting.
+                // Go back as soon as you've said yes: the app that asked (a browser extension, say)
+                // may only be able to answer once it's in front again, so waiting here for it
+                // would wait forever. The hand-over finishes in the background; a failure is a
+                // notification.
                 var hadConnect by remember { mutableStateOf(false) }
-                LaunchedEffect(ui.connect == null) {
-                    if (ui.connect != null) hadConnect = true
-                    else if (hadConnect) { hadConnect = false; if (backToCaller) { backToCaller = false; moveTaskToBack(true) } }
+                LaunchedEffect(ui.connect?.stage) {
+                    val stage = ui.connect?.stage
+                    if (stage != null) hadConnect = true
+                    if (backToCaller && (stage == Connect.Stage.WORKING || (stage == null && hadConnect))) {
+                        backToCaller = false
+                        if (stage == Connect.Stage.WORKING) phone.connectInBackground = true
+                        moveTaskToBack(true)
+                    }
+                    if (stage == null) hadConnect = false
                 }
                 App(phone, ui)
             }

@@ -147,6 +147,8 @@ class Phone(private val context: Context) {
         fun onAsk(ask: Ask); fun onAskGone(id: String); fun onStatus()
         fun onDeleting(d: Deleting) {}; fun onDeletingGone(batch: String) {}
         fun onBatch(b: BatchAsk) {}; fun onBatchGone(batch: String) {}
+        /** Something to say while Cosign isn't on screen (a sign-in that didn't go through). */
+        fun onNotice(title: String, text: String) {}
     }
 
     private val secrets = Secrets(context)
@@ -370,7 +372,7 @@ class Phone(private val context: Context) {
             usedCode(params.token) -> ui.update { it.copy(error = "You've already used that code. Ask the site for a new one.") }
             else -> {
                 connecting = params; nostrConnect = null
-                ui.update { it.copy(error = null, connect = Connect(params.origin ?: "This site", Connect.Stage.CONFIRM)) }
+                ui.update { it.copy(error = null, connect = Connect(params.origin?.let(::siteLabel) ?: "This site", Connect.Stage.CONFIRM)) }
             }
         }
     }
@@ -678,6 +680,8 @@ class Phone(private val context: Context) {
         timer.schedule({
             if (transfer === t && ui.value.connect?.stage == Connect.Stage.WORKING) {
                 t.cancel(); connecting = null
+                if (connectInBackground) listener?.onNotice("Not signed in", "$origin didn't answer. Ask it for a new code.")
+                connectInBackground = false
                 ui.update { it.copy(connect = Connect(origin, Connect.Stage.FAILED, "$origin didn't answer. Ask it for a new code.")) }
             }
         }, 30, TimeUnit.SECONDS)
@@ -687,6 +691,16 @@ class Phone(private val context: Context) {
             if (v.stage == TransferView.Stage.ENDED) finishConnect(origin, v.session.outcome)
         }
     }
+
+    /** As the servers name them: a browser extension's made-up origin, as words (server's siteName). */
+    private fun siteLabel(origin: String): String {
+        val m = Regex("^https?://([a-z0-9-]+)\\.extension/?$", RegexOption.IGNORE_CASE).find(origin) ?: return origin
+        val words = mapOf("iphone" to "iPhone", "ipad" to "iPad", "macbook" to "MacBook", "macos" to "macOS", "ios" to "iOS", "pc" to "PC", "on" to "on", "in" to "in", "for" to "for")
+        return m.groupValues[1].lowercase().split('-').filter { it.isNotEmpty() }.joinToString(" ") { w -> words[w] ?: w.replaceFirstChar { it.uppercase() } } + " (browser extension)"
+    }
+
+    /** The sign-in is finishing while you're back in the app that asked (MainActivity sent you there). */
+    @Volatile var connectInBackground = false
 
     private fun finishConnect(origin: String, outcome: Outcome?) {
         if (ui.value.connect?.stage != Connect.Stage.WORKING) return
@@ -698,6 +712,8 @@ class Phone(private val context: Context) {
             else -> Connect.Stage.FAILED to "Couldn't connect $origin (${outcome?.wire ?: "unknown"})."
         }
         if (stage == Connect.Stage.DONE) note("Connected $origin", "approved")
+        else if (connectInBackground) listener?.onNotice("Not signed in", message)
+        connectInBackground = false
         ui.update { it.copy(connect = Connect(origin, stage, message)) }
         // A success needs no tap to dismiss, and mustn't sit over an approval that arrives next.
         if (stage == Connect.Stage.DONE) timer.schedule({ ui.update { u -> if (u.connect?.stage == Connect.Stage.DONE) u.copy(connect = null) else u } }, 2500, TimeUnit.MILLISECONDS)
