@@ -17,7 +17,21 @@ VERSION=$(sed -n 's/.*versionName = "\(.*\)"/\1/p' android/app/build.gradle.kts)
 sed -i '' -E "s/\"version\": \"[^\"]+\"/\"version\": \"$VERSION\"/" server/package.json
 (cd android && JAVA_HOME=${JAVA_HOME:-/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home} ./gradlew -q :app:assembleRelease)
 rm -f Cosign-*.apk link/public/Cosign-*.apk
-cp android/app/build/outputs/apk/release/app-release.apk "Cosign-$VERSION.apk"
+# Signed with Cosign's release key (kept off the repo, in $COSIGN_KEYS), with the
+# lineage that proves it took over from the debug key the first builds were signed
+# with, so every build still installs over the last (APK key rotation, Android 9+).
+KEYS=${COSIGN_KEYS:-$HOME/cosign-release}
+if [ -f "$KEYS/cosign-release.jks" ]; then
+  BT=$(ls -d ${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}/build-tools/* | sort -V | tail -1)
+  JAVA_HOME=${JAVA_HOME:-/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home} "$BT/apksigner" sign \
+    --ks "$KEYS/old-debug.keystore" --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android \
+    --next-signer --ks "$KEYS/cosign-release.jks" --ks-pass "file:$KEYS/password.txt" --ks-key-alias cosign \
+    --lineage "$KEYS/lineage.bin" --rotation-min-sdk-version 28 \
+    --out "Cosign-$VERSION.apk" android/app/build/outputs/apk/release/app-release.apk
+  rm -f "Cosign-$VERSION.apk.idsig"
+else
+  echo "no release key in $KEYS: signing with the debug key"; cp android/app/build/outputs/apk/release/app-release.apk "Cosign-$VERSION.apk"
+fi
 cp "Cosign-$VERSION.apk" "link/public/Cosign-$VERSION.apk"
 cp "Cosign-$VERSION.apk" link/public/cosign.apk
 sed -i '' -E "s#/Cosign-[0-9.]+\.apk\">Cosign-[0-9.]+\.apk#/Cosign-$VERSION.apk\">Cosign-$VERSION.apk#" link/public/index.html
