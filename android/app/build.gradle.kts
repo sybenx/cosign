@@ -60,6 +60,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("org.unifiedpush.android:connector:3.0.10")
     implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-android:0.19.0")
+    // Videos in notes: the player and HLS only (its own controls are Compose; no media3-ui, no session).
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

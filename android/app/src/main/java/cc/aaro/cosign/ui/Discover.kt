@@ -126,7 +126,9 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
     // Read on open and when you come back to it; nothing in between.
     LifecycleEventEffect(Lifecycle.Event.ON_START) { social.loadFeed(); social.loadNotices() }
 
-    val nav = Nav(open = open, back = back, social = social)
+    // A note's pictures, full screen, over everything else.
+    var viewing by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
+    val nav = Nav(open = open, back = back, social = social) { urls, i -> viewing = urls to i }
     when (val top = stack.lastOrNull()) {
         null -> Home(phone, ui, social, feedState, nav)
         Route.Account -> AccountScreen(phone, ui, onScan, onProfile = { ui.member?.group?.groupX?.let { nav.profile(it) } }, onBack = back)
@@ -135,6 +137,9 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
         is Route.Thread -> ThreadScreen(top.id, social, nav)
         is Route.Profile -> ProfileScreen(top.pubkey, social, nav)
     }
+
+    viewing?.let { (urls, i) -> ImageViewer(urls, i) { viewing = null } }
+    VideoFullScreen()
 
     social.held.collectAsState().value?.let { h ->
         AlertDialog(
@@ -156,7 +161,7 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
     }
 }
 
-private class Nav(val open: (Route) -> Unit, val back: () -> Unit, val social: Social) {
+private class Nav(val open: (Route) -> Unit, val back: () -> Unit, val social: Social, val pictures: (List<String>, Int) -> Unit = { _, _ -> }) {
     fun thread(id: String) = open(Route.Thread(id))
     fun profile(pk: String) = open(Route.Profile(pk))
     fun search(q: String) { social.search(q); open(Route.Search) }
@@ -391,11 +396,18 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
             }
             // In a list, one picture, no taller than it is wide; a thread shows them all, whole.
             val full = maxLines == Int.MAX_VALUE
-            for (img in body.images.take(if (full) 6 else 1)) {
+            // A tap on a picture opens it full screen (and not the thread); a video plays where it is.
+            val urls = remember(body) { body.images.map { it.url } }
+            body.media.take(if (full) 4 else 1).forEach { m ->
                 Spacer(Modifier.height(8.dp))
-                NetImage(img.url, Modifier.fillMaxWidth().aspectRatio(img.ratio.coerceIn(if (full) 0.6f else 1f, 2.2f)).clip(RoundedCornerShape(12.dp)), 1080, description = "Picture")
+                when (m) {
+                    is Body.Img -> NetImage(m.url, Modifier.fillMaxWidth().aspectRatio(m.ratio.coerceIn(if (full) 0.6f else 1f, 2.2f)).clip(RoundedCornerShape(12.dp))
+                        .clickable { nav.pictures(urls, urls.indexOf(m.url).coerceAtLeast(0)) }, 1080, description = "Picture")
+                    is Body.Vid -> VideoCard(m.v)
+                }
             }
-            if (!full && body.images.size > 1) Text("+${body.images.size - 1} more", color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+            if (!full && body.media.size > 1) Text("+${body.media.size - 1} more", color = Vault.Muted, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp).clickable { if (body.media.drop(1).all { it is Body.Img }) nav.pictures(urls, 1) else nav.thread(n.id) })
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onLike, Modifier.offset(x = (-12).dp)) {
                     Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, if (liked) "Liked" else "Like", tint = if (liked) Vault.Amber else Vault.Muted, modifier = Modifier.size(20.dp))
@@ -420,7 +432,8 @@ private fun NoteMenu(n: Event, name: String, social: Social) = Box {
 }
 
 /** A note's text, cut up: pictures apart, mentions and #tags made tappable. */
-private class Body(val parts: List<Part>, val images: List<Img>, val mentions: List<String>) {
+private class Body(val parts: List<Part>, val media: List<Media>, val mentions: List<String>) {
+    val images get() = media.filterIsInstance<Img>()
     sealed class Part {
         data class Plain(val s: String) : Part()
         data class Link(val url: String) : Part()
@@ -428,7 +441,9 @@ private class Body(val parts: List<Part>, val images: List<Img>, val mentions: L
         data class Quote(val id: String) : Part()
         data class Tag(val tag: String) : Part()
     }
-    data class Img(val url: String, val ratio: Float)
+    sealed class Media
+    data class Img(val url: String, val ratio: Float) : Media()
+    data class Vid(val v: VideoRef) : Media()
 
     fun annotated(people: Map<String, Person>, nav: Nav): AnnotatedString = buildAnnotatedString {
         val style = TextLinkStyles(SpanStyle(color = Vault.Teal))
@@ -444,14 +459,20 @@ private class Body(val parts: List<Part>, val images: List<Img>, val mentions: L
     companion object {
         private val TOKEN = Regex("(https?://[^\\s<>\"]+)|nostr:((?:npub|nprofile|note|nevent)1[02-9ac-hj-np-z]+)|(?<=^|\\s)#([\\p{L}\\p{N}_]{1,40})")
         private val IMAGE = Regex("\\.(jpe?g|png|gif|webp|avif)(\\?.*)?$", RegexOption.IGNORE_CASE)
+        private val VIDEO = Regex("\\.(mp4|webm|mov|m4v|m3u8)(\\?.*)?$", RegexOption.IGNORE_CASE)
+        private val BREAKS = Regex("[ \\t]*\\n[ \\t\\n]*\\n[ \\t\\n]*")
 
         fun of(e: Event, content: String = e.content): Body {
-            val dims = e.tags.filter { it.isNotEmpty() && it[0] == "imeta" }.mapNotNull { t ->
+            // NIP-92 imeta (and NIP-71 video events): each file's shape, type, picture and length.
+            val meta = e.tags.filter { it.isNotEmpty() && it[0] == "imeta" }.mapNotNull { t ->
                 val f = t.drop(1).associate { it.substringBefore(' ') to it.substringAfter(' ') }
-                val (w, h) = f["dim"]?.split('x')?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size == 2 && it[1] > 0 } ?: return@mapNotNull null
-                f["url"]?.let { it to w / h }
+                f["url"]?.let { it to f }
             }.toMap()
-            val parts = ArrayList<Part>(); val images = ArrayList<Img>(); val mentions = ArrayList<String>()
+            fun ratioOf(url: String) = meta[url]?.get("dim")?.split('x')?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size == 2 && it[1] > 0 }?.let { it[0] / it[1] }
+            fun isVideo(url: String) = VIDEO.containsMatchIn(url) || meta[url]?.get("m")?.startsWith("video/") == true
+            fun video(url: String) = Vid(VideoRef(url, (meta[url]?.get("image") ?: meta[url]?.get("thumb"))?.takeIf { it.startsWith("https://") },
+                ratioOf(url) ?: (16f / 9f), meta[url]?.get("duration")?.toFloatOrNull()?.toInt()))
+            val parts = ArrayList<Part>(); val images = ArrayList<Media>(); val mentions = ArrayList<String>()
             var at = 0
             val text = content.trim()
             for (m in TOKEN.findAll(text)) {
@@ -461,7 +482,8 @@ private class Body(val parts: List<Part>, val images: List<Img>, val mentions: L
                 val ref = m.groups[2]?.value
                 val tag = m.groups[3]?.value
                 when {
-                    url != null && IMAGE.containsMatchIn(url) -> images += Img(url, dims[url] ?: 1.5f)
+                    url != null && isVideo(url) -> images += video(url)
+                    url != null && IMAGE.containsMatchIn(url) -> images += Img(url, ratioOf(url) ?: 1.5f)
                     url != null -> parts += Part.Link(url)
                     ref != null -> when (val r = Ref.parse(ref)) {
                         is Ref.Profile -> { parts += Part.Mention(r.pubkey); mentions += r.pubkey }
@@ -472,9 +494,17 @@ private class Body(val parts: List<Part>, val images: List<Img>, val mentions: L
                 }
             }
             if (at < text.length) parts += Part.Plain(text.substring(at))
-            // Pictures leave blank lines behind; tidy them.
-            val tidy = parts.mapIndexed { i, p -> if (p is Part.Plain) Part.Plain(p.s.replace(Regex("\\n{3,}"), "\n\n").let { s -> if (i == parts.lastIndex) s.trimEnd() else s }) else p }
-            return Body(tidy, images, mentions)
+            // A video event (NIP-71) names its file only in imeta; so may any note.
+            for ((url, f) in meta) if (f["m"]?.startsWith("video/") == true && images.none { it is Vid && it.v.url == url }) images += video(url)
+            // Media links are pulled out of the text: tidy the line breaks they leave behind
+            // (the text on either side of one is one stretch now).
+            val joined = ArrayList<Part>()
+            for (p in parts) { val last = joined.lastOrNull(); if (p is Part.Plain && last is Part.Plain) joined[joined.lastIndex] = Part.Plain(last.s + p.s) else joined += p }
+            parts.clear(); parts += joined
+            val tidy = parts.mapIndexed { i, p ->
+                if (p !is Part.Plain) p else Part.Plain(p.s.replace(BREAKS, "\n\n").let { s -> if (i == 0) s.trimStart() else s }.let { s -> if (i == parts.lastIndex) s.trimEnd() else s })
+            }
+            return Body(tidy, images.take(4), mentions)
         }
     }
 }
@@ -512,14 +542,26 @@ private fun ThreadScreen(id: String, social: Social, nav: Nav) = Column(Modifier
     TopBar("Thread", nav)
     val people by People.known.collectAsState()
     val liked by social.liked.collectAsState()
-    val thread by produceState<List<Pair<Event, Int>>?>(null, id) { value = social.thread(id) }
+    // At once, from what's here already (the note you tapped, the thread if you've opened it before);
+    // the note it answers and the replies come in around it, with a small spinner while they do.
+    var thread by remember(id) { mutableStateOf(social.threadNow(id)) }
+    var loading by remember(id) { mutableStateOf(true) }
+    LaunchedEffect(id) {
+        val full = social.thread(id)
+        if (full.isNotEmpty() || thread == null) thread = full
+        loading = false
+    }
+    val shown = thread
     when {
-        thread == null -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
-        thread!!.isEmpty() -> Text("Couldn't find this note.", color = Vault.Muted, modifier = Modifier.padding(20.dp))
+        shown == null -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
+        shown.isEmpty() -> Text("Couldn't find this note.", color = Vault.Muted, modifier = Modifier.padding(20.dp))
         else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-            items(thread!!, key = { it.first.id }) { (e, depth) ->
-                NoteCard(e, people, e.id in liked, nav, onLike = { social.like(e) }, indent = minOf(depth, 4), lit = e.id == id && depth > 0)
+            items(shown, key = { it.first.id }) { (e, depth) ->
+                NoteCard(e, people, e.id in liked, nav, onLike = { social.like(e) }, indent = minOf(depth, 4), lit = e.id == id && shown.size > 1 && depth > 0)
                 if (depth == 0) HorizontalDivider(color = Vault.Edge)
+            }
+            if (loading) item(key = "loading") {
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(20.dp), color = Vault.Teal, strokeWidth = 2.dp) }
             }
         }
     }
@@ -541,7 +583,7 @@ private fun ProfileScreen(pk: String, social: Social, nav: Nav) = Column(Modifie
         item(key = "head") {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(p, pk, 72)
+                    Avatar(p, pk, 72, Modifier.clickable(enabled = p?.picture != null) { p?.picture?.let { nav.pictures(listOf(it), 0) } })
                     Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) {
                         Text(p?.shown ?: shortNpub(pk), style = MaterialTheme.typography.titleLarge, color = Vault.Text)

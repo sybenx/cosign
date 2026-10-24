@@ -29,6 +29,9 @@ import java.util.concurrent.ConcurrentHashMap
 /** The app's name, from its one string resource: renaming the app is a one-line change there. */
 val appName: String get() = CosignApp.instance.getString(R.string.app_name)
 
+/** What Discover shows: notes, and NIP-71 video events (normal and short) when a feed carries them. */
+val FEED_KINDS = listOf(1, 21, 22)
+
 /** Where things are read from. Lists, so one relay being down never empties a screen. */
 object Sources {
     /** Discover, best first: the first that has notes is the feed. discover.syb.lol runs on one home machine. */
@@ -241,11 +244,11 @@ class Social private constructor(private val phone: Phone, context: Context) {
             val foreign = ArrayList<Event>()
             for (src in Sources.FEEDS) {
                 Startup.mark("feed asked")
-                val got = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 60), 8000)
+                val got = Fetch.query(listOf(src), mapOf("kinds" to FEED_KINDS, "limit" to 60), 8000)
                 Startup.mark("feed fetched ${got.size}")
-                val notes = got.filter { it.kind == 1 && forDiscover(it) && fresh.none { f -> f.id == it.id } }
+                val notes = got.filter { it.kind in FEED_KINDS && forDiscover(it) && fresh.none { f -> f.id == it.id } }
                 Startup.mark("feed filtered ${notes.size}")
-                foreign += got.filter { it.kind == 1 && foreignOk(it) && foreign.none { f -> f.id == it.id } }
+                foreign += got.filter { it.kind in FEED_KINDS && foreignOk(it) && foreign.none { f -> f.id == it.id } }
                 if (notes.isEmpty()) continue
                 if (used == null) used = src
                 fresh += rank(notes)
@@ -295,12 +298,12 @@ class Social private constructor(private val phone: Phone, context: Context) {
         feed.update { it.copy(loading = true) }
         scope.launch {
             val until = f.notes.minOf { it.createdAt } - 1
-            val got = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 60, "until" to until), 8000)
-            val more = got.filter { it.kind == 1 && forDiscover(it) && f.notes.none { n -> n.id == it.id } }
+            val got = Fetch.query(listOf(src), mapOf("kinds" to FEED_KINDS, "limit" to 60, "until" to until), 8000)
+            val more = got.filter { it.kind in FEED_KINDS && forDiscover(it) && f.notes.none { n -> n.id == it.id } }
             remember(more)
             People.want(more.map { it.pubkey })
             feed.update { it.copy(notes = it.notes + more.sortedByDescending { n -> n.createdAt }, loading = false, more = got.isNotEmpty()) }
-            translateIn(got.filter { it.kind == 1 && foreignOk(it) })
+            translateIn(got.filter { it.kind in FEED_KINDS && foreignOk(it) })
         }
     }
 
@@ -414,6 +417,19 @@ class Social private constructor(private val phone: Phone, context: Context) {
 
     // --- Threads and profiles --------------------------------------------------------
 
+    /** Threads opened lately, so going back to one shows it at once. */
+    private val threads = object : LinkedHashMap<String, List<Pair<Event, Int>>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Pair<Event, Int>>>?) = size > 30
+    }
+
+    /** What can be shown of thread [id] right now, with no network: as opened before, or the note itself (under its first note, if that's here). Null if neither is. */
+    fun threadNow(id: String): List<Pair<Event, Int>>? {
+        synchronized(threads) { threads[id] }?.let { return it }
+        val n = note(id) ?: return null
+        val root = rootOf(n)?.let { note(it) }
+        return if (root != null && root.id != n.id) listOf(root to 0, n to 1) else listOf(n to 0)
+    }
+
     /** The whole thread [id] is in: its first note, then the replies, each with how deep it sits. */
     suspend fun thread(id: String): List<Pair<Event, Int>> {
         val relays = readRelays() + listOfNotNull(feed.value.source) + Sources.SEARCH.take(1)
@@ -435,6 +451,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
             byParent[e.id]?.sortedBy { it.createdAt }?.forEach { walk(it, depth + 1) }
         }
         walk(all.first(), 0)
+        synchronized(threads) { threads[id] = out }
         return out
     }
 

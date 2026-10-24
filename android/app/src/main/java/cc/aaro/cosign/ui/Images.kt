@@ -66,10 +66,11 @@ object Images {
 
 /** A picture from the web, or [placeholder] until (or unless) it arrives. */
 @Composable
-fun NetImage(url: String?, modifier: Modifier, px: Int, scale: ContentScale = ContentScale.Crop, description: String? = null, placeholder: @Composable () -> Unit = {}) {
+fun NetImage(url: String?, modifier: Modifier, px: Int, scale: ContentScale = ContentScale.Crop, description: String? = null,
+             ground: androidx.compose.ui.graphics.Color = Vault.Surface, placeholder: @Composable () -> Unit = {}) {
     var img by remember(url, px) { mutableStateOf(url?.let { Images.cached(it, px) }) }
     LaunchedEffect(url, px) { if (img == null && url != null) img = Images.load(url, px) }
     val shown = img
     if (shown != null) Image(shown, description, modifier, contentScale = scale)
-    else Box(modifier.background(Vault.Surface)) { placeholder() }
+    else Box(modifier.background(ground)) { placeholder() }
 }
