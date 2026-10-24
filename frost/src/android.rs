@@ -119,3 +119,35 @@ pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_dkgPart3(mut env: JN
     })();
     out(&mut env, r)
 }
+
+/// A key you already have (32 bytes, wiped here once read), dealt at `idxs`: `{"groupX", "shares": [{idx, secret, sharePub}]}`.
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_dealFromSecret(mut env: JNIEnv, _: JClass, secret: jni::objects::JByteArray, idxs: jni::objects::JIntArray, threshold: jint) -> jstring {
+    use zeroize::Zeroize;
+    let r = (|| {
+        let mut key = env.convert_byte_array(&secret).map_err(|e| e.to_string())?;
+        let n = env.get_array_length(&idxs).map_err(|e| e.to_string())? as usize;
+        let mut ids = vec![0i32; n];
+        env.get_int_array_region(&idxs, 0, &mut ids).map_err(|e| e.to_string())?;
+        let ids: Vec<u16> = ids.into_iter().map(|i| i as u16).collect();
+        let d = super::deal_from_secret(&key, &ids, threshold as u16);
+        key.zeroize();
+        d.map(|d| serde_json::to_string(&d).unwrap()).map_err(|e| e.0)
+    })();
+    out(&mut env, r)
+}
+
+/// The key from `threshold` of its shares (`[[idx, secret], …]`), as 32 bytes; the caller wipes them.
+#[no_mangle]
+pub extern "system" fn Java_cc_aaro_cosign_core_FrostNative_reconstruct(mut env: JNIEnv, _: JClass, g: JString, shares: JString) -> jni::sys::jbyteArray {
+    use zeroize::Zeroize;
+    let r = (|| {
+        let g = group(&s(&mut env, &g)?)?;
+        let sh: Vec<(u16, String)> = serde_json::from_str(&s(&mut env, &shares)?).map_err(|e| format!("shares: {e}"))?;
+        super::reconstruct(&g, &sh).map_err(|e| e.0)
+    })();
+    match r {
+        Ok(mut key) => { let a = env.byte_array_from_slice(&key).map(|a| a.into_raw()).unwrap_or(std::ptr::null_mut()); key.zeroize(); a }
+        Err(e) => { let _ = env.throw_new("java/lang/IllegalArgumentException", e); std::ptr::null_mut() }
+    }
+}

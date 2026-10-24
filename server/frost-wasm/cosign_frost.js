@@ -68,6 +68,37 @@ function commit(group_json, idx, secret) {
 exports.commit = commit;
 
 /**
+ * A key you already have, dealt at `idxs`: `{"groupX", "shares": [{idx, secret, sharePub}]}`.
+ * @param {Uint8Array} secret
+ * @param {Uint16Array} idxs
+ * @param {number} threshold
+ * @returns {string}
+ */
+function dealFromSecret(secret, idxs, threshold) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passArray8ToWasm0(secret, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray16ToWasm0(idxs, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.dealFromSecret(ptr0, len0, ptr1, len1, threshold);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+exports.dealFromSecret = dealFromSecret;
+
+/**
  * DKG part 1 for one share: `{"secret", "package"}`.
  * @param {number} idx
  * @param {number} max_signers
@@ -216,6 +247,27 @@ function ecdhPartial(idx, secret, participants, peer_x) {
     }
 }
 exports.ecdhPartial = ecdhPartial;
+
+/**
+ * The key from `threshold` of its shares (`[[idx, secret], …]`), as 32 bytes.
+ * @param {string} group_json
+ * @param {string} shares_json
+ * @returns {Uint8Array}
+ */
+function reconstruct(group_json, shares_json) {
+    const ptr0 = passStringToWasm0(group_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(shares_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.reconstruct(ptr0, len0, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
+}
+exports.reconstruct = reconstruct;
 
 /**
  * Returns `[[helperIdx, delta], …]`.
@@ -605,6 +657,13 @@ function isLikeNone(x) {
 function passArray16ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 2, 2) >>> 0;
     getUint16ArrayMemory0().set(arg, ptr / 2);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }

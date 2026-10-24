@@ -35,4 +35,11 @@ object FrostNative {
     @JvmStatic external fun dkgPart2(secret: String, others: String): String
     /** Returns `{"share", "groupX", "members": [{"idx", "sharePub"}, …]}`. */
     @JvmStatic external fun dkgPart3(idx: Int, secret2: String, round1: String, round2: String): String
+
+    // A key you already have: dealt into shares at `idxs`, and put back together. The key
+    // goes in and out as bytes (wipe them after), never as a String.
+    /** Returns `{"groupX", "shares": [{"idx", "secret", "sharePub"}, …]}`. */
+    @JvmStatic external fun dealFromSecret(secret: ByteArray, idxs: IntArray, threshold: Int): String
+    /** `shares`: `[[idx, secret], …]`, at least the threshold. Returns the key's 32 bytes. */
+    @JvmStatic external fun reconstruct(group: String, shares: String): ByteArray
 }

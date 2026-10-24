@@ -78,3 +78,16 @@ pub fn dkg_part3(idx: u16, secret2: &str, others_round1_json: &str, round2_json:
     let r2: Vec<(u16, String)> = serde_json::from_str(round2_json).map_err(|e| JsError::new(&format!("round 2: {e}")))?;
     Ok(serde_json::to_string(&js(super::dkg_part3(idx, secret2, &r1, &r2))?).unwrap())
 }
+
+/// A key you already have, dealt at `idxs`: `{"groupX", "shares": [{idx, secret, sharePub}]}`.
+#[wasm_bindgen(js_name = dealFromSecret)]
+pub fn deal_from_secret(secret: &[u8], idxs: Vec<u16>, threshold: u16) -> Result<String, JsError> {
+    Ok(serde_json::to_string(&js(super::deal_from_secret(secret, &idxs, threshold))?).unwrap())
+}
+
+/// The key from `threshold` of its shares (`[[idx, secret], …]`), as 32 bytes.
+#[wasm_bindgen]
+pub fn reconstruct(group_json: &str, shares_json: &str) -> Result<Vec<u8>, JsError> {
+    let sh: Vec<(u16, String)> = serde_json::from_str(shares_json).map_err(|e| JsError::new(&format!("shares: {e}")))?;
+    Ok(js(super::reconstruct(&group(group_json)?, &sh))?.to_vec())
+}

@@ -12,6 +12,11 @@ export function aggregate(group_json: string, msg: string, commits_json: string,
 export function commit(group_json: string, idx: number, secret: string): string;
 
 /**
+ * A key you already have, dealt at `idxs`: `{"groupX", "shares": [{idx, secret, sharePub}]}`.
+ */
+export function dealFromSecret(secret: Uint8Array, idxs: Uint16Array, threshold: number): string;
+
+/**
  * DKG part 1 for one share: `{"secret", "package"}`.
  */
 export function dkgPart1(idx: number, max_signers: number, min_signers: number): string;
@@ -29,6 +34,11 @@ export function dkgPart3(idx: number, secret2: string, others_round1_json: strin
 export function ecdhCombine(parts: string[]): string;
 
 export function ecdhPartial(idx: number, secret: string, participants: Uint16Array, peer_x: string): string;
+
+/**
+ * The key from `threshold` of its shares (`[[idx, secret], …]`), as 32 bytes.
+ */
+export function reconstruct(group_json: string, shares_json: string): Uint8Array;
 
 /**
  * Returns `[[helperIdx, delta], …]`.
@@ -53,11 +63,13 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly aggregate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly commit: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly dealFromSecret: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly dkgPart1: (a: number, b: number, c: number) => [number, number, number, number];
     readonly dkgPart2: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly dkgPart3: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly ecdhCombine: (a: number, b: number) => [number, number, number, number];
     readonly ecdhPartial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly reconstruct: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly repairStep1: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly repairStep2: (a: number, b: number) => [number, number, number, number];
     readonly repairStep3: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];

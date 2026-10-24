@@ -304,6 +304,69 @@ pub fn dkg_part3(idx: u16, secret2: &str, others_round1: &[(u16, String)], round
     Ok(DkgDone { share: hex::encode(kp.signing_share().serialize()), group_x: hex::encode(&vk[1..]), members })
 }
 
+// --- A key you already have: dealt into shares, and put back together ---------------
+//
+// Moving an existing key into Cosign (the phone deals it: its own shares and each
+// server's), and taking it out again. The library's trusted dealer (`keys::split`)
+// makes the shares, at the indices given; the BIP-340 even-y rule is applied here (an
+// odd-y key and its shares are negated: the same npub); `keys::reconstruct` puts any `threshold` of them
+// back together. Secret bytes are wiped once used.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DealtShare {
+    pub idx: u16,
+    pub secret: String,
+    #[serde(rename = "sharePub")]
+    pub share_pub: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Dealt {
+    #[serde(rename = "groupX")]
+    pub group_x: String,
+    pub shares: Vec<DealtShare>,
+}
+
+/// Deal `secret` (32 bytes) into shares at `idxs`, any `threshold` of which sign as it.
+pub fn deal_from_secret(secret: &[u8], idxs: &[u16], threshold: u16) -> R<Dealt> {
+    use frost::keys::EvenY;
+    use zeroize::Zeroize;
+    let mut s: [u8; 32] = secret.try_into().map_err(|_| Error("secret: expected 32 bytes".into()))?;
+    let key = frost::SigningKey::deserialize(&s).map_err(err("secret"));
+    s.zeroize();
+    let key = key?;
+    let ids = idxs.iter().map(|&i| id(i)).collect::<R<Vec<_>>>()?;
+    let (shares, pkp) = frost::keys::split(&key, idxs.len() as u16, threshold, frost::keys::IdentifierList::Custom(&ids), &mut OsRng)
+        .map_err(err("split"))?;
+    // BIP-340: the shares of an odd-y key are negated with it (as after DKG).
+    let even = pkp.has_even_y();
+    let pkp = pkp.into_even_y(Some(even));
+    let vk = pkp.verifying_key().serialize().map_err(err("key"))?;
+    let mut out = vec![];
+    for (who, share) in shares {
+        let idx = idxs.iter().copied().find(|i| id(*i).ok() == Some(who)).ok_or(Error("unknown share".into()))?;
+        let kp = KeyPackage::try_from(share).map_err(err("share"))?.into_even_y(Some(even));
+        out.push(DealtShare {
+            idx,
+            secret: hex::encode(kp.signing_share().serialize()),
+            share_pub: hex::encode(kp.verifying_share().serialize().map_err(err("share point"))?),
+        });
+    }
+    out.sort_by_key(|d| d.idx);
+    Ok(Dealt { group_x: hex::encode(&vk[1..]), shares: out })
+}
+
+/// The key itself, from `threshold` (or more) of its shares, each checked against the group.
+pub fn reconstruct(group: &Group, shares: &[(u16, String)]) -> R<[u8; 32]> {
+    let kps = shares.iter().map(|(i, s)| key_package(group, *i, s)).collect::<R<Vec<_>>>()?;
+    let key = frost::keys::reconstruct(&kps).map_err(err("reconstruct"))?;
+    // It must be the group's key (even y, as the shares were made).
+    let x = hex::encode(&VerifyingKey::from(&key).serialize().map_err(err("key"))?[1..]);
+    if x != group.group_x { return Err(Error("those shares don't make this account's key".into())); }
+    let b: [u8; 32] = key.serialize().try_into().map_err(|_| Error("key: expected 32 bytes".into()))?;
+    Ok(b)
+}
+
 // --- Decryption: threshold ECDH (not part of FROST) --------------------------------
 //
 // Each of two members returns λ_i·s_i·P for the peer's key P; the sum is s·P, the shared

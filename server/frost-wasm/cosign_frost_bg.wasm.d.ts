@@ -3,11 +3,13 @@
 export const memory: WebAssembly.Memory;
 export const aggregate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
 export const commit: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const dealFromSecret: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const dkgPart1: (a: number, b: number, c: number) => [number, number, number, number];
 export const dkgPart2: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const dkgPart3: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const ecdhCombine: (a: number, b: number) => [number, number, number, number];
 export const ecdhPartial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const reconstruct: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const repairStep1: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
 export const repairStep2: (a: number, b: number) => [number, number, number, number];
 export const repairStep3: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];

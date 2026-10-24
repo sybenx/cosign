@@ -171,3 +171,40 @@ fn weighted_repair_adds_a_device_with_three_shares() {
     let mut two_devices = new_shares.clone(); two_devices.extend(shares[..3].iter().cloned());
     assert!(bip340_ok(&g.group_x, &msg, &sign_with(&g, &two_devices, &msg)));
 }
+
+/// A key you already have, dealt weighted (phone 1–3, servers 4 and 5, threshold 4).
+fn dealt_from(secret: &[u8; 32]) -> (Group, Vec<(u16, String)>) {
+    let d = deal_from_secret(secret, &[1, 2, 3, 4, 5], 4).unwrap();
+    let members = d.shares.iter().map(|s| Member { idx: s.idx, share_pub: s.share_pub.clone() }).collect();
+    (Group { group_x: d.group_x, threshold: 4, members }, d.shares.into_iter().map(|s| (s.idx, s.secret)).collect())
+}
+
+#[test]
+fn a_key_you_have_is_dealt_with_the_same_npub_and_signs() {
+    // Both parities: a key whose point has odd y is negated by the dealer, the same x.
+    let mut seen = [false, false];
+    for n in 1u8..=40 {
+        let secret = [n; 32];
+        let sk = k256::SecretKey::from_slice(&secret).unwrap();
+        let p = sk.public_key().as_affine().to_encoded_point(true);
+        seen[(p.as_bytes()[0] == 3) as usize] = true;
+        let (g, shares) = dealt_from(&secret);
+        assert_eq!(g.group_x, hex::encode(&p.as_bytes()[1..]), "npub changed");
+        let msg = hex::encode([n; 32]);
+        let phone_and_server: Vec<_> = shares.iter().filter(|s| [1, 2, 3, 5].contains(&s.0)).cloned().collect();
+        assert!(bip340_ok(&g.group_x, &msg, &sign_with(&g, &phone_and_server, &msg)));
+        // Back together: the key, or its negation (the same npub), from any four.
+        let key = reconstruct(&g, &phone_and_server).unwrap();
+        let back = k256::SecretKey::from_slice(&key).unwrap().public_key().as_affine().to_encoded_point(true);
+        assert_eq!(hex::encode(&back.as_bytes()[1..]), g.group_x);
+        if n > 12 && seen[0] && seen[1] { break; }
+    }
+    assert!(seen[0] && seen[1], "didn't try both parities");
+}
+
+#[test]
+fn three_shares_dont_make_the_key() {
+    let (g, shares) = dealt_from(&[7u8; 32]);
+    let three: Vec<_> = shares.iter().filter(|s| s.0 <= 3).cloned().collect();
+    assert!(reconstruct(&g, &three).is_err());
+}

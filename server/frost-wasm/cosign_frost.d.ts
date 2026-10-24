@@ -12,6 +12,11 @@ export function aggregate(group_json: string, msg: string, commits_json: string,
 export function commit(group_json: string, idx: number, secret: string): string;
 
 /**
+ * A key you already have, dealt at `idxs`: `{"groupX", "shares": [{idx, secret, sharePub}]}`.
+ */
+export function dealFromSecret(secret: Uint8Array, idxs: Uint16Array, threshold: number): string;
+
+/**
  * DKG part 1 for one share: `{"secret", "package"}`.
  */
 export function dkgPart1(idx: number, max_signers: number, min_signers: number): string;
@@ -29,6 +34,11 @@ export function dkgPart3(idx: number, secret2: string, others_round1_json: strin
 export function ecdhCombine(parts: string[]): string;
 
 export function ecdhPartial(idx: number, secret: string, participants: Uint16Array, peer_x: string): string;
+
+/**
+ * The key from `threshold` of its shares (`[[idx, secret], …]`), as 32 bytes.
+ */
+export function reconstruct(group_json: string, shares_json: string): Uint8Array;
 
 /**
  * Returns `[[helperIdx, delta], …]`.

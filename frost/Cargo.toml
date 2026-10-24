@@ -19,6 +19,7 @@ serde_json = "1"
 wasm-bindgen = { version = "0.2", optional = true }
 frost-core = "2.2"
 jni = { version = "0.21", optional = true }
+zeroize = "1"
 
 [features]
 wasm = ["dep:wasm-bindgen", "getrandom/js"]
