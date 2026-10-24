@@ -44,15 +44,16 @@ class TubeFeed(context: Context, slot: String, private val me: () -> String?, pr
     override suspend fun fetch(): List<PlaceCard>? = withContext(Dispatchers.IO) {
         // Turned away lately: don't sign another login every time Discover opens.
         if (System.currentTimeMillis() - prefs.getLong("tube.denied", 0) < 86_400_000) return@withContext null
-        var session = prefs.getString("tube.session", null) ?: login() ?: return@withContext null
+        // Ask first; sign a login only when Tube says who are you. Not there yet, or down: nothing, and no signing.
+        var session = prefs.getString("tube.session", null)
         repeat(2) { attempt ->
-            val res = http.newCall(Request.Builder().url("$origin/api/for-you?limit=6").header("Cookie", session).build()).execute()
-            res.use { r ->
+            val req = Request.Builder().url("$origin/api/for-you?limit=6").apply { session?.let { header("Cookie", it) } }.build()
+            http.newCall(req).execute().use { r ->
                 when {
                     r.isSuccessful -> return@withContext parse(r.body?.string().orEmpty())
                     (r.code == 401 || r.code == 403) && attempt == 0 -> { prefs.edit().remove("tube.session").apply(); session = login() ?: return@withContext null }
                     r.code == 401 || r.code == 403 -> { denied(); return@withContext null }
-                    else -> return@withContext emptyList() // down, or not there yet: nothing this time
+                    else -> return@withContext emptyList()
                 }
             }
         }
