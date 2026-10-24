@@ -37,8 +37,11 @@ export interface Server {
 
 export interface Seed { pubkey: string; relays: string[]; operator: string }
 
-/** Servers known to be run by distinct people. Empty until syb.lol's shared server announces itself. */
-export const SEEDS: Seed[] = [];
+/** Servers known to be run by distinct people. */
+export const SEEDS: Seed[] = [
+  // syb.lol, run by the author of Cosign.
+  { pubkey: '040e022d19ed8e0ba6d83f6246b9d051f0093e59092ee6bb279730d0e4b191c8', relays: ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'], operator: 'f5073ea24832d8e6246d22ec0b5a75bbf4a12558e3ac67cb07360b3474e5a40e' },
+];
 /** Where announcements are looked for, besides the seeds' own relays and the user's. */
 export const DISCOVERY_RELAYS = ['wss://syb.lol', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.damus.io'];
 
