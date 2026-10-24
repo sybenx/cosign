@@ -1241,6 +1241,27 @@ class Phone(private val context: Context, val slot: String = "0") {
         throw IllegalStateException("Couldn't reach your servers (${tried.joinToString("; ")})")
     }
 
+    // --- Cosign's own actions (a like, a follow) -----------------------------------------
+    //
+    // Signed the way an app on this phone signs, under a grant of Cosign's own: your servers
+    // judge the event, log it and keep the list version it replaced, so Undo works as for any app.
+
+    /** The latest version of one of your lists this phone has seen signed ("3": your follows). */
+    fun latest(key: String): Event? = lists.latest(key)
+
+    /** Sign something you did in Cosign itself. Blocks for a few seconds; never call on the main thread. */
+    fun signOwn(ev: Event, approved: Boolean = false): Event {
+        val m = ui.value.member ?: error("Cosign isn't set up yet")
+        val own = context.packageName
+        // A new grant has to reach your servers before the first request that uses it.
+        val g = appGrant(own) ?: connectApp(own, "Cosign").also { Thread.sleep(2500) }
+        val signed = try { signForApp(g, ev, approved) } catch (_: Revoked) {
+            val again = connectApp(own, "Cosign"); Thread.sleep(2500); signForApp(again, ev, approved)
+        }
+        lists.record(signed, m.group.groupX)
+        return signed
+    }
+
     /** The shared x with [peerX], from this phone's half and a server's. Kept ten minutes, in memory. */
     private fun sharedX(g: AppGrant, peerX: String): ByteArray {
         sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) return x }

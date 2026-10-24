@@ -49,8 +49,8 @@ object Bech32 {
     }
 
     /** Returns (hrp, data). Throws on a bad checksum, mixed case, or anything malformed. */
-    fun decode(input: String): Pair<String, ByteArray> {
-        require(input.length <= 90) { "bech32: too long" }
+    fun decode(input: String, limit: Int = 90): Pair<String, ByteArray> {
+        require(input.length <= limit) { "bech32: too long" }
         require(input == input.lowercase() || input == input.uppercase()) { "bech32: mixed case" }
         val s = input.lowercase()
         val pos = s.lastIndexOf('1')

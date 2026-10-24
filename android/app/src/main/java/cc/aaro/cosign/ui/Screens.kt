@@ -25,7 +25,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -89,7 +93,7 @@ fun App(phone: Phone, ui: Ui) {
                 if (others.isNotEmpty()) TextButton({ CosignApp.instance.accounts.forget(phone.slot); CosignApp.instance.accounts.show(others.first().slot) },
                     Modifier.align(Alignment.CenterHorizontally).safeDrawingPadding().padding(bottom = 12.dp)) { Text("Back to ${others.first().label}", color = Vault.Muted) }
             }
-            else -> Home(phone, ui) { phone.clearError(); scanning = true }
+            else -> Discover(phone, ui) { phone.clearError(); scanning = true }
         }
         // With several keys, every question says which one it's about.
         val which = if (CosignApp.instance.accounts.all.count { it.isMember } > 1) phone.label else null
@@ -102,7 +106,6 @@ fun App(phone: Phone, ui: Ui) {
         ui.paper?.let { PaperSheet(it, phone::closePaper) }
         if (ui.askPaper && ui.paper == null && ui.paperStatus == null) PaperPrompt(phone)
         ui.serverChoice?.let { ServerChoiceSheet(it, ui.paperStatus, phone) }
-        ui.recovery?.let { RecoverySheet(it.first, it.second, phone) }
     }
 }
 
@@ -284,8 +287,9 @@ private fun ConnectSheet(c: Connect, which: String?, onConnect: () -> Unit, onCl
     }
 }
 
+/** Everything about your key and this signer: behind your picture on the home screen. */
 @Composable
-private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
+internal fun SignerScreen(phone: Phone, ui: Ui, onScan: () -> Unit, onBack: () -> Unit) {
     val m = ui.member!!
     var leaving by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -293,7 +297,12 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
 
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            Text("Cosign", style = MaterialTheme.typography.labelMedium, color = Vault.Muted)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onBack, Modifier.padding(end = 4.dp).size(32.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Vault.Text)
+                }
+                Text("Your key and signer", style = MaterialTheme.typography.labelMedium, color = Vault.Muted)
+            }
             Spacer(Modifier.height(4.dp))
             var switching by remember { mutableStateOf(false) }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { switching = true }) {
@@ -313,6 +322,7 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             }
             if (ui.relaysUp == 0) Text("No relay connection. Retrying…", color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
         }
+        ui.recovery?.let { (name, until) -> if (!RecoveryOk.has(until)) item { RecoveryCard(name, until, phone) } }
         // Until there's a paper or a second device, this stays at the top.
         if (phone.needsPaper) item { PaperCard(phone) }
         item {
@@ -379,7 +389,7 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
 @Composable private fun Muted(text: String) = Text(text, style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
 
 @Composable
-private fun FutureCard(f: Future, onRemove: () -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
+internal fun FutureCard(f: Future, onRemove: () -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
     Text("Dated in the future", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText)
     Spacer(Modifier.height(4.dp))
     Text(f.text, style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
@@ -388,7 +398,7 @@ private fun FutureCard(f: Future, onRemove: () -> Unit) = Card(Vault.AmberEdge, 
 }
 
 @Composable
-private fun AskCard(ask: Ask, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
+internal fun AskCard(ask: Ask, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
     val left = ((ask.expiresAt - now) / 1000).coerceAtLeast(0)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("Approve?", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText, modifier = Modifier.weight(1f))
@@ -424,7 +434,7 @@ private fun SiteGroup(origin: String, grants: List<Site>, onRemove: (Site) -> Un
 }
 
 @Composable
-private fun DeletingCard(d: Deleting, now: Long, onUndo: () -> Unit) = Card(Vault.Line, Vault.Surface) {
+internal fun DeletingCard(d: Deleting, now: Long, onUndo: () -> Unit) = Card(Vault.Line, Vault.Surface) {
     val left = ((d.until - now) / 1000).coerceAtLeast(0)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
@@ -436,7 +446,7 @@ private fun DeletingCard(d: Deleting, now: Long, onUndo: () -> Unit) = Card(Vaul
 }
 
 @Composable
-private fun BatchCard(b: BatchAsk, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
+internal fun BatchCard(b: BatchAsk, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
     val left = ((b.expiresAt - now) / 1000).coerceAtLeast(0)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("Approve?", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText, modifier = Modifier.weight(1f))
@@ -617,7 +627,7 @@ private fun ServerChoiceSheet(choice: List<cc.aaro.cosign.net.Servers.Server>, s
 
 /** One device and no paper: a card at the top until there's one or the other. */
 @Composable
-private fun PaperCard(phone: Phone) = Card(Vault.AmberEdge, Vault.AmberGround) {
+internal fun PaperCard(phone: Phone) = Card(Vault.AmberEdge, Vault.AmberGround) {
     Text("Make your paper backup", style = MaterialTheme.typography.titleMedium, color = Vault.AmberText)
     Spacer(Modifier.height(4.dp))
     Text("If you lose this phone, your key can't be recovered without it. Or add another device.", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
@@ -737,31 +747,32 @@ private fun RestoringScreen(r: cc.aaro.cosign.Restoring, onCancel: () -> Unit) =
     TextButton(onCancel, Modifier.align(Alignment.CenterHorizontally)) { Text(if (r.failed) "Start again" else "Stop restoring", color = Vault.Muted) }
 }
 
+/** "It's me": the paper backup being used is yours. Kept for as long as Cosign runs, by the wait's end. */
+internal object RecoveryOk {
+    private val ok = androidx.compose.runtime.mutableStateListOf<Long>()
+    fun has(until: Long) = until in ok
+    fun add(until: Long) { ok += until }
+}
+
 /** Your paper backup is being used for another phone. If that isn't you, stop it (with this phone's lock). */
 @Composable
-private fun RecoverySheet(name: String, until: Long, phone: Phone) {
+internal fun RecoveryCard(name: String, until: Long, phone: Phone) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var hidden by remember { mutableStateOf(false) }
-    if (hidden) return
     val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == android.app.Activity.RESULT_OK) phone.cancelRecovery()
     }
-    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
-        Column(
-            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
-                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
-        ) {
-            Text("Your paper backup is being used", style = MaterialTheme.typography.titleLarge, color = Vault.Amber)
-            Spacer(Modifier.height(10.dp))
-            Text("$name is getting your key from your paper backup. If that isn't you, stop it now: someone has your paper.",
-                style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
-            Spacer(Modifier.height(20.dp))
-            OutlinedButton({ hidden = true }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("It's me", color = Vault.Text) }
-            Spacer(Modifier.height(10.dp))
+    Card(Vault.AmberEdge, Vault.AmberGround) {
+        Text("Your paper backup is being used", style = MaterialTheme.typography.titleMedium, color = Vault.Amber)
+        Spacer(Modifier.height(6.dp))
+        Text("$name is getting your key from your paper backup. If that isn't you, stop it now: someone has your paper.",
+            style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton({ RecoveryOk.add(until) }, Modifier.weight(1f).height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("It's me", color = Vault.Text) }
             Button({
                 val ask = lockIntent(context, "Stop it", "Confirm it's you to stop your paper backup being used")
                 if (ask == null) phone.lockMissing() else lock.launch(ask)
-            }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Danger, Vault.Ground)) { Text("Stop it") }
+            }, Modifier.weight(1f).height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Danger, Vault.Ground)) { Text("Stop it") }
         }
     }
 }
