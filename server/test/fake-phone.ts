@@ -12,7 +12,7 @@ import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../net.ts'
 
 const args = process.argv.slice(2);
 const deny = args.includes('--deny');
-const stateFile = '/tmp/cosign-fake-phone.json';
+const stateFile = process.env.PHONE_STATE ?? '/tmp/cosign-fake-phone.json';
 const say = (t: string) => console.log(`[phone] ${t}`);
 
 const pairUri = args[0]?.startsWith('cosign:') ? new URL(args[0].replace('cosign:', 'cosign://')) : null;

@@ -3,9 +3,14 @@
 # relay's stack, and no button there can touch this one.
 #
 # It joins the relay stack's network to reach Ditto at ws://relay:13131, and tells
-# phones and sites wss://syb.lol. On first start it makes a throwaway key in
-# /data/cosign (a directory owned by uid 1000 on the host). Its page (pairing code,
-# sites, Remove) has no login: keep port 8711 off the internet.
+# phones and sites wss://syb.lol. It's a shared server: one process for every group in
+# /data/cosign (owned by uid 1000 on the host: your own group in a/, any a device enrolls
+# in groups/). On first start it makes a throwaway key there, and its host key in
+# host.json. Its page (pairing code, sites, Remove) has no login: keep port 8711 off the
+# internet.
+#
+# Who may enroll a new group: only the devices in host.json's "invites" (none, at first),
+# unless its "enroll" is "open". COSIGN_INVITES and COSIGN_ENROLL, if set, win over it.
 #
 # Press Deploy to start or update it. The image is built here from ./server, never
 # downloaded (pull_policy: build), so Update rebuilds it instead of failing.
@@ -18,6 +23,8 @@ services:
     environment:
       COSIGN_RELAY_MAP: wss://syb.lol=ws://relay:13131
       COSIGN_RELAYS: wss://syb.lol,wss://nos.lol,wss://relay.primal.net
+      # COSIGN_ENROLL: open
+      # COSIGN_INVITES: <device pubkey hex>,<device pubkey hex>
     volumes:
       - /data/cosign:/data
     ports:

@@ -1,6 +1,7 @@
 # Shares and keys. Never commit these.
 server/data/
 server/data-*/
+server/test-shared/
 server/test-data/
 server/test-emu/
 server/logs/

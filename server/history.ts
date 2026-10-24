@@ -1,9 +1,9 @@
 // Everything signed, and for whom, so it can be undone: one site's work, however much
 // of it there is. A list change also keeps the version it replaced, so putting a list
 // back never depends on how much of the archive is left. Deleted events are kept too,
-// so a deletion (which Nostr can't take back) never loses the post itself.
+// so a deletion (which Nostr can't take back) never loses the post itself. The host
+// keeps both lists (history.jsonl and saved.jsonl, for the Node host), only ever adding.
 
-import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import type { Ev } from './policy.ts';
 
 export interface Entry {
@@ -22,15 +22,12 @@ export class History {
   private entries: Entry[] = [];
   private ids = new Set<string>();
   private saved = new Map<string, Ev>();
-  private file: string;
-  private savedFile: string;
+  private keep: { entry(e: Entry): void; saved(e: Ev): void };
 
-  constructor(file: string, savedFile: string) {
-    this.file = file; this.savedFile = savedFile;
-    for (const [f, add] of [[file, (o: any) => this.remember(o)], [savedFile, (o: any) => this.saved.set(o.id, o)]] as const) {
-      if (!existsSync(f)) continue;
-      for (const line of readFileSync(f, 'utf8').split('\n')) { if (line) try { add(JSON.parse(line)); } catch { /* a torn last line */ } }
-    }
+  constructor(entries: Entry[], saved: Ev[], keep: { entry(e: Entry): void; saved(e: Ev): void }) {
+    this.keep = keep;
+    for (const e of entries) this.remember(e);
+    for (const e of saved) if (e?.id) this.saved.set(e.id, e);
   }
 
   private remember(e: Entry) {
@@ -43,7 +40,7 @@ export class History {
   /** Keep it. False if it was already here. */
   add(e: Entry): boolean {
     if (!this.remember(e)) return false;
-    appendFileSync(this.file, JSON.stringify(e) + '\n', { mode: 0o600 });
+    this.keep.entry(e);
     return true;
   }
 
@@ -54,7 +51,7 @@ export class History {
   save(e: Ev) {
     if (!e.id || this.saved.has(e.id)) return;
     this.saved.set(e.id, e);
-    appendFileSync(this.savedFile, JSON.stringify(e) + '\n', { mode: 0o600 });
+    this.keep.saved(e);
   }
   savedCopy(id: string): Ev | undefined { return this.saved.get(id); }
   allSaved(): Ev[] { return [...this.saved.values()]; }
