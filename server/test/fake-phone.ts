@@ -6,6 +6,7 @@
 //   node test/fake-phone.ts --restore <paper.json>   a new phone, from a paper backup
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { getEventHash } from 'nostr-tools/pure';
 import * as F from '../frost.ts';
 import * as Sig from '../sign.ts';
@@ -50,6 +51,13 @@ const myShares = (): Sig.Share[] => st.shares ?? [{ idx: st.idx, secret: st.shar
 const rf = refreshing({ st: () => st, pk, send: (to, m) => send(to, m), save: () => writeFileSync(stateFile, JSON.stringify(st, null, 2)), say });
 
 let making: { id: string; sk: string; pk: string } | null = null; // a paper backup being made
+let growing: { id: string; welcome?: any; server?: string; sigmas: [number, number, string][] } | null = null;
+const W = createRequire(import.meta.url)('../frost-wasm/cosign_frost.js');
+function growShares() {
+  growing = { id: F.bytesToHex(F.randomBytes(6)), sigmas: [] };
+  send(servers()[0].pk, { type: 'add_device', id: growing.id, pk, name: 'Restored phone', lock: true, grow: true });
+  say('growing a device’s shares');
+}
 let restoring = false;
 const sendAsPaper = (to: string, m: object) => { for (const e of sealParts(paper.sk, to, m)) pool.publish(e); };
 
@@ -72,7 +80,28 @@ function handle(msg: any, from: string) {
       st = { sk, idx: msg.idx, shares: restored.shares, signer: restored.signer, group: restored.group, epoch: restored.epoch };
       writeFileSync(stateFile, JSON.stringify(st, null, 2));
       say(`RECOVERED as member ${msg.idx}`);
+      // From a 2-share paper: too few to sign with one server. Grow a device's full 3.
+      if (restored.shares.length + 1 < st.group.threshold) setTimeout(growShares, 3000);
     }
+    return;
+  }
+  // Growing: this phone vouches for itself, and gathers the welcome and sigmas like a new device.
+  if (growing && (msg.type === 'welcome' || msg.type === 'sigma') && msg.id === growing.id) {
+    if (msg.type === 'welcome') { growing.welcome = msg; growing.server = from; }
+    growing.sigmas.push(...msg.sigmas);
+    const w = growing.welcome;
+    if (!w || !w.ks.every((k: number) => growing!.sigmas.filter(x => x[0] === k).length >= w.helpers.length)) return;
+    const g = JSON.stringify({ groupX: st.group.groupX, threshold: st.group.threshold, members: Sig.sharePoints(st.group) });
+    const shares = w.ks.map((k: number) => ({ idx: k, secret: W.repairStep3(g, growing!.sigmas.filter(x => x[0] === k).map(x => x[2]), k) as string }));
+    const points = shares.map((x: any) => ({ idx: x.idx, sharePub: W.sharePub(x.secret) }));
+    send(growing.server!, { type: 'joined', id: w.id, sharePubs: points.map((p: any) => [p.idx, p.sharePub]) });
+    st.shares = shares;
+    Object.assign(st.group.members.find((m: any) => m.idx === st.idx), { sharePub: points[0].sharePub, shares: points });
+    writeFileSync(stateFile, JSON.stringify(st, null, 2));
+    growing = null;
+    say(`GREW to shares ${shares.map((x: any) => x.idx).join(', ')}`);
+    // The paper's shares this phone held are useless once everyone has moved on.
+    setTimeout(() => rf.report(null), 4000);
     return;
   }
   if (msg.type === 'dkg1' || msg.type === 'dkg2') return dkg?.take(msg, from);

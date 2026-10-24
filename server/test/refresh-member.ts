@@ -36,8 +36,8 @@ export function refreshing(o: { st: () => DeviceState; pk: string; send: (to: st
   }
 
   return {
-    /** Report member `idx` lost (with this device's lock), and refresh with a server as the other dealer. */
-    report(idx: number) {
+    /** Report member `idx` lost (with this device's lock), and refresh with a server as the other dealer; with no idx, just refresh. */
+    report(idx: number | null) {
       const st = o.st();
       const left = st.group.members.filter((m: any) => m.idx !== idx && !m.removed);
       const plan: RefreshPlan = {
@@ -45,7 +45,7 @@ export function refreshing(o: { st: () => DeviceState; pk: string; send: (to: st
         holders: left.flatMap((m: any) => idxsOf(m).map(i => ({ idx: i, pk: m.idx === st.idx ? o.pk : m.pk }))),
         points: left.flatMap((m: any) => idxsOf(m).map(i => [i, points().get(i)!] as [number, string])),
       };
-      for (const s of servers()) o.send(s.pk, { type: 'remove_member', id: Date.now().toString(16), idx, lock: true, plan });
+      for (const s of servers()) o.send(s.pk, idx === null ? { type: 'refresh_request', lock: true, plan } : { type: 'remove_member', id: Date.now().toString(16), idx, lock: true, plan });
       run = new RefreshRun(plan, o.pk, shares(), o.send, done);
       // Other devices: the plan and our part, straight to them, and kept by the servers for one that's away.
       const parts = new Map(run.outgoing());
@@ -61,7 +61,7 @@ export function refreshing(o: { st: () => DeviceState; pk: string; send: (to: st
           for (const s of servers()) o.send(s.pk, { type: 'mail_for', to: m.pk, epoch: plan.epoch, content: nip44.v2.encrypt(JSON.stringify(body), ck) });
       }
       run.start();
-      o.say(`reported member ${idx} lost; refreshing to epoch ${plan.epoch}`);
+      o.say(idx === null ? `refreshing to epoch ${plan.epoch}` : `reported member ${idx} lost; refreshing to epoch ${plan.epoch}`);
     },
     /** True if it was a refresh message. Mail is opened and handled as if from its sender. */
     take(msg: any, from: string): boolean {

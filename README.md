@@ -162,8 +162,10 @@ background service is running.
   it too. Restoring: a new phone reads the paper, asks the servers as the paper
   (`backup_get`), adds the pieces up and every refresh since, then asks to `recover`;
   after a wait every server enforces (3 days; `COSIGN_RECOVERY_WAIT`) and any device can
-  cancel, the paper's shares are that phone's. Not yet: with two servers the paper
-  holds 2, and the restored phone needs a repair with both servers to sign.
+  cancel, the paper's shares are that phone's. With two servers the paper holds 2: the
+  restored phone then grows a device's 3 (`add_device {grow}`, by repair with both
+  servers: a server short of the threshold with the vouching device brings in another,
+  `repair_help`/`repair_finish`) and asks for a refresh (`refresh_request`).
 - **Finding servers** (`site/src/servers.ts`, COSIGN.md §9.5): a shared server with an
   `operator` in `host.json` (or `COSIGN_OPERATOR`) announces itself, kind 30243 signed by
   its host key; the operator lists it back, kind 10243 (`operatorServers`). Devices
@@ -184,6 +186,7 @@ cd site && node test/create.e2e.ts                       # create account: a dev
 cd site && node --experimental-transform-types test/import.e2e.ts   # move a key from a page into Cosign
 cd site && node test/lost.e2e.ts                         # report a device lost; refresh; one that was away catches up
 cd site && node test/paper.e2e.ts                        # paper backup through a refresh; a cancelled and a finished recovery
+cd site && node test/paper2.e2e.ts                       # two servers: the restored phone grows its shares with both
 cd site && node test/servers.e2e.ts                      # finding and picking servers; a live one announces itself
 cd site && node test/single.e2e.ts                       # phone co-signs; backup steps in; big lists
 cd site && node test/deletion.e2e.ts                     # copies kept, 10 s Undo, one approval per batch

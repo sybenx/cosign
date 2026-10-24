@@ -193,8 +193,12 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'repair_delta': { if (fromPhone) onRepairDelta(msg, from); return; }
       case 'members': { if (!fromPhone) mergeMembers(msg.members ?? []); return; }
       case 'remove_member': { if (fromPhone) onRemove(msg, from); return; }
+      case 'refresh_request': { if (fromPhone && msg.lock === true && msg.plan) startRefresh(msg.plan as RefreshPlan, from); return; }
       case 'refresh_part': { refresh?.take(msg, fromPk); return; }
-      case 'backup_piece': { if (fromPhone) { const a = adding.get(String(msg.id)); if (a?.backup && a.by.idx === from.idx) backupPiece(a, String(msg.id), { from: from.pk!, content: String(msg.content), epoch: S.epoch ?? 0 }); } return; }
+      case 'backup_piece': { const a = adding.get(String(msg.id)); if (a?.backup && (a.by.idx === from.idx || a.extras.some(x => x.idx === from.idx))) backupPiece(a, String(msg.id), { from: from.pk!, content: String(msg.content), epoch: S.epoch ?? 0 }); return; }
+      case 'repair_help': { if (from.role === 'server') onRepairHelp(msg, from); return; }
+      case 'repair_help_deltas': { if (from.role === 'server') onHelpDeltas(msg, from); return; }
+      case 'repair_finish': { if (from.role === 'server') onRepairFinish(msg, from); return; }
       case 'backup_store': { if (fromPhone && S.backup) { S.backup.parts.push({ from: from.pk!, content: String(msg.content), epoch: Number(msg.epoch) }); save(); toOther({ type: 'backup_sync', backup: S.backup }); } return; }
       case 'backup_sync': { if (from.role === 'server') mergeBackup(msg.backup); return; }
       case 'backup_get': { if (from.role === 'backup') sendBackup(from); return; }
@@ -878,7 +882,13 @@ export function openGroup(loaded: Loaded, io: Io) {
   // splits its weighted part of f(k) into deltas, they trade one, and each seals its sum
   // (a sigma) to the newcomer, who adds the two. Neither helper ever has the new share.
 
-  interface Adding { ks: number[]; helpers: number[]; pk: string; name: string; by: Member; local: Map<string, string[]>; at: number; backup?: boolean; pieces?: Piece[] }
+  interface Adding {
+    ks: number[]; helpers: number[]; pk: string; name: string; by: Member; local: Map<string, string[]>; at: number; backup?: boolean; grow?: boolean; pieces?: Piece[];
+    /** Other servers helping when the vouching device and this server hold fewer than the threshold between them. */
+    extras: Member[]; fromExtras: Map<string, [number, number, number, string][]>; toExtras: Map<string, [number, number, number, string][]>; toBy: [number, number, number, string][];
+  }
+  /** Another server's repair this server is helping with: its deltas to its own shares, kept until the rest arrive. */
+  const helping = new Map<string, { ks: number[]; local: Map<string, string[]>; pk: string; backup: boolean; coordinator: string; at: number }>();
   const adding = new Map<string, Adding>();
   /** Deltas waiting to be summed, by new share and the helper share they're for. */
   const slot = (k: number, j: number) => `${k}:${j}`;
@@ -886,43 +896,104 @@ export function openGroup(loaded: Loaded, io: Io) {
   async function addDevice(msg: any, by: Member) {
     const pk = String(msg.pk ?? '');
     if (!/^[0-9a-f]{64}$/.test(pk)) throw new Error('that code is damaged');
-    if (members.some(m => m.pk === pk && !m.removed)) throw new Error('that device is already one of yours');
+    // `grow`: a device with too few shares to sign with one server (restored from a 2-share
+    // paper) asks for a device's full 3, made by repair like any new device's, under its own key.
+    const grow = msg.grow === true && pk === by.pk;
+    if (!grow && members.some(m => m.pk === pk && !m.removed)) throw new Error('that device is already one of yours');
     // One device vouching is instant only with its own lock, asked for right then.
     if (msg.lock !== true) throw new Error('adding a device needs this phone’s lock');
     // The new device gets as many shares as the one vouching for it (3 in a weighted key).
     // A paper backup gets 2, or 3 while there's only one server (COSIGN.md §3).
     const backup = msg.backup === true;
     const next = Math.max(...members.flatMap(sharesOf)) + 1;
-    const count = backup ? (members.filter(m => m.role === 'server' && !m.removed).length < 2 ? 3 : 2) : sharesOf(by).length;
+    const count = backup ? (members.filter(m => m.role === 'server' && !m.removed).length < 2 ? 3 : 2) : grow ? 3 : sharesOf(by).length;
     const ks = Array.from({ length: count }, (_, i) => next + i);
-    const helpers = [...sharesOf(by), ...myIdxs].sort((a, b) => a - b);
-    if (helpers.length < S.group.threshold) throw new Error('not enough shares to vouch with');
+    // The vouching device and this server, and if that's short of the threshold (a device
+    // restored from a 2-share paper, say), other servers too.
+    const extras: Member[] = [];
+    let held = sharesOf(by).length + myIdxs.length;
+    for (const srv of partners(members.filter(m => m.role === 'server' && !m.removed && m.idx !== me.idx))) {
+      if (held >= S.group.threshold) break;
+      extras.push(srv); held += sharesOf(srv).length;
+    }
+    if (held < S.group.threshold) throw new Error('not enough shares to vouch with');
+    const helpers = [...sharesOf(by), ...myIdxs, ...extras.flatMap(sharesOf)].sort((a, b) => a - b);
     // Each of our shares splits its part of f(k) into a delta per helper share: ours stay
     // here, the vouching device's go to it.
     const local = new Map<string, string[]>();
     const toBy: [number, number, number, string][] = [];
+    const toExtras = new Map<string, [number, number, number, string][]>();
     for (const k of ks) for (const s of myShares) {
       for (const [j, d] of Sig.repairStep1(S.group, s.idx, s.secret, helpers, k)) {
+        const x = extras.find(e => sharesOf(e).includes(j));
         if (myIdxs.includes(j)) local.set(slot(k, j), [...local.get(slot(k, j)) ?? [], d]);
+        else if (x) toExtras.set(x.pk!, [...toExtras.get(x.pk!) ?? [], [k, s.idx, j, d]]);
         else toBy.push([k, s.idx, j, d]);
       }
     }
-    adding.set(String(msg.id), { ks, helpers, pk, name: String(msg.name ?? (backup ? 'Paper backup' : 'A device')).slice(0, 40), by, local, at: io.now(), backup });
+    const a: Adding = { ks, helpers, pk, name: String(msg.name ?? (backup ? 'Paper backup' : 'A device')).slice(0, 40), by, local, at: io.now(), backup, grow, extras, fromExtras: new Map(), toExtras, toBy };
+    adding.set(String(msg.id), a);
     const relays = (msg.relays ?? []).filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r));
     if (relays.length) await io.listen(relays);
+    note(`${by.name} is adding ${msg.name ?? 'a device'}${extras.length ? `, with ${extras.map(e => e.name).join(', ')}` : ''}`);
+    // The other servers first: the device needs their deltas along with ours.
+    if (extras.length) for (const x of extras) send(x.pk, { type: 'repair_help', id: msg.id, ks, helpers, pk, backup });
+    else askDevice(String(msg.id), a);
+  }
+
+  function askDevice(id: string, a: Adding) {
+    const deltas = [...a.toBy, ...[...a.fromExtras.values()].flat().filter(t => sharesOf(a.by).includes(t[2]))];
     // `k`/`delta`: the earlier one-share form, for an app not updated yet.
-    const one = ks.length === 1 && myShares.length === 1 ? { k: ks[0], delta: toBy[0][3] } : {};
-    send(by.pk, { type: 'repair', id: msg.id, ks, helpers, deltas: toBy, pk, ...one });
-    note(`${by.name} is adding ${msg.name ?? 'a device'}`);
+    const one = a.ks.length === 1 && myShares.length === 1 && !a.extras.length ? { k: a.ks[0], delta: deltas[0][3] } : {};
+    send(a.by.pk, { type: 'repair', id, ks: a.ks, helpers: a.helpers, deltas, pk: a.pk, ...one });
+  }
+
+  /** Another server's deltas for a repair this server is running. */
+  function onHelpDeltas(msg: any, from: Member) {
+    const a = adding.get(String(msg.id));
+    if (!a || !a.extras.some(x => x.idx === from.idx) || a.fromExtras.has(from.pk!)) return;
+    a.fromExtras.set(from.pk!, (msg.deltas ?? []).filter((t: any) => sharesOf(from).includes(t[1])));
+    if (a.fromExtras.size === a.extras.length) askDevice(String(msg.id), a);
+  }
+
+  /** Helping another server add a device: our deltas for every helper share, ours kept. */
+  function onRepairHelp(msg: any, from: Member) {
+    const ks: number[] = msg.ks, helpers: number[] = msg.helpers, pk = String(msg.pk ?? '');
+    if (!Array.isArray(ks) || !Array.isArray(helpers) || !myIdxs.every(i => helpers.includes(i)) || !/^[0-9a-f]{64}$/.test(pk)) return;
+    const local = new Map<string, string[]>();
+    const out: [number, number, number, string][] = [];
+    for (const k of ks) for (const s of myShares) for (const [j, d] of Sig.repairStep1(S.group, s.idx, s.secret, helpers, k)) {
+      if (myIdxs.includes(j)) local.set(slot(k, j), [...local.get(slot(k, j)) ?? [], d]); else out.push([k, s.idx, j, d]);
+    }
+    helping.set(String(msg.id), { ks, local, pk, backup: msg.backup === true, coordinator: from.pk!, at: io.now() });
+    send(from.pk, { type: 'repair_help_deltas', id: msg.id, deltas: out });
+  }
+
+  /** The rest of our deltas: our sigmas, to the new device (or sealed to the paper, via the server running it). */
+  function onRepairFinish(msg: any, from: Member) {
+    const h = helping.get(String(msg.id));
+    if (!h || h.coordinator !== from.pk || io.now() - h.at > 120_000) return;
+    helping.delete(String(msg.id));
+    const theirs: [number, number, number, string][] = msg.deltas ?? [];
+    const sigmas = h.ks.flatMap(k => myIdxs.map(j => [k, j, Sig.repairStep2([...h.local.get(slot(k, j)) ?? [], ...theirs.filter(t => t[0] === k && t[2] === j).map(t => String(t[3]))])] as [number, number, string]));
+    if (h.backup) send(from.pk, { type: 'backup_piece', id: msg.id, content: sealTo(h.pk, { sigmas }) });
+    else send(h.pk, { type: 'sigma', id: msg.id, sigmas });
   }
 
   function onRepairDelta(msg: any, from: Member) {
     const a = adding.get(String(msg.id));
     if (!a || a.by.idx !== from.idx || io.now() - a.at > 120_000) return;
     const theirs: [number, number, number, string][] = msg.deltas ?? [[a.ks[0], from.idx, myIdxs[0], String(msg.delta)]];
+    const fromX = [...a.fromExtras.values()].flat();
+    // The other servers get the device's deltas and ours for their shares, and finish their part.
+    for (const x of a.extras) send(x.pk, { type: 'repair_finish', id: msg.id, deltas: [
+      ...theirs.filter(t => sharesOf(x).includes(t[2]) && sharesOf(from).includes(t[1])), ...(a.toExtras.get(x.pk!) ?? []),
+      ...fromX.filter(t => sharesOf(x).includes(t[2])),
+    ] });
     const sigmas: [number, number, string][] = [];
     for (const k of a.ks) for (const j of myIdxs) {
-      const ds = [...a.local.get(slot(k, j)) ?? [], ...theirs.filter(t => t[0] === k && t[2] === j && sharesOf(from).includes(t[1])).map(t => String(t[3]))];
+      const ds = [...a.local.get(slot(k, j)) ?? [], ...theirs.filter(t => t[0] === k && t[2] === j && sharesOf(from).includes(t[1])).map(t => String(t[3])),
+        ...fromX.filter(t => t[0] === k && t[2] === j).map(t => String(t[3]))];
       if (ds.length !== a.helpers.length) return note(`${a.name}: pieces missing; not added`);
       sigmas.push([k, j, Sig.repairStep2(ds)]);
     }
@@ -942,6 +1013,14 @@ export function openGroup(loaded: Loaded, io: Io) {
     const theirs = new Map<number, string>(msg.sharePubs ?? [[a.ks[0], msg.sharePub]]);
     const shares = a.ks.map(k => ({ idx: k, sharePub: Sig.sharePubAt(S.group, k) }));
     if (shares.some(s => theirs.get(s.idx) !== s.sharePub)) return note(`${a.name} didn't end up with the right shares; not added`);
+    if (a.grow) {
+      // Its new shares replace the few it had; a refresh it asks for next makes the old ones useless.
+      Object.assign(a.by, { sharePub: shares[0].sharePub, shares });
+      save();
+      toOther({ type: 'members', members });
+      toDevices({ type: 'members', members: publicMembers() });
+      return note(`${a.by.name} has a device's full shares now`);
+    }
     members.push({ idx: a.ks[0], name: a.name, role: 'device', pk: a.pk, sharePub: shares[0].sharePub, push: null, ...(shares.length > 1 ? { shares } : {}) });
     lastSeen.set(a.ks[0], io.now());
     save();
@@ -962,6 +1041,9 @@ export function openGroup(loaded: Loaded, io: Io) {
       if (!mine.pk && m.pk) { mine.pk = m.pk; dirty = true; }
       // A paper backup that became the phone it restored (after the wait, at the other server).
       if (mine.role === 'backup' && m.role === 'device' && !m.removed) { Object.assign(mine, { role: 'device', pk: m.pk, name: m.name }); dirty = true; }
+      // A device that grew its shares (after a paper recovery), at the other server.
+      // Only a change of which shares it holds: points move by refresh, which each server works out itself.
+      if (m.shares && !m.removed && mine.role !== 'server' && !sameSet(m.shares.map(x => x.idx), sharesOf(mine))) { Object.assign(mine, { shares: m.shares, sharePub: m.sharePub }); dirty = true; }
     }
     if (dirty) { save(); toDevices({ type: 'members', members: publicMembers() }); }
   }
@@ -1186,7 +1268,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   function backupPiece(a: Adding, id: string, p: Piece) {
     a.pieces ??= [];
     if (!a.pieces.some(x => x.from === p.from)) a.pieces.push(p);
-    if (a.pieces.length < 2) return;
+    if (a.pieces.length < 2 + a.extras.length) return;
     adding.delete(id);
     // A new paper replaces the old one.
     for (const m of members) if (m.role === 'backup' && !m.removed) m.removed = now();
