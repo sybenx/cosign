@@ -23,6 +23,8 @@ const asPhone = (msg: object) => { for (const s of servers) ctl.publish(sealTo(p
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 let failures = 0;
 const check = (label: string, ok: boolean, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!ok) failures++; };
+const phoneLog = new URL('../../server/logs/test-phone.log', import.meta.url);
+const logFrom = (() => { try { return readFileSync(phoneLog, 'utf8').length; } catch { return 0; } })(); // only this run's lines
 const saved = () => { try { return readFileSync(savedFile, 'utf8'); } catch { return ''; } };
 
 await sleep(2000);
@@ -44,8 +46,8 @@ t0 = Date.now();
 const burst = await Promise.all(notes.slice(1, 7).map(n => del([n.id]).catch(e => e)));
 check('six deletions in a burst: one approval, all signed', burst.every(e => verifyEvent(e)), `${Date.now() - t0} ms`);
 check('…all six kept', notes.slice(1, 7).every(n => saved().includes(n.id)));
-const approvals = readFileSync(new URL('../../server/logs/test-phone.log', import.meta.url), 'utf8').split('\n').filter(l => l.includes('APPROVED batch: Delete 6 events for delete.test'));
-check('…and the phone was asked once', approvals.length === 1, approvals[0]);
+const approvals = readFileSync(phoneLog, 'utf8').slice(logFrom).split('\n').filter(l => l.includes('APPROVED batch: Delete 6 events for delete.test'));
+check('…and the phone was asked once', approvals.length === 1, `${approvals.length}: ${approvals.join(' | ')}`);
 
 cancelNext = true;
 t0 = Date.now();

@@ -179,18 +179,34 @@ pub fn aggregate(group: &Group, msg: &str, commits: &[Commit], partials: &[(u16,
 // to the other helper, adds what it holds into a sigma (step 2), and seals the sigma to
 // the new device, which adds them (step 3) and checks the result against the group.
 
-/// The group polynomial's public coefficients, rebuilt from the group key and one member's
-/// share point. Exact for a 2-of-N group: f(x) = a0 + a1·x, so a1·G = (S_i − Y) / i.
+/// The group polynomial's public coefficients, rebuilt from any `threshold` share points:
+/// each Lagrange basis polynomial's coefficients, applied in the exponent. Its constant
+/// term must come out as the group key, which checks the share points too.
 fn vss_commitment(group: &Group) -> R<frost::keys::VerifiableSecretSharingCommitment> {
-    if group.threshold != 2 { return Err(Error("repair needs a 2-of-N group".into())); }
+    let t = group.threshold as usize;
+    if t < 2 || group.members.len() < t { return Err(Error("not enough share points to rebuild the group's commitment".into())); }
+    let pts = group.members.iter().take(t)
+        .map(|m| Ok((Scalar::from(m.idx as u64), point(&hex::decode(&m.share_pub).map_err(err("sharePub"))?, "sharePub")?)))
+        .collect::<R<Vec<_>>>()?;
+    let mut coeffs = vec![ProjectivePoint::IDENTITY; t];
+    for (j, (xj, sj)) in pts.iter().enumerate() {
+        // L_j(x) = Π_{m≠j} (x − x_m) / (x_j − x_m), as coefficients of x^0..x^(t−1).
+        let mut poly = vec![Scalar::ONE];
+        let mut den = Scalar::ONE;
+        for (m, (xm, _)) in pts.iter().enumerate() {
+            if m == j { continue; }
+            let mut next = vec![Scalar::ZERO; poly.len() + 1];
+            for (i, c) in poly.iter().enumerate() { next[i] -= *c * xm; next[i + 1] += *c; }
+            poly = next;
+            den *= *xj - xm;
+        }
+        let inv = Option::<Scalar>::from(den.invert()).ok_or(Error("two share points at one index".into()))?;
+        for (i, c) in poly.iter().enumerate() { coeffs[i] += *sj * (*c * inv); }
+    }
     let x: [u8; 32] = bytes(&group.group_x, "groupX")?;
-    let y = point(&[&[0x02u8][..], &x[..]].concat(), "groupX")?;
-    let m = group.members.first().ok_or(Error("no members".into()))?;
-    let si = point(&hex::decode(&m.share_pub).map_err(err("sharePub"))?, "sharePub")?;
-    let inv = Option::<Scalar>::from(Scalar::from(m.idx as u64).invert()).ok_or(Error("bad index".into()))?;
-    let a1 = (si - y) * inv;
-    let enc = |p: ProjectivePoint| p.to_affine().to_encoded_point(true).as_bytes().to_vec();
-    frost::keys::VerifiableSecretSharingCommitment::deserialize(vec![enc(y), enc(a1)]).map_err(err("commitment"))
+    if coeffs[0] != point(&[&[0x02u8][..], &x[..]].concat(), "groupX")? { return Err(Error("the share points don't belong to this key".into())); }
+    let enc = |p: &ProjectivePoint| p.to_affine().to_encoded_point(true).as_bytes().to_vec();
+    frost::keys::VerifiableSecretSharingCommitment::deserialize(coeffs.iter().map(enc).collect::<Vec<_>>()).map_err(err("commitment"))
 }
 
 fn secret_share(group: &Group, idx: u16, secret: &str) -> R<frost::keys::SecretShare> {
@@ -225,6 +241,67 @@ pub fn repair_step3(group: &Group, sigmas: &[String], participant: u16) -> R<Str
     let share = frost::keys::repairable::repair_share_step_3(&s, id(participant)?, &vss_commitment(group)?);
     share.verify().map_err(|_| Error("the repaired share doesn't match the group".into()))?;
     Ok(hex::encode(share.signing_share().serialize()))
+}
+
+// --- Making a key with nobody holding it: DKG (frost-core's `dkg`) --------------------
+//
+// Each share's holder runs the three parts (a device with 3 shares runs them 3 times).
+// Packages and secrets cross this API as hex; the secrets never leave the holder.
+// At the end every share is turned the even-Y way, so the group key is a plain Nostr key.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DkgRound { pub secret: String, pub package: String }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DkgRound2 { pub secret: String, pub packages: Vec<(u16, String)> }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DkgDone {
+    pub share: String,
+    #[serde(rename = "groupX")]
+    pub group_x: String,
+    pub members: Vec<Member>,
+}
+
+/// Part 1, for one share: its secret (keep) and its package (send to every other share).
+pub fn dkg_part1(idx: u16, max_signers: u16, min_signers: u16) -> R<DkgRound> {
+    let (secret, package) = frost::keys::dkg::part1(id(idx)?, max_signers, min_signers, OsRng).map_err(err("dkg part 1"))?;
+    Ok(DkgRound { secret: hex::encode(secret.serialize().map_err(err("dkg"))?), package: hex::encode(package.serialize().map_err(err("dkg"))?) })
+}
+
+fn round1_map(packages: &[(u16, String)]) -> R<BTreeMap<Identifier, frost::keys::dkg::round1::Package>> {
+    packages.iter().map(|(i, h)| Ok((id(*i)?, frost::keys::dkg::round1::Package::deserialize(&hex::decode(h).map_err(err("package"))?).map_err(err("package"))?))).collect()
+}
+
+/// Part 2, for one share: from everyone else's part-1 packages, a package for each of them.
+pub fn dkg_part2(secret: &str, others: &[(u16, String)]) -> R<DkgRound2> {
+    let s = frost::keys::dkg::round1::SecretPackage::deserialize(&hex::decode(secret).map_err(err("secret"))?).map_err(err("secret"))?;
+    let (secret2, packages) = frost::keys::dkg::part2(s, &round1_map(others)?).map_err(err("dkg part 2"))?;
+    let mut out = vec![];
+    for (who, p) in packages {
+        let idx = others.iter().find(|(i, _)| id(*i).ok() == Some(who)).ok_or(Error("unknown recipient".into()))?.0;
+        out.push((idx, hex::encode(p.serialize().map_err(err("dkg"))?)));
+    }
+    Ok(DkgRound2 { secret: hex::encode(secret2.serialize().map_err(err("dkg"))?), packages: out })
+}
+
+/// Part 3, for one share: its share, and the group (key and every share point), even-Y.
+pub fn dkg_part3(idx: u16, secret2: &str, others_round1: &[(u16, String)], round2_received: &[(u16, String)]) -> R<DkgDone> {
+    use frost::keys::EvenY;
+    let s = frost::keys::dkg::round2::SecretPackage::deserialize(&hex::decode(secret2).map_err(err("secret"))?).map_err(err("secret"))?;
+    let r2 = round2_received.iter().map(|(i, h)| Ok((id(*i)?, frost::keys::dkg::round2::Package::deserialize(&hex::decode(h).map_err(err("package"))?).map_err(err("package"))?)))
+        .collect::<R<BTreeMap<_, _>>>()?;
+    let (kp, pkp) = frost::keys::dkg::part3(&s, &round1_map(others_round1)?, &r2).map_err(err("dkg part 3"))?;
+    let even = pkp.has_even_y();
+    let (kp, pkp) = (kp.into_even_y(Some(even)), pkp.into_even_y(Some(even)));
+    let vk = pkp.verifying_key().serialize().map_err(err("key"))?;
+    let mut idxs: Vec<u16> = others_round1.iter().map(|(i, _)| *i).collect();
+    idxs.push(idx);
+    let mut members = vec![];
+    for (who, vs) in pkp.verifying_shares() {
+        let idx = idxs.iter().copied().find(|i| id(*i).ok() == Some(*who)).ok_or(Error("unknown share".into()))?;
+        members.push(Member { idx, share_pub: hex::encode(vs.serialize().map_err(err("share point"))?) });
+    }
+    members.sort_by_key(|m| m.idx);
+    Ok(DkgDone { share: hex::encode(kp.signing_share().serialize()), group_x: hex::encode(&vk[1..]), members })
 }
 
 // --- Decryption: threshold ECDH (not part of FROST) --------------------------------

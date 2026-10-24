@@ -43,3 +43,10 @@ export function combine(scheme: Scheme, g: Group, msg: string, commits: Commit[]
     ? W.aggregate(json(g), msg, JSON.stringify(commits), JSON.stringify(partials))
     : F.aggregate({ groupX: g.groupX, msg, commits, partials: partials.map(p => p[1]) });
 }
+
+// Adding a device (repair): see frost/src/lib.rs. Each helper's step 1, its step 2, and
+// the share point the new member must end up with.
+export const repairStep1 = (g: Group, idx: number, secret: string, helpers: number[], k: number): [number, string][] =>
+  JSON.parse(W.repairStep1(json(g), idx, secret, Uint16Array.from(helpers), k));
+export const repairStep2 = (deltas: string[]): string => W.repairStep2(deltas);
+export const sharePubAt = (g: Group, k: number): string => W.sharePubAt(json(g), k);

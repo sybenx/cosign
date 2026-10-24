@@ -31,7 +31,8 @@ import { checkClock } from './clock.ts';
 
 // --- State -------------------------------------------------------------------
 
-interface Member { idx: number; name: string; role: 'server' | 'phone'; pk: string | null; sharePub: string; push?: string | null }
+/** A member: one of the two servers, your phone, or another device of yours (a tablet, a second phone, the extension). */
+interface Member { idx: number; name: string; role: 'server' | 'phone' | 'device'; pk: string | null; sharePub: string; push?: string | null; removed?: number }
 /**
  * A grant. `parent` is set for one a connected site added under itself (the browser
  * extension adds one per website it signs for); `via` names what connected it.
@@ -52,13 +53,19 @@ const history = new History(join(dir, 'history.jsonl'), join(dir, 'saved.jsonl')
 const members: Member[] = S.group.members;
 const me = members.find(m => m.idx === S.self.idx)!;
 const other = () => members.find(m => m.role === 'server' && m.idx !== me.idx)!;
+/** The phone your server's code added first: pairing only. Everything else is any device. */
 const phone = () => members.find(m => m.role === 'phone')!;
+const isDevice = (m?: Member) => !!m && (m.role === 'phone' || m.role === 'device') && !m.removed;
+/** Your devices that can sign: the phone, and any added since. */
+const devices = () => members.filter(m => isDevice(m) && m.pk);
 const byPk = (pk: string) => members.find(m => m.pk === pk);
 const groupX: string = S.group.groupX;
 const site = (pk: string) => (S.sites as Site[]).find(s => s.pk === pk);
 const now = () => Math.floor(Date.now() / 1000);
 
 const startedAt = Date.now();
+/** Shown on the status page, so you can tell which code a server is running after a deploy. */
+const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version as string;
 const lastSeen = new Map<number, number>();
 const seen = (idx: number) => lastSeen.get(idx) ?? 0;
 // Pings go out every 10 s; three missed means gone.
@@ -77,7 +84,7 @@ const pool = new Pool(S.group.relays, onEvent, t => console.log(`[${me.name}] ${
 const send = (toPk: string | null | undefined, msg: object) => { if (toPk) for (const e of sealParts(S.self.sk, toPk, msg)) pool.publish(e); };
 const parts = new Parts();
 const toOther = (msg: object) => send(other().pk, msg);
-const toPhone = (msg: object) => send(phone().pk, msg);
+const toDevices = (msg: object) => { for (const d of devices()) send(d.pk, msg); };
 
 const pending = new Map<string, { resolve: (v: any) => void; timer: NodeJS.Timeout; giveUp?: () => void; again?: NodeJS.Timeout }>();
 const rid = () => F.bytesToHex(F.randomBytes(8));
@@ -158,9 +165,10 @@ async function onMember(msg: any, fromPk: string) {
   }
   if (msg.type === 'pair_hello') return onPairHello(msg, fromPk);
   if (msg.type === 'pair_ack') return onPairAck(msg, fromPk);
+  if (msg.type === 'joined') return onJoined(msg, fromPk); // a new device, not a member until this lands
   if (!from) return;
 
-  const fromPhone = from.role === 'phone';
+  const fromPhone = isDevice(from); // any of your devices
   switch (msg.type) {
     case 'ping': return;
     case 'asking': { if (fromPhone) waitLonger(String(msg.id)); return; }
@@ -169,16 +177,19 @@ async function onMember(msg: any, fromPk: string) {
     case 'cosign_req': return answerOnce(from, msg.id, () => onCosignReq(msg, from));
     case 'phone_signed': { if (fromPhone) onPhoneSigned(msg); return; }
     case 'app_grant': { if (fromPhone) grantApp(msg); return; }
+    case 'add_device': { if (fromPhone) addDevice(msg, from).catch(err => send(from.pk, { type: 'add_failed', id: msg.id, reason: err.message })); return; }
+    case 'repair_delta': { if (fromPhone) onRepairDelta(msg, from); return; }
+    case 'members': { if (!fromPhone) mergeMembers(msg.members ?? []); return; }
     case 'cancel_batch': { // Undo on a deletion in its 10 s
       const b = fromPhone ? batchById(String(msg.batch)) : undefined;
       if (b) { b.cancelled = true; clearTimeout(b.timer); const site = [...batches].find(([, x]) => x === b)?.[0]; if (site) void closeBatch(site, b); }
       return;
     }
-    case 'repost': { if (fromPhone) repost(String(msg.id)).catch(err => toPhone({ type: 'undo_failed', id: msg.id, reason: err.message })); return; }
-    case 'site_summary': { if (fromPhone) toPhone({ type: 'site_summary', pk: msg.pk, ...siteSummary(String(msg.pk)) }); return; }
-    case 'undo_site': { if (fromPhone) undoSite(String(msg.pk)).catch(err => { note(`couldn't undo ${msg.pk}: ${err.message}`); toPhone({ type: 'undo_failed', id: msg.pk, reason: err.message }); }); return; }
+    case 'repost': { if (fromPhone) repost(String(msg.id)).catch(err => toDevices({ type: 'undo_failed', id: msg.id, reason: err.message })); return; }
+    case 'site_summary': { if (fromPhone) toDevices({ type: 'site_summary', pk: msg.pk, ...siteSummary(String(msg.pk)) }); return; }
+    case 'undo_site': { if (fromPhone) undoSite(String(msg.pk)).catch(err => { note(`couldn't undo ${msg.pk}: ${err.message}`); toDevices({ type: 'undo_failed', id: msg.pk, reason: err.message }); }); return; }
     case 'batch_decision': { if (fromPhone) decisions.get(String(msg.batch))?.(msg.approve === true); return; }
-    case 'remove_future': { if (fromPhone) removeFuture(String(msg.id)).catch(err => { note(`couldn't remove it: ${err.message}`); toPhone({ type: 'undo_failed', id: msg.id, reason: err.message }); }); return; }
+    case 'remove_future': { if (fromPhone) removeFuture(String(msg.id)).catch(err => { note(`couldn't remove it: ${err.message}`); toDevices({ type: 'undo_failed', id: msg.id, reason: err.message }); }); return; }
     case 'ecdh_req': return answerOnce(from, msg.id, () => onEcdhReq(msg, from));
 
     case 'member': { // the server that added the phone says who it is
@@ -187,9 +198,9 @@ async function onMember(msg: any, fromPk: string) {
     }
     case 'push': { // where to send "approval needed"
       if (!fromPhone) return;
-      phone().push = msg.endpoint || null; save(); toOther({ type: 'push_relay', endpoint: msg.endpoint }); return;
+      from.push = msg.endpoint || null; save(); toOther({ type: 'push_relay', idx: from.idx, endpoint: msg.endpoint }); return;
     }
-    case 'push_relay': { if (!fromPhone) { phone().push = msg.endpoint || null; save(); } return; }
+    case 'push_relay': { const d = members.find(m => m.idx === (msg.idx ?? phone().idx)); if (!fromPhone && d) { d.push = msg.endpoint || null; save(); } return; }
     case 'ticket': { // the phone is about to hand this to a site
       if (!(S.tickets as Ticket[]).some(t => t.t === msg.t)) {
         S.tickets.push({ t: String(msg.t), origin: String(msg.origin ?? 'a site'), expires: Number(msg.expires) });
@@ -201,7 +212,7 @@ async function onMember(msg: any, fromPk: string) {
     }
     case 'nostrconnect': { if (fromPhone) connectByUri(String(msg.uri), String(msg.origin ?? 'an app')).catch(err => console.error(err)); return; }
     case 'revoke': return revoke(String(msg.pk), fromPhone ? 'on your phone' : `on ${from.name}`, !fromPhone);
-    case 'undo': { if (fromPhone) undo(String(msg.id)).catch(err => { note(`undo failed: ${err.message}`); toPhone({ type: 'undo_failed', id: msg.id, reason: err.message }); }); return; }
+    case 'undo': { if (fromPhone) undo(String(msg.id)).catch(err => { note(`undo failed: ${err.message}`); toDevices({ type: 'undo_failed', id: msg.id, reason: err.message }); }); return; }
     case 'state_req': { if (fromPhone) pushState(); return; }
     case 'signed': { // the other server signed something worth keeping
       if (fromPhone) return;
@@ -320,7 +331,7 @@ async function connectByUri(uri: string, origin: string) {
   // Twice, in case a relay drops the first; the site takes whichever arrives.
   const answer = () => reply(client, 'nip44', JSON.stringify({ id: rid(), result: secret }));
   answer(); setTimeout(answer, 4000);
-  toPhone({ type: 'connected', pk: client, origin });
+  toDevices({ type: 'connected', pk: client, origin });
 }
 
 /**
@@ -388,7 +399,7 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?
     if (b.approved) batch = b.id;
   }
   const hold = judged.hold; // an approved batch still goes to the phone, which won't ask twice
-  const order = partners(hold ? [phone()] : [phone(), other()]);
+  const order = partners(hold ? devices() : [...devices(), other()]);
   const tried: string[] = [];
   const done = (r: Attempt) => {
     note(`signed ${kindName(ev.kind)} for ${by} with ${r.m.name}${hold && !opts.undo ? ' — you approved' : ''}`);
@@ -420,7 +431,7 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?
   const sameForAll = !ARCHIVED.has(ev.kind) && ev.kind !== 5 && ev.kind !== 62;
   if (sameForAll && !hold && !opts.undo && !batch && order.length >= 2 && online(order[0]) && online(order[1])) {
     const ids = [rid(), rid()];
-    const runs = order.slice(0, 2).map((m, i) => attempt(m, m.role === 'phone' ? 10_000 : 8_000, ids[i]));
+    const runs = order.slice(0, 2).map((m, i) => attempt(m, isDevice(m) ? 10_000 : 8_000, ids[i]));
     const first = await new Promise<Attempt | null>(resolve => {
       let left = runs.length;
       for (const r of runs) void r.then(a => { if (a.signed) resolve(a); else { tried.push(`${a.m.name}: ${a.reason}`); if (--left === 0) resolve(null); } });
@@ -428,7 +439,7 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?
     ids.forEach(cancelAsk);
     if (first) { if (process.env.DEBUG) console.log(`[${me.name}] ${first.m.name} answered first`); return done(first); }
   } else for (const [i, m] of order.entries()) {
-    const isPhone = m.role === 'phone';
+    const isPhone = isDevice(m);
     const asking = isPhone && !!hold && !opts.undo && !batch; // an approved batch: the phone already said yes
     const wait = isPhone ? phoneWait(asking, order.slice(i + 1)) : online(m) ? 8_000 : 3_000; // a silent server gets a last quick try
     if (isPhone && (asking || (wait > 3_000 && !online(m)))) pushPhone();
@@ -489,13 +500,13 @@ function deletionWindow(site: string, by: string, ev: Ev, held: boolean): Promis
   b.requests++;
   b.targets += ev.tags.filter(t => t[0] === 'e' || t[0] === 'a').length;
   b.held ||= held;
-  toPhone({ type: 'deleting', batch: b.id, by, count: b.targets, until: b.until });
+  toDevices({ type: 'deleting', batch: b.id, by, count: b.targets, until: b.until });
   return b.done;
 }
 
 async function closeBatch(site: string, b: Batch) {
   if (batches.get(site) === b) batches.delete(site);
-  toPhone({ type: 'deleting_done', batch: b.id });
+  toDevices({ type: 'deleting_done', batch: b.id });
   if (b.cancelled) return b.settle(new Error('You stopped this deletion on your phone.'));
   if (b.targets < 5 && !b.held) return b.settle({ id: b.id, approved: false });
   const text = `Delete ${b.targets} event${b.targets === 1 ? '' : 's'} for ${b.by}${b.held ? ', including one of your lists' : ''}`;
@@ -503,7 +514,7 @@ async function closeBatch(site: string, b: Batch) {
   const ok = await new Promise<boolean>(resolve => {
     const t = setTimeout(() => { decisions.delete(b.id); resolve(false); }, 60_000);
     decisions.set(b.id, approve => { clearTimeout(t); decisions.delete(b.id); resolve(approve); });
-    const askNow = () => { if (decisions.has(b.id)) toPhone({ type: 'approve_batch', batch: b.id, text, by: b.by, expires: Date.now() + 55_000 }); };
+    const askNow = () => { if (decisions.has(b.id)) toDevices({ type: 'approve_batch', batch: b.id, text, by: b.by, expires: Date.now() + 55_000 }); };
     askNow(); setTimeout(askNow, 4000);
   });
   note(`${ok ? 'you approved' : 'you declined'}: ${text}`);
@@ -520,14 +531,14 @@ const phoneWait = (asking: boolean, after: Member[]) => asking ? 60_000 : after.
 function keep(signed: Event, text: string | undefined, by: string, held: boolean, site = '', prev?: Event | Ev) {
   // Everything goes in the history, so a site's work can be undone however much of it there is.
   const entry: Entry = { at: now(), site, by, event: signed, ...(ARCHIVED.has(signed.kind) && prev ? { prev } : {}) };
-  if (history.add(entry)) { toOther({ type: 'logged', entry }); toPhone({ type: 'logged', entry }); }
+  if (history.add(entry)) { toOther({ type: 'logged', entry }); toDevices({ type: 'logged', entry }); }
   if (!ARCHIVED.has(signed.kind) && !held) return;
   archive.record(signed);
   const change: Change | undefined = text ? { id: signed.id, key: keyOf(signed), kind: signed.kind, at: signed.created_at, text, by, held } : undefined;
   if (change) addChange(change, false);
   toOther({ type: 'signed', event: signed, change });
   // The phone judges for itself too, against the latest version it has seen signed.
-  if (ARCHIVED.has(signed.kind)) toPhone({ type: 'signed', event: signed });
+  if (ARCHIVED.has(signed.kind)) toDevices({ type: 'signed', event: signed });
 }
 
 function addChange(c: Change, quiet: boolean) {
@@ -551,7 +562,7 @@ function onSignReq(msg: any, from: Member): object {
   // into co-signing something destructive without the phone.
   const { hold, refuse } = assess(ev, archive.latest(keyOf(ev)));
   if (refuse) { note(`refused to co-sign for ${from.name}: ${refuse}`); return respond({ ok: false, reason: `refused: ${refuse}` }); }
-  if (hold && !participants.includes(phone().idx)) {
+  if (hold && !participants.some(i => isDevice(members.find(m => m.idx === i)))) {
     note(`refused to co-sign for ${from.name}: ${hold} needs your phone`);
     return respond({ ok: false, reason: `${hold} needs your phone` });
   }
@@ -564,7 +575,7 @@ function onEcdhReq(msg: any, from: Member): object {
   const respond = (r: object) => ({ type: 'ecdh_res', id: msg.id, ...r });
   if (!msg.participants?.includes(me.idx) || !msg.participants.includes(from.idx)) return respond({ ok: false, reason: 'bad request' });
   // The phone asks on behalf of an app it has let read your messages; that app must still have access.
-  if (from.role === 'phone' && !liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
+  if (isDevice(from) && !liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
   return respond({ ok: true, point: F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants: msg.participants, peerX: msg.peerX }) });
 }
 
@@ -590,7 +601,7 @@ function grantApp(msg: any) {
 function onCosignReq(msg: any, from: Member): object {
   const respond = (r: object) => ({ type: 'cosign_res', id: msg.id, ...r });
   const ev = msg.event;
-  if (from.role !== 'phone') return respond({ ok: false, reason: 'only your phone does this' });
+  if (!isDevice(from)) return respond({ ok: false, reason: 'only your devices do this' });
   const participants: number[] = msg.participants ?? [];
   if (participants.length !== 2 || !participants.includes(me.idx) || !participants.includes(from.idx)) return respond({ ok: false, reason: 'bad participants' });
   if (ev?.pubkey !== groupX || getEventHash(ev) !== msg.msg) return respond({ ok: false, reason: 'event does not match the message' });
@@ -622,10 +633,10 @@ async function frostEcdh(peerX: string): Promise<Uint8Array> {
   const hit = ecdhCache.get(peerX);
   if (hit && Date.now() - hit.at < 600_000) return hit.x;
   const tried: string[] = [];
-  const order = partners([phone(), other()]);
+  const order = partners([...devices(), other()]);
   for (const [i, m] of order.entries()) {
     const participants = [me.idx, m.idx].sort((a, b) => a - b);
-    const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, m.role === 'phone' ? phoneWait(false, order.slice(i + 1)) : 6_000);
+    const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, isDevice(m) ? phoneWait(false, order.slice(i + 1)) : 6_000);
     if (!res.ok) { tried.push(`${m.name}: ${res.reason}`); continue; }
     const x = F.ecdhCombine([F.ecdhPartial({ idx: me.idx, secret: S.self.share, participants, peerX }), res.point]);
     ecdhCache.set(peerX, { x, at: Date.now() });
@@ -744,7 +755,7 @@ async function undoSite(pk: string) {
     deleted += chunk.length;
   }
   note(`undid ${s.origin}: ${restored} list${restored === 1 ? '' : 's'} put back, ${deleted} event${deleted === 1 ? '' : 's'} deleted (copies kept)`);
-  toPhone({ type: 'undone_site', pk, origin: s.origin, restored, deleted });
+  toDevices({ type: 'undone_site', pk, origin: s.origin, restored, deleted });
   pushState();
 }
 
@@ -799,7 +810,7 @@ function mergeSync(msg: any) {
 }
 
 function pushState() {
-  toPhone({
+  toDevices({
     type: 'state',
     sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: siteName(s.origin), added: s.added, lastUsed: s.lastUsed, parent: s.parent ?? null, via: s.via ?? null })),
     changes: (S.changes as Change[]).slice(0, 30),
@@ -810,12 +821,78 @@ function pushState() {
   });
 }
 
-/** Wake the phone through ntfy. The message says only that something is waiting. */
+/** Wake your devices through ntfy. The message says only that something is waiting. */
 function pushPhone() {
-  const url = phone().push;
-  if (!url) return;
-  fetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' } })
-    .catch(err => note(`push failed: ${err.message}`));
+  for (const d of devices()) {
+    if (!d.push) continue;
+    fetch(d.push, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' } })
+      .catch(err => note(`push to ${d.name} failed: ${err.message}`));
+  }
+}
+
+// --- Adding a device ------------------------------------------------------------------
+//
+// One of your devices vouches for a new one (it scanned the new one's code and you
+// unlocked it). That device and this server make the newcomer's share by repair: each
+// splits its weighted part of f(k) into deltas, they trade one, and each seals its sum
+// (a sigma) to the newcomer, who adds the two. Neither helper ever has the new share.
+
+interface Adding { k: number; pk: string; name: string; by: Member; mine: string; at: number }
+const adding = new Map<string, Adding>();
+
+async function addDevice(msg: any, by: Member) {
+  const pk = String(msg.pk ?? '');
+  if (!/^[0-9a-f]{64}$/.test(pk)) throw new Error('that code is damaged');
+  if (members.some(m => m.pk === pk && !m.removed)) throw new Error('that device is already one of yours');
+  // One device vouching is instant only with its own lock, asked for right then.
+  if (msg.lock !== true) throw new Error('adding a device needs this phone’s lock');
+  const k = Math.max(...members.map(m => m.idx)) + 1;
+  const helpers = [by.idx, me.idx].sort((a, b) => a - b);
+  const deltas = Sig.repairStep1(S.group, me.idx, S.self.share, helpers, k);
+  adding.set(String(msg.id), { k, pk, name: String(msg.name ?? 'A device').slice(0, 40), by, mine: deltas.find(d => d[0] === me.idx)![1], at: Date.now() });
+  const relays = (msg.relays ?? []).filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r));
+  if (relays.length) await pool.add(relays);
+  send(by.pk, { type: 'repair', id: msg.id, k, helpers, delta: deltas.find(d => d[0] === by.idx)![1], pk });
+  note(`${by.name} is adding ${msg.name ?? 'a device'}`);
+}
+
+function onRepairDelta(msg: any, from: Member) {
+  const a = adding.get(String(msg.id));
+  if (!a || a.by.idx !== from.idx || Date.now() - a.at > 120_000) return;
+  const sigma = Sig.repairStep2([a.mine, String(msg.delta)]);
+  send(a.pk, {
+    type: 'welcome', id: msg.id, k: a.k, sigma, name: a.name, signer: S.signer.pk,
+    group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays, members: publicMembers() },
+  });
+}
+
+/** The newcomer has its share and checked it against the group: it's a member now. */
+function onJoined(msg: any, fromPk: string) {
+  const a = adding.get(String(msg.id));
+  if (!a || a.pk !== fromPk) return;
+  adding.delete(String(msg.id));
+  const sharePub = Sig.sharePubAt(S.group, a.k);
+  if (msg.sharePub !== sharePub) return note(`${a.name} didn't end up with the right share; not added`);
+  members.push({ idx: a.k, name: a.name, role: 'device', pk: a.pk, sharePub, push: null });
+  lastSeen.set(a.k, Date.now());
+  save();
+  toOther({ type: 'members', members });
+  toDevices({ type: 'members', members: publicMembers() });
+  note(`${a.name} joined, vouched for by ${a.by.name}`);
+}
+
+const publicMembers = () => members.filter(m => !m.removed).map(m => ({ idx: m.idx, name: m.name, role: m.role, pk: m.pk, sharePub: m.sharePub }));
+
+/** The other server's member list: take anything new, and every removal. */
+function mergeMembers(list: Member[]) {
+  let dirty = false;
+  for (const m of list) {
+    const mine = members.find(x => x.idx === m.idx);
+    if (!mine) { members.push({ ...m, push: m.push ?? null }); dirty = true; continue; }
+    if (m.removed && !mine.removed) { mine.removed = m.removed; dirty = true; }
+    if (!mine.pk && m.pk) { mine.pk = m.pk; dirty = true; }
+  }
+  if (dirty) { save(); toDevices({ type: 'members', members: publicMembers() }); }
 }
 
 // --- Adding your phone --------------------------------------------------------
@@ -832,7 +909,7 @@ function onPairHello(msg: any, fromPk: string) {
     type: 'pair_offer', token: S.pairing.token, idx: S.pairing.idx, share: S.pairing.share,
     signer: S.signer.pk,
     group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays,
-      members: members.map(m => ({ idx: m.idx, name: m.name, role: m.role, pk: m.role === 'phone' ? null : m.pk, sharePub: m.sharePub })) },
+      members: members.filter(m => !m.removed).map(m => ({ idx: m.idx, name: m.name, role: m.role, pk: isDevice(m) ? null : m.pk, sharePub: m.sharePub })) },
   });
   note('a phone scanned the code');
 }
@@ -881,7 +958,7 @@ const ago = (t: number) => { const s = now() - t; return s < 60 ? 'just now' : s
 const esc = (s: string) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 function status() {
   return {
-    me: me.name, npub: S.group.npub, coordinating: coordinating(),
+    me: me.name, version: VERSION, started: startedAt, npub: S.group.npub, coordinating: coordinating(),
     members: members.map(m => ({ name: m.name, online: !!m.pk && online(m), paired: !!m.pk, self: m.idx === me.idx })),
     relays: pool.status(), pairing: !!S.pairing,
     sites: (S.sites as Site[]).filter(s => !s.revoked).sort((a, b) => b.lastUsed - a.lastUsed)
@@ -921,7 +998,7 @@ const $=id=>document.getElementById(id);
 async function revoke(pk){ await fetch('/revoke',{method:'POST',body:pk}); tick(); }
 async function tick(){const s=await (await fetch('/status')).json();
  $('members').innerHTML=s.members.map(m=>'<div class=row><span class="dot '+(m.online?'on':'')+'"></span>'+m.name+(m.self?' <span class=muted>(this one)</span>':'')+(m.paired?'':' <span class=muted>— not added</span>')+'</div>').join('');
- $('coord').textContent=(s.coordinating?'Answering your sites. ':'Standing by. ')+s.relays.filter(r=>r.up).length+'/'+s.relays.length+' relays';
+ $('coord').textContent=(s.coordinating?'Answering your sites. ':'Standing by. ')+s.relays.filter(r=>r.up).length+'/'+s.relays.length+' relays · Cosign '+s.version+' · running since '+new Date(s.started).toLocaleTimeString();
  const groups={};for(const x of s.sites)(groups[x.origin]??=[]).push(x);
  $('sites').innerHTML=Object.entries(groups).map(([o,g])=>'<div class=site style="display:block"><div>'+o+'</div>'+g.map(x=>'<div class=row style="justify-content:space-between"><span class=muted style="font-size:13px">'+x.via+' · used '+x.lastUsed+'</span><button data-pk="'+x.pk+'">Remove</button></div>').join('')+'</div>').join('')||'<div class=muted>None yet. Scan a site’s code with your phone.</div>';
  for(const b of document.querySelectorAll('button[data-pk]')) b.onclick=()=>revoke(b.dataset.pk);

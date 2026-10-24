@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -74,11 +76,13 @@ fun App(phone: Phone, ui: Ui) {
             }
             ui.offer != null -> JoinPrompt(ui.offer, phone::accept, phone::decline)
             ui.joining != null -> Joining(ui.joining, phone::decline)
-            ui.member == null -> Welcome(ui.error) { phone.clearError(); scanning = true }
+            ui.joinCode != null && ui.member == null -> JoinCode(ui.joinCode, ui.error, phone::cancelJoin)
+            ui.member == null -> Welcome(ui.error, onJoin = phone::startJoin) { phone.clearError(); scanning = true }
             else -> Home(phone, ui) { phone.clearError(); scanning = true }
         }
         ui.connect?.let { ConnectSheet(it, phone::confirmConnect, phone::closeConnect) }
         ui.summary?.let { UndoSiteSheet(it, phone::confirmUndoSite, phone::closeSummary) }
+        ui.adding?.let { AddDeviceSheet(it, phone) }
     }
 }
 
@@ -87,7 +91,7 @@ private fun Page(content: @Composable ColumnScope.() -> Unit) =
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp, vertical = 16.dp), content = content)
 
 @Composable
-private fun Welcome(error: String?, onScan: () -> Unit) = Page {
+private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit) = Page {
     Spacer(Modifier.weight(1f))
     Text("Cosign", style = MaterialTheme.typography.headlineMedium, color = Vault.Text)
     Spacer(Modifier.height(12.dp))
@@ -103,6 +107,8 @@ private fun Welcome(error: String?, onScan: () -> Unit) = Page {
     }
     Spacer(Modifier.height(8.dp))
     Text("It's on your server's page, under “Add your phone”.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted, modifier = Modifier.align(Alignment.CenterHorizontally))
+    Spacer(Modifier.height(8.dp))
+    TextButton(onJoin, Modifier.align(Alignment.CenterHorizontally)) { Text("Already use Cosign on another device? Join with it", color = Vault.Teal) }
 }
 
 @Composable
@@ -207,6 +213,16 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
         items(ui.deleting, key = { "deleting:" + it.batch }) { d -> DeletingCard(d, now) { phone.cancelDeletion(d.batch) } }
         items(ui.batchAsks, key = { "batch:" + it.batch }) { b -> BatchCard(b, now) { approve -> phone.decideBatch(b.batch, approve) } }
         items(ui.asks, key = { "ask:" + it.id }) { ask -> AskCard(ask, now) { approve -> phone.decide(ask.id, approve) } }
+
+        item { Heading("Your devices") }
+        items(m.group.members.filter { it.role != "server" }, key = { "member:" + it.idx }) { d ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(8.dp).background(if (d.idx == m.idx || ui.online[d.idx] == true) Vault.Teal else Vault.Field, CircleShape))
+                Spacer(Modifier.width(10.dp))
+                Text(if (d.idx == m.idx) "${d.name} (this one)" else d.name, color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        item { TextButton(onScan, contentPadding = PaddingValues(0.dp)) { Text("Add a device", color = Vault.Teal) } }
 
         item { Heading("Sites that can sign as you") }
         if (ui.sites.isEmpty()) item { Muted("None yet. Tap Connect a site and scan a site's sign-in code.") }
@@ -402,3 +418,57 @@ private fun ago(seconds: Long): String {
 }
 
 private fun short(npub: String) = if (npub.length > 20) npub.take(12) + "…" + npub.takeLast(6) else npub
+
+
+/** On a new device: its code, for one of your devices to scan. */
+@Composable
+private fun JoinCode(code: String, error: String?, onCancel: () -> Unit) = Page {
+    Spacer(Modifier.height(24.dp))
+    Text("Join your key", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+    Spacer(Modifier.height(10.dp))
+    Text("On a device that already uses Cosign, tap Add a device and scan this. That device will ask for its lock.", style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+    Spacer(Modifier.height(24.dp))
+    val qr = remember(code) { qrBitmap(code, 720) }
+    androidx.compose.foundation.Image(qr.asImageBitmap(), "Join code", Modifier.fillMaxWidth().then(Modifier.aspectRatio(1f)).background(Color.White, RoundedCornerShape(12.dp)).padding(12.dp))
+    error?.let { Spacer(Modifier.height(12.dp)); Text(it, color = Vault.Danger, style = MaterialTheme.typography.bodySmall) }
+    Spacer(Modifier.weight(1f))
+    TextButton(onCancel, Modifier.align(Alignment.CenterHorizontally)) { Text("Cancel", color = Vault.Muted) }
+}
+
+private fun qrBitmap(text: String, size: Int): android.graphics.Bitmap {
+    val m = com.google.zxing.qrcode.QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size)
+    val px = IntArray(size * size) { i -> if (m[i % size, i / size]) android.graphics.Color.BLACK else android.graphics.Color.WHITE }
+    return android.graphics.Bitmap.createBitmap(px, size, size, android.graphics.Bitmap.Config.ARGB_8888)
+}
+
+/** You scanned a new device's code: add it, after this phone's own lock. */
+@Composable
+private fun AddDeviceSheet(a: cc.aaro.cosign.AddingDevice, phone: Phone) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) phone.confirmAddDevice()
+    }
+    BackHandler { phone.cancelAddDevice() }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            Text("Add ${a.name} to your key?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Spacer(Modifier.height(10.dp))
+            Text("It gets a share of its own and can sign as you, with your server, like this phone. This phone and your server make its share together; neither ever has it.",
+                style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+            Spacer(Modifier.height(6.dp))
+            Text("Cosign asks for this phone's lock first.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+            Spacer(Modifier.height(20.dp))
+            OutlinedButton({ phone.cancelAddDevice() }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Don't add", color = Vault.Text) }
+            Spacer(Modifier.height(10.dp))
+            Button({
+                val kg = context.getSystemService(android.app.KeyguardManager::class.java)
+                @Suppress("DEPRECATION") // BiometricPrompt needs a FragmentActivity; this asks for the same lock
+                val ask = if (kg.isDeviceSecure) kg.createConfirmDeviceCredentialIntent("Add ${a.name}", "Confirm it's you to add a device to your key") else null
+                if (ask == null) phone.lockMissing() else lock.launch(ask)
+            }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Unlock and add") }
+        }
+    }
+}

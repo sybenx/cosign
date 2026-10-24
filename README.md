@@ -31,6 +31,9 @@ changes.
   or server with its clock set ahead doesn't change that. A future-dated version already
   out there is flagged on your phone with a one-tap fix.
 - **Remove a site** on the phone or on either server's page; it stops immediately.
+- **Add your other devices** (a second phone, a tablet): the new one shows a code, your
+  phone scans it and asks for its own lock, and your phone and server make the new
+  device's share between them — neither ever has it.
 - **Any one of the three can be down.** If your phone doesn't answer within 3 s, the
   backup server signs instead (never for anything destructive). If your server is down,
   the backup takes over from it after 30 s. With neither phone nor backup, the site gets
@@ -130,6 +133,7 @@ cd site && node test/single.e2e.ts                       # phone co-signs; backu
 cd site && node test/deletion.e2e.ts                     # copies kept, 10 s Undo, one approval per batch
 cd site && node test/undo-site.e2e.ts                    # undo everything one site did
 cd site && NSEC=… node test/future.e2e.ts                # dated ahead: refused, held, found and removed
+cd site && node test/devices.e2e.ts                      # add a device by repair; it co-signs
 cd server && node test/policy-vectors.ts                 # policy cases for the phone's copy
 # a second group beside yours for these: node setup.ts --dir test-data --port 8721
 ```

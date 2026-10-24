@@ -113,3 +113,61 @@ fn a_wrong_sigma_is_caught() {
     let sigma1 = repair_step2(&[d1[0].1.clone()]).unwrap(); // missing the other helper's delta
     assert!(repair_step3(&group, &[sigma1, hex::encode([1u8; 32])], 4).is_err());
 }
+
+/// A weighted group made by DKG: a device runs shares 1–3, a server share 4; threshold 4.
+fn weighted() -> (Group, Vec<(u16, String)>) {
+    let ids = [1u16, 2, 3, 4];
+    let r1: Vec<(u16, DkgRound)> = ids.iter().map(|i| (*i, dkg_part1(*i, 4, 4).unwrap())).collect();
+    let others1 = |me: u16| r1.iter().filter(|(i, _)| *i != me).map(|(i, r)| (*i, r.package.clone())).collect::<Vec<_>>();
+    let r2: Vec<(u16, DkgRound2)> = r1.iter().map(|(i, r)| (*i, dkg_part2(&r.secret, &others1(*i)).unwrap())).collect();
+    let mut done = vec![];
+    for (i, r) in &r2 {
+        let received: Vec<(u16, String)> = r2.iter().filter(|(j, _)| j != i)
+            .map(|(j, rr)| (*j, rr.packages.iter().find(|(to, _)| to == i).unwrap().1.clone())).collect();
+        done.push((*i, dkg_part3(*i, &r.secret, &others1(*i), &received).unwrap()));
+    }
+    let g = Group { group_x: done[0].1.group_x.clone(), threshold: 4, members: done[0].1.members.clone() };
+    for (_, d) in &done { assert_eq!(d.group_x, g.group_x); }
+    (g, done.into_iter().map(|(i, d)| (i, d.share)).collect())
+}
+
+fn sign_with(g: &Group, signers: &[(u16, String)], msg: &str) -> String {
+    let cs: Vec<(u16, Committed)> = signers.iter().map(|(i, s)| (*i, commit(g, *i, s).unwrap())).collect();
+    let commits: Vec<Commit> = cs.iter().map(|(_, c)| c.commit.clone()).collect();
+    let zs: Vec<(u16, String)> = signers.iter().zip(&cs).map(|((i, s), (_, c))| (*i, sign(g, *i, s, &c.nonces, msg, &commits).unwrap())).collect();
+    for (i, z) in &zs { assert!(verify_partial(g, msg, &commits, *i, z)); }
+    aggregate(g, msg, &commits, &zs).unwrap()
+}
+
+#[test]
+fn dkg_makes_a_nostr_key_nobody_held() {
+    for _ in 0..4 { // about half of all keys come out odd-Y first
+        let (g, shares) = weighted();
+        let msg = hex::encode([9u8; 32]);
+        let sig = sign_with(&g, &shares, &msg);
+        assert!(bip340_ok(&g.group_x, &msg, &sig));
+        for (i, s) in &shares { assert_eq!(&share_pub(s).unwrap(), &g.members.iter().find(|m| m.idx == *i).unwrap().share_pub); }
+    }
+}
+
+#[test]
+fn weighted_repair_adds_a_device_with_three_shares() {
+    let (mut g, shares) = weighted();
+    // Helpers worth 4: the device's 3 shares and the server's 1 make shares 5, 6, 7 for a new device.
+    let helpers: Vec<u16> = vec![1, 2, 3, 4];
+    let mut new_shares = vec![];
+    for k in [5u16, 6, 7] {
+        let deltas: Vec<Vec<(u16, String)>> = shares.iter().map(|(i, s)| repair_step1(&g, *i, s, &helpers, k).unwrap()).collect();
+        let sigmas: Vec<String> = helpers.iter().map(|h| repair_step2(&deltas.iter().map(|d| d.iter().find(|x| x.0 == *h).unwrap().1.clone()).collect::<Vec<_>>()).unwrap()).collect();
+        let sk = repair_step3(&g, &sigmas, k).unwrap();
+        assert_eq!(share_pub(&sk).unwrap(), share_pub_at(&g, k).unwrap());
+        new_shares.push((k, sk));
+    }
+    for (k, s) in &new_shares { g.members.push(Member { idx: *k, share_pub: share_pub(s).unwrap() }); }
+    // The new device (3) and the server (1) sign; so do the two devices (6) without the server.
+    let msg = hex::encode([3u8; 32]);
+    let mut with_server = new_shares.clone(); with_server.push(shares[3].clone());
+    assert!(bip340_ok(&g.group_x, &msg, &sign_with(&g, &with_server, &msg)));
+    let mut two_devices = new_shares.clone(); two_devices.extend(shares[..3].iter().cloned());
+    assert!(bip340_ok(&g.group_x, &msg, &sign_with(&g, &two_devices, &msg)));
+}

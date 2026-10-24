@@ -30,6 +30,7 @@ const pool = new Pool(relays, e => {
 });
 const send = (to: string, m: object) => { for (const e of sealParts(sk, to, m)) pool.publish(e); };
 const parts = new Parts();
+const decided = new Set<string>();
 const servers = () => st.group.members.filter((m: any) => m.role === 'server');
 
 function handle(msg: any, from: string) {
@@ -55,10 +56,23 @@ function handle(msg: any, from: string) {
     reply({ ok: true, commit: mine.commit, z });
   } else if (msg.type === 'ecdh_req') {
     send(from, { type: 'ecdh_res', id: msg.id, ok: true, point: F.ecdhPartial({ idx: st.idx, secret: st.share, participants: msg.participants, peerX: msg.peerX }) });
+  } else if (msg.type === 'repair') {
+    // Vouching for a new device: our part of its share, half to the server, half to it.
+    const d = Sig.repairStep1(st.group, st.idx, st.share, msg.helpers, msg.k);
+    const sigma = Sig.repairStep2([d.find(x => x[0] === st.idx)![1], msg.delta]);
+    send(from, { type: 'repair_delta', id: msg.id, delta: d.find(x => x[0] === srv.idx)![1] });
+    send(msg.pk, { type: 'sigma', id: msg.id, k: msg.k, sigma });
+    say(`vouched for a new device as member ${msg.k}`);
+  } else if (msg.type === 'members') {
+    st.group.members = msg.members.map((m: any) => ({ ...m, pk: m.idx === st.idx ? pk : m.pk }));
+    writeFileSync(stateFile, JSON.stringify(st, null, 2));
+    say(`members now ${st.group.members.map((m: any) => m.name).join(', ')}`);
   } else if (msg.type === 'deleting') {
     say(`deleting ${msg.count} for ${msg.by}`);
     if (process.env.CANCEL_DELETES) { send(from, { type: 'cancel_batch', batch: msg.batch }); say('UNDO tapped'); }
   } else if (msg.type === 'approve_batch') {
+    if (decided.has(msg.batch)) return; // the server asks again in case a relay dropped it; the app ignores repeats too
+    decided.add(msg.batch);
     say(`${deny ? 'DECLINED' : 'APPROVED'} batch: ${msg.text}`);
     send(from, { type: 'batch_decision', batch: msg.batch, approve: !deny });
   } else if (msg.type === 'state') {

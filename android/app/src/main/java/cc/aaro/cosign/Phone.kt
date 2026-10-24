@@ -60,6 +60,8 @@ data class BatchAsk(val batch: String, val text: String, val by: String, val exp
 data class Deleted(val id: String, val kind: String, val at: Long, val text: String)
 /** What undoing a site would do, for you to confirm. */
 data class SiteSummary(val pk: String, val origin: String, val total: Int, val counts: Map<String, Int>, val lists: List<String>, val deletable: Int)
+/** A new device asking to join your key. */
+data class AddingDevice(val pk: String, val name: String, val relays: List<String>)
 /** A version of one of your lists dated in the future, found on relays: it blocks every change. */
 data class Future(val id: String, val text: String)
 data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
@@ -87,6 +89,10 @@ data class Ui(
     val batchAsks: List<BatchAsk> = emptyList(),
     val deleted: List<Deleted> = emptyList(),
     val summary: SiteSummary? = null,
+    /** A new device's code you scanned: add it? */
+    val adding: AddingDevice? = null,
+    /** This (new) device's code, while it waits for one of yours to add it. */
+    val joinCode: String? = null,
     val connect: Connect? = null,
     val push: String? = null,
 )
@@ -247,6 +253,14 @@ class Phone(private val context: Context) {
             return
         }
         if (t.startsWith("nostrconnect:")) return scannedNostrConnect(t)
+        if (t.startsWith("cosign:join")) {
+            if (!isMember) return ui.update { it.copy(error = "That's a new device's code. Scan it with a device that's already part of your key.") }
+            val u = Uri.parse(t.replace("cosign:join?", "cosign://join?"))
+            val pk = u.getQueryParameter("pk")
+            val relays = u.getQueryParameters("r").filter { it.startsWith("wss://") || it.startsWith("ws://") }
+            if (!isHex32(pk) || relays.isEmpty()) return ui.update { it.copy(error = "That code is damaged. Try again.") }
+            return ui.update { it.copy(error = null, adding = AddingDevice(pk!!, u.getQueryParameter("name")?.take(40) ?: "A device", relays)) }
+        }
         val params = try { PairingUri.parse(t) } catch (_: Exception) { null }
         // A sign-in code that carries a nostrconnect:// fallback (`nc`, site/src/pair.ts):
         // use the ticket if it's one for us, the fallback if not.
@@ -381,6 +395,90 @@ class Phone(private val context: Context) {
         myUndos[change.id] = System.currentTimeMillis()
         send(target.pk!!, mapOf("type" to "undo", "id" to change.id))
         note("Undoing: ${change.text}")
+    }
+
+    // --- Your devices -------------------------------------------------------------------
+    //
+    // Adding one: it shows a code, this phone scans it, you unlock this phone (one device
+    // vouching is instant only with its own lock), and this phone and a server make its
+    // share by repair, each sealing half of it to the new device. Neither ever has it.
+
+    /** You unlocked this phone: ask a server to start. */
+    fun confirmAddDevice() {
+        val a = ui.value.adding ?: return
+        val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        send(target.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to a.pk, "name" to a.name, "relays" to a.relays, "lock" to true))
+        ui.update { it.copy(adding = null) }
+        note("Adding ${a.name}…")
+    }
+
+    fun cancelAddDevice() = ui.update { it.copy(adding = null) }
+
+    /** No screen lock: one device can only vouch instantly with one, so it can't add a device yet. */
+    fun lockMissing() = ui.update { it.copy(adding = null, error = "Set a screen lock on this phone first: adding a device needs it.") }
+
+    /** A server's half of the repair: add ours, send the server its delta and the new device our sigma. */
+    private fun onRepair(msg: Map<*, *>, from: Member, m: Membership) {
+        val id = msg["id"] as? String ?: return
+        val k = (msg["k"] as? Long)?.toInt() ?: return
+        val newPk = msg["pk"] as? String ?: return
+        val helpers = (msg["helpers"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
+        if (m.idx !in helpers || from.idx !in helpers) return
+        val d = (Json.parse(FrostNative.repairStep1(groupJson(m), m.idx, m.share, Json.stringify(helpers), k)) as List<*>).associate { (it as List<*>)[0].toString() to (it[1] as String) }
+        val sigma = FrostNative.repairStep2(Json.stringify(listOf(d[m.idx.toString()], msg["delta"] as String)))
+        send(from.pk!!, mapOf("type" to "repair_delta", "id" to id, "delta" to d[from.idx.toString()]))
+        send(newPk, mapOf("type" to "sigma", "id" to id, "k" to k, "sigma" to sigma))
+    }
+
+    /** Who's in your key now: a server added or removed someone. */
+    private fun onMembers(msg: Map<*, *>, m: Membership) {
+        val list = (msg["members"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
+            Member((it["idx"] as Long).toInt(), it["name"] as? String ?: "?", it["role"] as? String ?: "device", it["pk"] as? String, it["sharePub"] as? String ?: return@let null) } } ?: return
+        if (list.none { it.idx == m.idx }) return // a list without this phone isn't one to take
+        val members = list.map { if (it.idx == m.idx) it.copy(pk = publicKeyHex(m.sk.hexToBytes())) else it }
+        val updated = m.copy(group = m.group.copy(members = members))
+        secrets.saveMembership(Json.stringify(membershipToMap(updated)))
+        val added = members.filter { n -> m.group.members.none { it.idx == n.idx } }
+        ui.update { it.copy(member = updated) }
+        for (n in added) note("${n.name} joined your key", "approved")
+    }
+
+    // Joining, on the new device: show a code, wait for a server's welcome and a device's sigma.
+    private var joinWith: String? = null
+    private val joinPieces = ConcurrentHashMap<String, Any>()
+
+    fun startJoin() {
+        val sk = generateSecretKey(env).toHex()
+        joinWith = sk; joinPieces.clear()
+        val relays = listOf("wss://syb.lol", "wss://nos.lol", "wss://relay.primal.net")
+        connect(relays, sk)
+        val name = android.os.Build.MODEL.ifBlank { "A device" }
+        val code = "cosign:join?pk=${publicKeyHex(sk.hexToBytes())}&name=${Uri.encode(name)}&" + relays.joinToString("&") { "r=" + Uri.encode(it) }
+        ui.update { it.copy(joinCode = code, error = null) }
+        android.util.Log.d("Cosign", "join code: $code") // for testing on an emulator, where nothing can scan the screen
+    }
+
+    fun cancelJoin() { joinWith = null; relays?.stop(); relays = null; sk = null; ui.update { it.copy(joinCode = null) } }
+
+    private fun onJoinPiece(msg: Map<*, *>, fromPk: String) {
+        if (msg["type"] == "welcome") { joinPieces["welcome"] = msg; joinPieces["server"] = fromPk } else joinPieces["sigma"] = msg["sigma"] as? String ?: return
+        val w = joinPieces["welcome"] as? Map<*, *> ?: return
+        val sigma2 = joinPieces["sigma"] as? String ?: return
+        val mySk = joinWith ?: return
+        val group = parseGroup(w["group"]) ?: return
+        val k = (w["k"] as? Long)?.toInt() ?: return
+        val g = Json.stringify(mapOf("groupX" to group.groupX, "threshold" to group.threshold, "members" to group.members.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+        val share = try { FrostNative.repairStep3(g, Json.stringify(listOf(w["sigma"], sigma2)), k) } catch (e: Exception) {
+            return ui.update { it.copy(error = "The pieces didn't add up to a share of that key. Nothing was kept.") }
+        }
+        val me = Member(k, w["name"] as? String ?: "This device", "device", publicKeyHex(mySk.hexToBytes()), Frost.sharePub(share))
+        val m = Membership(mySk, k, share, w["signer"] as? String ?: return, group.copy(members = group.members + me))
+        secrets.saveMembership(Json.stringify(membershipToMap(m)))
+        send(joinPieces["server"] as String, mapOf("type" to "joined", "id" to w["id"], "sharePub" to me.sharePub))
+        joinWith = null
+        ui.update { it.copy(member = m, joinCode = null) }
+        note("Joined. This device holds 1 of ${group.members.size + 1} shares of ${group.npub.take(16)}…")
+        start() // same relays and key: it keeps the connection the joined message just went out on
     }
 
     // --- Deletions, and undoing a site -------------------------------------------------
@@ -603,6 +701,7 @@ class Phone(private val context: Context) {
         // Relays replay recent ephemeral events to a new subscription; the sender has given up on those.
         if ((type == "sign_req" || type == "ecdh_req") && System.currentTimeMillis() / 1000 - e.createdAt > 30) return
         if (type == "pair_offer") return onOffer(msg, e.pubkey)
+        if (joinWith != null && (type == "welcome" || type == "sigma")) return onJoinPiece(msg, e.pubkey)
         val m = ui.value.member ?: return
         val from = m.group.members.firstOrNull { it.pk == e.pubkey && it.role == "server" } ?: return
         lastSeen[from.idx] = System.currentTimeMillis()
@@ -610,6 +709,9 @@ class Phone(private val context: Context) {
             "sign_req" -> onSignReq(msg, from, m)
             "ecdh_req" -> onEcdhReq(msg, from, m)
             "state" -> onState(msg, from.pk!!)
+            "repair" -> onRepair(msg, from, m)
+            "members" -> onMembers(msg, m)
+            "add_failed" -> { note("Couldn't add the device: ${msg["reason"]}", "denied"); ui.update { it.copy(error = "Couldn't add the device: ${msg["reason"]}") } }
             "connected" -> onConnected(msg)
             "cosign_res", "ecdh_res" -> (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }
             "logged" -> (msg["entry"] as? Map<*, *>)?.let { signedLog.appendText(Json.stringify(it) + "\n") }

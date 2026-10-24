@@ -28,7 +28,8 @@ let failures = 0;
 const check = (label: string, ok: boolean, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!ok) failures++; };
 const time = async <T>(f: () => Promise<T>) => { const t = Date.now(); const v = await f(); return [v, Date.now() - t] as const; };
 const lastSigned = async () => ((await (await fetch(`http://localhost:${portA}/status`)).json()).activity as any[]).map(a => a.text).find(t => t.startsWith('signed') || t.startsWith('did not sign')) ?? '';
-const run = (args: string[]): ChildProcess => spawn('node', args, { cwd: serverDir, stdio: 'ignore' });
+import { openSync } from 'node:fs';
+const run = (args: string[], log = '/dev/null'): ChildProcess => spawn('node', args, { cwd: serverDir, stdio: ['ignore', openSync(log, 'a'), openSync(log, 'a')] });
 const kill = (pattern: string) => spawn('pkill', ['-f', pattern]);
 
 await sleep(2000);
@@ -62,7 +63,7 @@ check('phone and backup both gone: the site gets an error', !!err && /phone/i.te
 
 // Back to normal.
 run(['server.ts', 'test-data/b']);
-run(['test/fake-phone.ts']);
+run(['test/fake-phone.ts'], serverDir + 'logs/test-phone.log');
 await sleep(14_000);
 const [n3, ms5] = await time(() => site.signEvent({ kind: 3, content: '', tags: [['p', bytesToHex(randomBytes(32))], ['p', bytesToHex(randomBytes(32))]] }));
 check('phone back: it co-signs again', verifyEvent(n3) && (await lastSigned()).includes('with Phone'), `${ms5} ms`);

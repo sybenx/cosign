@@ -13,6 +13,8 @@ VERSION=$(sed -n 's/.*versionName = "\(.*\)"/\1/p' android/app/build.gradle.kts)
 [ -n "$VERSION" ] || { echo "no versionName"; exit 1; }
 [ -e "Cosign-$VERSION.apk" ] && { echo "Cosign-$VERSION.apk already exists: bump the version first"; exit 1; }
 
+# The server reports the same version on its status page.
+sed -i '' -E "s/\"version\": \"[^\"]+\"/\"version\": \"$VERSION\"/" server/package.json
 (cd android && JAVA_HOME=${JAVA_HOME:-/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home} ./gradlew -q :app:assembleRelease)
 rm -f Cosign-*.apk link/public/Cosign-*.apk
 cp android/app/build/outputs/apk/release/app-release.apk "Cosign-$VERSION.apk"
