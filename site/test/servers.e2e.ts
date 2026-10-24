@@ -82,8 +82,11 @@ if (mine) {
   check('it answers a ping', ms !== null, `${ms} ms`);
   const relays = [...new Set([...hostCfg.relays, 'wss://syb.lol', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.damus.io'])];
   const p = new SimplePool();
-  // Clean up after ourselves: no test server left announced.
-  const del = finalizeEvent({ kind: 5, created_at: Math.floor(Date.now() / 1000), tags: [['a', `30243:${mine.pk}:cosign-server`], ['k', '30243']], content: 'test server' }, hexToBytes(hostCfg.sk));
+  // Clean up after ourselves: no test server left announced. An empty announcement first,
+  // for relays that keep a replaceable event but ignore deletions, then the deletion.
+  const empty = finalizeEvent({ kind: 30243, created_at: Math.floor(Date.now() / 1000), tags: [['d', 'cosign-server']], content: JSON.stringify({ relays: [] }) }, hexToBytes(hostCfg.sk));
+  await Promise.allSettled(p.publish(relays, empty));
+  const del = finalizeEvent({ kind: 5, created_at: Math.floor(Date.now() / 1000) + 1, tags: [['a', `30243:${mine.pk}:cosign-server`], ['k', '30243']], content: 'test server' }, hexToBytes(hostCfg.sk));
   await Promise.allSettled(p.publish(relays, del));
   p.close(relays);
 }

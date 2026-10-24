@@ -242,11 +242,13 @@ export class CosignHost extends DurableObject {
 
   async alarm() {
     for (const x of this.groups.values()) x.g.tick();
+    // Every 6 h, and as soon as a new version is running (its announcement says which).
     const last = Number(this.get('announced') ?? 0);
-    if (Date.now() - last > 6 * 3600_000) {
+    if (Date.now() - last > 6 * 3600_000 || this.get('announcedVersion') !== VERSION) {
       await checkClock(t => console.log(`[clock] ${t}`));
       await this.announce().catch(err => console.error('announce', err));
       this.put('announced', String(Date.now()));
+      this.put('announcedVersion', VERSION);
     }
     // On-demand liveness (HOSTS.md): a member's message wakes this object; this is only a slow heartbeat.
     await this.ctx.storage.setAlarm(Date.now() + 10 * 60_000);
