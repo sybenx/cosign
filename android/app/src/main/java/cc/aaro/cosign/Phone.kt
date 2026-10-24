@@ -402,16 +402,23 @@ class Phone(private val context: Context, val slot: String = "0") {
     fun confirmReportLost() {
         val d = ui.value.reporting ?: return
         ui.update { it.copy(reporting = null) }
+        refreshWithout(d)
+        note("Reported ${d.name} lost. It can't sign any more; refreshing your key…", "approved")
+    }
+
+    /** Refresh everyone's shares, with this phone and a server dealing; [d], if given, is reported lost first. */
+    private fun refreshWithout(d: Member?) {
         val m = ui.value.member ?: return
         val me = publicKeyHex(m.sk.hexToBytes())
         val srv = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
-        val left = m.group.members.filter { it.idx != d.idx }
+        val left = m.group.members.filter { it.idx != d?.idx }
         val plan = Json.parse(Json.stringify(mapOf(
             "epoch" to m.epoch + 1, "threshold" to m.group.threshold, "dealers" to listOf(me, srv.pk),
             "holders" to left.flatMap { mm -> mm.idxs.map { mapOf("idx" to it, "pk" to (if (mm.idx == m.idx) me else mm.pk)) } },
             "points" to left.flatMap { it.points }.map { listOf(it.idx, it.sharePub) },
         ))) as Map<*, *>
-        for (s in servers()) send(s.pk!!, mapOf("type" to "remove_member", "id" to env.random(8).toHex(), "idx" to d.idx, "lock" to true, "plan" to plan))
+        for (s in servers()) send(s.pk!!, if (d == null) mapOf("type" to "refresh_request", "lock" to true, "plan" to plan)
+            else mapOf("type" to "remove_member", "id" to env.random(8).toHex(), "idx" to d.idx, "lock" to true, "plan" to plan))
         val run = startRefresh(plan, m) ?: return
         // Your other devices: the plan and this phone's part, straight to them and kept on the servers for one that's away.
         val parts = run.outgoing().toMap()
@@ -426,7 +433,47 @@ class Phone(private val context: Context, val slot: String = "0") {
             for (body in listOfNotNull(mapOf("type" to "refresh_plan", "plan" to plan), parts[o.pk]))
                 for (s in servers()) send(s.pk!!, mapOf("type" to "mail_for", "to" to o.pk, "epoch" to m.epoch + 1, "content" to Nip44.encrypt(Json.stringify(body), key, env.random(32))))
         }
-        note("Reported ${d.name} lost. It can't sign any more; refreshing your key…", "approved")
+    }
+
+    // Growing: restored from a 2-share paper (two servers or more), this phone can't sign
+    // with one server, so it asks for a device's full 3 by repair, vouching for itself with
+    // the paper's shares and both servers' (three parties), then refreshes the paper's away.
+    private var growing: Pair<String, MutableList<List<*>>>? = null
+    private var growWelcome: Map<*, *>? = null
+    private var growServer: String? = null
+
+    private fun growShares() {
+        val m = ui.value.member ?: return
+        if (m.shares.size + 1 >= m.group.threshold) return
+        val srv = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        val id = env.random(8).toHex()
+        growing = id to java.util.Collections.synchronizedList(mutableListOf()); growWelcome = null
+        send(srv.pk!!, mapOf("type" to "add_device", "id" to id, "pk" to publicKeyHex(m.sk.hexToBytes()), "name" to android.os.Build.MODEL.ifBlank { "This phone" }, "lock" to true, "grow" to true))
+        note("Getting this phone a device's full share of your key…")
+    }
+
+    private fun onGrowPiece(msg: Map<*, *>, from: String) {
+        val (id, pieces) = growing ?: return
+        val m = ui.value.member ?: return
+        if (msg["type"] == "welcome") { growWelcome = msg; growServer = from }
+        pieces.addAll((msg["sigmas"] as? List<*>)?.map { it as List<*> } ?: emptyList())
+        val w = growWelcome ?: return
+        val ks = (w["ks"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
+        val need = (w["helpers"] as? List<*>)?.size ?: return
+        val forK = { k: Int -> pieces.toList().filter { (it[0] as? Long)?.toInt() == k }.map { it[2] as String } }
+        if (ks.any { forK(it).size < need }) return
+        val g = groupJson(m)
+        val shares = try { ks.map { k -> Share(k, FrostNative.repairStep3(g, Json.stringify(forK(k)), k)) } } catch (e: Exception) { growing = null; return note("Couldn't grow this phone's shares: ${e.message}", "denied") }
+        val points = shares.map { Point(it.idx, Frost.sharePub(it.secret)) }
+        send(growServer!!, mapOf("type" to "joined", "id" to id, "sharePubs" to points.map { listOf(it.idx, it.sharePub) }))
+        val members = m.group.members.map { if (it.idx == m.idx) it.copy(sharePub = points[0].sharePub, shares = points) else it }
+        val updated = m.copy(shares = shares, group = m.group.copy(members = members))
+        secrets.saveMembership(Json.stringify(membershipToMap(updated)))
+        ui.update { it.copy(member = updated) }
+        growing = null
+        note("This phone has a device's full share of your key now", "approved")
+        // The paper's shares it held stop combining once everyone has moved on.
+        timer.schedule({ refreshWithout(null) }, 4, TimeUnit.SECONDS)
     }
 
     private fun startRefresh(plan: Map<*, *>, m: Membership): Refresh? {
@@ -583,6 +630,8 @@ class Phone(private val context: Context, val slot: String = "0") {
                 note("Restored from your paper backup. Make a new paper backup, and report your old phone lost if it is.", "approved")
                 connect(g.relays, m.sk)
                 start()
+                // From a 2-share paper: too few to sign with one server. Grow a device's full 3.
+                if (m.shares.size + 1 < m.group.threshold) timer.schedule({ growShares() }, 3, TimeUnit.SECONDS)
             }
         }
     }
@@ -1169,6 +1218,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         if (ui.value.restoring != null && !isMember) return onRestoreMsg(msg, e)
         ui.value.member?.let { m -> if (m.group.members.any { it.pk == e.pubkey } && onRefreshMsg(msg, e.pubkey, m)) return }
         if (joinWith != null && (type == "welcome" || type == "sigma")) return onJoinPiece(msg, e.pubkey)
+        if (growing != null && (type == "welcome" || type == "sigma") && msg["id"] == growing?.first) return onGrowPiece(msg, e.pubkey)
         val m = ui.value.member ?: return
         val from = m.group.members.firstOrNull { it.pk == e.pubkey && it.role == "server" } ?: return
         lastSeen[from.idx] = System.currentTimeMillis()

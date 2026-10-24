@@ -14,11 +14,14 @@ android {
         targetSdk = 35
         versionCode = 15
         versionName = "0.11.0"
+        // Cosign's FROST library (libcosign_frost.so) is built for these two only, so the
+        // APK carries no others: an app store then offers it only where it runs.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     buildTypes {
-        // A prototype: release builds are minified but signed with the debug key so
-        // they install directly. Not for a store.
+        // Release builds are signed with the debug key here, then re-signed by release.sh
+        // with Cosign's release key (rotated from the debug key, so each installs over the last).
         release {
             isMinifyEnabled = true
             isShrinkResources = true
