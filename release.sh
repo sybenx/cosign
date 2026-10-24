@@ -37,6 +37,8 @@ cp "Cosign-$VERSION.apk" link/public/cosign.apk
 sed -i '' -E "s#/Cosign-[0-9.]+\.apk\">Cosign-[0-9.]+\.apk#/Cosign-$VERSION.apk\">Cosign-$VERSION.apk#" link/public/index.html
 grep -q "Cosign-$VERSION.apk" link/public/index.html || { echo "couldn't update the page's link"; exit 1; }
 
+# The live list of public servers (cosign.aaro.cc/servers), from site/src/servers.ts.
+(cd site && npx esbuild src/servers-page.ts --bundle --format=iife --minify --target=es2022 --outfile=../link/public/servers.js --log-level=warning)
 (cd link && wrangler deploy)
 git add -A && git commit -q -m "Release Cosign $VERSION
 

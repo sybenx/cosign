@@ -44,6 +44,12 @@ paper backup gets your key back, after a wait your other devices can stop.
 - **Your phone judges for itself.** It keeps the latest signed version of each of your
   lists and asks you about anything destructive even if the server didn't flag it.
 
+**Servers.** Public servers today: syb.lol, which its author runs and will keep running,
+listed live at [cosign.aaro.cc/servers](https://cosign.aaro.cc/servers). More operators
+wanted: running your own (public or private) is encouraged, not required.
+[Running a server](docs/servers.md) · [How servers work](docs/COSIGN.md#9-servers) ·
+[How Cosign picks servers](docs/choosing-servers.md)
+
 Everything travels over public relays (syb.lol, nos.lol, relay.primal.net): your servers
 need no public address and your phone needs nothing but a connection.
 

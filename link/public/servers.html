@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Cosign servers</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; background: #13110f; color: #ede6da; max-width: 620px; margin: 0 auto; padding: 32px 20px; }
+  h1 { font-size: 26px; margin: 0 0 12px; } .muted { color: #a69d90; } .small { font-size: 14px; }
+  a { color: #7fc8c0; } .ok { color: #7fc8c0; } .warn { color: #f2b33d; }
+  .server { background: #1e1b18; border: 1px solid #2a2622; border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .name { font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>Cosign servers</h1>
+  <p>A Cosign key is split between your devices and your servers: your phone holds 3 shares, each server 1, and it takes 4 to sign. A server can't sign on its own, and it never sees your key.</p>
+  <p><b id="count">Looking…</b> Every server here announces itself on Nostr, and its operator lists it back. This is the same list the app and the browser extension pick from, never two from one operator.</p>
+  <div id="list"></div>
+  <p>syb.lol is run by Cosign's author, who will keep running it. More operators wanted: running your own, public or private, is encouraged, not required. A private one counts as one of your own devices; a public one helps everyone.</p>
+  <p class="small">
+    <a href="https://github.com/sybenx/cosign/blob/main/docs/servers.md">Running a server</a> ·
+    <a href="https://github.com/sybenx/cosign/blob/main/docs/COSIGN.md#9-servers">How servers work</a> ·
+    <a href="https://github.com/sybenx/cosign/blob/main/docs/choosing-servers.md">How Cosign picks servers</a>
+  </p>
+  <script src="servers.js"></script>
+</body>
+</html>

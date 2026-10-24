@@ -18,6 +18,14 @@ description: |
     back on a new phone after a wait your other devices can stop.
   - Create a new key with nobody ever holding it, or move the one you have out of a web
     app in one scan.
+
+  Public servers today: syb.lol, which I run and will keep running. More operators
+  wanted: running your own (public or private) is encouraged, not required.
+  Live list: https://cosign.aaro.cc/servers
+
+  - Running a server: https://github.com/sybenx/cosign/blob/main/docs/servers.md
+  - How servers work: https://github.com/sybenx/cosign/blob/main/docs/COSIGN.md#9-servers
+  - How Cosign picks servers: https://github.com/sybenx/cosign/blob/main/docs/choosing-servers.md
 license: MIT
 website: https://cosign.aaro.cc
 tags:
