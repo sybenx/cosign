@@ -31,7 +31,7 @@ import { nip19 } from 'nostr-tools';
 // --- State -------------------------------------------------------------------
 
 /** A member: one of the two servers, your phone, or another device of yours (a tablet, a second phone, the extension). */
-export interface Member { idx: number; name: string; role: 'server' | 'phone' | 'device'; pk: string | null; sharePub: string; push?: string | null; removed?: number;
+export interface Member { idx: number; name: string; role: 'server' | 'phone' | 'device' | 'backup'; pk: string | null; sharePub: string; push?: string | null; removed?: number;
   /** Who reported it lost (a member idx), and whether it answered "This wasn't me". */
   removedBy?: number; contested?: number;
   /** In a weighted key a member holds several shares (a device 3, a server 1). `idx`/`sharePub` are the first. */
@@ -194,6 +194,13 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'members': { if (!fromPhone) mergeMembers(msg.members ?? []); return; }
       case 'remove_member': { if (fromPhone) onRemove(msg, from); return; }
       case 'refresh_part': { refresh?.take(msg, fromPk); return; }
+      case 'backup_piece': { if (fromPhone) { const a = adding.get(String(msg.id)); if (a?.backup && a.by.idx === from.idx) backupPiece(a, String(msg.id), { from: from.pk!, content: String(msg.content), epoch: S.epoch ?? 0 }); } return; }
+      case 'backup_store': { if (fromPhone && S.backup) { S.backup.parts.push({ from: from.pk!, content: String(msg.content), epoch: Number(msg.epoch) }); save(); toOther({ type: 'backup_sync', backup: S.backup }); } return; }
+      case 'backup_sync': { if (from.role === 'server') mergeBackup(msg.backup); return; }
+      case 'backup_get': { if (from.role === 'backup') sendBackup(from); return; }
+      case 'recover': { if (from.role === 'backup') startRecovery(msg, from); return; }
+      case 'recover_finish': { if (from.role === 'backup') finishRecovery(from); return; }
+      case 'cancel_recovery': { if (fromPhone && msg.lock === true) cancelRecovery(from); return; }
       case 'mail_for': { if (fromPhone) holdMail(String(msg.to), { from: from.pk!, content: String(msg.content), epoch: Number(msg.epoch) }); return; }
       case 'refreshed': { if (fromPhone) { S.mail ??= {}; S.mail[from.pk!] = (S.mail[from.pk!] ?? []).filter((x: any) => x.epoch > Number(msg.epoch)); save(); } return; }
       case 'cancel_batch': { // Undo on a deletion in its 10 s
@@ -871,7 +878,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   // splits its weighted part of f(k) into deltas, they trade one, and each seals its sum
   // (a sigma) to the newcomer, who adds the two. Neither helper ever has the new share.
 
-  interface Adding { ks: number[]; helpers: number[]; pk: string; name: string; by: Member; local: Map<string, string[]>; at: number }
+  interface Adding { ks: number[]; helpers: number[]; pk: string; name: string; by: Member; local: Map<string, string[]>; at: number; backup?: boolean; pieces?: Piece[] }
   const adding = new Map<string, Adding>();
   /** Deltas waiting to be summed, by new share and the helper share they're for. */
   const slot = (k: number, j: number) => `${k}:${j}`;
@@ -883,8 +890,11 @@ export function openGroup(loaded: Loaded, io: Io) {
     // One device vouching is instant only with its own lock, asked for right then.
     if (msg.lock !== true) throw new Error('adding a device needs this phone’s lock');
     // The new device gets as many shares as the one vouching for it (3 in a weighted key).
+    // A paper backup gets 2, or 3 while there's only one server (COSIGN.md §3).
+    const backup = msg.backup === true;
     const next = Math.max(...members.flatMap(sharesOf)) + 1;
-    const ks = sharesOf(by).map((_, i) => next + i);
+    const count = backup ? (members.filter(m => m.role === 'server' && !m.removed).length < 2 ? 3 : 2) : sharesOf(by).length;
+    const ks = Array.from({ length: count }, (_, i) => next + i);
     const helpers = [...sharesOf(by), ...myIdxs].sort((a, b) => a - b);
     if (helpers.length < S.group.threshold) throw new Error('not enough shares to vouch with');
     // Each of our shares splits its part of f(k) into a delta per helper share: ours stay
@@ -897,7 +907,7 @@ export function openGroup(loaded: Loaded, io: Io) {
         else toBy.push([k, s.idx, j, d]);
       }
     }
-    adding.set(String(msg.id), { ks, helpers, pk, name: String(msg.name ?? 'A device').slice(0, 40), by, local, at: io.now() });
+    adding.set(String(msg.id), { ks, helpers, pk, name: String(msg.name ?? (backup ? 'Paper backup' : 'A device')).slice(0, 40), by, local, at: io.now(), backup });
     const relays = (msg.relays ?? []).filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r));
     if (relays.length) await io.listen(relays);
     // `k`/`delta`: the earlier one-share form, for an app not updated yet.
@@ -916,6 +926,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       if (ds.length !== a.helpers.length) return note(`${a.name}: pieces missing; not added`);
       sigmas.push([k, j, Sig.repairStep2(ds)]);
     }
+    if (a.backup) return backupPiece(a, String(msg.id), { from: me.pk!, content: sealTo(a.pk, { sigmas }), epoch: S.epoch ?? 0 });
     const one = sigmas.length === 1 ? { k: a.ks[0], sigma: sigmas[0][2] } : {};
     send(a.pk, {
       type: 'welcome', id: msg.id, ks: a.ks, helpers: a.helpers, sigmas, name: a.name, signer: S.signer?.pk ?? null, ...one,
@@ -949,6 +960,8 @@ export function openGroup(loaded: Loaded, io: Io) {
       if (!mine) { members.push({ ...m, push: m.push ?? null }); dirty = true; continue; }
       if (m.removed && !mine.removed) { mine.removed = m.removed; dirty = true; }
       if (!mine.pk && m.pk) { mine.pk = m.pk; dirty = true; }
+      // A paper backup that became the phone it restored (after the wait, at the other server).
+      if (mine.role === 'backup' && m.role === 'device' && !m.removed) { Object.assign(mine, { role: 'device', pk: m.pk, name: m.name }); dirty = true; }
     }
     if (dirty) { save(); toDevices({ type: 'members', members: publicMembers() }); }
   }
@@ -1087,7 +1100,7 @@ export function openGroup(loaded: Loaded, io: Io) {
 
   /** The plan must be the next epoch, dealt by the device that sent it and a server, over every remaining share. */
   function startRefresh(plan: RefreshPlan, by: Member) {
-    if (refresh?.plan.epoch === plan?.epoch) return;
+    if (refresh?.plan.epoch === plan?.epoch || Number(plan?.epoch) <= (S.epoch ?? 0)) return; // a repeat, or done already
     const want = members.filter(m => !m.removed).flatMap(m => sharesOf(m).map(idx => ({ idx, pk: m.pk })));
     const ok = plan && plan.epoch === (S.epoch ?? 0) + 1 && plan.threshold === S.group.threshold && Array.isArray(plan.dealers) && Array.isArray(plan.holders)
       && plan.dealers.includes(by.pk!) && plan.dealers.some(d => members.some(m => m.pk === d && m.role === 'server' && !m.removed))
@@ -1096,8 +1109,12 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (!ok) return note(`refused a refresh from ${by.name}: its plan doesn't match the members`);
     refresh?.stop();
     refresh = new RefreshRun(plan, me.pk!, myShares, send, onRefreshed);
-    // Devices that aren't here now get the plan and our part when they're next seen.
-    for (const [pk, part] of refresh.outgoing()) if (devices().some(d => d.pk === pk)) {
+    // Devices that aren't here now get the plan and our part when they're next seen; the
+    // paper's part is kept, sealed to it, for whenever it's used (COSIGN.md §8.2).
+    for (const [pk, part] of refresh.outgoing()) if (S.backup && pk === S.backup.pk) {
+      S.backup.parts.push({ from: me.pk!, content: sealTo(pk, part), epoch: plan.epoch });
+      save(); toOther({ type: 'backup_sync', backup: S.backup });
+    } else if (devices().some(d => d.pk === pk)) {
       holdMail(pk, { from: me.pk!, msg: { type: 'refresh_plan', plan }, epoch: plan.epoch });
       holdMail(pk, { from: me.pk!, msg: part, epoch: plan.epoch });
     }
@@ -1149,6 +1166,94 @@ export function openGroup(loaded: Loaded, io: Io) {
     mailSent.set(m.pk!, io.now());
     S.mail[m.pk!] = box.filter((x: any) => now() - x.at < 30 * 86400);
     for (const x of S.mail[m.pk!]) send(m.pk, x.msg && x.from === me.pk ? x.msg : { type: 'mail', from: x.from, content: x.content });
+  }
+
+  // --- The paper backup (COSIGN.md §8) ---------------------------------------------------
+  //
+  // A key printed on paper, with share indices of its own in the member list, whose
+  // shares nobody online holds. Making it is a repair like adding a device, except that
+  // each helper seals its pieces (sigmas) to the paper's key and every server keeps them,
+  // and each refresh's part for the paper is kept the same way. Restoring: a new phone
+  // reads the paper, fetches the pieces, adds them up, and asks to recover; after a wait
+  // every server enforces and any device can cancel, the paper's shares are that phone's.
+
+  interface Piece { from: string; content: string; epoch: number }
+  /** How long recovery waits. Three days; shorter for tests. */
+  const WAIT = Number(process.env.COSIGN_RECOVERY_WAIT ?? 3 * 86400);
+  const sealTo = (pk: string, body: object) => nip44.v2.encrypt(JSON.stringify(body), nip44.v2.utils.getConversationKey(F.hexToBytes(S.self.sk), pk));
+
+  /** A helper's pieces for a paper being made: ours and the vouching device's. With both, it's a member. */
+  function backupPiece(a: Adding, id: string, p: Piece) {
+    a.pieces ??= [];
+    if (!a.pieces.some(x => x.from === p.from)) a.pieces.push(p);
+    if (a.pieces.length < 2) return;
+    adding.delete(id);
+    // A new paper replaces the old one.
+    for (const m of members) if (m.role === 'backup' && !m.removed) m.removed = now();
+    const shares = a.ks.map(k => ({ idx: k, sharePub: Sig.sharePubAt(S.group, k) }));
+    members.push({ idx: a.ks[0], name: a.name, role: 'backup', pk: a.pk, sharePub: shares[0].sharePub, push: null, shares });
+    // The points as they are now: the pieces add up to shares of this epoch, and later refreshes' parts move them on.
+    const points = members.filter(m => !m.removed).flatMap(m => m.shares ?? [{ idx: m.idx, sharePub: m.sharePub }]).map(p => [p.idx, p.sharePub]);
+    S.backup = { pk: a.pk, ks: a.ks, epoch: S.epoch ?? 0, helpers: a.helpers, points, pieces: a.pieces, parts: [] };
+    save();
+    toOther({ type: 'members', members });
+    toOther({ type: 'backup_sync', backup: S.backup });
+    toDevices({ type: 'members', members: publicMembers() });
+    send(a.by.pk, { type: 'backup_made', id, pieces: a.pieces });
+    note(`${a.by.name} made a paper backup (${a.ks.length} shares)`);
+  }
+
+  function mergeBackup(b: any) {
+    if (!b?.pk) return;
+    if (!S.backup || S.backup.pk !== b.pk) S.backup = { ...b, pieces: [], parts: [] };
+    for (const p of b.pieces ?? []) if (!S.backup.pieces.some((x: Piece) => x.from === p.from)) S.backup.pieces.push(p);
+    for (const p of b.parts ?? []) if (!S.backup.parts.some((x: Piece) => x.from === p.from && x.epoch === p.epoch)) S.backup.parts.push(p);
+    save();
+  }
+
+  /** To the paper's own key: everything needed to rebuild its shares, all sealed to it. */
+  function sendBackup(b: Member) {
+    if (!S.backup || S.backup.pk !== b.pk) return;
+    send(b.pk, {
+      type: 'backup', ...S.backup, epochNow: S.epoch ?? 0, recovery: S.recovery ?? null, signer: S.signer?.pk ?? null,
+      group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays, members: publicMembers() },
+    });
+  }
+
+  function startRecovery(msg: any, b: Member) {
+    const pk = String(msg.pk ?? '');
+    if (!/^[0-9a-f]{64}$/.test(pk) || members.some(m => m.pk === pk)) return;
+    if (!S.recovery || S.recovery.pk !== pk) {
+      S.recovery = { pk, name: String(msg.name ?? 'A new phone').slice(0, 40), at: now(), until: now() + WAIT };
+      save();
+      toDevices({ type: 'recovery', name: S.recovery.name, until: S.recovery.until });
+      for (const d of devices()) if (d.push) void io.push(d.push);
+      note(`your paper backup is being used for ${S.recovery.name}; any of your devices can cancel it before ${new Date(S.recovery.until * 1000).toISOString()}`);
+    }
+    send(b.pk, { type: 'recovering', until: S.recovery.until });
+  }
+
+  /** The wait is over at this server: the paper's shares are that phone's now. */
+  function finishRecovery(b: Member) {
+    const r = S.recovery;
+    if (!r || now() < r.until) return send(b.pk, { type: 'recovering', until: r?.until ?? null });
+    Object.assign(b, { role: 'device', pk: r.pk, name: r.name });
+    S.recovery = null; S.backup = null;
+    lastSeen.set(b.idx, io.now());
+    save();
+    toOther({ type: 'members', members });
+    toDevices({ type: 'members', members: publicMembers() });
+    send(r.pk, { type: 'recovered', idx: b.idx });
+    note(`${r.name} is one of your devices now, from your paper backup. Make a new paper backup, and report your old phone lost if you've lost it.`);
+  }
+
+  function cancelRecovery(by: Member) {
+    if (!S.recovery) return;
+    const r = S.recovery;
+    S.recovery = null; save();
+    toDevices({ type: 'recovery_cancelled', by: by.name });
+    if (S.backup) send(S.backup.pk, { type: 'recovery_cancelled', by: by.name });
+    note(`${by.name} cancelled using your paper backup for ${r.name}`);
   }
 
   // --- Liveness ----------------------------------------------------------------

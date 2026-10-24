@@ -151,6 +151,16 @@ background service is running.
   device's pieces stop combining. A device that was away gets its parts from the
   servers when it's back (`mail`). The lost device can answer `not_me`, which blocks the
   device that reported it too, until it's settled.
+- **Paper backup** (`backupPiece`… in `server/core/group.ts`, `server/backup.ts`, COSIGN.md §8):
+  a key printed on paper with share indices of its own (3 while there's one server,
+  else 2) whose shares nobody online holds. Made by repair like adding a device
+  (`add_device {backup: true}`), except each helper seals its pieces to the paper's key
+  and every server keeps them; each later refresh's part for the paper is kept sealed to
+  it too. Restoring: a new phone reads the paper, asks the servers as the paper
+  (`backup_get`), adds the pieces up and every refresh since, then asks to `recover`;
+  after a wait every server enforces (3 days; `COSIGN_RECOVERY_WAIT`) and any device can
+  cancel, the paper's shares are that phone's. Not yet: with two servers the paper
+  holds 2, and the restored phone needs a repair with both servers to sign.
 - **Finding servers** (`site/src/servers.ts`, COSIGN.md §9.5): a shared server with an
   `operator` in `host.json` (or `COSIGN_OPERATOR`) announces itself, kind 30243 signed by
   its host key; the operator lists it back, kind 10243 (`operatorServers`). Devices
@@ -170,6 +180,7 @@ cd site && node test/shared.e2e.ts                       # two keys in one proce
 cd site && node test/create.e2e.ts                       # create account: a device and one shared server make a key
 cd site && node --experimental-transform-types test/import.e2e.ts   # move a key from a page into Cosign
 cd site && node test/lost.e2e.ts                         # report a device lost; refresh; one that was away catches up
+cd site && node test/paper.e2e.ts                        # paper backup through a refresh; a cancelled and a finished recovery
 cd site && node test/servers.e2e.ts                      # finding and picking servers; a live one announces itself
 cd site && node test/single.e2e.ts                       # phone co-signs; backup steps in; big lists
 cd site && node test/deletion.e2e.ts                     # copies kept, 10 s Undo, one approval per batch

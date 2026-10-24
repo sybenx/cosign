@@ -6,6 +6,7 @@
 //   node setup.ts --dir test-data --port 8721   a second group beside it, for tests
 //   node setup.ts --dir /data --relays wss://syb.lol,wss://nos.lol   (in a container)
 //   node setup.ts --weighted      no key yet: your phone and the servers make one together
+//   node setup.ts --weighted --single   the same with one server (A) only
 //
 // Share 1 goes to server A, share 2 to server B, and share 3 waits on server A
 // until your phone scans A's pairing code. Once the phone has it, A deletes it.
@@ -44,6 +45,7 @@ if (args.includes('--nsec')) {
 }
 
 const weighted = args.includes('--weighted');
+const single = args.includes('--single');
 if (weighted && secretHex) { console.error('--weighted makes a new key; it can\'t split one you have.'); process.exit(1); }
 const key = () => bytesToHex(randomBytes(32));
 const skA = key(), skB = key(), signerSk = key();
@@ -59,13 +61,13 @@ if (weighted) {
     groupX: null, npub: null, threshold: 4, relays,
     members: [
       { idx: 1, name: 'Server A', role: 'server', pk: pubOf(skA), sharePub: '' },
-      { idx: 2, name: 'Server B', role: 'server', pk: pubOf(skB), sharePub: '' },
+      ...(single ? [] : [{ idx: 2, name: 'Server B', role: 'server', pk: pubOf(skB), sharePub: '' }]),
       { idx: 3, name: 'Phone', role: 'phone', pk: null, sharePub: '', push: null, shares: [3, 4, 5].map(idx => ({ idx, sharePub: '' })) },
     ],
   };
   const common = { group, signer, sites: [], tickets: [], changes: [] };
   write('a', { port, self: { idx: 1, sk: skA, shares: [] }, ...common, pairing: { token: bytesToHex(randomBytes(16)), weighted: true } });
-  write('b', { port: port + 1, self: { idx: 2, sk: skB, shares: [] }, ...common, pairing: null });
+  if (!single) write('b', { port: port + 1, self: { idx: 2, sk: skB, shares: [] }, ...common, pairing: null });
   console.log(`
 No key yet. It's made when your phone scans Server A's code: your phone 3 shares,
 each server 1, any 4 sign.

@@ -49,7 +49,12 @@ export function refreshing(o: { st: () => DeviceState; pk: string; send: (to: st
       run = new RefreshRun(plan, o.pk, shares(), o.send, done);
       // Other devices: the plan and our part, straight to them, and kept by the servers for one that's away.
       const parts = new Map(run.outgoing());
-      for (const m of left.filter((m: any) => m.role !== 'server' && m.pk && m.pk !== o.pk)) {
+      // The paper's part, sealed to it and kept on the servers (COSIGN.md §8.2).
+      for (const b of left.filter((m: any) => m.role === 'backup' && parts.get(m.pk))) {
+        const ck = nip44.v2.utils.getConversationKey(F.hexToBytes(st.sk), b.pk);
+        for (const s of servers()) o.send(s.pk, { type: 'backup_store', epoch: plan.epoch, content: nip44.v2.encrypt(JSON.stringify(parts.get(b.pk)), ck) });
+      }
+      for (const m of left.filter((m: any) => m.role !== 'server' && m.role !== 'backup' && m.pk && m.pk !== o.pk)) {
         o.send(m.pk, { type: 'refresh_plan', plan });
         const ck = nip44.v2.utils.getConversationKey(F.hexToBytes(st.sk), m.pk);
         for (const body of [{ type: 'refresh_plan', plan }, parts.get(m.pk)].filter(Boolean))
