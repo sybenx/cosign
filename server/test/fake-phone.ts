@@ -9,6 +9,7 @@ import { getEventHash } from 'nostr-tools/pure';
 import * as F from '../frost.ts';
 import * as Sig from '../sign.ts';
 import { DkgRun } from '../dkg.ts';
+import { refreshing } from './refresh-member.ts';
 import { nip19 } from 'nostr-tools';
 import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../net.ts';
 
@@ -38,6 +39,7 @@ const servers = () => st.group.members.filter((m: any) => m.role === 'server');
 let dkg: DkgRun | null = null;
 /** My shares: one from the earlier dealer, three in a weighted key. */
 const myShares = (): Sig.Share[] => st.shares ?? [{ idx: st.idx, secret: st.share }];
+const rf = refreshing({ st: () => st, pk, send: (to, m) => send(to, m), save: () => writeFileSync(stateFile, JSON.stringify(st, null, 2)), say });
 
 function handle(msg: any, from: string) {
   if (msg.type === 'dkg1' || msg.type === 'dkg2') return dkg?.take(msg, from);
@@ -72,6 +74,9 @@ function handle(msg: any, from: string) {
     return;
   }
   if (!st) return;
+  // The test reports a device lost as this phone, by writing to it from its own key.
+  if (msg.type === 'test_report' && from === pk) return rf.report(Number(msg.idx));
+  if (st.group.members.some((m: any) => m.pk === from) && rf.take(msg, from)) return;
   const srv = st.group.members.find((m: any) => m.pk === from && m.role === 'server');
   if (!srv) return;
   if (msg.type === 'sign_req') {

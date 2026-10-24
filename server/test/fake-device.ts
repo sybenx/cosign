@@ -3,21 +3,24 @@
 // and from then on co-signs like the fake phone.
 //
 //   node test/fake-device.ts [name]        prints JOIN <cosign:join?… uri>
+//   node test/fake-device.ts --resume      the one in DEVICE_STATE, back from being away
 
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { getEventHash } from 'nostr-tools/pure';
 import * as F from '../frost.ts';
 import * as Sig from '../sign.ts';
 import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../net.ts';
+import { refreshing } from './refresh-member.ts';
 
 const W = createRequire(import.meta.url)('../frost-wasm/cosign_frost.js');
 const name = process.argv[2] ?? 'Test tablet';
 const relays = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'];
-const sk = F.bytesToHex(F.randomBytes(32));
+const stateFile = process.env.DEVICE_STATE ?? '/tmp/cosign-fake-device.json';
+let st: any = process.argv.includes('--resume') && existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : null;
+const sk: string = st?.sk ?? F.bytesToHex(F.randomBytes(32));
 const pk = pubOf(sk);
 const say = (t: string) => console.log(`[device] ${t}`);
-let st: any = null;
 const got: { welcome?: any; sigmas: [number, number, string][]; server?: string } = { sigmas: [] };
 const parts = new Parts();
 const pool = new Pool(relays, e => {
@@ -25,6 +28,7 @@ const pool = new Pool(relays, e => {
   if (msg) handle(msg, e.pubkey);
 });
 const send = (to: string, m: object) => { for (const e of sealParts(sk, to, m)) pool.publish(e); };
+const rf = refreshing({ st: () => st, pk, send, save: () => writeFileSync(stateFile, JSON.stringify(st, null, 2)), say });
 
 function handle(msg: any, from: string) {
   if (!st) {
@@ -41,11 +45,13 @@ function handle(msg: any, from: string) {
     const points = shares.map(x => ({ idx: x.idx, sharePub: W.sharePub(x.secret) }));
     const me = { idx: ks[0], name, role: 'device', pk, sharePub: points[0].sharePub, ...(ks.length > 1 ? { shares: points } : {}) };
     st = { sk, idx: ks[0], shares, share: shares[0].secret, signer: w.signer, group: { ...w.group, members: [...w.group.members, me] } };
-    writeFileSync('/tmp/cosign-fake-device.json', JSON.stringify(st, null, 2));
+    writeFileSync(stateFile, JSON.stringify(st, null, 2));
     send(from === got.server ? from : got.server!, { type: 'joined', id: w.id, sharePubs: points.map(p => [p.idx, p.sharePub]), sharePub: points[0].sharePub });
     say(`JOINED ${w.group.npub} as member ${ks[0]} with shares ${ks.join(', ')}`);
     return;
   }
+  if (msg.type === 'removed') return say(`REMOVED by ${msg.by}`);
+  if (st.group.members.some((m: any) => m.pk === from) && rf.take(msg, from)) return;
   const srv = st.group.members.find((m: any) => m.pk === from && m.role === 'server');
   if (!srv) return;
   if (msg.type === 'sign_req') {
@@ -63,6 +69,7 @@ function handle(msg: any, from: string) {
 }
 
 pool.start([{ kinds: [KIND_MEMBER], '#p': [pk] }]);
-console.log(`JOIN cosign:join?pk=${pk}&name=${encodeURIComponent(name)}&${relays.map(r => 'r=' + encodeURIComponent(r)).join('&')}`);
+if (st) { say(`back as member ${st.idx}`); setTimeout(() => ping(), 1500); }
+else console.log(`JOIN cosign:join?pk=${pk}&name=${encodeURIComponent(name)}&${relays.map(r => 'r=' + encodeURIComponent(r)).join('&')}`);
 const ping = () => { if (st) for (const s of st.group.members.filter((m: any) => m.role === 'server')) send(s.pk, { type: 'ping', idx: st.idx, ts: Date.now() }); };
 setInterval(ping, 10_000);

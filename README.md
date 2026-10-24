@@ -142,6 +142,15 @@ background service is running.
   page, and hands the phone its shares by QRST (`cosign-member`, checked at `type`: the
   phone shows five digits, you type them on the page). The phone claims its place with
   `pair_ack {token}`; the page is signed in by the same move.
+- **Report lost and refresh** (`server/refresh.ts`, `onRemove` in `server/core/group.ts`,
+  COSIGN.md §7.2–7.3): a device, with its own lock, sends `remove_member {idx, plan}`;
+  every server blocks that device at once and tells it. The plan is the next epoch,
+  dealt by the reporting device and a server: each picks a zero-constant polynomial and
+  sends every remaining share its delta (`refresh_part`, checked against commitments to
+  the coefficients). Everyone adds its deltas, the key stays the same, and the lost
+  device's pieces stop combining. A device that was away gets its parts from the
+  servers when it's back (`mail`). The lost device can answer `not_me`, which blocks the
+  device that reported it too, until it's settled.
 - **Finding servers** (`site/src/servers.ts`, COSIGN.md §9.5): a shared server with an
   `operator` in `host.json` (or `COSIGN_OPERATOR`) announces itself, kind 30243 signed by
   its host key; the operator lists it back, kind 10243 (`operatorServers`). Devices
@@ -160,6 +169,7 @@ cd site && node test/nostrconnect.e2e.ts [relay]         # a plain nostr-tools s
 cd site && node test/shared.e2e.ts                       # two keys in one process; enroll a third (starts its own servers)
 cd site && node test/create.e2e.ts                       # create account: a device and one shared server make a key
 cd site && node --experimental-transform-types test/import.e2e.ts   # move a key from a page into Cosign
+cd site && node test/lost.e2e.ts                         # report a device lost; refresh; one that was away catches up
 cd site && node test/servers.e2e.ts                      # finding and picking servers; a live one announces itself
 cd site && node test/single.e2e.ts                       # phone co-signs; backup steps in; big lists
 cd site && node test/deletion.e2e.ts                     # copies kept, 10 s Undo, one approval per batch

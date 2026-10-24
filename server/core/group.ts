@@ -25,12 +25,15 @@ import { Archive } from '../archive.ts';
 import { History, type Entry } from '../history.ts';
 import type { Io, Loaded } from './io.ts';
 import { DkgRun, type DkgPlan, type DkgResult } from '../dkg.ts';
+import { RefreshRun, type RefreshPlan, type RefreshResult } from '../refresh.ts';
 import { nip19 } from 'nostr-tools';
 
 // --- State -------------------------------------------------------------------
 
 /** A member: one of the two servers, your phone, or another device of yours (a tablet, a second phone, the extension). */
 export interface Member { idx: number; name: string; role: 'server' | 'phone' | 'device'; pk: string | null; sharePub: string; push?: string | null; removed?: number;
+  /** Who reported it lost (a member idx), and whether it answered "This wasn't me". */
+  removedBy?: number; contested?: number;
   /** In a weighted key a member holds several shares (a device 3, a server 1). `idx`/`sharePub` are the first. */
   shares?: { idx: number; sharePub: string }[] }
 /**
@@ -173,6 +176,9 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (msg.type === 'dkg1' || msg.type === 'dkg2') return dkg?.take(msg, fromPk);
     if (msg.type === 'dkg_start') return onDkgStart(msg, from);
     if (!from) return;
+    deliverMail(from);
+    // A device reported lost can still say it wasn't.
+    if (from.removed && msg.type === 'not_me') return onNotMe(msg, from);
 
     const fromPhone = isDevice(from); // any of your devices
     switch (msg.type) {
@@ -186,6 +192,10 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'add_device': { if (fromPhone) addDevice(msg, from).catch(err => send(from.pk, { type: 'add_failed', id: msg.id, reason: err.message })); return; }
       case 'repair_delta': { if (fromPhone) onRepairDelta(msg, from); return; }
       case 'members': { if (!fromPhone) mergeMembers(msg.members ?? []); return; }
+      case 'remove_member': { if (fromPhone) onRemove(msg, from); return; }
+      case 'refresh_part': { refresh?.take(msg, fromPk); return; }
+      case 'mail_for': { if (fromPhone) holdMail(String(msg.to), { from: from.pk!, content: String(msg.content), epoch: Number(msg.epoch) }); return; }
+      case 'refreshed': { if (fromPhone) { S.mail ??= {}; S.mail[from.pk!] = (S.mail[from.pk!] ?? []).filter((x: any) => x.epoch > Number(msg.epoch)); save(); } return; }
       case 'cancel_batch': { // Undo on a deletion in its 10 s
         const b = fromPhone ? batchById(String(msg.batch)) : undefined;
         if (b) { b.cancelled = true; clearTimeout(b.timer); const site = [...batches].find(([, x]) => x === b)?.[0]; if (site) void closeBatch(site, b); }
@@ -1046,6 +1056,99 @@ export function openGroup(loaded: Loaded, io: Io) {
     note(`your key was made: ${S.group.npub}`);
     if (earlyAck) { const a = earlyAck; earlyAck = null; onPairAck(a, offeredTo!); }
     setTimeout(() => void fetchArchive(), 1000);
+  }
+
+  // --- A device reported lost (COSIGN.md §7.2), and the refresh after it (§7.3) -------------
+  //
+  // One of your devices, with its own lock, reports another: from that moment no member
+  // takes part in a round with it. The same message carries a refresh plan the reporting
+  // device made, with it and a server as dealers; every remaining member moves to a new
+  // epoch of the same key (refresh.ts), and the lost device's pieces stop combining.
+  // A member that's offline gets its parts later, from the servers (mail).
+
+  let refresh: RefreshRun | null = null;
+  const pointOf = (idx: number) => members.flatMap(m => m.shares ?? [{ idx: m.idx, sharePub: m.sharePub }]).find(p => p.idx === idx)?.sharePub;
+
+  function onRemove(msg: any, by: Member) {
+    const target = members.find(m => m.idx === Number(msg.idx));
+    const fail = (reason: string) => send(by.pk, { type: 'remove_failed', id: msg.id, reason });
+    if (msg.lock !== true) return fail('reporting a device needs this phone’s lock');
+    if (!target || target.role === 'server') return fail('that isn’t one of your devices');
+    if (!target.removed) {
+      target.removed = now(); target.removedBy = by.idx;
+      save();
+      send(target.pk, { type: 'removed', by: by.name });
+      toOther({ type: 'members', members });
+      toDevices({ type: 'members', members: publicMembers() });
+      note(`${by.name} reported ${target.name} lost: it can't take part in anything now`);
+    }
+    if (msg.plan) startRefresh(msg.plan as RefreshPlan, by);
+  }
+
+  /** The plan must be the next epoch, dealt by the device that sent it and a server, over every remaining share. */
+  function startRefresh(plan: RefreshPlan, by: Member) {
+    if (refresh?.plan.epoch === plan?.epoch) return;
+    const want = members.filter(m => !m.removed).flatMap(m => sharesOf(m).map(idx => ({ idx, pk: m.pk })));
+    const ok = plan && plan.epoch === (S.epoch ?? 0) + 1 && plan.threshold === S.group.threshold && Array.isArray(plan.dealers) && Array.isArray(plan.holders)
+      && plan.dealers.includes(by.pk!) && plan.dealers.some(d => members.some(m => m.pk === d && m.role === 'server' && !m.removed))
+      && plan.holders.length === want.length && want.every(w => plan.holders.some(h => h.idx === w.idx && h.pk === w.pk))
+      && Array.isArray(plan.points) && want.every(w => plan.points.some(([i, p]) => i === w.idx && p === pointOf(w.idx)));
+    if (!ok) return note(`refused a refresh from ${by.name}: its plan doesn't match the members`);
+    refresh?.stop();
+    refresh = new RefreshRun(plan, me.pk!, myShares, send, onRefreshed);
+    // Devices that aren't here now get the plan and our part when they're next seen.
+    for (const [pk, part] of refresh.outgoing()) if (devices().some(d => d.pk === pk)) {
+      holdMail(pk, { from: me.pk!, msg: { type: 'refresh_plan', plan }, epoch: plan.epoch });
+      holdMail(pk, { from: me.pk!, msg: part, epoch: plan.epoch });
+    }
+    refresh.start();
+    note(`refreshing your key (epoch ${plan.epoch})`);
+  }
+
+  function onRefreshed(r: RefreshResult) {
+    const at = new Map(r.points);
+    for (const m of members) {
+      if (m.removed || !sharesOf(m).every(i => at.has(i))) continue;
+      const pts = sharesOf(m).map(idx => ({ idx, sharePub: at.get(idx)! }));
+      m.sharePub = pts[0].sharePub;
+      if (m.shares) m.shares = pts;
+    }
+    S.self.shares = myShares = r.shares;
+    myIdxs = myShares.map(s => s.idx);
+    delete S.self.share;
+    S.epoch = r.epoch;
+    save();
+    toDevices({ type: 'members', members: publicMembers() });
+    note(`your key moved to epoch ${r.epoch}: the lost device's pieces no longer combine with anything`);
+  }
+
+  /** The device reported lost says it's the user's: block the one that reported it too, until it's settled. */
+  function onNotMe(msg: any, from: Member) {
+    if (msg.lock !== true || from.contested) return;
+    from.contested = now();
+    const by = members.find(m => m.idx === from.removedBy);
+    if (by && !by.removed) { by.removed = now(); by.contested = now(); }
+    save();
+    toOther({ type: 'members', members });
+    toDevices({ type: 'contested', removed: from.name, by: by?.name ?? 'a device' });
+    note(`${from.name} says it wasn't lost: ${by?.name ?? 'the device that reported it'} is blocked too, until another of your devices or your paper backup settles it`);
+  }
+
+  // Mail: what a member that wasn't here missed, kept on the servers until it's back.
+  // Sealed by its sender (`content`, NIP-44 to the member) or sent by this server (`msg`).
+  function holdMail(to: string, item: { from: string; content?: string; msg?: object; epoch: number }) {
+    S.mail ??= {};
+    const box = (S.mail[to] ??= []);
+    if (box.length < 50) box.push({ ...item, at: now() });
+    save();
+  }
+  const mailSent = new Map<string, number>();
+  function deliverMail(m: Member) {
+    const box = m.pk ? S.mail?.[m.pk] : null;
+    if (!box?.length || io.now() - (mailSent.get(m.pk!) ?? 0) < 30_000) return;
+    mailSent.set(m.pk!, io.now());
+    S.mail[m.pk!] = box.filter((x: any) => now() - x.at < 30 * 86400);
+    for (const x of S.mail[m.pk!]) send(m.pk, x.msg && x.from === me.pk ? x.msg : { type: 'mail', from: x.from, content: x.content });
   }
 
   // --- Liveness ----------------------------------------------------------------
