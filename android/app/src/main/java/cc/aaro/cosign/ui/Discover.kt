@@ -126,7 +126,9 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
     // Read on open and when you come back to it; nothing in between.
     LifecycleEventEffect(Lifecycle.Event.ON_START) { social.loadFeed(); social.loadNotices() }
 
-    val nav = Nav(open = open, back = back, social = social)
+    // A note's pictures, full screen, over everything else.
+    var viewing by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
+    val nav = Nav(open = open, back = back, social = social) { urls, i -> viewing = urls to i }
     when (val top = stack.lastOrNull()) {
         null -> Home(phone, ui, social, feedState, nav)
         Route.Account -> AccountScreen(phone, ui, onScan, onProfile = { ui.member?.group?.groupX?.let { nav.profile(it) } }, onBack = back)
@@ -135,6 +137,8 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
         is Route.Thread -> ThreadScreen(top.id, social, nav)
         is Route.Profile -> ProfileScreen(top.pubkey, social, nav)
     }
+
+    viewing?.let { (urls, i) -> ImageViewer(urls, i) { viewing = null } }
 
     social.held.collectAsState().value?.let { h ->
         AlertDialog(
@@ -156,7 +160,7 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
     }
 }
 
-private class Nav(val open: (Route) -> Unit, val back: () -> Unit, val social: Social) {
+private class Nav(val open: (Route) -> Unit, val back: () -> Unit, val social: Social, val pictures: (List<String>, Int) -> Unit = { _, _ -> }) {
     fun thread(id: String) = open(Route.Thread(id))
     fun profile(pk: String) = open(Route.Profile(pk))
     fun search(q: String) { social.search(q); open(Route.Search) }
@@ -391,11 +395,15 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
             }
             // In a list, one picture, no taller than it is wide; a thread shows them all, whole.
             val full = maxLines == Int.MAX_VALUE
-            for (img in body.images.take(if (full) 6 else 1)) {
+            // A tap on a picture opens it full screen (and not the thread).
+            val urls = remember(body) { body.images.map { it.url } }
+            body.images.take(if (full) 6 else 1).forEachIndexed { i, img ->
                 Spacer(Modifier.height(8.dp))
-                NetImage(img.url, Modifier.fillMaxWidth().aspectRatio(img.ratio.coerceIn(if (full) 0.6f else 1f, 2.2f)).clip(RoundedCornerShape(12.dp)), 1080, description = "Picture")
+                NetImage(img.url, Modifier.fillMaxWidth().aspectRatio(img.ratio.coerceIn(if (full) 0.6f else 1f, 2.2f)).clip(RoundedCornerShape(12.dp))
+                    .clickable { nav.pictures(urls, i) }, 1080, description = "Picture")
             }
-            if (!full && body.images.size > 1) Text("+${body.images.size - 1} more", color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+            if (!full && body.images.size > 1) Text("+${body.images.size - 1} more", color = Vault.Muted, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp).clickable { nav.pictures(urls, 1) })
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onLike, Modifier.offset(x = (-12).dp)) {
                     Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, if (liked) "Liked" else "Like", tint = if (liked) Vault.Amber else Vault.Muted, modifier = Modifier.size(20.dp))
@@ -512,14 +520,26 @@ private fun ThreadScreen(id: String, social: Social, nav: Nav) = Column(Modifier
     TopBar("Thread", nav)
     val people by People.known.collectAsState()
     val liked by social.liked.collectAsState()
-    val thread by produceState<List<Pair<Event, Int>>?>(null, id) { value = social.thread(id) }
+    // At once, from what's here already (the note you tapped, the thread if you've opened it before);
+    // the note it answers and the replies come in around it, with a small spinner while they do.
+    var thread by remember(id) { mutableStateOf(social.threadNow(id)) }
+    var loading by remember(id) { mutableStateOf(true) }
+    LaunchedEffect(id) {
+        val full = social.thread(id)
+        if (full.isNotEmpty() || thread == null) thread = full
+        loading = false
+    }
+    val shown = thread
     when {
-        thread == null -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
-        thread!!.isEmpty() -> Text("Couldn't find this note.", color = Vault.Muted, modifier = Modifier.padding(20.dp))
+        shown == null -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
+        shown.isEmpty() -> Text("Couldn't find this note.", color = Vault.Muted, modifier = Modifier.padding(20.dp))
         else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-            items(thread!!, key = { it.first.id }) { (e, depth) ->
-                NoteCard(e, people, e.id in liked, nav, onLike = { social.like(e) }, indent = minOf(depth, 4), lit = e.id == id && depth > 0)
+            items(shown, key = { it.first.id }) { (e, depth) ->
+                NoteCard(e, people, e.id in liked, nav, onLike = { social.like(e) }, indent = minOf(depth, 4), lit = e.id == id && shown.size > 1 && depth > 0)
                 if (depth == 0) HorizontalDivider(color = Vault.Edge)
+            }
+            if (loading) item(key = "loading") {
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(20.dp), color = Vault.Teal, strokeWidth = 2.dp) }
             }
         }
     }
@@ -541,7 +561,7 @@ private fun ProfileScreen(pk: String, social: Social, nav: Nav) = Column(Modifie
         item(key = "head") {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(p, pk, 72)
+                    Avatar(p, pk, 72, Modifier.clickable(enabled = p?.picture != null) { p?.picture?.let { nav.pictures(listOf(it), 0) } })
                     Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) {
                         Text(p?.shown ?: shortNpub(pk), style = MaterialTheme.typography.titleLarge, color = Vault.Text)

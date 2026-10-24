@@ -414,6 +414,19 @@ class Social private constructor(private val phone: Phone, context: Context) {
 
     // --- Threads and profiles --------------------------------------------------------
 
+    /** Threads opened lately, so going back to one shows it at once. */
+    private val threads = object : LinkedHashMap<String, List<Pair<Event, Int>>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Pair<Event, Int>>>?) = size > 30
+    }
+
+    /** What can be shown of thread [id] right now, with no network: as opened before, or the note itself (under its first note, if that's here). Null if neither is. */
+    fun threadNow(id: String): List<Pair<Event, Int>>? {
+        synchronized(threads) { threads[id] }?.let { return it }
+        val n = note(id) ?: return null
+        val root = rootOf(n)?.let { note(it) }
+        return if (root != null && root.id != n.id) listOf(root to 0, n to 1) else listOf(n to 0)
+    }
+
     /** The whole thread [id] is in: its first note, then the replies, each with how deep it sits. */
     suspend fun thread(id: String): List<Pair<Event, Int>> {
         val relays = readRelays() + listOfNotNull(feed.value.source) + Sources.SEARCH.take(1)
@@ -435,6 +448,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
             byParent[e.id]?.sortedBy { it.createdAt }?.forEach { walk(it, depth + 1) }
         }
         walk(all.first(), 0)
+        synchronized(threads) { threads[id] = out }
         return out
     }
 
