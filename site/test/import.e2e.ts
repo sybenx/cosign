@@ -28,12 +28,13 @@ const waitFor = async (pred: () => boolean, ms: number) => { const until = Date.
 
 execFileSync('rm', ['-rf', serverDir + 'test-import']);
 mkdirSync(serverDir + 'logs', { recursive: true });
-const log = openSync(serverDir + 'logs/import-host.log', 'w');
-const hostProc = spawn('node', ['server.ts', '--root', 'test-import/h', '--port', '8997'], { cwd: serverDir, env: { ...process.env, COSIGN_ENROLL: 'open' }, stdio: ['ignore', log, log] });
-const done = (code: number) => { hostProc.kill(); process.exit(code); };
+// Two shared servers: a new account needs at least two.
+const hostProcs = ['h', 'h2'].map((d, i) => { const log = openSync(serverDir + `logs/import-${d}.log`, 'w'); return spawn('node', ['server.ts', '--root', `test-import/${d}`, '--port', String(8997 + i * 2)], { cwd: serverDir, env: { ...process.env, COSIGN_ENROLL: 'open' }, stdio: ['ignore', log, log] }); });
+const done = (code: number) => { for (const p of hostProcs) p.kill(); process.exit(code); };
 await sleep(3000);
-const host = JSON.parse(readFileSync(serverDir + 'test-import/h/host.json', 'utf8'));
-const server: Server = { pk: host.pk, relays: host.relays, https: null, enroll: 'open', version: 'test', operator: host.pk, nip05: 'test server', verified: true, at: 0 };
+const hosts = ['h', 'h2'].map(d => JSON.parse(readFileSync(serverDir + `test-import/${d}/host.json`, 'utf8')));
+const host = hosts[0];
+const servers: Server[] = hosts.map((h, i) => ({ pk: h.pk, relays: h.relays, https: null, enroll: 'open', version: 'test', operator: h.pk, nip05: `test server ${i + 1}`, verified: true, at: 0 }));
 
 // --- The phone: scans the page's code, shows its five digits, keeps what arrives --------
 
@@ -58,7 +59,7 @@ function phoneScans(uri: string) {
 let typed = 0;
 const t0 = Date.now();
 const imp = importToPhone({
-  secretKey: oldKey, origin: 'https://astral.test', baseUrl: 'https://cosign.aaro.cc/', servers: [server],
+  secretKey: oldKey, origin: 'https://astral.test', baseUrl: 'https://cosign.aaro.cc/', servers,
   ui: {
     status: s => console.log(`     [page] ${s}`),
     code: uri => phoneScans(uri),
@@ -73,13 +74,13 @@ const points = new Map(member!.group.members.flatMap(m => m.shares ?? [{ idx: m.
 check('each share lies on its point', member!.shares.every(s => bytesToHex(secp256k1.Point.BASE.multiply(BigInt('0x' + s.secret)).toBytes(true)) === points.get(s.idx)));
 
 // The phone claims its place with each server, then answers as the phone.
-const serverPk = member!.group.members.find(m => m.role === 'server')!.pk!;
+const serverPks = member!.group.members.filter(m => m.role === 'server').map(m => m.pk!);
 const g: Sig.Group = { groupX: member!.group.groupX, threshold: member!.group.threshold, members: member!.group.members.map(m => ({ idx: m.idx, sharePub: m.sharePub, ...(m.shares ? { shares: m.shares } : {}) })) };
 const parts = new Parts();
 const send = (to: string, m: object) => { for (const e of sealParts(phoneSk, to, m)) pool.publish(e); };
 const pool = new Pool(member!.group.relays, e => {
   const m = parts.take(e.pubkey, openFrom(phoneSk, e));
-  if (!m || !answering || e.pubkey !== serverPk || m.type !== 'sign_req') return;
+  if (!m || !answering || !serverPks.includes(e.pubkey) || m.type !== 'sign_req') return;
   if (m.event.pubkey !== g.groupX || getEventHash(m.event) !== m.msg) return;
   const mine = Sig.commitAll(g, member!.shares);
   const zs = Sig.partialAll(2, g, member!.shares, mine.nonces, m.msg, [...m.commits, ...mine.commits]);
@@ -87,21 +88,22 @@ const pool = new Pool(member!.group.relays, e => {
 });
 pool.start([{ kinds: [KIND_MEMBER], '#p': [phonePk] }]);
 await sleep(2000);
-send(serverPk, { type: 'pair_ack', token: member!.claim, name: 'Test phone' });
+for (const pk of serverPks) send(pk, { type: 'pair_ack', token: member!.claim, name: 'Test phone' });
 const groupDir = () => execFileSync('ls', [serverDir + 'test-import/h/groups']).toString().trim();
 const claimed = await waitFor(() => { try { return JSON.parse(readFileSync(`${serverDir}test-import/h/groups/${groupDir()}/state.json`, 'utf8')).group.members.some((m: any) => m.pk === phonePk); } catch { return false; } }, 20_000);
 check('the phone claims its place with the server', claimed);
-const ping = setInterval(() => send(serverPk, { type: 'ping', idx: 1, ts: Date.now() }), 5000);
-send(serverPk, { type: 'ping', idx: 1, ts: Date.now() });
+const pingAll = () => { for (const pk of serverPks) send(pk, { type: 'ping', idx: 1, ts: Date.now() }); };
+const ping = setInterval(pingAll, 5000);
+pingAll();
 await sleep(2000);
 
 check('the page signs as the old key', (await signer.getPublicKey()) === oldPub);
 const note = await signer.signEvent({ kind: 1, content: 'moved into Cosign', tags: [] }).catch((e: Error) => e);
-check('the phone (3) and the server (1) sign it', verifyEvent(note) && note.pubkey === oldPub, String(note?.message ?? ''));
+check('the phone (3) and a server (1) sign it', verifyEvent(note) && note.pubkey === oldPub, String(note?.message ?? ''));
 
 answering = false; clearInterval(ping);
 const err = await signer.signEvent({ kind: 1, content: 'server alone', tags: [] }).then(() => null, (e: Error) => e);
-check('the server alone can’t', !!err, err?.message);
+check('the servers alone can’t', !!err, err?.message);
 
 signer.close?.();
 console.log(failures ? `${failures} failed` : 'all passed');

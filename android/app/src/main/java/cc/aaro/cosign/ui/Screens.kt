@@ -88,7 +88,9 @@ fun App(phone: Phone, ui: Ui) {
             ui.joinCode != null && ui.member == null -> JoinCode(ui.joinCode, ui.error, phone::cancelJoin)
             ui.restoring != null && ui.member == null -> RestoringScreen(ui.restoring, phone::cancelRestore)
             ui.member == null -> Column(Modifier.fillMaxSize()) {
-                Box(Modifier.weight(1f)) { Welcome(ui.error, onJoin = phone::startJoin, onScan = { phone.clearError(); scanning = true }, onPaste = phone::pastedBackup) }
+                var importing by remember { mutableStateOf(false) }
+                Box(Modifier.weight(1f)) { Welcome(ui.error, onJoin = phone::startJoin, onScan = { phone.clearError(); scanning = true }, onPaste = phone::pastedBackup, onHave = { phone.clearError(); importing = true }) }
+                if (importing) ImportSheet({ importing = false }) { chars -> importing = false; phone.secretFrom(chars)?.let(phone::importKey) ?: phone.showError("That isn't an nsec (or a 64-character hex key). Nothing was kept.") }
                 // A place for another key: the ones you have are a tap away.
                 val others = CosignApp.instance.accounts.all.filter { it !== phone && it.isMember }
                 if (others.isNotEmpty()) TextButton({ CosignApp.instance.accounts.forget(phone.slot); CosignApp.instance.accounts.show(others.first().slot) },
@@ -115,7 +117,7 @@ private fun Page(content: @Composable ColumnScope.() -> Unit) =
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp, vertical = 16.dp), content = content)
 
 @Composable
-private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit, onPaste: (String) -> Unit) = Page {
+private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit, onPaste: (String) -> Unit, onHave: () -> Unit) = Page {
     val context = androidx.compose.ui.platform.LocalContext.current
     Spacer(Modifier.weight(1f))
     Text(appName, style = MaterialTheme.typography.headlineMedium, color = Vault.Text)
@@ -135,8 +137,60 @@ private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit, onPa
         modifier = Modifier.align(Alignment.CenterHorizontally))
     Spacer(Modifier.height(8.dp))
     TextButton(onJoin, Modifier.align(Alignment.CenterHorizontally)) { Text("Sign in with another device", color = Vault.Teal) }
+    TextButton(onHave, Modifier.align(Alignment.CenterHorizontally)) { Text("I already have an account", color = Vault.Teal) }
     TextButton(onScan, Modifier.align(Alignment.CenterHorizontally)) { Text("Restore from your backup", color = Vault.Muted) }
     TextButton({ onPaste(pasted(context)) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Paste your backup code instead", color = Vault.Muted) }
+}
+
+/**
+ * "I already have an account": paste its nsec. The field is a plain Android one, so what's
+ * in it is read as characters (never a String) and wiped; no screenshots while it's open;
+ * the clipboard is cleared once it's used.
+ */
+@Composable
+private fun ImportSheet(onClose: () -> Unit, onKey: (CharArray) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = context as? android.app.Activity
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        activity?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) }
+    }
+    var field by remember { mutableStateOf<android.widget.EditText?>(null) }
+    val take = {
+        field?.let { f ->
+            val e = f.text
+            val chars = CharArray(e.length).also { e.getChars(0, e.length, it, 0) }
+            e.clear()
+            context.getSystemService(android.content.ClipboardManager::class.java)?.let { cb -> try { cb.clearPrimaryClip() } catch (_: Exception) {} }
+            onKey(chars)
+        }
+    }
+    BackHandler(onBack = onClose)
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            Text("Bring your account", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Spacer(Modifier.height(10.dp))
+            Text("Paste its secret key (nsec). This phone splits it with your servers, so no one place holds it, then forgets it. You'll make a backup next.",
+                style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+            Spacer(Modifier.height(16.dp))
+            androidx.compose.ui.viewinterop.AndroidView({ ctx ->
+                android.widget.EditText(ctx).apply {
+                    inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                    importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+                    hint = "nsec1…"
+                    setTextColor(android.graphics.Color.WHITE); setHintTextColor(android.graphics.Color.GRAY)
+                    isSingleLine = true
+                    field = this
+                }
+            }, Modifier.fillMaxWidth())
+            Spacer(Modifier.height(20.dp))
+            Button({ take() }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Bring it into Cosign") }
+            TextButton(onClose, Modifier.align(Alignment.CenterHorizontally)) { Text("Cancel", color = Vault.Muted) }
+        }
+    }
 }
 
 @Composable

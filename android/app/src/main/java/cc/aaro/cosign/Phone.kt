@@ -356,6 +356,7 @@ class Phone(private val context: Context, val slot: String = "0") {
     }
 
     fun clearError() = ui.update { it.copy(error = null) }
+    fun showError(text: String) = ui.update { it.copy(error = text) }
 
     fun leave() {
         stop(); secrets.clear(); lists.clear(); lastSeen.clear(); signedLog.delete(); apps.edit().clear().apply()
@@ -806,7 +807,8 @@ class Phone(private val context: Context, val slot: String = "0") {
                 "signer" to mapOf("sk" to signerSk, "pk" to publicKeyHex(signerSk.hexToBytes()))), 6)
             if (r?.get("type") != "enrolled") throw IllegalStateException("${p.first.name} ${r?.get("reason") ?: "didn't answer"}")
         }
-        val group = parseGroup(record) ?: throw IllegalStateException("the account record is damaged")
+        // As it would arrive over the wire (numbers as Long), the way parseGroup reads it.
+        val group = parseGroup(Json.parse(Json.stringify(record))) ?: throw IllegalStateException("the account record is damaged")
         val m = Membership(mySk, 1, mine.map { Share(it.first, it.second) }, publicKeyHex(signerSk.hexToBytes()), group)
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         connect(relays, mySk)

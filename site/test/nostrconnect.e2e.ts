@@ -58,10 +58,12 @@ const [note, ms1] = await time(() => within(20_000, signer.signEvent({ kind: 1, 
 check('a note signs automatically', verifyEvent(note) && note.pubkey === pubkey, `${ms1} ms`);
 
 const friend = generateSecretKey();
-const [ct, ms2] = await time(() => within(20_000, signer.nip44Encrypt(getPublicKey(friend), 'hello friend')));
-check('nip44_encrypt to someone else', nip44.v2.decrypt(ct, nip44.v2.utils.getConversationKey(friend, pubkey)) === 'hello friend', `${ms2} ms`);
+// Sites connected by code share one signer key: no encrypting or decrypting for them (the app or extension do that).
+const enc = await within(20_000, signer.nip44Encrypt(getPublicKey(friend), 'hello friend')).then(() => '', e => String(e?.message ?? e));
+check('nip44_encrypt is refused for a site connected by code', enc.startsWith('unsupported'), enc);
 const back = nip44.v2.encrypt('hello you', nip44.v2.utils.getConversationKey(friend, pubkey));
-check('nip44_decrypt from someone else', await within(20_000, signer.nip44Decrypt(getPublicKey(friend), back)) === 'hello you');
+const dec = await within(20_000, signer.nip44Decrypt(getPublicKey(friend), back)).then(() => '', e => String(e?.message ?? e));
+check('and nip44_decrypt', dec.startsWith('unsupported'), dec);
 
 const follows = Array.from({ length: 12 }, () => ['p', bytesToHex(randomBytes(32))]);
 await within(20_000, signer.signEvent({ kind: 3, created_at: Math.floor(Date.now() / 1000), content: '', tags: follows }));

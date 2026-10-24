@@ -78,8 +78,10 @@ if (want('ecdh')) {
   const { schnorr } = await import('@noble/curves/secp256k1.js');
   const nip44 = await import('nostr-tools/nip44');
   const third = randomBytes(32), thirdPk = bytesToHex(schnorr.getPublicKey(third));
-  const ct = await site.nip44.encrypt(thirdPk, 'hello');
-  check('nip44 through the servers', nip44.v2.decrypt(ct, nip44.v2.utils.getConversationKey(third, pubkey)) === 'hello');
+  // A site connected by code shares the signer key with every other such site: no messages through it.
+  const err = await site.nip44.encrypt(thirdPk, 'hello').then(() => '', e => String(e.message));
+  check('a site connected by code can’t encrypt or decrypt (use the app or extension)', err.startsWith('unsupported'), err);
+  void nip44;
 }
 
 if (want('revoke')) {

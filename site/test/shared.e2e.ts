@@ -15,7 +15,7 @@ import { verifyEvent } from 'nostr-tools/pure';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import { SignerClient, newSession } from '../src/client.ts';
 import { Pool, sealTo, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../../server/net.ts';
-import { deal } from '../../server/frost.ts';
+import { createRequire } from 'node:module';
 
 const serverDir = new URL('../../server/', import.meta.url).pathname;
 const at = (p: string) => serverDir + 'test-shared/' + p;
@@ -117,15 +117,19 @@ check('a host that takes only invited devices turns away anyone else', refused.t
 const [key1, key2] = await Promise.all([ask(dealer, host1.pk, { type: 'enroll_key' }), ask(dealer, host2.pk, { type: 'enroll_key' })]);
 check('both hosts hand out a member key for the new group', key1.type === 'enroll_key' && key2.type === 'enroll_key' && key1.pk !== key2.pk);
 
-const dealt = deal(null, 3, 2);
+// Weighted, as accounts are now: the phone 3 shares, each server 1, any 4 sign.
+const W = createRequire(import.meta.url)('../../server/frost-wasm/cosign_frost.js');
+const d = JSON.parse(W.dealFromSecret(randomBytes(32), [1, 2, 3, 4, 5], 4));
+const sh = (i: number) => d.shares.find((x: any) => x.idx === i);
+const dealt = { groupX: d.groupX, shares: [4, 5, 1].map(i => ({ secret: sh(i).secret, pub: sh(i).sharePub })) };
 const signerSk = hex(), phoneSk = hex();
 const relays = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'];
 const group = {
-  groupX: dealt.groupX, threshold: 2, relays,
+  groupX: dealt.groupX, threshold: 4, relays,
   members: [
-    { idx: 1, name: 'Shared A', role: 'server', pk: key1.pk, sharePub: dealt.shares[0].pub },
-    { idx: 2, name: 'Shared B', role: 'server', pk: key2.pk, sharePub: dealt.shares[1].pub },
-    { idx: 3, name: 'Phone', role: 'phone', pk: pubOf(phoneSk), sharePub: dealt.shares[2].pub },
+    { idx: 4, name: 'Shared A', role: 'server', pk: key1.pk, sharePub: sh(4).sharePub },
+    { idx: 5, name: 'Shared B', role: 'server', pk: key2.pk, sharePub: sh(5).sharePub },
+    { idx: 1, name: 'Phone', role: 'phone', pk: pubOf(phoneSk), sharePub: sh(1).sharePub, shares: [1, 2, 3].map(i => ({ idx: i, sharePub: sh(i).sharePub })) },
   ],
 };
 const signer = { sk: signerSk, pk: pubOf(signerSk) };
@@ -133,7 +137,7 @@ const enroll = (k: any, share: string) => ({ type: 'enroll', how: 'dealt', key: 
 
 const wrong = await ask(dealer, host1.pk, enroll(key1, dealt.shares[1].secret));
 check('a share that isn’t this server’s is refused', wrong.type === 'enroll_failed' && wrong.reason.startsWith('bad-share'), wrong.reason);
-const bent = await ask(dealer, host2.pk, { ...enroll(key2, dealt.shares[1].secret), group: { ...group, members: group.members.map(m => m.idx === 3 ? { ...m, sharePub: dealt.shares[0].pub } : m) } });
+const bent = await ask(dealer, host2.pk, { ...enroll(key2, dealt.shares[1].secret), group: { ...group, members: group.members.map(m => m.idx === 1 ? { ...m, shares: m.shares!.map(x => x.idx === 3 ? { ...x, sharePub: sh(4).sharePub } : x) } : m) } });
 check('so is a group whose share points don’t belong to its key', bent.type === 'enroll_failed' && bent.reason.startsWith('bad-group'), bent.reason);
 const [e1, e2] = await Promise.all([ask(dealer, host1.pk, enroll(key1, dealt.shares[0].secret)), ask(dealer, host2.pk, enroll(key2, dealt.shares[1].secret))]);
 check('both hosts take the new group on', e1.type === 'enrolled' && e2.type === 'enrolled', `${e1.type}/${e2.type} ${e1.reason ?? ''}${e2.reason ?? ''}`);
@@ -142,7 +146,7 @@ check('asking again gets the same answer', again.type === 'enrolled' && again.gr
 check('it has a directory of its own on each', existsSync(at(`h1/groups/${e1.group}/state.json`)) && existsSync(at(`h2/groups/${e2.group}/state.json`)));
 check('host 1 now serves three groups', (await hostStatus(8970)).groups.length === 3);
 
-const phone3 = { sk: phoneSk, idx: 3, share: dealt.shares[2].secret, signer: signer.pk, group };
+const phone3 = { sk: phoneSk, idx: 1, shares: [1, 2, 3].map(i => ({ idx: i, secret: sh(i).secret })), signer: signer.pk, group };
 writeFileSync(phoneFile('k3'), JSON.stringify(phone3, null, 2));
 run(['test/fake-phone.ts'], 'shared-phone-k3.log', { PHONE_STATE: phoneFile('k3') });
 await sleep(12_000);
