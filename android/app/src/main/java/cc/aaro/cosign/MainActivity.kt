@@ -50,7 +50,10 @@ class MainActivity : ComponentActivity() {
 
     /** A code handed over by the camera app or a link; the app asks before doing anything with it. */
     private fun opened(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_VIEW) intent.dataString?.let { CosignApp.instance.phone.scanned(it) }
+        // Reopened from Recents, Android hands back the link that first opened Cosign, maybe
+        // hours old: that's not something you just scanned.
+        if (intent == null || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let { CosignApp.instance.phone.scanned(it) }
         testHook(intent)
     }
 

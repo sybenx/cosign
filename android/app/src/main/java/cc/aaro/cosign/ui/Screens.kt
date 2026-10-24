@@ -186,10 +186,14 @@ private fun ConnectSheet(c: Connect, onConnect: () -> Unit, onClose: () -> Unit)
                         Text("Connect ${c.origin}", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                Connect.Stage.WORKING -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(22.dp), color = Vault.Teal, strokeWidth = 2.dp)
-                    Spacer(Modifier.width(14.dp))
-                    Text(c.message ?: "Connecting…", color = Vault.Text)
+                Connect.Stage.WORKING -> Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(22.dp), color = Vault.Teal, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(14.dp))
+                        Text(c.message ?: "Connecting…", color = Vault.Text)
+                    }
+                    Spacer(Modifier.height(18.dp))
+                    OutlinedButton(onClose, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Cancel", color = Vault.Text) }
                 }
                 Connect.Stage.DONE, Connect.Stage.FAILED -> {
                     Text(if (c.stage == Connect.Stage.DONE) "Connected" else "Not connected", style = MaterialTheme.typography.titleLarge,

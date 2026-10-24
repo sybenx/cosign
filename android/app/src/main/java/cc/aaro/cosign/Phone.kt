@@ -341,6 +341,7 @@ class Phone(private val context: Context) {
             !isMember -> ui.update { it.copy(error = "Add this phone to your servers first: scan the code on your server's page.") }
             params.profile != SignerTicketProfile.id -> ui.update { it.copy(error = "That code is for something else (${params.profile}).") }
             params.mode != Mode.OFFER -> ui.update { it.copy(error = "That code isn't asking to sign in.") }
+            usedCode(params.token) -> ui.update { it.copy(error = "You've already used that code. Ask the site for a new one.") }
             else -> {
                 connecting = params; nostrConnect = null
                 ui.update { it.copy(error = null, connect = Connect(params.origin ?: "This site", Connect.Stage.CONFIRM)) }
@@ -359,6 +360,7 @@ class Phone(private val context: Context) {
         val params = connecting ?: return
         val m = ui.value.member ?: return
         val origin = params.origin ?: "a site"
+        useCode(params.token)
         val ticket = SignerTicket(m.group.groupX, m.signer, m.group.relays, env.random(16).toHex(), env.now() + 900)
         for (s in servers()) send(s.pk!!, mapOf("type" to "ticket", "t" to ticket.t, "origin" to origin, "expires" to ticket.expires))
         ui.update { it.copy(connect = Connect(origin, Connect.Stage.WORKING, "Sending to $origin…")) }
@@ -366,6 +368,13 @@ class Phone(private val context: Context) {
         val deps = TransferDeps(SignerTicketProfile, qrstStore, env, "https://qrst.aaro.cc/", CodeCheck.NONE)
         val t = Transfer.join(deps, params, true, ticket)
         transfer = t
+        // A site that has gone (a closed tab, an old code) never answers: don't wait forever.
+        timer.schedule({
+            if (transfer === t && ui.value.connect?.stage == Connect.Stage.WORKING) {
+                t.cancel(); connecting = null
+                ui.update { it.copy(connect = Connect(origin, Connect.Stage.FAILED, "$origin didn't answer. Ask it for a new code.")) }
+            }
+        }, 30, TimeUnit.SECONDS)
         t.onChange = {
             val v: TransferView<SignerTicket> = t.view()
             if (v.session.phase == Phase.RELEASE && !released) { released = true; t.release(ticket) }
@@ -390,6 +399,16 @@ class Phone(private val context: Context) {
         timer.schedule({ requestState() }, 3, TimeUnit.SECONDS)
     }
 
+    /** Sign-in codes already used here (their token, or a nostrconnect site's key): a code is good once. */
+    private val usedCodes = context.getSharedPreferences("used-codes", Context.MODE_PRIVATE)
+    private fun usedCode(id: String) = usedCodes.contains(id)
+    private fun useCode(id: String) {
+        val all = usedCodes.all
+        val e = usedCodes.edit().putLong(id, System.currentTimeMillis())
+        if (all.size > 200) all.entries.sortedBy { it.value as? Long ?: 0 }.take(all.size - 200).forEach { e.remove(it.key) }
+        e.apply()
+    }
+
     fun closeConnect() {
         val stage = ui.value.connect?.stage
         if (stage == Connect.Stage.CONFIRM || stage == Connect.Stage.WORKING) transfer?.cancel()
@@ -412,6 +431,7 @@ class Phone(private val context: Context) {
             !isMember -> ui.update { it.copy(error = "Add this phone to your servers first: scan the code on your server's page.") }
             !isHex32(client) || relayList.isEmpty() || uri.getQueryParameter("secret").isNullOrBlank() ->
                 ui.update { it.copy(error = "That nostrconnect code is incomplete. Ask the site for a new one.") }
+            usedCode(client!!) -> ui.update { it.copy(error = "You've already used that code. Ask the site for a new one.") }
             else -> {
                 // What the site says it is: its web address if it gave one, else its name.
                 val site = uri.getQueryParameter("url")?.let { Uri.parse(it).let { u -> u.host?.let { h -> if (u.port > 0) "$h:${u.port}" else h } } }
@@ -424,6 +444,7 @@ class Phone(private val context: Context) {
 
     private fun confirmNostrConnect() {
         val (code, client) = nostrConnect ?: return
+        useCode(client)
         val origin = ui.value.connect?.origin ?: "a site"
         ui.update { it.copy(connect = Connect(origin, Connect.Stage.WORKING, "Telling your servers…")) }
         val started = System.currentTimeMillis()
