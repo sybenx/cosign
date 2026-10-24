@@ -11,7 +11,7 @@
 // around them: one relay pool with one subscription per relay for all of them, their
 // files, the clock, push, HTTP, and taking on new groups (core/enroll.ts).
 
-import { readFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { SimplePool } from 'nostr-tools/pool';
@@ -129,6 +129,13 @@ function serve(dir: string): Served | undefined {
     save: groupFiles(dir),
     note: t => console.log(`[${x.label}] ${t}`),
     debug: process.env.DEBUG ? t => console.log(`[${x.label}] ${t}`) : undefined,
+    // "Remove my servers' pieces", after its wait: the whole directory (share, member key, the rest), gone.
+    forget: async () => {
+      groups.delete(x.id);
+      pool.setFilters(filters());
+      rmSync(dir, { recursive: true, force: true });
+      console.log(`[${x.label}] deleted`);
+    },
   };
   x.g = openGroup(loaded, io);
   // One group alone keeps the log it always had; several say which one is talking.

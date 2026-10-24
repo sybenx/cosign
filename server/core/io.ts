@@ -40,6 +40,8 @@ export interface Io {
     entry(e: Entry): void;
     saved(e: Ev): void;
   };
+  /** Delete everything this host keeps for this group, for real: its share, member key and the rest (a "remove my servers' pieces" that wasn't cancelled). */
+  forget?(): Promise<void>;
   /** A line for the log (the group keeps its own list of recent ones for its page). */
   note(text: string): void;
   /** More detail, when the host wants it (DEBUG=1). */

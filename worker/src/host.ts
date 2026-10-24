@@ -118,6 +118,15 @@ export class CosignHost extends DurableObject {
         saved: e => this.sql.exec('INSERT INTO log (g, kind, v) VALUES (?, ?, ?)', x.id, 'saved', JSON.stringify(e)),
       },
       note: t => console.log(`[${x.g?.name ?? x.id}] ${t}`),
+      // "Remove my servers' pieces", after its wait: the share and keys in KV, and every row here.
+      forget: async () => {
+        this.groups.delete(x.id);
+        this.put('groups', JSON.stringify([...this.groups.keys()]));
+        await this.env.SECRETS.delete(`g:${x.id}`);
+        this.sql.exec('DELETE FROM kv WHERE k = ? OR k = ?', `g:${x.id}`, `a:${x.id}`);
+        this.sql.exec('DELETE FROM log WHERE g = ?', x.id);
+        console.log(`[${x.id}] deleted`);
+      },
     };
   }
 
