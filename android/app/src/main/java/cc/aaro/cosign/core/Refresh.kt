@@ -75,12 +75,19 @@ class Refresh(val plan: Map<*, *>, private val me: String, shares: List<Pair<Int
         onDone(done!!)
     }
 
-    private fun mulG(k: BigInteger) = Secp256k1.pubKeyCompress(Secp256k1.pubkeyCreate(Frost.bytes32(k)))
+    companion object {
+        fun mulG(k: BigInteger): ByteArray = Secp256k1.pubKeyCompress(Secp256k1.pubkeyCreate(Frost.bytes32(k)))
 
-    /** g(j)·G from the commitments: Σ Ck·j^k. */
-    private fun deltaPoint(commits: List<String>, j: Int): ByteArray {
-        var x = BigInteger.valueOf(j.toLong())
-        val terms = commits.map { c -> Secp256k1.pubKeyTweakMul(Secp256k1.pubkeyParse(c.hexToBytes()), Frost.bytes32(x)).also { x = x.multiply(BigInteger.valueOf(j.toLong())).mod(Frost.N) } }
-        return Secp256k1.pubKeyCompress(if (terms.size == 1) terms[0] else Secp256k1.pubKeyCombine(terms.toTypedArray()))
+        /** g(j)·G from the commitments: Σ Ck·j^k. */
+        fun deltaPoint(commits: List<String>, j: Int): ByteArray {
+            var x = BigInteger.valueOf(j.toLong())
+            val terms = commits.map { c -> Secp256k1.pubKeyTweakMul(Secp256k1.pubkeyParse(c.hexToBytes()), Frost.bytes32(x)).also { x = x.multiply(BigInteger.valueOf(j.toLong())).mod(Frost.N) } }
+            return Secp256k1.pubKeyCompress(if (terms.size == 1) terms[0] else Secp256k1.pubKeyCombine(terms.toTypedArray()))
+        }
+
+        fun checkDelta(commits: List<String>, j: Int, delta: String) = mulG(BigInteger(1, delta.hexToBytes())).contentEquals(deltaPoint(commits, j))
+
+        fun addDeltas(secret: String, deltas: List<String>): String =
+            Frost.bytes32(deltas.fold(BigInteger(1, secret.hexToBytes())) { acc, d -> acc.add(BigInteger(1, d.hexToBytes())) }.mod(Frost.N)).toHex()
     }
 }

@@ -22,6 +22,7 @@ import cc.aaro.cosign.core.SignerTicketProfile
 import cc.aaro.cosign.core.CosignMemberProfile
 import cc.aaro.cosign.core.MemberMove
 import cc.aaro.cosign.core.Refresh
+import cc.aaro.cosign.core.Backup
 import cc.aaro.cosign.core.SystemEnv
 import cc.aaro.cosign.core.generateSecretKey
 import cc.aaro.cosign.core.hexToBytes
@@ -85,6 +86,8 @@ data class AddingDevice(val pk: String, val name: String, val relays: List<Strin
 /** A version of one of your lists dated in the future, found on relays: it blocks every change. */
 data class Future(val id: String, val text: String)
 data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
+/** This phone being restored from a paper backup. [until]: when the wait ends, once it's started. */
+data class Restoring(val text: String, val until: Long? = null, val failed: Boolean = false)
 /** A key moving in from a web page (QRST `cosign-member`): its code, then whether to keep it. */
 data class MoveIn(val stage: Stage, val code: String? = null, val text: String? = null) { enum class Stage { WAITING, CODE, ACCEPT, DONE, FAILED } }
 data class Line(val ts: Long, val text: String, val kind: String = "info")
@@ -121,6 +124,14 @@ data class Ui(
     val reporting: Member? = null,
     /** This phone was reported lost, by this device. It can say it wasn't. */
     val removedBy: String? = null,
+    /** A paper backup just made: its code, shown once. */
+    val paper: String? = null,
+    /** Making a paper backup, or restoring from one: what's happening. */
+    val paperStatus: String? = null,
+    /** Restoring this phone from a paper backup. */
+    val restoring: Restoring? = null,
+    /** Your paper backup is being used somewhere: for whom, and until when it can be cancelled. */
+    val recovery: Pair<String, Long>? = null,
     val push: String? = null,
 )
 
@@ -182,6 +193,8 @@ class Phone(private val context: Context) {
             ui.update { u -> u.copy(log = lines.mapNotNull { (it as? Map<*, *>)?.let { m -> Line(m["ts"] as Long, m["text"] as String, m["kind"] as? String ?: "info") } }) }
         }
         ui.update { it.copy(push = context.getSharedPreferences("cosign", Context.MODE_PRIVATE).getString("push", null)) }
+        // A restore from paper survives restarts: its wait takes days.
+        if (ui.value.member == null) secrets.load("restoring")?.let { Json.parse(it) as? Map<*, *> }?.let { timer.execute { resumeRestore(it) } }
     }
 
     val isMember get() = ui.value.member != null
@@ -340,6 +353,7 @@ class Phone(private val context: Context) {
             if (!isHex32(pk) || relays.isEmpty()) return ui.update { it.copy(error = "That code is damaged. Try again.") }
             return ui.update { it.copy(error = null, adding = AddingDevice(pk!!, u.getQueryParameter("name")?.take(40) ?: "A device", relays)) }
         }
+        if (t.startsWith("cosign:backup")) return if (isMember) ui.update { it.copy(error = "This phone already holds a key. Restore a paper backup on a phone that doesn't.") } else startRestore(t)
         val params = try { PairingUri.parse(t) } catch (_: Exception) { null }
         if (params?.profile == CosignMemberProfile.id) return moveIn(params)
         // A sign-in code that carries a nostrconnect:// fallback (`nc`, site/src/pair.ts):
@@ -392,7 +406,12 @@ class Phone(private val context: Context) {
         val run = startRefresh(plan, m) ?: return
         // Your other devices: the plan and this phone's part, straight to them and kept on the servers for one that's away.
         val parts = run.outgoing().toMap()
-        for (o in left.filter { it.role != "server" && it.pk != null && it.idx != m.idx }) {
+        // The paper's part, sealed to it and kept by the servers (COSIGN.md §8.2).
+        for (b in left.filter { it.role == "backup" && it.pk != null }) parts[b.pk]?.let { part ->
+            val content = Nip44.encrypt(Json.stringify(part), Nip44.conversationKey(m.sk.hexToBytes(), b.pk!!), env.random(32))
+            for (s in servers()) send(s.pk!!, mapOf("type" to "backup_store", "epoch" to m.epoch + 1, "content" to content))
+        }
+        for (o in left.filter { it.role != "server" && it.role != "backup" && it.pk != null && it.idx != m.idx }) {
             send(o.pk!!, mapOf("type" to "refresh_plan", "plan" to plan))
             val key = Nip44.conversationKey(m.sk.hexToBytes(), o.pk)
             for (body in listOfNotNull(mapOf("type" to "refresh_plan", "plan" to plan), parts[o.pk]))
@@ -443,6 +462,8 @@ class Phone(private val context: Context) {
             "refresh_plan" -> { (msg["plan"] as? Map<*, *>)?.let { startRefresh(it, m) } }
             "refresh_part" -> refresh?.take(msg, from)
             "removed" -> { ui.update { it.copy(removedBy = msg["by"] as? String ?: "another device") }; note("This phone was reported lost from ${msg["by"]}", "denied") }
+            "recovery" -> { ui.update { it.copy(recovery = (msg["name"] as? String ?: "a new phone") to ((msg["until"] as? Long) ?: 0L)) }; note("Your paper backup is being used for ${msg["name"]}", "denied") }
+            "recovery_cancelled" -> { ui.update { it.copy(recovery = null) }; note("${msg["by"]} cancelled using your paper backup", "approved") }
             "contested" -> note("${msg["removed"]} says it wasn't lost: ${msg["by"]} is blocked too, until another device or your paper backup settles it", "denied")
             else -> return false
         }
@@ -456,6 +477,120 @@ class Phone(private val context: Context) {
         ui.update { it.copy(removedBy = null) }
     }
 
+    // --- The paper backup (COSIGN.md §8) ------------------------------------------------
+    //
+    // Making one: a key for the paper, its shares made by repair with a server, this
+    // phone's pieces sealed to the paper and kept by the servers. The paper's code is
+    // shown once and never kept here. Restoring: a new phone reads the paper, rebuilds its
+    // shares (core/Backup.kt) and asks to recover; after a wait any of your devices can
+    // cancel, the paper's shares are this phone's.
+
+    private var making: Pair<String, String>? = null // the paper's secret and public key, until it's shown
+
+    /** You unlocked this phone: make a paper backup. */
+    fun makePaper() {
+        val m = ui.value.member ?: return
+        val srv = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        val bsk = generateSecretKey(env).toHex()
+        making = bsk to publicKeyHex(bsk.hexToBytes())
+        send(srv.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to making!!.second, "name" to "Paper backup", "lock" to true, "backup" to true))
+        ui.update { it.copy(paperStatus = "Making your paper backup…") }
+        timer.schedule({ if (making != null && ui.value.paper == null) { making = null; ui.update { it.copy(paperStatus = null, error = "Your server didn't answer. Try again in a minute.") } } }, 40, TimeUnit.SECONDS)
+        if (m.group.members.any { it.role == "backup" }) note("Making a new paper backup: the old one stops working", "approved")
+    }
+
+    /** The paper's code, for the screen, a printout or a photo: its key, your servers, their relays. */
+    private fun paperCode(bsk: String, m: Membership) = "cosign:backup?k=$bsk&" +
+        (servers().map { "s=${it.pk}" } + m.group.relays.map { "r=" + Uri.encode(it) }).joinToString("&")
+
+    private fun onBackupMade() {
+        val (bsk, _) = making ?: return
+        val m = ui.value.member ?: return
+        ui.update { it.copy(paper = paperCode(bsk, m), paperStatus = null) }
+        making = null
+        note("Made a paper backup", "approved")
+    }
+
+    /** You've kept the paper: forget its code here. */
+    fun closePaper() = ui.update { it.copy(paper = null) }
+
+    // Restoring, on a phone that isn't in a key yet.
+
+    fun startRestore(code: String) {
+        val u = Uri.parse(code.trim().replace("cosign:backup?", "cosign://backup?"))
+        val bsk = u.getQueryParameter("k")
+        val srvs = u.getQueryParameters("s").filter { isHex32(it) }
+        val urls = u.getQueryParameters("r").filter { it.startsWith("wss://") || it.startsWith("ws://") }
+        if (!isHex32(bsk) || srvs.isEmpty() || urls.isEmpty()) return ui.update { it.copy(error = "That paper code is damaged. Try scanning it again.") }
+        val state = mapOf("paper" to bsk, "sk" to generateSecretKey(env).toHex(), "servers" to srvs, "relays" to urls)
+        secrets.save("restoring", Json.stringify(state))
+        resumeRestore(state)
+    }
+
+    private var restoreAsk: ScheduledFuture<*>? = null
+    private var restored: Pair<List<Pair<Int, String>>, Map<*, *>>? = null
+
+    private fun resumeRestore(st: Map<*, *>) {
+        val bsk = st["paper"] as String
+        val bpk = publicKeyHex(bsk.hexToBytes())
+        connect((st["relays"] as List<*>).map { it as String }, st["sk"] as String, mapOf(bpk to bsk))
+        ui.update { it.copy(restoring = Restoring("Reading your paper…"), error = null) }
+        restoreAsk?.cancel(false)
+        restoreAsk = timer.scheduleWithFixedDelay({
+            if (isMember) { restoreAsk?.cancel(false); return@scheduleWithFixedDelay }
+            for (srv in st["servers"] as List<*>) sendAs(bsk, srv as String, mapOf("type" to if (restored == null) "backup_get" else "recover_finish"))
+        }, 1, 10, TimeUnit.SECONDS)
+    }
+
+    private fun sendAs(secret: String, to: String, msg: Map<String, Any?>) {
+        val key = Nip44.conversationKey(secret.hexToBytes(), to)
+        relays?.publish(Event.sign(publicKeyHex(secret.hexToBytes()), env.now(), KIND_MEMBER, listOf(listOf("p", to)), Nip44.encrypt(Json.stringify(msg), key, env.random(32)), secret.hexToBytes(), env))
+    }
+
+    private fun onRestoreMsg(msg: Map<*, *>, e: Event) {
+        val st = secrets.load("restoring")?.let { Json.parse(it) as? Map<*, *> } ?: return
+        val bsk = st["paper"] as String
+        when (msg["type"]) {
+            "backup" -> if (restored == null) {
+                val shares = try { Backup.restore(bsk, msg) } catch (x: Exception) {
+                    return ui.update { it.copy(restoring = Restoring("Couldn't read the paper: ${x.message}", failed = true)) }
+                }
+                restored = shares to msg
+                for (srv in st["servers"] as List<*>) sendAs(bsk, srv as String, mapOf("type" to "recover", "pk" to publicKeyHex((st["sk"] as String).hexToBytes()), "name" to android.os.Build.MODEL.ifBlank { "A new phone" }))
+            }
+            "recovering" -> (msg["until"] as? Long)?.let { until -> ui.update { it.copy(restoring = Restoring("Your paper is good. Waiting until your other devices have had time to stop it.", until)) } }
+            "recovery_cancelled" -> ui.update { it.copy(restoring = Restoring("${msg["by"]} cancelled it. If that wasn't you, someone else may have your devices: start again.", failed = true)) }
+            "recovered" -> {
+                val (shares, b) = restored ?: return
+                val idx = (msg["idx"] as? Long)?.toInt() ?: return
+                val group = parseGroup(b["group"]) ?: return
+                val me = publicKeyHex((st["sk"] as String).hexToBytes())
+                val g = group.copy(members = group.members.map { if (it.idx == idx) it.copy(role = "device", pk = me, name = android.os.Build.MODEL.ifBlank { "This phone" }) else it })
+                val m = Membership(st["sk"] as String, idx, shares.map { Share(it.first, it.second) }, b["signer"] as? String ?: return, g, (b["epochNow"] as? Long)?.toInt() ?: 0)
+                secrets.saveMembership(Json.stringify(membershipToMap(m)))
+                secrets.save("restoring", null)
+                restoreAsk?.cancel(false); restored = null
+                ui.update { it.copy(member = m, restoring = null) }
+                note("Restored from your paper backup. Make a new paper backup, and report your old phone lost if it is.", "approved")
+                connect(g.relays, m.sk)
+                start()
+            }
+        }
+    }
+
+    fun cancelRestore() {
+        restoreAsk?.cancel(false); restored = null
+        secrets.save("restoring", null)
+        if (!isMember) { relays?.stop(); relays = null; sk = null }
+        ui.update { it.copy(restoring = null) }
+    }
+
+    /** Your paper backup is being used, and it isn't you (confirmed with this phone's lock). */
+    fun cancelRecovery() {
+        for (s in servers()) send(s.pk!!, mapOf("type" to "cancel_recovery", "lock" to true))
+        ui.update { it.copy(recovery = null) }
+    }
+
     // --- A key moving in from a web page ------------------------------------------------
     //
     // The page that held the key dealt it: each server already has its share (and a claim
@@ -466,9 +601,12 @@ class Phone(private val context: Context) {
     private var moving: Transfer<MemberMove>? = null
 
     private fun moveIn(params: PairingParams) {
-        when {
-            isMember -> return ui.update { it.copy(error = "This phone already holds a key. Moving another one in isn't possible yet.") }
-            params.mode != Mode.REQUEST -> return ui.update { it.copy(error = "That code isn't offering a key.") }
+        if (params.mode != Mode.REQUEST) return ui.update { it.copy(error = "That code isn't offering a key.") }
+        if (isMember) {
+            // Say no to the page too, so it stops waiting at once (it hears peer-aborted).
+            val t = Transfer.join(TransferDeps(CosignMemberProfile, qrstStore, env, "https://qrst.aaro.cc/", CodeCheck.TYPE), params, true)
+            timer.schedule({ t.cancel(); timer.schedule({ t.dispose() }, 10, TimeUnit.SECONDS) }, 3, TimeUnit.SECONDS)
+            return ui.update { it.copy(error = "This phone already holds a key. Moving another one in isn't possible yet.") }
         }
         moving?.cancel()
         val t = Transfer.join(TransferDeps(CosignMemberProfile, qrstStore, env, "https://qrst.aaro.cc/", CodeCheck.TYPE), params, true)
@@ -704,6 +842,11 @@ class Phone(private val context: Context) {
         } }
         val one = sigmas.size == 1
         send(from.pk!!, mapOf("type" to "repair_delta", "id" to id, "deltas" to toSrv) + (if (one) mapOf("delta" to toSrv[0][3]) else emptyMap()))
+        if (making?.second == newPk) {
+            // A paper: our pieces, sealed to it, kept by the servers.
+            val content = Nip44.encrypt(Json.stringify(mapOf("sigmas" to sigmas)), Nip44.conversationKey(m.sk.hexToBytes(), newPk), env.random(32))
+            return send(from.pk!!, mapOf("type" to "backup_piece", "id" to id, "content" to content))
+        }
         send(newPk, mapOf("type" to "sigma", "id" to id, "sigmas" to sigmas) + (if (one) mapOf("k" to ks[0], "sigma" to sigmas[0][2]) else emptyMap()))
     }
 
@@ -980,11 +1123,15 @@ class Phone(private val context: Context) {
 
     // --- Answering your servers --------------------------------------------------
 
-    private fun connect(urls: List<String>, secret: String) {
+    /** Other keys this phone reads member messages for (a paper being restored): public key → secret. */
+    private var alsoFor = mapOf<String, String>()
+
+    private fun connect(urls: List<String>, secret: String, also: Map<String, String> = emptyMap()) {
         relays?.stop()
         sk = secret
+        alsoFor = also
         relays = Relays(urls, ::onEvent, ::status).also {
-            it.start(mapOf("kinds" to listOf(KIND_MEMBER), "#p" to listOf(publicKeyHex(secret.hexToBytes()))))
+            it.start(mapOf("kinds" to listOf(KIND_MEMBER), "#p" to listOf(publicKeyHex(secret.hexToBytes())) + also.keys))
         }
     }
 
@@ -996,6 +1143,7 @@ class Phone(private val context: Context) {
         if ((type == "sign_req" || type == "ecdh_req") && System.currentTimeMillis() / 1000 - e.createdAt > 30) return
         if (type == "pair_offer") return onOffer(msg, e.pubkey)
         if (type == "dkg1" || type == "dkg2") { dkg?.take(msg, e.pubkey); return }
+        if (ui.value.restoring != null && !isMember) return onRestoreMsg(msg, e)
         ui.value.member?.let { m -> if (m.group.members.any { it.pk == e.pubkey } && onRefreshMsg(msg, e.pubkey, m)) return }
         if (joinWith != null && (type == "welcome" || type == "sigma")) return onJoinPiece(msg, e.pubkey)
         val m = ui.value.member ?: return
@@ -1007,6 +1155,7 @@ class Phone(private val context: Context) {
             "state" -> onState(msg, from.pk!!)
             "repair" -> onRepair(msg, from, m)
             "members" -> onMembers(msg, m)
+            "backup_made" -> onBackupMade()
             "add_failed" -> { note("Couldn't add the device: ${msg["reason"]}", "denied"); ui.update { it.copy(error = "Couldn't add the device: ${msg["reason"]}") } }
             "connected" -> onConnected(msg)
             "cosign_res", "ecdh_res" -> (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }
@@ -1203,7 +1352,8 @@ class Phone(private val context: Context) {
     }
 
     private fun open(e: Event): Map<*, *>? = try {
-        val secret = sk?.hexToBytes() ?: throw IllegalStateException()
+        val to = e.tags.firstOrNull { it.firstOrNull() == "p" }?.getOrNull(1)
+        val secret = (alsoFor[to] ?: sk)?.hexToBytes() ?: throw IllegalStateException()
         Json.parse(Nip44.decrypt(e.content, Nip44.conversationKey(secret, e.pubkey))) as? Map<*, *>
     } catch (_: Exception) { null }
 

@@ -78,6 +78,7 @@ fun App(phone: Phone, ui: Ui) {
             ui.offer != null -> JoinPrompt(ui.offer, phone::accept, phone::decline)
             ui.joining != null -> Joining(ui.joining, phone::decline)
             ui.joinCode != null && ui.member == null -> JoinCode(ui.joinCode, ui.error, phone::cancelJoin)
+            ui.restoring != null && ui.member == null -> RestoringScreen(ui.restoring, phone::cancelRestore)
             ui.member == null -> Welcome(ui.error, onJoin = phone::startJoin) { phone.clearError(); scanning = true }
             else -> Home(phone, ui) { phone.clearError(); scanning = true }
         }
@@ -87,6 +88,8 @@ fun App(phone: Phone, ui: Ui) {
         ui.adding?.let { AddDeviceSheet(it, phone) }
         ui.reporting?.let { ReportLostSheet(it, phone) }
         ui.removedBy?.let { RemovedSheet(it, phone) }
+        ui.paper?.let { PaperSheet(it, phone::closePaper) }
+        ui.recovery?.let { RecoverySheet(it.first, it.second, phone) }
     }
 }
 
@@ -113,6 +116,7 @@ private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit) = Pa
     Text("It's on your server's page, under “Add your phone”.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted, modifier = Modifier.align(Alignment.CenterHorizontally))
     Spacer(Modifier.height(8.dp))
     TextButton(onJoin, Modifier.align(Alignment.CenterHorizontally)) { Text("Already use Cosign on another device? Join with it", color = Vault.Teal) }
+    TextButton(onScan, Modifier.align(Alignment.CenterHorizontally)) { Text("Lost your phone? Scan your paper backup", color = Vault.Muted) }
 }
 
 @Composable
@@ -303,6 +307,7 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             }
         }
         item { TextButton(onScan, contentPadding = PaddingValues(0.dp)) { Text("Add a device", color = Vault.Teal) } }
+        item { PaperRow(m.group.members.any { it.role == "backup" }, ui.paperStatus, phone) }
 
         item { Heading("Sites that can sign as you") }
         if (ui.sites.isEmpty()) item { Muted("None yet. Tap Connect a site and scan a site's sign-in code.") }
@@ -519,6 +524,95 @@ private fun qrBitmap(text: String, size: Int): android.graphics.Bitmap {
     val m = com.google.zxing.qrcode.QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size)
     val px = IntArray(size * size) { i -> if (m[i % size, i / size]) android.graphics.Color.BLACK else android.graphics.Color.WHITE }
     return android.graphics.Bitmap.createBitmap(px, size, size, android.graphics.Bitmap.Config.ARGB_8888)
+}
+
+/** The paper backup: whether there is one, and making one (after this phone's lock). */
+@Composable
+private fun PaperRow(made: Boolean, status: String?, phone: Phone) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) phone.makePaper()
+    }
+    Column(Modifier.padding(top = 6.dp)) {
+        Text(if (made) "Paper backup: made" else "No paper backup yet. If you lose this phone, it's how you get your key back.",
+            color = if (made) Vault.Text else Vault.AmberText, style = MaterialTheme.typography.bodyMedium)
+        if (status != null) Text(status, color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+        else TextButton({
+            val ask = lockIntent(context, "Make a paper backup", "Confirm it's you to make a backup of your key")
+            if (ask == null) phone.lockMissing() else lock.launch(ask)
+        }, contentPadding = PaddingValues(0.dp)) { Text(if (made) "Make a new one" else "Make a paper backup", color = Vault.Teal) }
+    }
+}
+
+/** The paper backup's code, shown once: print it, or write it down, and keep it somewhere safe. */
+@Composable
+private fun PaperSheet(code: String, onClose: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Box(Modifier.fillMaxSize().background(Vault.Ground)) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp)) {
+            Text("Your paper backup", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+            Spacer(Modifier.height(10.dp))
+            Text("Print this, or photograph it onto something offline, and keep it somewhere safe. With it and your server, you can get your key back on a new phone, after a wait your other devices can stop. Cosign won't show it again.",
+                color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(16.dp))
+            val qr = remember(code) { qrBitmap(code, 720) }
+            androidx.compose.foundation.Image(qr.asImageBitmap(), "Paper backup", Modifier.fillMaxWidth().aspectRatio(1f).background(Color.White, RoundedCornerShape(12.dp)).padding(12.dp))
+            Spacer(Modifier.height(12.dp))
+            Text(code, fontFamily = PlexMono, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.weight(1f))
+            OutlinedButton({
+                context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, code), "Save your paper backup"))
+            }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Print or save…", color = Vault.Text) }
+            Spacer(Modifier.height(10.dp))
+            Button(onClose, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("I've kept it safe") }
+        }
+    }
+}
+
+/** This phone, being restored from a paper backup. */
+@Composable
+private fun RestoringScreen(r: cc.aaro.cosign.Restoring, onCancel: () -> Unit) = Page {
+    Spacer(Modifier.height(24.dp))
+    Text("Restoring from paper", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+    Spacer(Modifier.height(16.dp))
+    if (!r.failed && r.until == null) CircularProgressIndicator(color = Vault.Teal)
+    Text(r.text, color = if (r.failed) Vault.Danger else Vault.Text, style = MaterialTheme.typography.bodyLarge)
+    r.until?.let {
+        Spacer(Modifier.height(10.dp))
+        Text("Ready after ${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(it * 1000))}. Keep Cosign installed; it finishes by itself.",
+            color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
+    }
+    Spacer(Modifier.weight(1f))
+    TextButton(onCancel, Modifier.align(Alignment.CenterHorizontally)) { Text(if (r.failed) "Start again" else "Stop restoring", color = Vault.Muted) }
+}
+
+/** Your paper backup is being used for another phone. If that isn't you, stop it (with this phone's lock). */
+@Composable
+private fun RecoverySheet(name: String, until: Long, phone: Phone) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var hidden by remember { mutableStateOf(false) }
+    if (hidden) return
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) phone.cancelRecovery()
+    }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            Text("Your paper backup is being used", style = MaterialTheme.typography.titleLarge, color = Vault.Amber)
+            Spacer(Modifier.height(10.dp))
+            Text("$name is getting your key from your paper backup. If that isn't you, stop it now: someone has your paper.",
+                style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
+            Spacer(Modifier.height(20.dp))
+            OutlinedButton({ hidden = true }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("It's me", color = Vault.Text) }
+            Spacer(Modifier.height(10.dp))
+            Button({
+                val ask = lockIntent(context, "Stop it", "Confirm it's you to stop your paper backup being used")
+                if (ask == null) phone.lockMissing() else lock.launch(ask)
+            }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Danger, Vault.Ground)) { Text("Stop it") }
+        }
+    }
 }
 
 /** This phone's lock, asked for right then; null if it has none. */

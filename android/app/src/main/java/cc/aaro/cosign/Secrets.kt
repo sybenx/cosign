@@ -33,14 +33,19 @@ class Secrets(context: Context) {
         return gen.generateKey()
     }
 
-    fun saveMembership(json: String) {
+    fun saveMembership(json: String) = save("membership", json)
+    fun loadMembership(): String? = load("membership")
+
+    /** Anything small and secret, under [name]: sealed the same way. Null removes it. */
+    fun save(name: String, json: String?) {
+        if (json == null) return prefs.edit().remove(name).apply()
         val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         val sealed = c.iv + c.doFinal(json.toByteArray(Charsets.UTF_8))
-        prefs.edit().putString("membership", Base64.encodeToString(sealed, Base64.NO_WRAP)).apply()
+        prefs.edit().putString(name, Base64.encodeToString(sealed, Base64.NO_WRAP)).apply()
     }
 
-    fun loadMembership(): String? {
-        val sealed = prefs.getString("membership", null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
+    fun load(name: String): String? {
+        val sealed = prefs.getString(name, null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
         return try {
             val c = Cipher.getInstance("AES/GCM/NoPadding")
             c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, sealed, 0, 12))
