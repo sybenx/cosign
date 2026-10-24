@@ -1531,20 +1531,16 @@ class Phone(private val context: Context, val slot: String = "0") {
         else { reply(mapOf("ok" to false, "reason" to "declined on the phone")); note("You declined: ${ask.hold} (${ask.app})", "denied") }
     }
 
+    /** FROST (RFC 9591) only: the earlier hand-rolled math is no longer taken. */
     private fun sign(ask: Ask, m: Membership, reply: (Map<String, Any?>) -> Unit) {
-        if (ask.frost == 2) {
-            val group = groupJson(m)
-            val cs = m.shares.map { it to (Json.parse(FrostNative.commit(group, it.idx, it.secret)) as Map<*, *>) }
-            val mine = cs.map { it.second["commit"] as Map<*, *> }
-            val theirs = ask.commits.map { mapOf("idx" to it.idx, "D" to it.D, "E" to it.E) }
-            val all = Json.stringify(theirs + mine)
-            val zs = cs.map { (s, c) -> listOf(s.idx, FrostNative.sign(group, s.idx, s.secret, c["nonces"] as String, ask.msg, all)) }
-            return reply(mapOf("ok" to true, "commits" to mine, "zs" to zs, "commit" to mine[0], "z" to zs[0][1]))
-        }
-        if (m.shares.size > 1 || ask.commits.size > 1) return reply(mapOf("ok" to false, "reason" to "a weighted key signs only with the library"))
-        val (nonces, mine) = Frost.commit(m.idx, env)
-        val z = Frost.partialSign(m.group.groupX, ask.msg, listOf(ask.commit, mine), m.idx, m.share, nonces)
-        reply(mapOf("ok" to true, "z" to z, "commit" to mapOf("idx" to mine.idx, "D" to mine.D, "E" to mine.E)))
+        if (ask.frost != 2) return reply(mapOf("ok" to false, "reason" to "only FROST (RFC 9591) rounds are taken"))
+        val group = groupJson(m)
+        val cs = m.shares.map { it to (Json.parse(FrostNative.commit(group, it.idx, it.secret)) as Map<*, *>) }
+        val mine = cs.map { it.second["commit"] as Map<*, *> }
+        val theirs = ask.commits.map { mapOf("idx" to it.idx, "D" to it.D, "E" to it.E) }
+        val all = Json.stringify(theirs + mine)
+        val zs = cs.map { (s, c) -> listOf(s.idx, FrostNative.sign(group, s.idx, s.secret, c["nonces"] as String, ask.msg, all)) }
+        reply(mapOf("ok" to true, "commits" to mine, "zs" to zs, "commit" to mine[0], "z" to zs[0][1]))
     }
 
     private fun expire(id: String) {

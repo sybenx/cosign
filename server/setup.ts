@@ -1,14 +1,13 @@
-// One-time setup: make a key, split it 2-of-3, write a state file for each server.
+// One-time setup: write a state file for each server of a new account.
 //
-//   node setup.ts                 fresh throwaway key
-//   node setup.ts --nsec nsec1... split a key you already have
-//   node setup.ts --force         overwrite existing data/
-//   node setup.ts --dir test-data --port 8721   a second group beside it, for tests
-//   node setup.ts --dir /data --relays wss://syb.lol,wss://nos.lol   (in a container)
 //   node setup.ts --weighted      no key yet: your phone and the servers make one together
 //   node setup.ts --weighted --single   the same with one server (A) only
+//   node setup.ts --force         overwrite existing data/
+//   node setup.ts --dir /data --relays wss://syb.lol,wss://nos.lol   (in a container)
+//   node setup.ts --legacy [--nsec nsec1…] [--dir test-data --port 8721]
+//       the earlier 2-of-3, dealt here: only for the tests and the first test keys
 //
-// Share 1 goes to server A, share 2 to server B, and share 3 waits on server A
+// --legacy: share 1 goes to server A, share 2 to server B, and share 3 waits on server A
 // until your phone scans A's pairing code. Once the phone has it, A deletes it.
 // This script sees all three shares at once: that is what a trusted dealer is.
 //
@@ -45,6 +44,8 @@ if (args.includes('--nsec')) {
 }
 
 const weighted = args.includes('--weighted');
+// The earlier dealt 2-of-3 (threshold 2: one box with two shares can sign) only when asked for by name.
+if (!weighted && !args.includes('--legacy')) { console.error('Say --weighted (or --legacy for the earlier 2-of-3, for tests only).'); process.exit(1); }
 const single = args.includes('--single');
 if (weighted && secretHex) { console.error('--weighted makes a new key; it can\'t split one you have.'); process.exit(1); }
 const key = () => bytesToHex(randomBytes(32));

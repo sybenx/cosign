@@ -2,7 +2,7 @@
 // note dated ahead (a scheduled post) waits for the phone, and a list dated ahead that's
 // already out there is found and removed by its id.
 //
-//   (test servers made with `setup.ts --nsec <NSEC>`, fake phone paired)
+//   (test servers made with `setup.ts --legacy --nsec <NSEC>`, fake phone paired)
 //   NSEC=nsec1… node test/future.e2e.ts
 
 import { readFileSync } from 'node:fs';

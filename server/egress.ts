@@ -4,7 +4,9 @@
 //
 // - relays are wss:// only, and every address their name resolves to must be public (not
 //   loopback, private, CGNAT/tailnet, link-local, ULA, or a cloud metadata address),
-//   checked again at every connect, since a name can change what it points to;
+//   checked again at every connect, since a name can change what it points to, and the
+//   connection goes to the very address that was checked (so a name that answers
+//   differently a moment later, DNS rebinding, can't slip a private one in);
 // - the operator's own relay beside it (COSIGN_RELAY_MAP) and COSIGN_RELAY_ALLOW are
 //   trusted as they are;
 // - push endpoints are https:// on an allowed host (ntfy.sh, plus COSIGN_PUSH_HOSTS), with
@@ -12,6 +14,7 @@
 
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { Agent, WebSocket as UndiciWebSocket } from 'undici';
 import { normRelay } from './core/seal.ts';
 
 const list = (v?: string) => (v ?? '').split(',').map(s => s.trim()).filter(Boolean);
@@ -42,26 +45,48 @@ export function looksPublic(url: string): boolean {
   return !isIP(h) || !isPrivateAddress(h);
 }
 
-/** Every address this name stands for is public. An IP literal is checked as it is. */
-async function publicHost(host: string): Promise<boolean> {
+export interface Pinned { address: string; family: number }
+
+/** The address to connect to, if every address this name stands for is public; null if not. An IP literal is checked as it is. */
+async function publicAddress(host: string): Promise<Pinned | null> {
   const h = host.replace(/^\[|\]$/g, '');
-  if (isIP(h)) return !isPrivateAddress(h);
-  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.ts.net')) return false;
+  if (isIP(h)) return isPrivateAddress(h) ? null : { address: h, family: isIP(h) };
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.ts.net')) return null;
   try {
     const all = await lookup(h, { all: true, verbatim: true });
-    return all.length > 0 && all.every(a => !isPrivateAddress(a.address));
-  } catch { return false; }
+    return all.length > 0 && all.every(a => !isPrivateAddress(a.address)) ? all[0] : null;
+  } catch { return null; }
 }
 
-/** May this server open a connection to this relay? Asked at every connect. */
-export async function relayAllowed(url: string): Promise<boolean> {
-  const u = normRelay(url);
-  if (mapped.has(u) || allowRelays.has(u)) return true;
-  let p: URL;
-  try { p = new URL(u); } catch { return false; }
-  if (p.protocol !== 'wss:' || p.username || p.password || u.length > 200) return false;
-  return publicHost(p.hostname);
+/** A connection pool that reaches only `pin`, whatever the name says by then (TLS still checks the name). */
+export function pinnedAgent(pin: Pinned): Agent {
+  return new Agent({
+    connect: {
+      lookup: ((_host: string, opts: any, cb: any) => opts?.all ? cb(null, [{ address: pin.address, family: pin.family }]) : cb(null, pin.address, pin.family)) as any,
+    },
+  });
 }
+
+/** A WebSocket class (for nostr-tools' Relay) that connects to `pin` only. */
+export function pinnedWebSocket(pin: Pinned): typeof WebSocket {
+  const dispatcher = pinnedAgent(pin);
+  return class extends UndiciWebSocket {
+    constructor(url: string | URL, protocols?: string | string[]) { super(url, { dispatcher, ...(protocols ? { protocols } : {}) }); }
+  } as unknown as typeof WebSocket;
+}
+
+/** Where this server may connect for this relay, asked at every connect: null (nowhere), 'any' (the operator's, as named), or the one address it checked. */
+export async function relayTarget(url: string): Promise<null | 'any' | Pinned> {
+  const u = normRelay(url);
+  if (mapped.has(u) || allowRelays.has(u)) return 'any';
+  let p: URL;
+  try { p = new URL(u); } catch { return null; }
+  if (p.protocol !== 'wss:' || p.username || p.password || u.length > 200) return null;
+  return publicAddress(p.hostname);
+}
+
+/** May this server open a connection to this relay? */
+export const relayAllowed = async (url: string) => !!(await relayTarget(url));
 
 /** Only the relays in `urls` this server may use. */
 export async function allowedRelays(urls: string[]): Promise<string[]> {
@@ -69,10 +94,11 @@ export async function allowedRelays(urls: string[]): Promise<string[]> {
   return urls.filter((_, i) => ok[i]);
 }
 
-/** May this server POST to this push endpoint? */
-export async function pushAllowed(url: string): Promise<boolean> {
+/** The address to POST this push to, or null if it isn't a push endpoint this server may use. */
+export async function pushTarget(url: string): Promise<Pinned | null> {
   let p: URL;
-  try { p = new URL(url); } catch { return false; }
-  if (p.protocol !== 'https:' || p.username || p.password || !pushHosts.has(p.hostname.toLowerCase())) return false;
-  return publicHost(p.hostname);
+  try { p = new URL(url); } catch { return null; }
+  if (p.protocol !== 'https:' || p.username || p.password || !pushHosts.has(p.hostname.toLowerCase())) return null;
+  return publicAddress(p.hostname);
 }
+export const pushAllowed = async (url: string) => !!(await pushTarget(url));

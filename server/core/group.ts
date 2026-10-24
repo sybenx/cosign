@@ -189,10 +189,10 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (msg.type === 'dkg_start') return onDkgStart(msg, from);
     if (!from) return;
     deliverMail(from);
-    // A device reported lost can still say it wasn't.
-    if (from.removed && msg.type === 'not_me') return onNotMe(msg, from);
-    // A paper backup can settle a contest, as a third device would.
-    if (from.role === 'backup' && msg.type === 'guard_settle') return settleGuard(msg, from);
+    // Nothing from a member taken out (a device reported lost, an old paper): it must get
+    // nothing more from this server, not even a piece of a decryption. Removal is final;
+    // a device removed by mistake is added again by one of yours, or the paper.
+    if (from.removed) return;
 
     const fromPhone = isDevice(from); // any of your devices
     switch (msg.type) {
@@ -209,9 +209,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'remove_member': { if (fromPhone) onRemove(msg, from); return; }
       case 'take_out': { if (fromPhone) onTakeOut(msg, from); return; }
       case 'forget': { if (fromPhone) onForget(msg, from); return; }
-      case 'guard_contest': { if (fromPhone) contestGuard(msg, from); return; }
       case 'guard_cancel': { if (fromPhone) cancelGuard(msg, from); return; }
-      case 'guard_settle': { if (fromPhone) settleGuard(msg, from); return; }
       case 'refresh_request': { if (fromPhone && msg.lock === true && msg.plan) startRefresh(msg.plan as RefreshPlan, from); return; }
       case 'refresh_part': { refresh?.take(msg, fromPk); return; }
       case 'backup_piece': { const a = adding.get(String(msg.id)); if (a?.backup && (a.by.idx === from.idx || a.extras.some(x => x.idx === from.idx))) backupPiece(a, String(msg.id), { from: from.pk!, content: String(msg.content), epoch: S.epoch ?? 0 }); return; }
@@ -346,10 +344,11 @@ export function openGroup(loaded: Loaded, io: Io) {
         case 'switch_relays': return answer({ result: JSON.stringify(S.group.relays) });
         case 'get_relays': return answer({ result: JSON.stringify(Object.fromEntries(S.group.relays.map((r: string) => [r, { read: true, write: true }]))) });
         case 'sign_event': return answer({ result: JSON.stringify(await frostSign(JSON.parse(req.params[0]), s.origin, { site: s.pk })) });
-        case 'nip44_encrypt': return answer({ result: nip44.v2.encrypt(req.params[1], await groupNip44Key(req.params[0])) });
-        case 'nip44_decrypt': return answer({ result: nip44.v2.decrypt(req.params[1], await groupNip44Key(req.params[0])) });
-        case 'nip04_encrypt': return answer({ result: await groupNip04(req.params[0], req.params[1], false) });
-        case 'nip04_decrypt': return answer({ result: await groupNip04(req.params[0], req.params[1], true) });
+        // Not for sites that connect by code (NIP-46): every such site shares one signer key,
+        // so any of them could ask to read every message. Messages go through the Cosign
+        // app or extension, which ask your device, until each site has a key of its own.
+        case 'nip44_encrypt': case 'nip44_decrypt': case 'nip04_encrypt': case 'nip04_decrypt':
+          return answer({ error: 'unsupported: Use the Cosign app or extension for messages.' });
         default: return answer({ error: `unsupported method ${req.method}` });
       }
     } catch (err: any) {
@@ -473,10 +472,9 @@ export function openGroup(loaded: Loaded, io: Io) {
       const theirZs: [number, string][] = res.zs ?? (res.commit ? [[res.commit.idx, res.z]] : []);
       if (!sameSet(theirs.map(c => c.idx), sharesOf(m)) || !sameSet(theirZs.map(z => z[0]), sharesOf(m))) return { m, reason: 'bad partial' };
       const commits = [...mine.commits, ...theirs];
-      // Whichever math the partner used (it may not be updated yet), finish the round in it.
-      const scheme = Sig.schemeOfAll(S.group, id, commits, theirZs);
-      if (!scheme) return { m, reason: 'bad partial' };
-      io.debug?.(`${m.name} signed with ${scheme === 2 ? 'FROST (RFC 9591)' : 'the earlier math'}`);
+      // FROST (RFC 9591) only: the earlier hand-rolled math is no longer taken.
+      if (Sig.schemeOfAll(S.group, id, commits, theirZs) !== 2) return { m, reason: 'bad partial' };
+      const scheme = 2 as const;
       const zs = Sig.partialAll(scheme, S.group, myShares, mine.nonces, id, commits);
       return { m, signed: { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [...zs, ...theirZs]) } as Event };
     }
@@ -623,7 +621,8 @@ export function openGroup(loaded: Loaded, io: Io) {
       note(`refused to co-sign for ${from.name}: ${hold} needs your phone`);
       return respond({ ok: false, reason: `${hold} needs your phone` });
     }
-    return respond(cosign(msg, msg.frost === 2 ? 2 : 1));
+    if (msg.frost !== 2) return respond({ ok: false, reason: 'update Cosign: only FROST (RFC 9591) rounds are taken' });
+    return respond(cosign(msg, 2));
   }
 
   /** Our commitments and partials for a round someone else runs, over its commitments and ours. */
@@ -638,7 +637,12 @@ export function openGroup(loaded: Loaded, io: Io) {
   function onEcdhReq(msg: any, from: Member): object {
     const respond = (r: object) => ({ type: 'ecdh_res', id: msg.id, ...r });
     if (forgetting()) return respond({ ok: false, reason: 'this server is removing its pieces of the account' });
+    // Only one of your devices, or another server running the round for one: never the
+    // paper, which with this server's piece could read every message at once, with no
+    // wait and nobody told. And the shares taking part must be enough to sign.
+    if (!isDevice(from) && from.role !== 'server') return respond({ ok: false, reason: 'not allowed' });
     if (!Array.isArray(msg.participants) || !sameSet(msg.participants, [...sharesOf(from), ...myIdxs])) return respond({ ok: false, reason: 'bad request' });
+    if (msg.participants.length < S.group.threshold) return respond({ ok: false, reason: 'bad request' });
     // The phone asks on behalf of an app it has let read your messages; that app must still have access.
     if (isDevice(from) && !liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
     const points = myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
@@ -933,9 +937,12 @@ export function openGroup(loaded: Loaded, io: Io) {
     const backup = msg.backup === true;
     const asServer = msg.server === true;
     const next = Math.max(...members.flatMap(sharesOf)) + 1;
-    const count = backup ? (members.filter(m => m.role === 'server' && !m.removed).length < 2 ? 3 : 2) : grow ? 3 : asServer ? 1 : sharesOf(by).length;
-    // A paper must never be enough to sign alone (keys made before weighted ones have threshold 2).
-    if (backup && count >= S.group.threshold) throw new Error('this key is too old for a paper backup: its paper could sign on its own');
+    // A paper is always 2: with a server it can bring the account back (2 + 1 + 1 of a
+    // second server), never alone, nor with one server. So it needs two servers first.
+    if (backup && members.filter(m => m.role === 'server' && !m.removed).length < 2) throw new Error('add a second server first: a paper backup needs two');
+    const count = backup ? 2 : grow ? 3 : asServer ? 1 : sharesOf(by).length;
+    // A paper must never be enough to sign alone, or with one server (keys made before weighted ones have threshold 2).
+    if (backup && count + 1 >= S.group.threshold) throw new Error('this account is too old for a paper backup: its paper could sign with one server');
     const ks = asServer && Number.isInteger(msg.k) && msg.k >= next ? [msg.k as number] : Array.from({ length: count }, (_, i) => next + i);
     // The vouching device and this server, and if that's short of the threshold (a device
     // restored from a 2-share paper, say), other servers too.
@@ -1054,6 +1061,15 @@ export function openGroup(loaded: Loaded, io: Io) {
     members.push({ idx: a.ks[0], name: a.name, role: a.asServer ? 'server' : 'device', pk: a.pk, sharePub: shares[0].sharePub, push: null, ...(shares.length > 1 ? { shares } : {}) });
     // A new server may be reachable only where it listens (a Worker is its own relay): keep listening there.
     if (a.asServer && a.relays?.length) { S.group.relays = [...new Set([...S.group.relays, ...a.relays])].slice(0, 8); void io.listen(a.relays); }
+    // A paper made when there was one server holds 3: with this one it would reach 4 on its
+    // own. It's retired (it gets nothing more from any server), and your devices are asked
+    // for a new one (2), and to refresh so its shares stop counting.
+    if (a.asServer) for (const b of members) if (b.role === 'backup' && !b.removed && sharesOf(b).length >= 3) {
+      b.removed = now();
+      if (S.backup?.pk === b.pk) S.backup = null;
+      toDevices({ type: 'paper_retired', reason: 'second-server' });
+      note('your paper backup was made with one server: retired now that there are two. Make a new one.');
+    }
     lastSeen.set(a.ks[0], io.now());
     save();
     toOther({ type: 'members', members });
@@ -1204,7 +1220,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (!target.removed) {
       const why = mayStart(msg, by);
       if (why) return fail(why);
-      // At once: a lost device mustn't take part in anything more. It can still say it wasn't lost (not_me).
+      // At once, and for good: a lost device mustn't take part in anything more.
       target.removed = now(); target.removedBy = by.idx;
       startGuard('remove', msg, by, { target: target.idx, wait: 0 });
       send(target.pk, { type: 'removed', by: by.name });
@@ -1263,20 +1279,6 @@ export function openGroup(loaded: Loaded, io: Io) {
     note(`your key moved to epoch ${r.epoch}: the lost device's pieces no longer combine with anything`);
   }
 
-  /** The device reported lost says it's the user's: block the one that reported it too, until it's settled. */
-  function onNotMe(msg: any, from: Member) {
-    if (msg.lock !== true || from.contested) return;
-    from.contested = now();
-    const by = members.find(m => m.idx === from.removedBy);
-    if (by && !by.removed) { by.removed = now(); by.contested = now(); }
-    const g = (S.guards as Guard[] ?? []).filter(x => x.kind === 'remove' && x.target === from.idx).pop();
-    if (g) { g.contested = now(); g.contestedBy = from.idx; tellGuard(g); }
-    save();
-    toOther({ type: 'members', members });
-    toDevices({ type: 'contested', removed: from.name, by: by?.name ?? 'a device' });
-    note(`${from.name} says it wasn't lost: ${by?.name ?? 'the device that reported it'} is blocked too, until another of your devices or your paper backup settles it`);
-  }
-
   // --- Guarded actions (COSIGN.md §7.2) -------------------------------------------------
   //
   // Everything that takes something away goes through here, so the guards can't drift
@@ -1284,32 +1286,29 @@ export function openGroup(loaded: Loaded, io: Io) {
   // this server's share to the device that asked, after WAIT; or, with the paper,
   // announced before the phone shows the key) and removing the servers' pieces ('forget':
   // this server stops at once, and deletes them for real after WAIT). Each needs the lock
-  // of a live, uncontested device. Every device is told (and woken). Any other device can
-  // say "this wasn't me" (contest, with its lock): the action never completes, and the
-  // device that started it is blocked with the one that contested, until a third device
-  // or the paper settles which of them is yours. A waiting one can be cancelled by any
-  // device. Devices send each to every server, with one id.
+  // of a live device. Every device is told (and woken), and a waiting one can be
+  // cancelled by any of them, with its lock. Devices send each to every server, with one id.
 
   interface Guard {
     id: string; kind: 'remove' | 'take_out' | 'forget'; by: number; byName: string; target?: number;
     at: number; until: number; paper?: boolean;
-    contested?: number; contestedBy?: number; cancelled?: number; cancelledBy?: string; settled?: number; done?: number;
+    cancelled?: number; cancelledBy?: string; done?: number;
   }
   S.guards ??= [];
   const guards = () => S.guards as Guard[];
   const guardById = (id: unknown) => guards().find(g => g.id === String(id));
-  const active = (g: Guard) => !g.done && !g.cancelled && !g.contested;
+  const active = (g: Guard) => !g.done && !g.cancelled;
   /** Why `by` can't start one now, or null. */
   function mayStart(msg: any, by: Member): string | null {
     if (msg.lock !== true) return 'this needs your device’s lock';
-    if (!isDevice(by) || by.contested) return 'this device can’t do that now';
+    if (!isDevice(by)) return 'this device can’t do that now';
     if (!/^[0-9a-f]{8,64}$/.test(String(msg.id ?? ''))) return 'damaged request';
     return null;
   }
   const guardView = (g: Guard) => ({
     id: g.id, kind: g.kind, by: g.byName, target: g.target != null ? members.find(m => m.idx === g.target)?.name ?? null : null,
     at: g.at, until: g.until, paper: !!g.paper,
-    state: g.done ? 'done' : g.cancelled ? 'cancelled' : g.contested ? 'contested' : 'waiting',
+    state: g.done ? 'done' : g.cancelled ? 'cancelled' : 'waiting',
   });
   /** Every device hears of every change to one, and is woken for a new one. */
   function tellGuard(g: Guard, wake = false) {
@@ -1354,57 +1353,24 @@ export function openGroup(loaded: Loaded, io: Io) {
   }
 
   /** Stopped while its pieces wait to be deleted: no signing, no decrypting. */
-  const forgetting = () => guards().some(g => g.kind === 'forget' && !g.cancelled && !g.contested);
-
-  function contestGuard(msg: any, from: Member) {
-    const g = guardById(msg.id);
-    if (!g || msg.lock !== true || g.done && !g.paper || g.cancelled || g.contested || from.contested || from.idx === g.by) return;
-    g.contested = now(); g.contestedBy = from.idx;
-    const by = members.find(m => m.idx === g.by);
-    if (by && !by.removed) { by.removed = now(); by.contested = now(); }
-    from.contested = now();
-    save();
-    toOther({ type: 'members', members });
-    toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
-    tellGuard(g, true);
-    note(`${from.name} says it wasn't them: ${g.byName} and ${from.name} are both blocked until another of your devices or your paper backup settles it`);
-  }
+  const forgetting = () => guards().some(g => g.kind === 'forget' && !g.cancelled);
 
   function cancelGuard(msg: any, from: Member) {
     const g = guardById(msg.id);
-    if (!g || msg.lock !== true || from.contested || !active(g)) return;
+    if (!g || msg.lock !== true || !active(g)) return;
     g.cancelled = now(); g.cancelledBy = from.name;
     save();
     tellGuard(g);
     note(`${from.name} stopped ${g.kind === 'take_out' ? 'taking your account out' : 'removing your servers’ pieces'}`);
   }
 
-  /** A third device, or the paper, says which side is yours: `keep` 'starter' (it goes on) or 'contester'. */
-  function settleGuard(msg: any, from: Member) {
-    const g = guardById(msg.id);
-    if (!g?.contested || g.settled || (from.role !== 'backup' && msg.lock !== true)) return;
-    if (from.idx === g.by || from.idx === g.contestedBy || from.idx === g.target || from.contested || from.removed) return;
-    const starter = members.find(m => m.idx === g.by), contester = members.find(m => m.idx === (g.contestedBy ?? g.target));
-    const [winner, loser] = msg.keep === 'starter' ? [starter, contester] : [contester, starter];
-    if (winner) { delete winner.removed; delete winner.contested; delete winner.removedBy; }
-    if (loser) { loser.removed ??= now(); loser.contested ??= now(); }
-    g.settled = now();
-    if (msg.keep === 'starter') { delete g.contested; if (g.kind !== 'remove' && !g.paper) g.until = Math.max(g.until, now()); }
-    else if (g.kind !== 'remove') g.cancelled = now();
-    save();
-    toOther({ type: 'members', members });
-    toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
-    tellGuard(g);
-    note(`${from.role === 'backup' ? 'Your paper backup' : from.name} settled it: ${winner?.name ?? 'a device'} is yours`);
-  }
-
-  /** Each tick: a wait that ran out, uncontested and not cancelled, completes. */
+  /** Each tick: a wait that ran out and wasn't cancelled completes. */
   function finishGuards() {
     for (const g of guards()) {
       if (!active(g) || now() < g.until) continue;
       const by = members.find(m => m.idx === g.by);
       if (g.kind === 'take_out') {
-        if (!by || !isDevice(by) || by.contested) continue;
+        if (!by || !isDevice(by)) continue;
         g.done = now(); save();
         send(by.pk, { type: 'released', id: g.id, shares: myShares, group: { groupX, threshold: S.group.threshold, members: publicMembers() } });
         tellGuard(g);

@@ -93,7 +93,7 @@ function dealt({ msg, from, memberSk: sk, holds, now }: Enrolling) {
   const g = msg.group;
   if (!g || typeof g.groupX !== 'string' || !/^[0-9a-f]{64}$/.test(g.groupX) || !Array.isArray(g.members) || !Array.isArray(g.relays)) throw new Error('bad-group: That group record is damaged.');
   const threshold = Number(g.threshold);
-  if (!Number.isInteger(threshold) || threshold < 2) throw new Error('bad-group: A group needs a threshold of at least 2.');
+  if (!Number.isInteger(threshold) || threshold < 4) throw new Error('bad-group: A new account needs a threshold of at least 4 (your device 3, each server 1).');
   const relays = g.relays.filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r)).slice(0, MAX_RELAYS);
   if (!relays.length) throw new Error('bad-group: A group needs relays.');
   const members: Member[] = g.members.map((m: any) => ({
@@ -104,6 +104,7 @@ function dealt({ msg, from, memberSk: sk, holds, now }: Enrolling) {
   const pk = pubOf(sk);
   const me = members.find(m => m.pk === pk);
   if (!me || me.role !== 'server') throw new Error('bad-group: The group record doesn’t list this server’s member key as one of its servers.');
+  if (members.filter(m => m.role === 'server').length < 2) throw new Error('bad-group: A new account needs at least two servers, so its paper backup and either server can bring it back.');
   const group: Sig.Group = { groupX: g.groupX, threshold, members };
 
   // Every share point on one line through the key, or signing would fail later, and confusingly.
@@ -172,7 +173,7 @@ function dkg({ msg, from, memberSk: sk, now }: Enrolling) {
   const g = msg.group, plan = msg.plan;
   if (!g || !Array.isArray(g.members) || !Array.isArray(g.relays)) throw new Error('bad-group: That group record is damaged.');
   const threshold = Number(g.threshold);
-  if (!Number.isInteger(threshold) || threshold < 2) throw new Error('bad-group: A group needs a threshold of at least 2.');
+  if (!Number.isInteger(threshold) || threshold < 4) throw new Error('bad-group: A new account needs a threshold of at least 4 (your device 3, each server 1).');
   const relays = g.relays.filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r)).slice(0, MAX_RELAYS);
   if (!relays.length) throw new Error('bad-group: A group needs relays.');
   const members = membersOf(g);
@@ -209,7 +210,7 @@ function repair({ msg, from, memberSk: sk, now }: Enrolling) {
   const g = msg.group;
   if (!g || !/^[0-9a-f]{64}$/.test(String(g.groupX)) || !Array.isArray(g.members) || !Array.isArray(g.relays)) throw new Error('bad-group: That group record is damaged.');
   const threshold = Number(g.threshold);
-  if (!Number.isInteger(threshold) || threshold < 2) throw new Error('bad-group: A group needs a threshold of at least 2.');
+  if (!Number.isInteger(threshold) || threshold < 4) throw new Error('bad-group: A new account needs a threshold of at least 4 (your device 3, each server 1).');
   const k = Number(msg.k);
   const members = membersOf(g);
   const pk = pubOf(sk);

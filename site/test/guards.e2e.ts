@@ -1,8 +1,10 @@
-// Guarded actions (COSIGN.md §7.2), on a weighted key with one server: a phone, a tablet
+// Guarded actions (COSIGN.md §7.2), on a weighted key with two servers: a phone, a tablet
 // and a paper backup. Taking the account out through the server (after a wait every
 // device hears of), stopping it, taking it out with the paper (announced first, the
-// server's answer bound to the request), a contest the paper settles, and removing the
-// server's pieces: stopped at once, cancelled, then deleted for real after the wait.
+// server's answer bound to the request), reporting a device lost (final), and removing the
+// server's pieces: stopped at once, cancelled, then deleted for real after the wait. And
+// what a paper or a removed device can get from a server: nothing beyond its role (no
+// piece of a decryption, no signature).
 //
 //   node test/guards.e2e.ts      (sets up its own group in server/test-guards/; the wait is 6 s here)
 
@@ -36,10 +38,9 @@ const run = (args: string[], env: Record<string, string> = {}) => {
 
 spawnSync('pkill', ['-f', 'server.ts test-guards/']);
 for (const f of [phoneFile, tabletFile, paperFile]) if (existsSync(f)) rmSync(f);
-spawnSync('node', ['setup.ts', '--dir', 'test-guards', '--port', '8758', '--weighted', '--single', '--force'], { cwd: serverDir });
+spawnSync('node', ['setup.ts', '--dir', 'test-guards', '--port', '8758', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });
-const l = openSync(`${serverDir}logs/guards-a.log`, 'w');
-kids.push(spawn('node', ['server.ts', 'test-guards/a'], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '6' } }));
+for (const s of ['a', 'b']) { const l = openSync(`${serverDir}logs/guards-${s}.log`, 'w'); kids.push(spawn('node', ['server.ts', `test-guards/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '6' } })); }
 await sleep(3000);
 
 // --- The key: a phone, a tablet, a paper ------------------------------------------------
@@ -47,7 +48,7 @@ await sleep(3000);
 const html = await (await fetch('http://localhost:8758/')).text();
 const uri = html.match(/href="(cosign:pair\?[^"]+)"/)![1].replaceAll('&amp;', '&');
 const phone = run(['test/fake-phone.ts', uri], { PHONE_STATE: phoneFile, PAPER_FILE: paperFile });
-check('the phone and the server make a key', await waitFor(() => phone.out().includes('made npub'), 60_000));
+check('the phone and two servers make a key', await waitFor(() => phone.out().includes('made npub'), 60_000));
 await sleep(5000);
 const ph = json(phoneFile);
 const server = ph.group.members.find((m: any) => m.role === 'server');
@@ -86,6 +87,29 @@ const paper = json(paperFile);
 keys.set(tabletPk, tb.sk); keys.set(pubOf(paper.sk), paper.sk);
 listen();
 await sleep(2000);
+const paperPk = pubOf(paper.sk);
+const paperKs: number[] = state().group.members.find((m: any) => m.role === 'backup').shares.map((x: any) => x.idx);
+check('the paper holds 2', paperKs.length === 2);
+const peerX = getPublicKey(randomBytes(32));
+
+// --- What the paper can get: its pieces, nothing else -------------------------------------
+
+const e1 = hex();
+as(paper.sk, { type: 'ecdh_req', id: e1, participants: [...paperKs, server.idx], peerX });
+await waitFor(() => got(paperPk, m => m.type === 'ecdh_res' && m.id === e1), 8000);
+check('the paper gets no piece of a decryption', !got(paperPk, m => m.type === 'ecdh_res' && m.id === e1 && m.ok));
+const s1 = hex();
+as(paper.sk, { type: 'sign_req', id: s1, msg: hex(32), participants: [...paperKs, server.idx], commits: [], frost: 2, event: { pubkey: ph.group.groupX, kind: 1, content: '', tags: [], created_at: 0 } });
+await waitFor(() => got(paperPk, m => m.type === 'sign_res' && m.id === s1), 8000);
+check('nor a signature', !got(paperPk, m => m.type === 'sign_res' && m.id === s1 && m.ok));
+const b1 = hex();
+as(paper.sk, { type: 'backup_get', id: b1 });
+check('but it can fetch its own pieces', await waitFor(() => got(paperPk, m => m.type === 'backup'), 10_000));
+const e2 = hex();
+as(tb.sk, { type: 'ecdh_req', id: e2, participants: [server.idx], peerX });
+await waitFor(() => got(tabletPk, m => m.type === 'ecdh_res' && m.id === e2), 8000);
+check('a device asking with fewer shares than it takes to sign gets nothing', !got(tabletPk, m => m.type === 'ecdh_res' && m.id === e2 && m.ok));
+
 const group = () => ({ groupX: ph.group.groupX, threshold: 4, members: state().group.members.flatMap((m: any) => m.shares ?? [{ idx: m.idx, sharePub: m.sharePub }]) });
 
 // --- Taking the account out through the server ------------------------------------------
@@ -133,24 +157,30 @@ as(ph.sk, { type: 'take_out', id: t3, lock: true, paper: true });
 check('the server answers this request, signed by its member key', await waitFor(() => got(phonePk, m => m.type === 'noted' && m.id === t3), 15_000));
 check('and every device hears it was taken out', await waitFor(() => got(tabletPk, m => m.type === 'guard' && m.id === t3 && m.paper && m.state === 'done'), 15_000));
 
-// --- A contest, settled by the paper -----------------------------------------------------
+// --- Reported lost: at once, and for good -------------------------------------------------
 
-const t4 = hex();
-as(ph.sk, { type: 'take_out', id: t4, lock: true });
-await waitFor(() => got(tabletPk, m => m.type === 'guard' && m.id === t4), 15_000);
-as(tb.sk, { type: 'guard_contest', id: t4, lock: true });
-check('the tablet says it wasn’t them: both are blocked', await waitFor(() => { const ms = state().group.members; return ms.find((m: any) => m.pk === phonePk)?.contested && ms.find((m: any) => m.pk === tabletPk)?.contested; }, 15_000));
-await sleep(8000);
-check('a contested one never completes', !got(phonePk, m => m.type === 'released' && m.id === t4));
+as(tb.sk, { type: 'remove_member', id: hex(), idx: ph.idx });
+await sleep(2000);
+check('without the lock, a device isn’t removed', !state().group.members.find((m: any) => m.pk === phonePk)?.removed);
+const r1 = hex();
+as(tb.sk, { type: 'remove_member', id: r1, idx: ph.idx, lock: true });
+check('the tablet reports the phone lost: removed at once', await waitFor(() => !!state().group.members.find((m: any) => m.pk === phonePk)?.removed, 15_000));
+check('every device is told', await waitFor(() => got(tabletPk, m => m.type === 'guard' && m.id === r1 && m.kind === 'remove' && m.state === 'done'), 15_000));
 const t5 = hex();
 as(ph.sk, { type: 'take_out', id: t5, lock: true });
-await sleep(2000);
-check('a blocked device can’t start another', !state().guards?.some((g: any) => g.id === t5));
-as(paper.sk, { type: 'guard_settle', id: t4, keep: 'contester' });
-check('the paper says the tablet is yours: the tablet is free, the phone stays out', await waitFor(() => {
-  const ms = state().group.members; const p = ms.find((m: any) => m.pk === phonePk), t = ms.find((m: any) => m.pk === tabletPk);
-  return !t?.contested && !t?.removed && !!p?.removed;
-}, 15_000));
+as(ph.sk, { type: 'guard_cancel', id: r1, lock: true });
+await sleep(3000);
+check('a removed device can’t start or cancel anything', !state().guards?.some((g: any) => g.id === t5) && !state().guards?.find((g: any) => g.id === r1)?.cancelled);
+
+// --- A device taken out gets nothing at all -------------------------------------------------
+
+const [x1, x2, x3] = [hex(), hex(), hex()];
+as(ph.sk, { type: 'ecdh_req', id: x1, participants: [...ph.shares.map((x: any) => x.idx), server.idx], peerX });
+as(ph.sk, { type: 'cosign_req', id: x2, event: { kind: 1, content: 'x', tags: [], created_at: Math.floor(Date.now() / 1000) } });
+const backups = heard.filter(h => h.to === phonePk && h.m.type === 'backup').length;
+as(ph.sk, { type: 'backup_get', id: x3 });
+await sleep(6000);
+check('the phone, taken out, gets no answer to anything', !got(phonePk, m => [x1, x2].includes(m.id)) && heard.filter(h => h.to === phonePk && h.m.type === 'backup').length === backups);
 
 // --- Removing the server's pieces, for real -----------------------------------------------
 

@@ -9,6 +9,16 @@ import { Relay, type Subscription } from 'nostr-tools/relay';
 import { verifyEvent, type Event } from 'nostr-tools/pure';
 import type { Filter } from 'nostr-tools/filter';
 import { normRelay } from './core/seal.ts';
+import { pinnedWebSocket, type Pinned } from './egress.ts';
+import { AbstractRelay } from 'nostr-tools/abstract-relay';
+
+/** Open a relay: as named, or at the one address the egress check gave (`to`). */
+export async function openRelay(url: string, to: 'any' | Pinned): Promise<Relay> {
+  if (to === 'any') return Relay.connect(url);
+  const r = new AbstractRelay(url, { verifyEvent, websocketImplementation: pinnedWebSocket(to) });
+  await r.connect();
+  return r as unknown as Relay;
+}
 
 // The sealing itself has no I/O, so it lives with the core; everything that used it from here still can.
 export { KIND_MEMBER, KIND_NIP46, normRelay, sealTo, sealParts, Parts, openFrom, pubOf } from './core/seal.ts';
@@ -31,7 +41,8 @@ export class Pool {
   private onEvent: (e: Event, relay: string) => void;
   private log: (t: string) => void;
   /** A server's check on where it may connect (egress.ts), asked at every connect; and how many relays at most. */
-  guard?: (url: string) => Promise<boolean>;
+  /** Where it may connect for a relay: null (not at all), 'any' (as named), or the address it checked (egress.ts). */
+  guard?: (url: string) => Promise<null | 'any' | Pinned>;
   max = Infinity;
   constructor(urls: string[], onEvent: (e: Event, relay: string) => void, log: (t: string) => void = () => {}) {
     this.urls = [...urls]; this.onEvent = onEvent; this.log = log;
@@ -62,9 +73,10 @@ export class Pool {
   private async connect(url: string) {
     this.conns.set(url, null);
     // Not somewhere this server may go (now: what a name points to can change).
-    if (this.guard && !(await this.guard(url).catch(() => false))) { this.log(`refused relay ${url}`); setTimeout(() => this.connect(url), 600_000); return; }
+    const to = this.guard ? await this.guard(url).catch(() => null) : 'any';
+    if (!to) { this.log(`refused relay ${url}`); setTimeout(() => this.connect(url), 600_000); return; }
     try {
-      const r = await Relay.connect(dial(url));
+      const r = await openRelay(dial(url), to);
       r.onclose = () => { this.conns.set(url, null); setTimeout(() => this.connect(url), 5000); };
       this.conns.set(url, r);
       this.subscribe(url, r);

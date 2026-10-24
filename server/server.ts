@@ -19,14 +19,16 @@ import { finalizeEvent, type Event } from 'nostr-tools/pure';
 import { nip19 } from 'nostr-tools';
 import type { Filter } from 'nostr-tools/filter';
 import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
-import { Pool, sealParts, openFrom, Parts, normRelay, pubOf, dial, KIND_MEMBER, KIND_NIP46 } from './net.ts';
+import { Pool, sealParts, openFrom, Parts, normRelay, pubOf, dial, openRelay, KIND_MEMBER, KIND_NIP46 } from './net.ts';
+import type { Relay } from 'nostr-tools/relay';
 import { openGroup, type Group } from './core/group.ts';
 import type { Io } from './core/io.ts';
 import { enrollers, memberSk, newMemberKey } from './core/enroll.ts';
 import { loadGroup, groupFiles, isGroupDir, createGroup, writeJson } from './files.ts';
 import { groupPage, hostPage, esc } from './page.ts';
 import { checkClock, trustedNow } from './clock.ts';
-import { relayAllowed, allowedRelays, pushAllowed, looksPublic } from './egress.ts';
+import { relayTarget, pushTarget, pinnedAgent, looksPublic } from './egress.ts';
+import { fetch as pinnedFetch } from 'undici';
 
 const args = process.argv.slice(2);
 const opt = (name: string) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
@@ -94,22 +96,40 @@ const relaysOf = (x: Served) => [...new Set([...x.g.relays(), ...x.extra])];
 
 const pool = new Pool([], onEvent, t => console.log(`[relays] ${t}`));
 // Strangers name relays and push endpoints here: only public places, and not too many (egress.ts).
-pool.guard = relayAllowed;
+pool.guard = relayTarget;
 pool.max = Number(process.env.COSIGN_MAX_RELAYS ?? 300);
+
+/** Up to 12 of these relays, each opened at the address the egress check gave (or as named, for the operator's). */
+async function openOut(relays: string[], ms: number): Promise<Relay[]> {
+  const urls = [...new Set(relays.map(normRelay))].slice(0, 12);
+  const opened = await Promise.allSettled(urls.map(async u => {
+    const to = await relayTarget(u);
+    if (!to) throw new Error('not allowed');
+    return await Promise.race([
+      openRelay(dial(u), to),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
+    ]);
+  }));
+  return opened.flatMap(r => r.status === 'fulfilled' ? [r.value] : []);
+}
 
 /** How many relays took it. */
 async function publishOut(relays: string[], e: Event): Promise<number> {
-  const targets = [...new Set((await allowedRelays(relays)).slice(0, 12).map(dial))];
-  const p = new SimplePool();
-  const r = await Promise.allSettled(p.publish(targets, e as any));
-  p.close(targets);
+  const open = await openOut(relays, 5000);
+  const r = await Promise.allSettled(open.map(x => Promise.race([x.publish(e), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))])));
+  for (const x of open) x.close();
   return r.filter(x => x.status === 'fulfilled').length;
 }
 
 async function query(relays: string[], filter: Filter, maxWait: number): Promise<Event[]> {
-  const targets = [...new Set((await allowedRelays(relays)).slice(0, 12).map(dial))];
-  const p = new SimplePool();
-  try { return await p.querySync(targets, filter, { maxWait }); } finally { p.close(targets); }
+  const open = await openOut(relays, Math.min(maxWait, 5000));
+  const got = new Map<string, Event>();
+  await Promise.all(open.map(x => new Promise<void>(resolve => {
+    const t = setTimeout(() => { sub.close(); resolve(); }, maxWait);
+    const sub = x.subscribe([filter], { onevent: (e: Event) => { got.set(e.id, e); }, oneose: () => { clearTimeout(t); sub.close(); resolve(); } });
+  })));
+  for (const x of open) x.close();
+  return [...got.values()];
 }
 
 /** Load one group's directory and give it its Io. It starts (`start()`) once the relays listen for it. */
@@ -123,7 +143,7 @@ function serve(dir: string): Served | undefined {
     publish: e => pool.publish(e, relaysOf(x)),
     listen: async (relays, ms) => { for (const r of relays) x.extra.add(normRelay(r)); await pool.add(relays, ms); },
     publishOut: async (r, e) => { await publishOut(r, e); }, query,
-    push: async url => { if (await pushAllowed(url)) return fetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' }, redirect: 'manual' }); },
+    push: async url => { const to = await pushTarget(url); if (to) return pinnedFetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' }, redirect: 'manual', dispatcher: pinnedAgent(to) }); },
     now: () => Date.now(),
     trustedNow,
     save: groupFiles(dir),

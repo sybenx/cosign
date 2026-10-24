@@ -1,4 +1,4 @@
-// The paper backup (COSIGN.md §8), with one server, so the paper holds 3 shares: the
+// The paper backup (COSIGN.md §8), with two servers, so the paper holds 2 shares: the
 // phone makes it; a tablet is added and reported lost, so the key refreshes and the
 // paper's part of that is kept for it; the phone is lost. A new phone reads the paper:
 // its first try is cancelled by a device still around, the second waits out the
@@ -33,16 +33,15 @@ const run = (args: string[], env: Record<string, string> = {}) => {
 
 spawnSync('pkill', ['-f', 'server.ts test-paper/']);
 for (const f of [phoneFile, tabletFile, newFile, paperFile]) if (existsSync(f)) rmSync(f);
-spawnSync('node', ['setup.ts', '--dir', 'test-paper', '--port', '8757', '--weighted', '--single', '--force'], { cwd: serverDir });
+spawnSync('node', ['setup.ts', '--dir', 'test-paper', '--port', '8757', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });
-const l = openSync(`${serverDir}logs/paper-a.log`, 'w');
-kids.push(spawn('node', ['server.ts', 'test-paper/a'], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '12' } }));
+for (const s of ['a', 'b']) { const l = openSync(`${serverDir}logs/paper-${s}.log`, 'w'); kids.push(spawn('node', ['server.ts', `test-paper/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '12' } })); }
 await sleep(3000);
 
 const html = await (await fetch('http://localhost:8757/')).text();
 const uri = html.match(/href="(cosign:pair\?[^"]+)"/)![1].replaceAll('&amp;', '&');
 let phone = run(['test/fake-phone.ts', uri], { PHONE_STATE: phoneFile, PAPER_FILE: paperFile });
-check('the phone and one server make a key', await waitFor(() => phone.out().includes('made npub'), 60_000));
+check('the phone and two servers make a key', await waitFor(() => phone.out().includes('made npub'), 60_000));
 await sleep(5000);
 const ph = json(phoneFile);
 const server = ph.group.members.find((m: any) => m.role === 'server');
@@ -56,7 +55,7 @@ asPhone(phonePk, { type: 'test_backup' });
 check('the phone makes a paper backup', await waitFor(() => phone.out().includes('PAPER made'), 40_000));
 await sleep(2000);
 const paperMember = state().group.members.find((m: any) => m.role === 'backup');
-check('3 shares for the paper while there is one server; nobody holds them', paperMember?.shares?.length === 3 && !JSON.stringify(state()).includes(json(paperFile).sk));
+check('2 shares for the paper; nobody holds them', paperMember?.shares?.length === 2 && !JSON.stringify(state()).includes(json(paperFile).sk));
 
 // A tablet, reported lost: the key refreshes, and the paper's part is kept for it.
 const tablet = run(['test/fake-device.ts', 'Test tablet'], { DEVICE_STATE: tabletFile });

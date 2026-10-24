@@ -27,7 +27,7 @@ stack is left stopped.
    yet, and your phone and this server make it together, so neither can sign alone.
    Port 8711 lists every group it serves; open yours (`/g/<id>/`) and scan "Add your
    phone" with Cosign. (Before 0.11.2 this was a throwaway 2-of-3 with server B's share
-   in `/data/b` on the same box; that's now only `COSIGN_PERSONAL=dealt`.)
+   in `/data/b` on the same box; that's gone.)
 
 **On the relay's own stack, only ever press Edit → Deploy.** Update can't work there,
 and Stop/Restart take the relay down. To upgrade Ditto: new binary in `bin/`, bump the

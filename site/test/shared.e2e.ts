@@ -38,8 +38,8 @@ const waitFor = async (pred: () => boolean, ms: number) => { const until = Date.
 // --- Two keys, server A of each on host 1 and server B of each on host 2 ---------------
 
 execFileSync('rm', ['-rf', at('')]);
-execFileSync('node', ['setup.ts', '--dir', 'test-shared/k1', '--port', '8971'], { cwd: serverDir });
-execFileSync('node', ['setup.ts', '--dir', 'test-shared/k2', '--port', '8981'], { cwd: serverDir });
+execFileSync('node', ['setup.ts', '--legacy', '--dir', 'test-shared/k1', '--port', '8971'], { cwd: serverDir });
+execFileSync('node', ['setup.ts', '--legacy', '--dir', 'test-shared/k2', '--port', '8981'], { cwd: serverDir });
 const dealer = hex(), stranger = hex(); // the device that will enroll a third key, and one nobody invited
 const startH1 = () => run(['server.ts', '--root', 'test-shared/h1', '--port', '8970', 'test-shared/k1/a', 'test-shared/k2/a'], 'shared-h1.log', { COSIGN_INVITES: pubOf(dealer) });
 let h1 = startH1();
