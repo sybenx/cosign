@@ -1,9 +1,15 @@
 # Deploying the Cosign server
 
-## Beside syb.lol's Ditto relay (xumbrel, Dockge stack `ditto-relay`)
+## Beside syb.lol's Ditto relay (xumbrel) — DON'T deploy it this way
 
-`xumbrel/compose.yaml` is that stack's live compose file with one service added,
-`cosign`. `relay` and `caddy` are unchanged, so deploying doesn't restart them.
+**This took syb.lol down on 2026-10-23.** `xumbrel/compose.yaml` adds `cosign` to the
+live `ditto-relay` stack. Pressing Deploy in Dockge stopped the relay and Caddy, then
+tried to pull every image from Docker Hub; the locally built images can't be pulled,
+so it gave up with the relay stopped. The stack was restored by hand.
+
+Next time: a separate Dockge stack for Cosign that joins `ditto-relay`'s network as an
+external network, so deploying it can never touch the relay. Check what Dockge runs
+before pressing anything. The steps below are kept for reference only.
 
 1. Copy the server into the stack, and make its data directory (uid 1000):
 
