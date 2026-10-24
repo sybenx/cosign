@@ -95,6 +95,7 @@ import cc.aaro.cosign.PlaceCard
 import cc.aaro.cosign.Ref
 import cc.aaro.cosign.Social
 import cc.aaro.cosign.Startup
+import cc.aaro.cosign.Translate
 import cc.aaro.cosign.Ui
 import cc.aaro.cosign.appName
 import cc.aaro.cosign.core.Event
@@ -190,7 +191,7 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
     }
     val context = LocalContext.current
     LaunchedEffect(Unit) { Startup.mark("home composed", once = false) }
-    if (mixed.isNotEmpty()) LaunchedEffect(Unit) { androidx.compose.runtime.withFrameNanos { }; Startup.mark("first cards painted", once = false) }
+    if (mixed.isNotEmpty()) LaunchedEffect(Unit) { androidx.compose.runtime.withFrameNanos { }; Startup.mark("first cards painted", once = false); social.painted.complete(Unit) }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -354,7 +355,11 @@ private fun NeedCard(n: Need, phone: Phone, now: Long) = when (n) {
 @Composable
 private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav: Nav, onLike: () -> Unit, maxLines: Int = Int.MAX_VALUE, indent: Int = 0, lit: Boolean = false) {
     val author = people[n.pubkey]
-    val body = remember(n.id) { Body.of(n) }
+    // Translated by your LibreTranslate, if it was in another language; the original a tap away.
+    val translations by nav.social.translations.collectAsState()
+    val tr = translations[n.id]?.takeIf { it.from != null }
+    var original by remember(n.id) { mutableStateOf(false) }
+    val body = remember(n.id, tr, original) { Body.of(n, if (tr != null && !original) tr.text else n.content) }
     Row(
         Modifier.fillMaxWidth().background(if (lit) Vault.TealGround else Color.Transparent)
             .clickable { nav.thread(n.id) }.padding(start = 16.dp + (indent * 14).dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
@@ -375,10 +380,14 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
             if (indent == 0 && parentOf(n) != null) {
                 Text("Replying to ${to?.let { people[it]?.shown ?: shortNpub(it) } ?: "a note"}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
             }
-            val text = remember(n.id, people.size) { body.annotated(people, nav) }
+            val text = remember(body, people.size) { body.annotated(people, nav) }
             if (text.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
                 Text(text, color = Vault.Text, style = MaterialTheme.typography.bodyMedium, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+            }
+            tr?.let { t ->
+                Text("Translated from ${Translate.name(t.from) ?: "another language"} · " + if (original) "Show translation" else "Show original",
+                    color = Vault.Muted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp).clickable { original = !original })
             }
             // In a list, one picture, no taller than it is wide; a thread shows them all, whole.
             val full = maxLines == Int.MAX_VALUE
@@ -436,7 +445,7 @@ private class Body(val parts: List<Part>, val images: List<Img>, val mentions: L
         private val TOKEN = Regex("(https?://[^\\s<>\"]+)|nostr:((?:npub|nprofile|note|nevent)1[02-9ac-hj-np-z]+)|(?<=^|\\s)#([\\p{L}\\p{N}_]{1,40})")
         private val IMAGE = Regex("\\.(jpe?g|png|gif|webp|avif)(\\?.*)?$", RegexOption.IGNORE_CASE)
 
-        fun of(e: Event): Body {
+        fun of(e: Event, content: String = e.content): Body {
             val dims = e.tags.filter { it.isNotEmpty() && it[0] == "imeta" }.mapNotNull { t ->
                 val f = t.drop(1).associate { it.substringBefore(' ') to it.substringAfter(' ') }
                 val (w, h) = f["dim"]?.split('x')?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size == 2 && it[1] > 0 } ?: return@mapNotNull null
@@ -444,7 +453,7 @@ private class Body(val parts: List<Part>, val images: List<Img>, val mentions: L
             }.toMap()
             val parts = ArrayList<Part>(); val images = ArrayList<Img>(); val mentions = ArrayList<String>()
             var at = 0
-            val text = e.content.trim()
+            val text = content.trim()
             for (m in TOKEN.findAll(text)) {
                 if (m.range.first > at) parts += Part.Plain(text.substring(at, m.range.first))
                 at = m.range.last + 1

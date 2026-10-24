@@ -68,6 +68,7 @@ import cc.aaro.cosign.Site
 import cc.aaro.cosign.Ui
 import cc.aaro.cosign.appName
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 
@@ -452,6 +453,7 @@ internal fun AccountScreen(phone: Phone, ui: Ui, onScan: () -> Unit, onProfile: 
                 if (ui.relaysUp == 0) Text("No relay connection. Retrying…", color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
             }
             if (m.group.threshold >= 4) item { TextButton({ phone.chooseServer() }, contentPadding = PaddingValues(0.dp)) { Text("Add a server", color = Vault.Teal) } }
+            item { TranslateSetting() }
             item { Heading("On this phone") }
             items(ui.log.take(20)) { LogLine(it) }
             item {
@@ -470,6 +472,31 @@ internal fun AccountScreen(phone: Phone, ui: Ui, onScan: () -> Unit, onProfile: 
         dismissButton = { TextButton({ leaving = false }) { Text("Keep it") } },
         containerColor = Vault.Surface,
     )
+}
+
+/** Your own LibreTranslate: notes in other languages are translated instead of left out. */
+@Composable
+private fun TranslateSetting() {
+    val url by cc.aaro.cosign.Translate.url.collectAsState()
+    val status by cc.aaro.cosign.Translate.status.collectAsState()
+    var typed by remember(url) { mutableStateOf(url) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    Column(Modifier.padding(top = 6.dp)) {
+        Text("Translate other languages", style = MaterialTheme.typography.titleSmall, color = Vault.Text)
+        Muted(if (url.isEmpty()) "Off: notes in other languages are left out of Discover. Set your LibreTranslate server to translate them instead."
+            else "Notes in other languages are translated by your server. If it's down or slow, they're left out.")
+        Spacer(Modifier.height(8.dp))
+        androidx.compose.material3.OutlinedTextField(typed, { typed = it }, Modifier.fillMaxWidth(), singleLine = true,
+            placeholder = { Text("https://translate.example.com", color = Vault.Muted) },
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = Vault.Text))
+        Row {
+            TextButton({ cc.aaro.cosign.Translate.setUrl(typed); scope.launch { cc.aaro.cosign.Translate.check() } }, contentPadding = PaddingValues(0.dp)) {
+                Text(if (typed.isBlank()) "Turn off" else "Save", color = Vault.Teal)
+            }
+        }
+        status?.let { Muted(it) }
+        Muted("Your LibreTranslate, over https.")
+    }
 }
 
 /** An account, as you know it: its name, else its npub, shortened. */

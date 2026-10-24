@@ -190,6 +190,9 @@ class Social private constructor(private val phone: Phone, context: Context) {
     val me get() = phone.ui.value.member?.group?.groupX
 
     val feed = MutableStateFlow(Feed())
+    /** Done when the first Discover cards are on screen. Reads in the background wait for it (2.5 s at most), so they don't slow that first paint. */
+    val painted = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private suspend fun afterPaint() { kotlinx.coroutines.withTimeoutOrNull(2500) { painted.await() } }
     val notices = MutableStateFlow(Notices())
     /** Notifications newer than this were not seen yet: the bell's dot. */
     val seenAt = MutableStateFlow(prefs.getLong("seen", 0))
@@ -225,20 +228,24 @@ class Social private constructor(private val phone: Phone, context: Context) {
             return
         }
         feed.update { it.copy(loading = true, failed = false) }
-        scope.launch { knowFollows(); knowMutes() }
+        scope.launch { afterPaint(); knowFollows(); knowMutes() }
         lookedAt = 0
         loadPlaces()
         scope.launch {
+            // With last time's feed to show, that goes on screen first; without one, this is what's awaited.
+            if (feed.value.notes.isNotEmpty() || feedFile.exists()) afterPaint()
             // The curated feed first. If it has less than a screenful or two, the next source tops it up
             // (after it, never mixed in). A bit more is asked for than is shown, as some is left out.
             var used: String? = null
             val fresh = ArrayList<Event>()
+            val foreign = ArrayList<Event>()
             for (src in Sources.FEEDS) {
                 Startup.mark("feed asked")
                 val got = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 60), 8000)
                 Startup.mark("feed fetched ${got.size}")
                 val notes = got.filter { it.kind == 1 && forDiscover(it) && fresh.none { f -> f.id == it.id } }
                 Startup.mark("feed filtered ${notes.size}")
+                foreign += got.filter { it.kind == 1 && foreignOk(it) && foreign.none { f -> f.id == it.id } }
                 if (notes.isEmpty()) continue
                 if (used == null) used = src
                 fresh += rank(notes)
@@ -253,6 +260,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
                 Feed(keep + fresh.filter { n -> keep.none { it.id == n.id } }, source = used, at = System.currentTimeMillis())
             }
             saveFeed()
+            translateIn(foreign)
         }
     }
 
@@ -262,12 +270,14 @@ class Social private constructor(private val phone: Phone, context: Context) {
     /** Called once the whole object is set up: the filters below need it. */
     private fun restoreFeed() {
         scope.launch {
+            loadTranslations()
             val m = try { Json.parse(feedFile.readText()) as? Map<*, *> } catch (_: Exception) { null } ?: return@launch
             val notes = (m["notes"] as? List<*>)?.mapNotNull { Event.fromMap(it) }?.filter { forDiscover(it) } ?: return@launch
             if (notes.isEmpty()) return@launch
             remember(notes)
-            People.want(notes.map { it.pubkey })
             feed.update { if (it.notes.isNotEmpty()) it else it.copy(notes = notes, source = m["source"] as? String, at = m["at"] as? Long ?: 0) }
+            afterPaint()
+            People.want(notes.map { it.pubkey })
             Startup.mark("feed from cache ${notes.size}")
         }
     }
@@ -290,6 +300,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
             remember(more)
             People.want(more.map { it.pubkey })
             feed.update { it.copy(notes = it.notes + more.sortedByDescending { n -> n.createdAt }, loading = false, more = got.isNotEmpty()) }
+            translateIn(got.filter { it.kind == 1 && foreignOk(it) })
         }
     }
 
@@ -315,6 +326,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
         val cached = cachedCards()
         videos.value = if (cached.isEmpty()) Videos() else Videos(cached, 1)
         scope.launch {
+            afterPaint()
             val got = kotlinx.coroutines.withTimeoutOrNull(8000) {
                 places.map { p -> async { try { p.fetch() } catch (_: Exception) { emptyList() } } }.awaitAll()
             } ?: return@launch
@@ -441,6 +453,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
         if (n.loading || (!force && n.at != 0L && System.currentTimeMillis() - n.at < 5 * 60_000)) return
         notices.update { it.copy(loading = true) }
         scope.launch {
+            afterPaint()
             val evs = Fetch.query(readRelays(), mapOf("kinds" to listOf(1, 6, 7), "#p" to listOf(me), "limit" to 80), 7000).filter { it.pubkey != me && it.pubkey !in muted.value }
             val list = evs.sortedByDescending { it.createdAt }.map { e ->
                 when (e.kind) {
@@ -527,9 +540,59 @@ class Social private constructor(private val phone: Phone, context: Context) {
     private var mutes: Event? = null
 
     /** Shown anywhere: no content warning, nothing adult, nobody you muted. */
-    fun safe(e: Event) = !Safety.flagged(e) && e.pubkey !in muted.value && e.id !in dismissed.value
-    /** In Discover, also only in a language this phone is set to. */
-    private fun forDiscover(e: Event) = safe(e) && !snoozedNow(e.pubkey) && Lang.readable(e, languages)
+    fun safe(e: Event) = !Safety.flagged(e) && e.pubkey !in muted.value && e.id !in dismissed.value && !mutedText(e.content, e)
+    /** In Discover, also only in a language this phone is set to, or translated into it. */
+    private fun forDiscover(e: Event) = safe(e) && !snoozedNow(e.pubkey) && (Lang.readable(e, languages) || translations.value[e.id]?.let { okText(it.text) } == true)
+    /** In another language, and fine otherwise: worth translating. */
+    private fun foreignOk(e: Event) = Translate.on && safe(e) && !snoozedNow(e.pubkey) && !Lang.readable(e, languages) && e.id !in translations.value
+
+    /** Words and hashtags you muted (your mute list's "word" and "t" entries). */
+    val mutedWords = MutableStateFlow(prefs.getStringSet("mutedWords", emptySet())!!.toSet())
+    private fun mutedText(text: String, e: Event? = null): Boolean {
+        val words = mutedWords.value
+        if (words.isEmpty()) return false
+        val lower = text.lowercase()
+        return words.any { w -> if (w.startsWith("#")) e?.tags?.any { it.size > 1 && it[0] == "t" && it[1].lowercase() == w.drop(1) } == true || "(?<![\\p{L}\\p{N}_])${Regex.escape(w)}(?![\\p{L}\\p{N}_])".toRegex().containsMatchIn(lower) else lower.contains(w) }
+    }
+    /** A translation passes the same text filters as an original: adult hashtags, muted words. */
+    private fun okText(text: String) = !Safety.flaggedText(text) && !mutedText(text)
+
+    // --- Translations (your LibreTranslate, if you set one) ---------------------------------
+
+    /** A note's text in this phone's language, and the language it was in (null: it was in yours after all). */
+    data class Translated(val text: String, val from: String?)
+    val translations = MutableStateFlow<Map<String, Translated>>(emptyMap())
+    private val translationsFile = File(context.cacheDir, "translations-" + (phone.ui.value.member?.group?.groupX?.take(16) ?: phone.slot) + ".json")
+
+    private fun loadTranslations() {
+        val m = try { Json.parse(translationsFile.readText()) as? Map<*, *> } catch (_: Exception) { null } ?: return
+        translations.value = m.entries.mapNotNull { (k, v) -> val x = v as? Map<*, *> ?: return@mapNotNull null; (k as String) to Translated(x["text"] as? String ?: return@mapNotNull null, x["from"] as? String) }.toMap()
+    }
+
+    /** Translate these, in one request, in the background; the ones that pass go in below what's on screen. */
+    private fun translateIn(notes: List<Event>) {
+        if (notes.isEmpty() || !Translate.on) return
+        scope.launch {
+            afterPaint()
+            val todo = notes.distinctBy { it.id }.take(40)
+            val target = Translate.target()
+            val out = Translate.batch(todo.map { it.content.take(1500) }, target) ?: return@launch
+            val got = todo.zip(out).associate { (e, r) -> e.id to Translated(r.first, r.second?.takeIf { it != target }) }
+            translations.update { (it + got).entries.toList().takeLast(600).associate { (k, v) -> k to v } }
+            try { translationsFile.writeText(Json.stringify(translations.value.mapValues { (_, t) -> mapOf("text" to t.text, "from" to t.from) })) } catch (_: Exception) {}
+            val add = todo.filter { e -> got[e.id]?.let { okText(it.text) } == true }
+            if (add.isEmpty()) return@launch
+            remember(add)
+            People.want(add.map { it.pubkey })
+            // Below what's on screen, by time among the rest; nothing you're looking at moves.
+            feed.update { cur ->
+                val keep = cur.notes.take(lookedAt + 3)
+                val rest = (cur.notes.drop(keep.size) + add.filter { a -> cur.notes.none { it.id == a.id } }).sortedByDescending { it.createdAt }
+                cur.copy(notes = keep + rest)
+            }
+            saveFeed()
+        }
+    }
 
     /** People whose notes you said you're not interested in, until when (ms): Discover leaves them out for a while. */
     val snoozed = MutableStateFlow(prefs.getStringSet("snoozed", emptySet())!!.mapNotNull { s ->
@@ -570,6 +633,9 @@ class Social private constructor(private val phone: Phone, context: Context) {
         mutes = list
         val pks = list.tags.filter { it.size > 1 && it[0] == "p" }.map { it[1] }
         if (pks.isNotEmpty()) { muted.update { it + pks }; prefs.edit().putStringSet("muted", muted.value).apply() }
+        val words = list.tags.filter { it.size > 1 && (it[0] == "word" || it[0] == "t") }.map { (if (it[0] == "t") "#" else "") + it[1].lowercase() }.filter { it.length > 1 }.toSet()
+        mutedWords.value = words
+        prefs.edit().putStringSet("mutedWords", words).apply()
     }
 
     private suspend fun knowFollows() {

@@ -18,6 +18,9 @@ object Safety {
             else -> false
         }
     } || NSFW_TEXT.containsMatchIn(e.content)
+
+    /** The text alone (a translation): adult #hashtags in it. */
+    fun flaggedText(text: String) = NSFW_TEXT.containsMatchIn(text)
 }
 
 object Lang {
