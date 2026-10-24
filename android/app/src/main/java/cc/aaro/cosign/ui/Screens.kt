@@ -318,7 +318,8 @@ internal fun AccountScreen(phone: Phone, ui: Ui, onScan: () -> Unit, onProfile: 
                     Spacer(Modifier.width(14.dp))
                     Column {
                         Text(me?.name ?: "Your profile", style = MaterialTheme.typography.titleMedium, color = Vault.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(if (me?.name == null) "No name or picture yet" else "See your profile", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+                        if (me?.name == null) Text("No name or picture yet", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+                        Text(short(m.group.npub), fontFamily = PlexMono, style = MaterialTheme.typography.labelSmall, color = Vault.Muted)
                     }
                 }
                 TextButton({ switching = true }) { Text("Switch ▾", color = Vault.Teal) }
@@ -350,13 +351,13 @@ internal fun AccountScreen(phone: Phone, ui: Ui, onScan: () -> Unit, onProfile: 
         }
         item { TextButton(onScan, contentPadding = PaddingValues(0.dp)) { Text("Add a device", color = Vault.Teal) } }
 
-        item { Heading("Connected apps and sites") }
+        item { Heading("Apps and sites you're signed in to") }
         item {
             Button(onScan, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
-                Text("Connect a site", style = MaterialTheme.typography.labelLarge)
+                Text("Sign in to a site", style = MaterialTheme.typography.labelLarge)
             }
         }
-        if (ui.sites.isEmpty()) item { Muted("None yet. To use your account on a website, tap Connect a site and scan the code it shows.") }
+        if (ui.sites.isEmpty()) item { Muted("None yet. To use your account on a website, tap Sign in to a site and scan the code it shows.") }
         // One entry per website, with each way it's connected inside.
         items(ui.sites.groupBy { it.origin }.toList(), key = { "site:" + it.first }) { (origin, grants) ->
             SiteGroup(origin, grants, onRemove = phone::removeSite, onUndo = phone::askUndoSite)
@@ -684,7 +685,7 @@ private fun ServerChoiceSheet(choice: List<cc.aaro.cosign.net.Servers.Server>, s
 internal fun PaperCard(phone: Phone) = Card(Vault.AmberEdge, Vault.AmberGround) {
     Text("Make your paper backup", style = MaterialTheme.typography.titleMedium, color = Vault.AmberText)
     Spacer(Modifier.height(4.dp))
-    Text("If you lose this phone, you can't get back into your account without it. Or add another device.", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
+    Text("If you lose this phone, you can't get your account back without it. Or add another device.", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
     PaperButton(phone, "Make it now")
 }
 
@@ -698,7 +699,7 @@ private fun PaperPrompt(phone: Phone) {
         ) {
             Text("Make your paper backup", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
             Spacer(Modifier.height(10.dp))
-            Text("If you lose this phone, you can't get back into your account without it. It takes a minute: print it, or keep it in a password manager.",
+            Text("If you lose this phone, you can't get your account back without it. It takes a minute: print it, or keep it in a password manager.",
                 style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
             Spacer(Modifier.height(16.dp))
             OutlinedButton({ phone.laterPaper() }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Later", color = Vault.Text) }
@@ -731,7 +732,7 @@ private fun PaperRow(made: Boolean, status: String?, phone: Phone) {
         if (it.resultCode == android.app.Activity.RESULT_OK) phone.makePaper()
     }
     Column(Modifier.padding(top = 6.dp)) {
-        Text(if (made) "Paper backup: made" else "No paper backup yet. If you lose this phone, it's how you get back into your account.",
+        Text(if (made) "Paper backup: made" else "No paper backup yet. If you lose this phone, it's how you get your account back.",
             color = if (made) Vault.Text else Vault.AmberText, style = MaterialTheme.typography.bodyMedium)
         if (status != null) Text(status, color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
         else TextButton({
