@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import cc.aaro.cosign.Ask
 import cc.aaro.cosign.Change
 import cc.aaro.cosign.Connect
+import cc.aaro.cosign.Future
 import cc.aaro.cosign.Line
 import cc.aaro.cosign.Offer
 import cc.aaro.cosign.Phone
@@ -197,6 +198,7 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             }
             ui.error?.let { Text(it, color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp)) }
         }
+        items(ui.future, key = { it.id }) { f -> FutureCard(f) { phone.removeFuture(f) } }
         items(ui.asks, key = { it.id }) { ask -> AskCard(ask, now) { approve -> phone.decide(ask.id, approve) } }
 
         item { Heading("Sites that can sign as you") }
@@ -231,6 +233,15 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
 
 @Composable private fun Heading(text: String) = Text(text, style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.padding(top = 10.dp))
 @Composable private fun Muted(text: String) = Text(text, style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+
+@Composable
+private fun FutureCard(f: Future, onRemove: () -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
+    Text("Dated in the future", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText)
+    Spacer(Modifier.height(4.dp))
+    Text(f.text, style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
+    Spacer(Modifier.height(14.dp))
+    Button(onRemove, Modifier.fillMaxWidth().height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.OnAmber)) { Text("Remove it", fontWeight = FontWeight.SemiBold) }
+}
 
 @Composable
 private fun AskCard(ask: Ask, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {

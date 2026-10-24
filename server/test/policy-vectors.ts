@@ -7,7 +7,8 @@ import { writeFileSync } from 'node:fs';
 import { assess, type Ev } from '../policy.ts';
 
 const pk = (i: number) => i.toString(16).padStart(64, '0');
-const ev = (kind: number, tags: string[][] = [], content = ''): Ev => ({ kind, tags, content, created_at: 1 });
+const NOW = 1_800_000_000;
+const ev = (kind: number, tags: string[][] = [], content = '', created_at = NOW): Ev => ({ kind, tags, content, created_at });
 const follows = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ['p', pk(from + i)]);
 const relays = (...urls: string[]) => urls.map(u => ['r', u]);
 
@@ -35,8 +36,16 @@ const cases: [string, Ev, Ev | undefined][] = [
   ['profile wipe 2', ev(0, [], JSON.stringify({ name: 'a' })), ev(0, [], JSON.stringify({ name: 'a', about: 'x', picture: 'p' }))],
   ['profile emptied', ev(0, [], '{}'), ev(0, [], JSON.stringify({ name: 'a' }))],
   ['first profile', ev(0, [], JSON.stringify({ name: 'a' })), undefined],
+  ['profile dated 2099', ev(0, [], JSON.stringify({ name: 'a' }), 4_070_908_800), undefined],
+  ['follows 20 minutes ahead', ev(3, follows(3), '', NOW + 1200), ev(3, follows(3))],
+  ['follows 5 minutes ahead (a fast clock)', ev(3, follows(4), '', NOW + 300), ev(3, follows(3))],
+  ['relay list dated 2099', ev(10002, relays('wss://a'), '', 4_070_908_800), undefined],
+  ['set dated 2099', ev(30000, [['d', 'x'], ...follows(2)], '', 4_070_908_800), undefined],
+  ['note dated 2099 (scheduled?)', ev(1, [], 'hi', 4_070_908_800), undefined],
+  ['deletion by a, dated 2099', ev(5, [['a', `3:${pk(9)}:`]], '', 4_070_908_800), undefined],
+  ['deletion by e, dated 2099', ev(5, [['e', pk(1)]], '', 4_070_908_800), undefined],
 ];
 
-const out = cases.map(([label, e, prev]) => ({ label, event: e, prev: prev ?? null, hold: assess(e, prev).hold ?? null }));
+const out = cases.map(([label, e, prev]) => { const a = assess(e, prev, NOW); return { label, now: NOW, event: e, prev: prev ?? null, hold: a.hold ?? null, refuse: a.refuse ?? null }; });
 writeFileSync(new URL('../../android/app/src/test/resources/policy.json', import.meta.url), JSON.stringify(out, null, 2));
-console.log(`wrote ${out.length} policy cases, ${out.filter(c => c.hold).length} held`);
+console.log(`wrote ${out.length} policy cases, ${out.filter(c => c.hold).length} held, ${out.filter(c => c.refuse).length} refused`);

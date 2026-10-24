@@ -24,8 +24,10 @@ import QRCode from 'qrcode';
 import * as F from './frost.ts';
 import * as Sig from './sign.ts';
 import { Pool, sealParts, openFrom, Parts, normRelay, dial, KIND_MEMBER, KIND_NIP46 } from './net.ts';
-import { ARCHIVED, assess, keyOf, kindName } from './policy.ts';
+import { ARCHIVED, assess, keyOf, kindName, type Ev } from './policy.ts';
 import { Archive } from './archive.ts';
+import { History, type Entry } from './history.ts';
+import { checkClock } from './clock.ts';
 
 // --- State -------------------------------------------------------------------
 
@@ -45,6 +47,7 @@ const S = JSON.parse(readFileSync(file, 'utf8'));
 S.sites ??= []; S.tickets ??= []; S.changes ??= [];
 const save = () => { writeFileSync(file + '.tmp', JSON.stringify(S, null, 2), { mode: 0o600 }); renameSync(file + '.tmp', file); };
 const archive = new Archive(join(dir, 'archive.json'));
+const history = new History(join(dir, 'history.jsonl'), join(dir, 'saved.jsonl'));
 
 const members: Member[] = S.group.members;
 const me = members.find(m => m.idx === S.self.idx)!;
@@ -155,6 +158,7 @@ async function onMember(msg: any, fromPk: string) {
     case 'cosign_req': return answerOnce(from, msg.id, () => onCosignReq(msg, from));
     case 'phone_signed': { if (fromPhone) onPhoneSigned(msg); return; }
     case 'app_grant': { if (fromPhone) grantApp(msg); return; }
+    case 'remove_future': { if (fromPhone) removeFuture(String(msg.id)).catch(err => { note(`couldn't remove it: ${err.message}`); toPhone({ type: 'undo_failed', id: msg.id, reason: err.message }); }); return; }
     case 'ecdh_req': return answerOnce(from, msg.id, () => onEcdhReq(msg, from));
 
     case 'member': { // the server that added the phone says who it is
@@ -186,6 +190,9 @@ async function onMember(msg: any, fromPk: string) {
       return;
     }
     case 'sync': { if (!fromPhone) mergeSync(msg); return; }
+    case 'forget': { if (!fromPhone) { archive.forget(String(msg.id)); pushState(); } return; }
+    case 'logged': { if (!fromPhone && msg.entry?.event) history.add(msg.entry); return; }
+    case 'saved': { if (!fromPhone) for (const e of msg.events ?? []) history.save(e); return; }
   }
 }
 
@@ -258,7 +265,7 @@ async function onSiteRequest(e: Event) {
       // Move the site onto the relays your servers already use: the ones known to carry this.
       case 'switch_relays': return answer({ result: JSON.stringify(S.group.relays) });
       case 'get_relays': return answer({ result: JSON.stringify(Object.fromEntries(S.group.relays.map((r: string) => [r, { read: true, write: true }]))) });
-      case 'sign_event': return answer({ result: JSON.stringify(await frostSign(JSON.parse(req.params[0]), s.origin)) });
+      case 'sign_event': return answer({ result: JSON.stringify(await frostSign(JSON.parse(req.params[0]), s.origin, { site: s.pk })) });
       case 'nip44_encrypt': return answer({ result: nip44.v2.encrypt(req.params[1], await groupNip44Key(req.params[0])) });
       case 'nip44_decrypt': return answer({ result: nip44.v2.decrypt(req.params[1], await groupNip44Key(req.params[0])) });
       case 'nip04_encrypt': return answer({ result: await groupNip04(req.params[0], req.params[1], false) });
@@ -342,13 +349,15 @@ function revoke(pk: string, where: string, quiet = false) {
  * server is there, the backup does. Something destructive goes only to the phone, which
  * asks you.
  */
-async function frostSign(unsigned: any, by: string, opts: { undo?: string } = {}): Promise<Event> {
+async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?: string } = {}): Promise<Event> {
   const ev = {
     pubkey: groupX, kind: Number(unsigned.kind), created_at: Number(unsigned.created_at ?? now()),
     tags: unsigned.tags ?? [], content: unsigned.content ?? '',
   };
   const id = getEventHash(ev);
-  const judged = assess(ev, archive.latest(keyOf(ev)));
+  const prev = archive.latest(keyOf(ev));
+  const judged = assess(ev, prev);
+  if (judged.refuse) { note(`refused ${kindName(ev.kind)} for ${by}: ${judged.refuse}`); throw new Error(`refused: ${judged.refuse}`); }
   const hold = judged.hold;
   const order = partners(hold ? [phone()] : [phone(), other()]);
   const tried: string[] = [];
@@ -374,7 +383,7 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string } = {}
     const z = Sig.partial(scheme, S.group, me.idx, S.self.share, mine.nonces, id, commits);
     const signed = { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [[me.idx, z], [m.idx, res.z]]) } as Event;
     note(`signed ${kindName(ev.kind)} for ${by} with ${m.name}${hold && !opts.undo ? ' — you approved' : ''}`);
-    keep(signed, judged.change ?? hold, by, !!hold && !opts.undo);
+    keep(signed, judged.change ?? hold, by, !!hold && !opts.undo, opts.site ?? '', prev);
     return signed;
   }
   const declined = tried.some(t => t.includes('declined'));
@@ -393,7 +402,10 @@ const partners = (want: Member[]) => want.filter(m => m.pk).sort((a, b) => Numbe
 const phoneWait = (asking: boolean, after: Member[]) => asking ? 60_000 : after.some(online) ? 3_000 : 15_000;
 
 /** Archive what was signed, note the change, and tell the other server and the phone. */
-function keep(signed: Event, text: string | undefined, by: string, held: boolean) {
+function keep(signed: Event, text: string | undefined, by: string, held: boolean, site = '', prev?: Event | Ev) {
+  // Everything goes in the history, so a site's work can be undone however much of it there is.
+  const entry: Entry = { at: now(), site, by, event: signed, ...(ARCHIVED.has(signed.kind) && prev ? { prev } : {}) };
+  if (history.add(entry)) { toOther({ type: 'logged', entry }); toPhone({ type: 'logged', entry }); }
   if (!ARCHIVED.has(signed.kind) && !held) return;
   archive.record(signed);
   const change: Change | undefined = text ? { id: signed.id, key: keyOf(signed), kind: signed.kind, at: signed.created_at, text, by, held } : undefined;
@@ -422,7 +434,8 @@ function onSignReq(msg: any, from: Member): object {
   if (ev.pubkey !== groupX || getEventHash(ev) !== msg.msg) return respond({ ok: false, reason: 'event does not match the message' });
   // Our own archive, not the coordinator's word: a compromised server can't talk us
   // into co-signing something destructive without the phone.
-  const hold = assess(ev, archive.latest(keyOf(ev))).hold;
+  const { hold, refuse } = assess(ev, archive.latest(keyOf(ev)));
+  if (refuse) { note(`refused to co-sign for ${from.name}: ${refuse}`); return respond({ ok: false, reason: `refused: ${refuse}` }); }
   if (hold && !participants.includes(phone().idx)) {
     note(`refused to co-sign for ${from.name}: ${hold} needs your phone`);
     return respond({ ok: false, reason: `${hold} needs your phone` });
@@ -468,7 +481,8 @@ function onCosignReq(msg: any, from: Member): object {
   if (ev?.pubkey !== groupX || getEventHash(ev) !== msg.msg) return respond({ ok: false, reason: 'event does not match the message' });
   const grant = liveGrant(msg.grant);
   if (!grant) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
-  const hold = assess(ev, archive.latest(keyOf(ev))).hold;
+  const { hold, refuse } = assess(ev, archive.latest(keyOf(ev)));
+  if (refuse) return respond({ ok: false, reason: `refused: ${refuse}` });
   if (hold && !msg.approved) return respond({ ok: false, reason: `needs-approval: ${hold}` });
   grant.lastUsed = now();
   const mine = Sig.commit(S.group, me.idx, S.self.share);
@@ -480,10 +494,11 @@ function onCosignReq(msg: any, from: Member): object {
 function onPhoneSigned(msg: any) {
   const ev = msg.event as Event;
   if (!ev || ev.pubkey !== groupX || !verifyEvent(ev)) return;
-  const judged = assess(ev, archive.latest(keyOf(ev)));
+  const prev = archive.latest(keyOf(ev));
+  const judged = assess(ev, prev);
   const app = liveGrant(msg.grant)?.origin ?? 'an app on your phone';
   note(`your phone signed ${kindName(ev.kind)} for ${app}${msg.approved ? ' — you approved' : ''}`);
-  keep(ev, judged.change ?? judged.hold, app, !!msg.approved && !!judged.hold);
+  keep(ev, judged.change ?? judged.hold, app, !!msg.approved && !!judged.hold, String(msg.grant ?? ''), prev);
 }
 
 // Shared secrets for encrypting on your behalf. Memory only, ten minutes.
@@ -535,6 +550,33 @@ async function undo(changeId: string) {
   note(`undid "${change.text}"`);
 }
 
+// --- Versions dated in the future ----------------------------------------------------
+//
+// Nothing here signs one, but one may already be out there (signed before Cosign, or
+// by a key that leaked). On any relay that took it, it beats every change you make.
+// Deleting it by its id works whatever date it claims.
+
+const flagged = new Set<string>();
+function checkFuture() {
+  for (const e of archive.future()) {
+    if (flagged.has(e.id!)) continue;
+    flagged.add(e.id!);
+    note(`found your ${kindName(e.kind)} dated ${new Date(e.created_at * 1000).toISOString().slice(0, 10)} on relays: it blocks every change`);
+  }
+  if (archive.future().length) pushState();
+}
+
+async function removeFuture(id: string) {
+  const target = archive.future().find(e => e.id === id);
+  if (!target) throw new Error('nothing dated in the future with that id');
+  const deletion = await frostSign({ kind: 5, created_at: now(), content: 'Dated in the future by mistake', tags: [['e', id], ['k', String(target.kind)]] }, 'Your phone', { undo: id });
+  await publishOut(deletion);
+  archive.forget(id);
+  toOther({ type: 'forget', id });
+  pushState();
+  note(`removed the ${kindName(target.kind)} dated in the future`);
+}
+
 /** Your relays: the write relays in your archived relay list, plus the group's. */
 async function publishOut(e: Event) {
   const list = archive.latest('10002');
@@ -564,6 +606,7 @@ function mergeSync(msg: any) {
     if (!mine) { S.tickets.push(t); dirty = true; } else if (t.used && !mine.used) { mine.used = true; dirty = true; }
   }
   for (const e of msg.archive ?? []) archive.record(e);
+  checkFuture();
   for (const c of (msg.changes ?? []) as Change[]) {
     const mine = (S.changes as Change[]).find(x => x.id === c.id);
     if (!mine) addChange(c, true); else if (c.undone && !mine.undone) { mine.undone = true; dirty = true; }
@@ -577,6 +620,7 @@ function pushState() {
     type: 'state',
     sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: siteName(s.origin), added: s.added, lastUsed: s.lastUsed, parent: s.parent ?? null, via: s.via ?? null })),
     changes: (S.changes as Change[]).slice(0, 30),
+    future: archive.future().map(e => ({ id: e.id, kind: e.kind, at: e.created_at, text: `Your ${kindName(e.kind)} has a version dated ${new Date(e.created_at * 1000).toISOString().slice(0, 10)}. On relays that took it, it blocks every change you make.` })),
   });
 }
 
@@ -635,10 +679,14 @@ async function fetchArchive() {
     let n = 0;
     for (const e of events) if (archive.record(e)) n++;
     if (n) note(`archived ${n} version${n === 1 ? '' : 's'} already on relays`);
+    checkFuture();
   } catch { /* relays come and go */ }
   p.close(relays);
 }
 setTimeout(fetchArchive, 3000);
+// Judge "the future" by the network's time, not this machine's clock.
+void checkClock(note);
+setInterval(() => void checkClock(note), 30 * 60_000);
 setInterval(fetchArchive, 15 * 60_000);
 
 // --- Status page -------------------------------------------------------------

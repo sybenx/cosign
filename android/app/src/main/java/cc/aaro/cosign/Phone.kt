@@ -2,6 +2,7 @@ package cc.aaro.cosign
 
 import android.content.Context
 import android.net.Uri
+import cc.aaro.cosign.core.Clock
 import cc.aaro.cosign.core.CodeCheck
 import cc.aaro.cosign.core.Event
 import cc.aaro.cosign.core.Frost
@@ -51,6 +52,8 @@ data class Ask(val id: String, val fromPk: String, val via: String, val app: Str
 /** A grant. [parent]: the connected site (the extension) that added it; [via]: what connected it. */
 data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long, val parent: String? = null, val via: String? = null)
 data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean)
+/** A version of one of your lists dated in the future, found on relays: it blocks every change. */
+data class Future(val id: String, val text: String)
 data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
 data class Line(val ts: Long, val text: String, val kind: String = "info")
 /** An app on this phone that may sign as you (Android signer, NIP-55). [pk] names its grant on your servers. */
@@ -71,6 +74,7 @@ data class Ui(
     val log: List<Line> = emptyList(),
     val sites: List<Site> = emptyList(),
     val changes: List<Change> = emptyList(),
+    val future: List<Future> = emptyList(),
     val connect: Connect? = null,
     val push: String? = null,
 )
@@ -99,6 +103,7 @@ class Phone(private val context: Context) {
     private val lastSeen = ConcurrentHashMap<Int, Long>()
     private val timer = Executors.newSingleThreadScheduledExecutor()
     private var pinger: ScheduledFuture<*>? = null
+    private var clockCheck: ScheduledFuture<*>? = null
     private var helloer: ScheduledFuture<*>? = null
     /** Answers already given, by request id: a repeat gets the same answer, never a second partial. */
     private val answered = ConcurrentHashMap<String, Map<String, Any?>>()
@@ -136,6 +141,10 @@ class Phone(private val context: Context) {
         relays?.watch(mapOf("kinds" to Policy.ARCHIVED.toList(), "authors" to listOf(m.group.groupX)))
         if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status() }, 0, 10, TimeUnit.SECONDS)
         timer.schedule({ requestState(); ui.value.push?.let { tellPush(it) } }, 2, TimeUnit.SECONDS)
+        // Judge "the future" by the network's time, not this phone's clock.
+        if (clockCheck?.isCancelled != false) clockCheck = timer.scheduleWithFixedDelay({
+            Clock.check()?.let { off -> if (kotlin.math.abs(off) > 60) note("This phone's clock is ${kotlin.math.abs(off)} s ${if (off < 0) "ahead" else "behind"}: using the network's time") }
+        }, 0, 30, TimeUnit.MINUTES)
     }
 
     fun stop() { pinger?.cancel(false); pinger = null; relays?.stop(); relays = null; sk = null }
@@ -353,6 +362,15 @@ class Phone(private val context: Context) {
         note("Undoing: ${change.text}")
     }
 
+    /** Delete a version dated in the future, by its id. You asked, so this phone co-signs it without asking again. */
+    fun removeFuture(f: Future) {
+        val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        myUndos[f.id] = System.currentTimeMillis()
+        send(target.pk!!, mapOf("type" to "remove_future", "id" to f.id))
+        ui.update { it.copy(future = it.future.filter { x -> x.id != f.id }) }
+        note("Removing a version dated in the future")
+    }
+
     fun requestState() { for (s in servers()) send(s.pk!!, mapOf("type" to "state_req")) }
 
     // --- Push (ntfy, by UnifiedPush) ---------------------------------------------
@@ -406,6 +424,7 @@ class Phone(private val context: Context) {
     /** Sign for an app, with one of your servers. Blocks for up to a few seconds; never call on the main thread. */
     fun signForApp(g: AppGrant, ev: Event, approved: Boolean): Event {
         val m = ui.value.member ?: error("Cosign isn't set up yet")
+        Policy.refuse(ev)?.let { throw IllegalStateException(it) }
         if (!approved) holdFor(ev)?.let { throw NeedsApproval(it) }
         awake()
         val group = groupJson(m)
@@ -530,7 +549,8 @@ class Phone(private val context: Context) {
                 it["parent"] as? String, it["via"] as? String) } } ?: return
         val changes = (msg["changes"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
             Change(it["id"] as? String ?: return@let null, it["text"] as? String ?: "", it["by"] as? String ?: "", it["at"] as? Long ?: 0, it["held"] == true, it["undone"] == true) } } ?: emptyList()
-        ui.update { it.copy(sites = sites.sortedByDescending { s -> s.lastUsed }, changes = changes) }
+        val future = (msg["future"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let { Future(it["id"] as? String ?: return@let null, it["text"] as? String ?: "") } } ?: emptyList()
+        ui.update { it.copy(sites = sites.sortedByDescending { s -> s.lastUsed }, changes = changes, future = future) }
     }
 
     private fun onSignReq(msg: Map<*, *>, from: Member, m: Membership) {
@@ -547,6 +567,7 @@ class Phone(private val context: Context) {
             return reply(mapOf("ok" to false, "reason" to "bad participants"))
         // Sign only what we were shown: the digest must be this event's id under your key.
         if (ev.pubkey != m.group.groupX || ev.computeId() != digest) return reply(mapOf("ok" to false, "reason" to "event does not match the message"))
+        Policy.refuse(ev)?.let { note("Refused: $it", "denied"); return reply(mapOf("ok" to false, "reason" to "refused: $it")) }
         val app = msg["app"] as? String ?: "a site"
         // Your server's judgement, or this phone's own: either one is enough to ask you.
         val hold = msg["hold"] as? String ?: Policy.hold(ev, lists.latest(Policy.keyOf(ev)))

@@ -100,6 +100,7 @@ class Nip55Activity : ComponentActivity() {
             "sign_event" -> {
                 val ev = try { phone.appEvent(payload) } catch (e: Exception) { return fail("That isn't an event Cosign can sign (${e.message}).") }
                 event = ev
+                cc.aaro.cosign.core.Policy.refuse(ev)?.let { return fail("Cosign won't sign this: $it.") }
                 val hold = phone.holdFor(ev)
                 if (hold != null) stage.value = Stage.Approve(hold) else sign(ev, approved = false)
             }

@@ -5,6 +5,8 @@
 // a follow list that adds one person is routine, one that drops most of them isn't.
 // That judgement needs the version it replaces, which is what the archive keeps.
 
+import { trustedNow } from './clock.ts';
+
 export interface Ev { kind: number; content: string; tags: string[][]; created_at: number; pubkey?: string; id?: string; sig?: string }
 
 /** Kinds whose latest version the servers keep, so they can compare and restore. */
@@ -54,7 +56,15 @@ const PROFILE_FIELDS = ['name', 'display_name', 'picture', 'about', 'nip05', 'lu
 const profile = (e?: Ev): Record<string, unknown> => { try { return JSON.parse(e?.content ?? '{}') ?? {}; } catch { return {}; } };
 const filled = (v: unknown) => typeof v === 'string' ? v.trim().length > 0 : v != null;
 
+/** How far ahead of now a clock may be; past this, an event is dated in the future. */
+export const AHEAD = 600;
+const replaceable = (k: number) => k === 0 || k === 3 || (k >= 10000 && k < 20000) || (k >= 30000 && k < 40000);
+const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
+const upper = (s: string) => s[0].toUpperCase() + s.slice(1);
+
 export interface Assessment {
+  /** Set when it must never be signed, approved or not: why, in plain words. */
+  refuse?: string;
   /** Set when the phone has to approve: what would be destroyed, in plain words. */
   hold?: string;
   /** For archived kinds: what changed, for the history the phone shows (and can undo). */
@@ -62,7 +72,14 @@ export interface Assessment {
 }
 
 /** Judge an event against the version it replaces. */
-export function assess(e: Ev, prev?: Ev): Assessment {
+export function assess(e: Ev, prev?: Ev, now = trustedNow()): Assessment {
+  // Dated ahead, a list or profile beats every later version on any relay that takes it,
+  // and a deletion of one wipes every version until that date: neither can be undone.
+  if (e.created_at > now + AHEAD) {
+    if (replaceable(e.kind)) return { refuse: `${upper(kindName(e.kind))} dated ${day(e.created_at)}: a version dated ahead would block every later change` };
+    if (e.kind === 5 && e.tags.some(t => t[0] === 'a')) return { refuse: `Deletion dated ${day(e.created_at)}: it would delete every version until then` };
+    return { hold: `${upper(kindName(e.kind))} dated in the future (${day(e.created_at)})` };
+  }
   if (e.kind === 62) return { hold: 'Ask relays to erase everything you have ever published' };
 
   if (e.kind === 5) {

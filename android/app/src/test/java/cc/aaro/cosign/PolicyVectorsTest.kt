@@ -19,8 +19,12 @@ class PolicyVectorsTest {
         for (i in 0 until cases.length()) {
             val c = cases.getJSONObject(i)
             val prev = if (c.isNull("prev")) null else event(c.getJSONObject("prev"))
+            val now = c.getLong("now")
             val want = if (c.isNull("hold")) null else c.getString("hold")
-            assertEquals(c.getString("label"), want, Policy.hold(event(c.getJSONObject("event")), prev))
+            val refuse = if (c.isNull("refuse")) null else c.getString("refuse")
+            val e = event(c.getJSONObject("event"))
+            assertEquals(c.getString("label") + " (refuse)", refuse, Policy.refuse(e, now))
+            assertEquals(c.getString("label"), want, Policy.hold(e, prev, now))
         }
     }
 }

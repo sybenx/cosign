@@ -21,9 +21,26 @@ object Policy {
         30004 to ("curation set" to "item"), 30015 to ("interest set" to "interest"), 30030 to ("emoji set" to "emoji"),
     )
     private val RELAYISH = setOf(10002, 10006, 10007, 30002)
+    /** How far ahead of now a clock may be; past this, an event is dated in the future. */
+    const val AHEAD = 600L
+    private fun replaceable(k: Int) = k == 0 || k == 3 || k in 10000 until 20000 || k in 30000 until 40000
+    private fun day(t: Long) = java.time.Instant.ofEpochSecond(t).toString().take(10)
+    private fun upper(s: String) = s.replaceFirstChar { it.uppercase() }
+
+    /** Set when this must never be signed, approved or not. Same rules as server/policy.ts. */
+    fun refuse(e: Event, now: Long = Clock.now()): String? {
+        if (e.createdAt <= now + AHEAD) return null
+        if (replaceable(e.kind)) return "${upper(kindName(e.kind))} dated ${day(e.createdAt)}: a version dated ahead would block every later change"
+        if (e.kind == 5 && e.tags.any { it.isNotEmpty() && it[0] == "a" }) return "Deletion dated ${day(e.createdAt)}: it would delete every version until then"
+        return null
+    }
     private val PROFILE_FIELDS = listOf("name", "display_name", "picture", "about", "nip05", "lud16", "banner", "website")
 
-    private fun kindName(k: Int) = NAMES[k]?.first ?: "kind $k event"
+    private val EVENT_NAMES = mapOf(
+        1 to "note", 4 to "DM", 5 to "deletion", 6 to "repost", 7 to "reaction", 13 to "DM", 14 to "DM", 16 to "repost", 62 to "request to vanish",
+        1111 to "comment", 9734 to "zap request", 22242 to "relay login", 24242 to "upload login", 27235 to "web login", 30023 to "article", 30078 to "app data",
+    )
+    private fun kindName(k: Int) = NAMES[k]?.first ?: EVENT_NAMES[k] ?: "kind $k event"
     private fun itemName(k: Int) = NAMES[k]?.second ?: "item"
     private fun plural(n: Int, k: Int) = "$n ${itemName(k)}${if (n == 1) "" else "s"}"
 
@@ -40,7 +57,8 @@ object Policy {
     private fun filled(v: Any?) = if (v is String) v.isNotBlank() else v != null
 
     /** Set when you have to approve: what would be destroyed, in plain words. */
-    fun hold(e: Event, prev: Event?): String? {
+    fun hold(e: Event, prev: Event?, now: Long = Clock.now()): String? {
+        if (e.createdAt > now + AHEAD) return if (refuse(e, now) != null) null else "${upper(kindName(e.kind))} dated in the future (${day(e.createdAt)})"
         if (e.kind == 62) return "Ask relays to erase everything you have ever published"
         if (e.kind == 5) {
             val targets = e.tags.count { it.isNotEmpty() && (it[0] == "e" || it[0] == "a") }

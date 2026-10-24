@@ -2,9 +2,10 @@
 // replaces, and undone by signing the old one again.
 
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
-import { ARCHIVED, keyOf, type Ev } from './policy.ts';
+import { AHEAD, ARCHIVED, keyOf, type Ev } from './policy.ts';
 
 const KEEP = 25; // versions per list
+import { trustedNow as now } from './clock.ts';
 
 export class Archive {
   private byKey: Record<string, Ev[]> = {};
@@ -22,7 +23,11 @@ export class Archive {
     renameSync(this.file + '.tmp', this.file);
   }
 
-  latest(key: string): Ev | undefined { return this.byKey[key]?.[0]; }
+  /** The newest version that isn't dated ahead: one from the future is never "the" version. */
+  latest(key: string): Ev | undefined { const t = now(); return this.byKey[key]?.find(e => e.created_at <= t + AHEAD); }
+  /** Versions dated in the future, which would block every change on relays that took them. */
+  future(): Ev[] { const t = now(); return this.all().filter(e => e.created_at > t + AHEAD); }
+  forget(id: string) { for (const k of Object.keys(this.byKey)) this.byKey[k] = this.byKey[k].filter(e => e.id !== id); this.save(); }
   history(key: string): Ev[] { return this.byKey[key] ?? []; }
   find(id: string): Ev | undefined {
     for (const list of Object.values(this.byKey)) { const e = list.find(x => x.id === id); if (e) return e; }

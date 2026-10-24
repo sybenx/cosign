@@ -1,28 +1,33 @@
 [
   {
     "label": "note",
+    "now": 1800000000,
     "event": {
       "kind": 1,
       "tags": [],
       "content": "gm",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": null,
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "vanish",
+    "now": 1800000000,
     "event": {
       "kind": 62,
       "tags": [],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": null,
-    "hold": "Ask relays to erase everything you have ever published"
+    "hold": "Ask relays to erase everything you have ever published",
+    "refuse": null
   },
   {
     "label": "delete 4",
+    "now": 1800000000,
     "event": {
       "kind": 5,
       "tags": [
@@ -44,13 +49,15 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": null,
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "delete 5",
+    "now": 1800000000,
     "event": {
       "kind": 5,
       "tags": [
@@ -76,13 +83,15 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": null,
-    "hold": "Delete 5 of your events"
+    "hold": "Delete 5 of your events",
+    "refuse": null
   },
   {
     "label": "delete follow list",
+    "now": 1800000000,
     "event": {
       "kind": 5,
       "tags": [
@@ -92,13 +101,15 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": null,
-    "hold": "Delete your follow list"
+    "hold": "Delete your follow list",
+    "refuse": null
   },
   {
     "label": "delete by k",
+    "now": 1800000000,
     "event": {
       "kind": 5,
       "tags": [
@@ -112,13 +123,15 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": null,
-    "hold": "Delete your relay list"
+    "hold": "Delete your relay list",
+    "refuse": null
   },
   {
     "label": "first follow list",
+    "now": 1800000000,
     "event": {
       "kind": 3,
       "tags": [
@@ -244,13 +257,15 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": null,
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "follow one more",
+    "now": 1800000000,
     "event": {
       "kind": 3,
       "tags": [
@@ -380,7 +395,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 3,
@@ -507,12 +522,14 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "unfollow 5 of 30",
+    "now": 1800000000,
     "event": {
       "kind": 3,
       "tags": [
@@ -618,7 +635,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 3,
@@ -745,12 +762,14 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "unfollow 10 of 30",
+    "now": 1800000000,
     "event": {
       "kind": 3,
       "tags": [
@@ -836,7 +855,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 3,
@@ -963,12 +982,14 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": "Remove 10 of your 30 follows"
+    "hold": "Remove 10 of your 30 follows",
+    "refuse": null
   },
   {
     "label": "unfollow 10 of 100",
+    "now": 1800000000,
     "event": {
       "kind": 3,
       "tags": [
@@ -1334,7 +1355,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 3,
@@ -1741,12 +1762,14 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "replace all 30",
+    "now": 1800000000,
     "event": {
       "kind": 3,
       "tags": [
@@ -1872,7 +1895,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 3,
@@ -1999,17 +2022,19 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": "Remove 30 of your 30 follows (and add 30)"
+    "hold": "Remove 30 of your 30 follows (and add 30)",
+    "refuse": null
   },
   {
     "label": "empty from 3",
+    "now": 1800000000,
     "event": {
       "kind": 3,
       "tags": [],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 3,
@@ -2028,17 +2053,19 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": "Empty your follow list (it has 3 follows)"
+    "hold": "Empty your follow list (it has 3 follows)",
+    "refuse": null
   },
   {
     "label": "empty from 2",
+    "now": 1800000000,
     "event": {
       "kind": 3,
       "tags": [],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 3,
@@ -2053,12 +2080,14 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "relays drop 2 of 3",
+    "now": 1800000000,
     "event": {
       "kind": 10002,
       "tags": [
@@ -2068,7 +2097,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 10002,
@@ -2087,12 +2116,14 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": "Remove 2 of your 3 relays"
+    "hold": "Remove 2 of your 3 relays",
+    "refuse": null
   },
   {
     "label": "relays drop 1 of 3",
+    "now": 1800000000,
     "event": {
       "kind": 10002,
       "tags": [
@@ -2106,7 +2137,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 10002,
@@ -2125,12 +2156,14 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "relays trailing slash",
+    "now": 1800000000,
     "event": {
       "kind": 10002,
       "tags": [
@@ -2144,7 +2177,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 10002,
@@ -2159,17 +2192,19 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "bookmarks emptied",
+    "now": 1800000000,
     "event": {
       "kind": 10003,
       "tags": [],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 10003,
@@ -2192,12 +2227,14 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": "Empty your bookmarks (it has 4 bookmarks)"
+    "hold": "Empty your bookmarks (it has 4 bookmarks)",
+    "refuse": null
   },
   {
     "label": "set emptied",
+    "now": 1800000000,
     "event": {
       "kind": 30000,
       "tags": [
@@ -2207,7 +2244,7 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 30000,
@@ -2238,67 +2275,274 @@
         ]
       ],
       "content": "",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": "Empty your follow set (it has 5 persons)"
+    "hold": "Empty your follow set (it has 5 persons)",
+    "refuse": null
   },
   {
     "label": "profile name change",
+    "now": 1800000000,
     "event": {
       "kind": 0,
       "tags": [],
       "content": "{\"name\":\"b\",\"about\":\"x\"}",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 0,
       "tags": [],
       "content": "{\"name\":\"a\",\"about\":\"x\"}",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": null
+    "hold": null,
+    "refuse": null
   },
   {
     "label": "profile wipe 2",
+    "now": 1800000000,
     "event": {
       "kind": 0,
       "tags": [],
       "content": "{\"name\":\"a\"}",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 0,
       "tags": [],
       "content": "{\"name\":\"a\",\"about\":\"x\",\"picture\":\"p\"}",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": "Wipe your profile: picture, about"
+    "hold": "Wipe your profile: picture, about",
+    "refuse": null
   },
   {
     "label": "profile emptied",
+    "now": 1800000000,
     "event": {
       "kind": 0,
       "tags": [],
       "content": "{}",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": {
       "kind": 0,
       "tags": [],
       "content": "{\"name\":\"a\"}",
-      "created_at": 1
+      "created_at": 1800000000
     },
-    "hold": "Wipe your profile: name"
+    "hold": "Wipe your profile: name",
+    "refuse": null
   },
   {
     "label": "first profile",
+    "now": 1800000000,
     "event": {
       "kind": 0,
       "tags": [],
       "content": "{\"name\":\"a\"}",
-      "created_at": 1
+      "created_at": 1800000000
     },
     "prev": null,
-    "hold": null
+    "hold": null,
+    "refuse": null
+  },
+  {
+    "label": "profile dated 2099",
+    "now": 1800000000,
+    "event": {
+      "kind": 0,
+      "tags": [],
+      "content": "{\"name\":\"a\"}",
+      "created_at": 4070908800
+    },
+    "prev": null,
+    "hold": null,
+    "refuse": "Profile dated 2099-01-01: a version dated ahead would block every later change"
+  },
+  {
+    "label": "follows 20 minutes ahead",
+    "now": 1800000000,
+    "event": {
+      "kind": 3,
+      "tags": [
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000000"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000001"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000002"
+        ]
+      ],
+      "content": "",
+      "created_at": 1800001200
+    },
+    "prev": {
+      "kind": 3,
+      "tags": [
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000000"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000001"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000002"
+        ]
+      ],
+      "content": "",
+      "created_at": 1800000000
+    },
+    "hold": null,
+    "refuse": "Follow list dated 2027-01-15: a version dated ahead would block every later change"
+  },
+  {
+    "label": "follows 5 minutes ahead (a fast clock)",
+    "now": 1800000000,
+    "event": {
+      "kind": 3,
+      "tags": [
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000000"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000001"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000002"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000003"
+        ]
+      ],
+      "content": "",
+      "created_at": 1800000300
+    },
+    "prev": {
+      "kind": 3,
+      "tags": [
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000000"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000001"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000002"
+        ]
+      ],
+      "content": "",
+      "created_at": 1800000000
+    },
+    "hold": null,
+    "refuse": null
+  },
+  {
+    "label": "relay list dated 2099",
+    "now": 1800000000,
+    "event": {
+      "kind": 10002,
+      "tags": [
+        [
+          "r",
+          "wss://a"
+        ]
+      ],
+      "content": "",
+      "created_at": 4070908800
+    },
+    "prev": null,
+    "hold": null,
+    "refuse": "Relay list dated 2099-01-01: a version dated ahead would block every later change"
+  },
+  {
+    "label": "set dated 2099",
+    "now": 1800000000,
+    "event": {
+      "kind": 30000,
+      "tags": [
+        [
+          "d",
+          "x"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000000"
+        ],
+        [
+          "p",
+          "0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      ],
+      "content": "",
+      "created_at": 4070908800
+    },
+    "prev": null,
+    "hold": null,
+    "refuse": "Follow set dated 2099-01-01: a version dated ahead would block every later change"
+  },
+  {
+    "label": "note dated 2099 (scheduled?)",
+    "now": 1800000000,
+    "event": {
+      "kind": 1,
+      "tags": [],
+      "content": "hi",
+      "created_at": 4070908800
+    },
+    "prev": null,
+    "hold": "Note dated in the future (2099-01-01)",
+    "refuse": null
+  },
+  {
+    "label": "deletion by a, dated 2099",
+    "now": 1800000000,
+    "event": {
+      "kind": 5,
+      "tags": [
+        [
+          "a",
+          "3:0000000000000000000000000000000000000000000000000000000000000009:"
+        ]
+      ],
+      "content": "",
+      "created_at": 4070908800
+    },
+    "prev": null,
+    "hold": null,
+    "refuse": "Deletion dated 2099-01-01: it would delete every version until then"
+  },
+  {
+    "label": "deletion by e, dated 2099",
+    "now": 1800000000,
+    "event": {
+      "kind": 5,
+      "tags": [
+        [
+          "e",
+          "0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      ],
+      "content": "",
+      "created_at": 4070908800
+    },
+    "prev": null,
+    "hold": "Deletion dated in the future (2099-01-01)",
+    "refuse": null
   }
 ]
