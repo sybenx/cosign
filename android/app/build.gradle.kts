@@ -12,8 +12,8 @@ android {
         applicationId = "cc.aaro.cosign"
         minSdk = 30
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.10.3"
+        versionCode = 15
+        versionName = "0.11.0"
     }
 
     buildTypes {
