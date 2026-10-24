@@ -44,6 +44,8 @@ class MainActivity : ComponentActivity() {
                 // Once in a group: stay reachable, and be allowed to say so.
                 LaunchedEffect(ui.member != null) {
                     if (ui.member != null) {
+                        // Not before the first screen is drawn.
+                        kotlinx.coroutines.delay(1500)
                         if (Build.VERSION.SDK_INT >= 33) notify.launch(Manifest.permission.POST_NOTIFICATIONS)
                         CosignService.start(this@MainActivity)
                         // ntfy, if it's installed. Without it, approvals reach you while Cosign is running.

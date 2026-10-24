@@ -17,7 +17,9 @@ class CosignApp : Application() {
         Startup.mark("app")
         accounts = Accounts(this)
         Startup.mark("accounts")
-        if (accounts.all.any { it.isMember }) CosignService.start(this)
+        // After the first screen is drawn: the service's relay connections would otherwise share the main
+        // thread with it. Signing never waits on this (it connects by itself); boot and push start it directly.
+        if (accounts.all.any { it.isMember }) android.os.Handler(mainLooper).postDelayed({ CosignService.start(this) }, 1500)
         Startup.mark("app done")
     }
 

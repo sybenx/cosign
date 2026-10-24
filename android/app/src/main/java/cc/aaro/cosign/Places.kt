@@ -45,18 +45,19 @@ class TubeFeed(context: Context, slot: String, private val me: () -> String?, pr
 
     override suspend fun fetch(): List<PlaceCard>? = withContext(Dispatchers.IO) {
         // Turned away lately, or the login didn't work: don't sign another one every time Discover opens.
-        if (System.currentTimeMillis() < prefs.getLong("tube.wait", 0)) return@withContext null
+        if (System.currentTimeMillis() < prefs.getLong("tube.wait", 0)) return@withContext null.also { android.util.Log.i("CosignPlaces", "tube: waiting until ${java.util.Date(prefs.getLong("tube.wait", 0))}") }
         // Ask first; sign a login only when Tube says who are you. Not there yet, or down: nothing, and no signing.
         var session = prefs.getString("tube.session", null)
         repeat(2) { attempt ->
             val req = Request.Builder().url("$origin/api/for-you?limit=6").apply { session?.let { header("Cookie", it) } }.build()
             http.newCall(req).execute().use { r ->
+                android.util.Log.i("CosignPlaces", "tube for-you: ${r.code}" + if (session == null) " (no session)" else "")
                 when {
                     r.isSuccessful -> {
                         // The session renews on use (tube_session, 30 days): keep the newest.
                         r.headers("Set-Cookie").joinToString("; ") { it.substringBefore(';') }.takeIf { it.isNotEmpty() }
                             ?.let { prefs.edit().putString("tube.session", it).apply() }
-                        return@withContext parse(r.body?.string().orEmpty())
+                        return@withContext parse(r.body?.string().orEmpty()).also { android.util.Log.i("CosignPlaces", "tube for-you: ${it.size} items") }
                     }
                     (r.code == 401 || r.code == 403) && attempt == 0 -> { prefs.edit().remove("tube.session").apply(); session = login() ?: return@withContext null }
                     r.code == 401 || r.code == 403 -> { denied(); return@withContext null }
@@ -72,10 +73,11 @@ class TubeFeed(context: Context, slot: String, private val me: () -> String?, pr
         if (me() == null) return null
         val url = "$origin/api/login"
         // Couldn't sign (your servers out of reach, say): try again in a while, not on every open.
-        val ev = try { sign(Event(me()!!, Clock.now(), 27235, listOf(listOf("u", url), listOf("method", "POST")), "").withId()) } catch (_: Exception) { backOff(30 * 60_000L); return null }
+        val ev = try { sign(Event(me()!!, Clock.now(), 27235, listOf(listOf("u", url), listOf("method", "POST")), "").withId()) } catch (e: Exception) { android.util.Log.i("CosignPlaces", "tube login: couldn't sign (${e.message})"); backOff(30 * 60_000L); return null }
         val auth = "Nostr " + Base64.getEncoder().encodeToString(ev.toJson().toByteArray())
         return try {
             http.newCall(Request.Builder().url(url).header("Authorization", auth).post(ByteArray(0).toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
+                android.util.Log.i("CosignPlaces", "tube login: ${r.code}" + if (r.headers("Set-Cookie").any { it.startsWith("tube_session=") }) " (session set)" else "")
                 if (r.code == 401 || r.code == 403) { denied(); return null }
                 val cookie = r.headers("Set-Cookie").joinToString("; ") { it.substringBefore(';') }
                 if (!r.isSuccessful || cookie.isEmpty()) { backOff(6 * 3_600_000L); return null }
