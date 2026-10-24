@@ -112,7 +112,6 @@ cd site && node test/nostrconnect.e2e.ts [relay]         # a plain nostr-tools s
   request once and wait forever; if every relay drops it, the site hangs. The servers
   answer twice and move sites onto relays known to work, which covers lost answers, not
   lost requests. A site waiting for your phone just looks busy: it can't say why.
-- **Phone cameras open QRST codes in whichever app owns the link's host.** The demo's
-  codes point at qrst.aaro.cc, which belongs to qrst-signer. `link/` is a tiny site for
-  cosign.aaro.cc that hands them to Cosign instead; once it's deployed, the demo's
-  `baseUrl` changes to it.
+- **Phone cameras open QRST codes in whichever app owns the link's host**, so the demo's
+  codes point at cosign.aaro.cc (`link/`, deployed with `wrangler deploy`), whose App
+  Links file names Cosign. Android checks that file when the app is installed.

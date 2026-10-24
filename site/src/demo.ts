@@ -43,7 +43,7 @@ function signIn() {
   let last = '';
   const p = pair({
     origin: location.origin,
-    baseUrl: 'https://qrst.aaro.cc/',
+    baseUrl: 'https://cosign.aaro.cc/',
     storage,
     ui: {
       code: uri => { $('qr').innerHTML = qrSvg(uri); $('qr').dataset.uri = uri; },
