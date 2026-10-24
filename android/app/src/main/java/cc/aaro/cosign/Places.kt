@@ -33,7 +33,9 @@ interface PlaceFeed {
 
 /**
  * Tube (tube.syb.lol): "for you" videos, after a NIP-98 login signed once by your account
- * and kept as a session. [sign] signs the login event the way your likes are signed.
+ * and kept as a session (the tube_session cookie: 30 days, renewed on use). The login event
+ * names the exact URL and POST, is fresh (Tube takes ±60 s) and used once. [sign] signs it
+ * the way your likes are signed. Thumbnails are signed links that load without the cookie.
  */
 class TubeFeed(context: Context, slot: String, private val me: () -> String?, private val sign: (Event) -> Event) : PlaceFeed {
     override val origin = "https://tube.syb.lol"
@@ -50,7 +52,12 @@ class TubeFeed(context: Context, slot: String, private val me: () -> String?, pr
             val req = Request.Builder().url("$origin/api/for-you?limit=6").apply { session?.let { header("Cookie", it) } }.build()
             http.newCall(req).execute().use { r ->
                 when {
-                    r.isSuccessful -> return@withContext parse(r.body?.string().orEmpty())
+                    r.isSuccessful -> {
+                        // The session renews on use (tube_session, 30 days): keep the newest.
+                        r.headers("Set-Cookie").joinToString("; ") { it.substringBefore(';') }.takeIf { it.isNotEmpty() }
+                            ?.let { prefs.edit().putString("tube.session", it).apply() }
+                        return@withContext parse(r.body?.string().orEmpty())
+                    }
                     (r.code == 401 || r.code == 403) && attempt == 0 -> { prefs.edit().remove("tube.session").apply(); session = login() ?: return@withContext null }
                     r.code == 401 || r.code == 403 -> { denied(); return@withContext null }
                     else -> return@withContext emptyList()

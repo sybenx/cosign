@@ -259,21 +259,25 @@ private fun mix(notes: List<Event>, v: Social.Videos): List<Any> {
 /** A video from a place you're signed in to: a big picture with its length, the title, the channel, and where it's from. */
 @Composable
 private fun VideoCard(c: PlaceCard, onOpen: () -> Unit) = Column(Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 12.dp)) {
-    Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp))) {
-        NetImage(c.thumb, Modifier.fillMaxSize(), 1080, description = c.title)
-        c.duration?.let { d ->
-            Text(length(d), color = Color.White, style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color(0xCC000000), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp))
+    // No thumbnail: a plain card, the length beside the title instead.
+    if (c.thumb != null) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp))) {
+            NetImage(c.thumb, Modifier.fillMaxSize(), 1080, description = c.title)
+            c.duration?.let { d ->
+                Text(length(d), color = Color.White, style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color(0xCC000000), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp))
+            }
         }
+        Spacer(Modifier.height(10.dp))
     }
-    Spacer(Modifier.height(10.dp))
     Text(c.title, color = Vault.Text, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
     Spacer(Modifier.height(4.dp))
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(c.label, color = Vault.Teal, style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.border(1.dp, Vault.TealEdge, RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
         Spacer(Modifier.width(8.dp))
-        Text(c.channel, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(c.channel + if (c.thumb == null && c.duration != null) " · ${length(c.duration)}" else "", color = Vault.Muted, style = MaterialTheme.typography.bodySmall,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
