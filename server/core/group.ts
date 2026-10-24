@@ -968,15 +968,18 @@ export function openGroup(loaded: Loaded, io: Io) {
   }
 
   function onPairAck(msg: any, fromPk: string) {
+    // A member a web page dealt (core/enroll.ts claim): whoever has the token is that device.
+    if (S.pairing?.claim && msg.token === S.pairing.token && !byPk(fromPk)) offeredTo = fromPk;
     if (!S.pairing || fromPk !== offeredTo || msg.token !== S.pairing.token) return;
     if (S.pairing.weighted) {
       // The phone may finish making the key before we do; take its word once we have.
       if (!groupX) { earlyAck = msg; return; }
       if (msg.groupX !== groupX) return note('your phone made a different key; not added');
     }
-    const p = phone();
+    const p = S.pairing.claim ? members.find(m => m.idx === S.pairing.idx)! : phone();
     p.pk = fromPk;
     if (offeredName) p.name = offeredName;
+    if (S.pairing.claim && typeof msg.name === 'string' && msg.name.trim()) p.name = msg.name.trim().slice(0, 40);
     S.pairing = null; // the phone has its share; this server no longer does
     save();
     lastSeen.set(p.idx, io.now());

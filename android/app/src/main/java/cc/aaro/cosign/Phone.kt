@@ -19,6 +19,8 @@ import cc.aaro.cosign.core.Phase
 import cc.aaro.cosign.core.Policy
 import cc.aaro.cosign.core.SignerTicket
 import cc.aaro.cosign.core.SignerTicketProfile
+import cc.aaro.cosign.core.CosignMemberProfile
+import cc.aaro.cosign.core.MemberMove
 import cc.aaro.cosign.core.SystemEnv
 import cc.aaro.cosign.core.generateSecretKey
 import cc.aaro.cosign.core.hexToBytes
@@ -82,6 +84,8 @@ data class AddingDevice(val pk: String, val name: String, val relays: List<Strin
 /** A version of one of your lists dated in the future, found on relays: it blocks every change. */
 data class Future(val id: String, val text: String)
 data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
+/** A key moving in from a web page (QRST `cosign-member`): its code, then whether to keep it. */
+data class MoveIn(val stage: Stage, val code: String? = null, val text: String? = null) { enum class Stage { WAITING, CODE, ACCEPT, DONE, FAILED } }
 data class Line(val ts: Long, val text: String, val kind: String = "info")
 /** An app on this phone that may sign as you (Android signer, NIP-55). [pk] names its grant on your servers. */
 data class AppGrant(val pkg: String, val pk: String, val label: String, val dm: Boolean)
@@ -111,6 +115,7 @@ data class Ui(
     /** This (new) device's code, while it waits for one of yours to add it. */
     val joinCode: String? = null,
     val connect: Connect? = null,
+    val moveIn: MoveIn? = null,
     val push: String? = null,
 )
 
@@ -331,6 +336,7 @@ class Phone(private val context: Context) {
             return ui.update { it.copy(error = null, adding = AddingDevice(pk!!, u.getQueryParameter("name")?.take(40) ?: "A device", relays)) }
         }
         val params = try { PairingUri.parse(t) } catch (_: Exception) { null }
+        if (params?.profile == CosignMemberProfile.id) return moveIn(params)
         // A sign-in code that carries a nostrconnect:// fallback (`nc`, site/src/pair.ts):
         // use the ticket if it's one for us, the fallback if not.
         val nc = t.substringAfter('#', "").split('&').firstOrNull { it.startsWith("nc=") }?.let { Uri.decode(it.removePrefix("nc=")) }
@@ -347,6 +353,67 @@ class Phone(private val context: Context) {
                 ui.update { it.copy(error = null, connect = Connect(params.origin ?: "This site", Connect.Stage.CONFIRM)) }
             }
         }
+    }
+
+    // --- A key moving in from a web page ------------------------------------------------
+    //
+    // The page that held the key dealt it: each server already has its share (and a claim
+    // token for this phone), and this phone gets three by QRST. It shows five digits, you
+    // type them on the page, it checks the shares and asks before keeping them, then
+    // claims its place with each server (pair_ack). Nothing here ever held the whole key.
+
+    private var moving: Transfer<MemberMove>? = null
+
+    private fun moveIn(params: PairingParams) {
+        when {
+            isMember -> return ui.update { it.copy(error = "This phone already holds a key. Moving another one in isn't possible yet.") }
+            params.mode != Mode.REQUEST -> return ui.update { it.copy(error = "That code isn't offering a key.") }
+        }
+        moving?.cancel()
+        val t = Transfer.join(TransferDeps(CosignMemberProfile, qrstStore, env, "https://qrst.aaro.cc/", CodeCheck.TYPE), params, true)
+        moving = t
+        ui.update { it.copy(error = null, moveIn = MoveIn(MoveIn.Stage.WAITING, text = "Reaching the page…")) }
+        var kept = false
+        t.onChange = {
+            val v = t.view()
+            when {
+                v.value != null && !kept -> { kept = true; keepMoved(v.value) }
+                v.session.phase == Phase.ACCEPT -> ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.ACCEPT, v.session.code, v.session.rendering)) }
+                v.session.phase == Phase.CODE && v.session.code != null -> ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.CODE, v.session.code)) }
+                v.stage == TransferView.Stage.ENDED && !kept -> ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.FAILED, text = when (v.session.outcome) {
+                    Outcome.DECLINED, Outcome.PEER_ABORTED -> "Cancelled. Nothing was moved."
+                    Outcome.EXPIRED -> "That code expired. Start again on the page."
+                    else -> "Not moved (${v.session.outcome?.wire ?: "ended"})."
+                })) }
+            }
+        }
+    }
+
+    /** You checked what arrived and said keep it. */
+    fun acceptMove() { moving?.accept() }
+    fun closeMove() {
+        if (ui.value.moveIn?.stage.let { it == MoveIn.Stage.WAITING || it == MoveIn.Stage.CODE || it == MoveIn.Stage.ACCEPT }) moving?.decline()
+        moving = null
+        ui.update { it.copy(moveIn = null) }
+    }
+
+    private fun keepMoved(mv: MemberMove) {
+        val group = parseGroup(mv.group) ?: return ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.FAILED, text = "The page sent a damaged key. Nothing was kept.")) }
+        val points = group.members.flatMap { it.points }.associate { it.idx to it.sharePub }
+        if (mv.shares.any { (i, sec) -> Frost.sharePub(sec) != points[i] })
+            return ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.FAILED, text = "Those shares don't belong to that key. Nothing was kept.")) }
+        val mySk = generateSecretKey(env).toHex()
+        val me = publicKeyHex(mySk.hexToBytes())
+        val m = Membership(mySk, mv.idx, mv.shares.map { Share(it.first, it.second) }, mv.signer,
+            group.copy(npub = Nip19.npub(group.groupX), members = group.members.map { if (it.idx == mv.idx) it.copy(pk = me) else it }))
+        secrets.saveMembership(Json.stringify(membershipToMap(m)))
+        connect(group.relays, mySk)
+        ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your key is in Cosign now. This phone holds ${m.shares.size} of its shares.")) }
+        note("Moved ${group.npub.take(16)}… in from a web page", "approved")
+        // Claim this member's place with each server, again in case a relay drops it.
+        val claim = { for (srv in servers()) send(srv.pk!!, mapOf("type" to "pair_ack", "token" to mv.claim, "name" to android.os.Build.MODEL.ifBlank { "Phone" })) }
+        timer.schedule(claim, 2, TimeUnit.SECONDS); timer.schedule(claim, 6, TimeUnit.SECONDS)
+        start()
     }
 
     // --- Connecting a site ----------------------------------------------------

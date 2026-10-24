@@ -10,7 +10,10 @@
 //                             → enrolled { pk, group } | enroll_failed { reason }
 //     `how` is how this server's share came to be:
 //     'dealt': a device dealt the key and sends this server its share, which it checks
-//       against the group's share points before keeping it.
+//       against the group's share points before keeping it. Moving a key in from a web
+//       page (site/src/import.ts) adds `claim`, a token the phone that gets the device
+//       shares sends back (pair_ack) to become that member, and `tickets`, so the page
+//       can sign in with the key it just gave away.
 //   enroll { how: 'dkg', key, group, plan, signer? }
 //     No key yet: the device and its servers make one (dkg.ts), nobody ever holding it.
 //     `group` is the record without key or share points; `plan` is {session, threshold,
@@ -118,19 +121,14 @@ function dealt({ msg, from, memberSk: sk, holds, now }: Enrolling) {
   // Never enough here to sign alone, counting anything of this key the host already has.
   if (new Set([...shares.map(s => s.idx), ...holds(g.groupX)]).size >= threshold) throw new Error('too-many: This server would hold enough of the key to sign alone.');
 
-  let signer: { sk: string; pk: string } | null = null;
-  if (msg.signer) {
-    signer = { sk: String(msg.signer.sk), pk: String(msg.signer.pk) };
-    let ok = false;
-    try { ok = pubOf(signer.sk) === signer.pk; } catch { /* damaged */ }
-    if (!ok) throw new Error('bad-signer: The signer key doesn’t match its public key.');
-  }
+  const signer = signerOf(msg);
+  const { pairing, tickets } = claimOf(msg, members);
 
   return {
     // As setup.ts writes it: `share` for a member of one share, `shares` for one the record gives several.
     self: { idx: me.idx, sk, share: shares[0].secret, ...(me.shares ? { shares } : {}) },
     group: { groupX: g.groupX, npub: nip19.npubEncode(g.groupX), threshold, relays, members },
-    signer, sites: [], tickets: [], changes: [], pairing: null,
+    signer, sites: [], tickets, changes: [], pairing,
     enrolled: { at: Math.floor(now / 1000), by: from, how: 'dealt' },
   };
 }
@@ -150,6 +148,21 @@ const signerOf = (msg: any) => {
   if (!ok) throw new Error('bad-signer: The signer key doesn’t match its public key.');
   return signer;
 };
+
+/** A device member still to be claimed by whoever brings `claim` back, and tickets for the page that sent it. */
+function claimOf(msg: any, members: Member[]) {
+  let pairing: { token: string; idx: number; claim: true } | null = null;
+  if (msg.claim !== undefined) {
+    const m = members.find(x => x.idx === Number(msg.claim?.idx));
+    if (!/^[0-9a-f]{32}$/.test(String(msg.claim?.token)) || !m || m.role === 'server' || m.pk) throw new Error('bad-claim: That claim doesn’t name a device member without a key.');
+    pairing = { token: String(msg.claim.token), idx: m.idx, claim: true };
+  }
+  const tickets = (Array.isArray(msg.tickets) ? msg.tickets : []).slice(0, 4).map((t: any) => {
+    if (!/^[0-9a-f]{32}$/.test(String(t?.t)) || typeof t.expires !== 'number') throw new Error('bad-ticket: A ticket is damaged.');
+    return { t: String(t.t), origin: String(t.origin ?? 'a site').slice(0, 80), expires: Math.min(t.expires, Math.floor(Date.now() / 1000) + 3600) };
+  });
+  return { pairing, tickets };
+}
 
 /** A key not made yet: check the record and the plan agree on who holds what, then wait for the run. */
 function dkg({ msg, from, memberSk: sk, now }: Enrolling) {

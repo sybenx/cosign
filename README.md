@@ -136,6 +136,12 @@ background service is running.
   against the group's share points (`how: 'dealt'`), or the record and a key plan, the
   key then made by DKG with the device (`how: 'dkg'`, "Create account": no code, no
   setup step on the server).
+- **Moving a key in** (`site/src/import.ts`, `site/src/member.ts`, `core/CosignMember.kt`):
+  a web app holding an nsec deals it (the phone 3 shares, each server 1, any 4 sign),
+  enrolls each server with its share, a claim token for the phone and a ticket for the
+  page, and hands the phone its shares by QRST (`cosign-member`, checked at `type`: the
+  phone shows five digits, you type them on the page). The phone claims its place with
+  `pair_ack {token}`; the page is signed in by the same move.
 - **Finding servers** (`site/src/servers.ts`, COSIGN.md §9.5): a shared server with an
   `operator` in `host.json` (or `COSIGN_OPERATOR`) announces itself, kind 30243 signed by
   its host key; the operator lists it back, kind 10243 (`operatorServers`). Devices
@@ -153,6 +159,7 @@ cd site && node --experimental-transform-types test/pair.e2e.ts   # QRST sign-in
 cd site && node test/nostrconnect.e2e.ts [relay]         # a plain nostr-tools site, by nostrconnect
 cd site && node test/shared.e2e.ts                       # two keys in one process; enroll a third (starts its own servers)
 cd site && node test/create.e2e.ts                       # create account: a device and one shared server make a key
+cd site && node --experimental-transform-types test/import.e2e.ts   # move a key from a page into Cosign
 cd site && node test/servers.e2e.ts                      # finding and picking servers; a live one announces itself
 cd site && node test/single.e2e.ts                       # phone co-signs; backup steps in; big lists
 cd site && node test/deletion.e2e.ts                     # copies kept, 10 s Undo, one approval per batch

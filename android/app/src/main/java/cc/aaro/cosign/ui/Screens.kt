@@ -49,6 +49,7 @@ import cc.aaro.cosign.Ask
 import cc.aaro.cosign.Change
 import cc.aaro.cosign.BatchAsk
 import cc.aaro.cosign.Connect
+import cc.aaro.cosign.MoveIn
 import cc.aaro.cosign.Deleted
 import cc.aaro.cosign.Deleting
 import cc.aaro.cosign.SiteSummary
@@ -81,6 +82,7 @@ fun App(phone: Phone, ui: Ui) {
             else -> Home(phone, ui) { phone.clearError(); scanning = true }
         }
         ui.connect?.let { ConnectSheet(it, phone::confirmConnect, phone::closeConnect) }
+        ui.moveIn?.let { MoveInSheet(it, phone::acceptMove, phone::closeMove) }
         ui.summary?.let { UndoSiteSheet(it, phone::confirmUndoSite, phone::closeSummary) }
         ui.adding?.let { AddDeviceSheet(it, phone) }
     }
@@ -158,6 +160,58 @@ private fun MakeKeyPrompt(onJoin: () -> Unit, onCancel: () -> Unit) = Page {
     Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Make my key", style = MaterialTheme.typography.labelLarge) }
     Spacer(Modifier.height(8.dp))
     TextButton(onCancel, Modifier.fillMaxWidth()) { Text("Not now", color = Vault.Muted) }
+}
+
+/** A key moving in from a web page: the five digits to type there, then whether to keep it. */
+@Composable
+private fun MoveInSheet(m: MoveIn, onKeep: () -> Unit, onClose: () -> Unit) {
+    BackHandler { onClose() }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            val digits: @Composable (String) -> Unit = { code ->
+                Text(code.chunked(1).joinToString(" "), fontFamily = PlexMono, style = MaterialTheme.typography.displaySmall, color = Vault.Teal,
+                    modifier = Modifier.align(Alignment.CenterHorizontally))
+            }
+            when (m.stage) {
+                MoveIn.Stage.WAITING -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(22.dp), color = Vault.Teal, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(14.dp))
+                    Text(m.text ?: "Working…", color = Vault.Text)
+                }
+                MoveIn.Stage.CODE -> {
+                    Text("Type this on the page", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                    Spacer(Modifier.height(16.dp))
+                    digits(m.code ?: "")
+                    Spacer(Modifier.height(16.dp))
+                    Text("It proves the page is talking to this phone. Your key moves only once you've typed it.", color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(18.dp))
+                    OutlinedButton(onClose, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Cancel", color = Vault.Text) }
+                }
+                MoveIn.Stage.ACCEPT -> {
+                    Text("Keep this key?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                    Spacer(Modifier.height(10.dp))
+                    Text(m.text ?: "", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("From now on it signs through your servers, with this phone. The page no longer needs to hold it.", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(20.dp))
+                    OutlinedButton(onClose, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Discard", color = Vault.Text) }
+                    Spacer(Modifier.height(10.dp))
+                    Button(onKeep, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Keep it") }
+                }
+                MoveIn.Stage.DONE, MoveIn.Stage.FAILED -> {
+                    Text(if (m.stage == MoveIn.Stage.DONE) "Moved in" else "Not moved", style = MaterialTheme.typography.titleLarge,
+                        color = if (m.stage == MoveIn.Stage.DONE) Vault.Teal else Vault.Danger)
+                    Spacer(Modifier.height(8.dp))
+                    Text(m.text ?: "", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(18.dp))
+                    Button(onClose, Modifier.fillMaxWidth().height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Edge, Vault.Text)) { Text("OK") }
+                }
+            }
+        }
+    }
 }
 
 /** Connecting a site: the one-tap consent of QRST at its lowest check, then progress. */
