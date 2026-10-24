@@ -176,7 +176,10 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
     LaunchedEffect(me) { People.want(listOf(me)) }
     val muted by social.muted.collectAsState()
     val dismissed by social.dismissed.collectAsState()
-    val mixed = remember(feed.notes, videos, muted, dismissed) { mix(feed.notes.filter { it.pubkey !in muted && it.id !in dismissed }, videos) }
+    val snoozed by social.snoozed.collectAsState()
+    val mixed = remember(feed.notes, videos, muted, dismissed, snoozed) {
+        mix(feed.notes.filter { it.pubkey !in muted && it.id !in dismissed && !social.snoozedNow(it.pubkey) }, videos)
+    }
     // How far down you've looked, in notes: a video that comes late goes below it.
     val notesNow by androidx.compose.runtime.rememberUpdatedState(feed.notes)
     LaunchedEffect(state) {

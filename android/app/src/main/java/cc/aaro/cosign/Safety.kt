@@ -90,8 +90,10 @@ object Lang {
         "nl" to "de het een en is van niet ik dat je op met voor zijn maar ook wat er heb".split(' '),
     ).mapValues { it.value.toSet() }
 
+    private val NOT_LETTERS = Regex("[^\\p{L}']+")
+
     private fun latinGuess(t: String): Set<String>? {
-        val words = t.lowercase().split(Regex("[^\\p{L}']+")).filter { it.isNotEmpty() }
+        val words = t.lowercase().split(NOT_LETTERS).filter { it.isNotEmpty() }
         if (words.size < 4) return null
         val scores = WORDS.mapValues { (_, w) -> words.count { it in w } }.entries.sortedByDescending { it.value }
         val (best, second) = scores[0] to scores[1]

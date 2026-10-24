@@ -225,21 +225,52 @@ class Social private constructor(private val phone: Phone, context: Context) {
         lookedAt = 0
         loadPlaces()
         scope.launch {
+            // The curated feed first. If it has less than a screenful or two, the next source tops it up
+            // (after it, never mixed in). A bit more is asked for than is shown, as some is left out.
+            var used: String? = null
+            val fresh = ArrayList<Event>()
             for (src in Sources.FEEDS) {
-                // The curated feed comes first and wins whenever it has enough to show.
                 Startup.mark("feed asked")
-                val got = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 100), 8000)
+                val got = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 60), 8000)
                 Startup.mark("feed fetched ${got.size}")
-                val notes = got.filter { it.kind == 1 && forDiscover(it) }
+                val notes = got.filter { it.kind == 1 && forDiscover(it) && fresh.none { f -> f.id == it.id } }
                 Startup.mark("feed filtered ${notes.size}")
-                if (notes.size < 3) continue
-                remember(notes)
-                feed.value = Feed(rank(notes), source = src, at = System.currentTimeMillis())
-                People.want(notes.map { it.pubkey })
-                return@launch
+                if (notes.isEmpty()) continue
+                if (used == null) used = src
+                fresh += rank(notes)
+                if (fresh.size >= 20) break
             }
-            feed.update { it.copy(loading = false, failed = it.notes.isEmpty()) }
+            if (fresh.size < 3) return@launch feed.update { it.copy(loading = false, failed = it.notes.isEmpty()) }
+            remember(fresh)
+            People.want(fresh.map { it.pubkey })
+            // What's on screen stays where it is; the new notes come after it. A refresh you asked for starts over.
+            feed.update { cur ->
+                val keep = if (force || cur.notes.isEmpty()) emptyList() else cur.notes.take(lookedAt + 3)
+                Feed(keep + fresh.filter { n -> keep.none { it.id == n.id } }, source = used, at = System.currentTimeMillis())
+            }
+            saveFeed()
         }
+    }
+
+    // The last feed, on disk, so opening shows it at once (filtered again: you may have muted someone since).
+    private val feedFile = File(context.cacheDir, "feed-" + (phone.ui.value.member?.group?.groupX?.take(16) ?: phone.slot) + ".json")
+
+    /** Called once the whole object is set up: the filters below need it. */
+    private fun restoreFeed() {
+        scope.launch {
+            val m = try { Json.parse(feedFile.readText()) as? Map<*, *> } catch (_: Exception) { null } ?: return@launch
+            val notes = (m["notes"] as? List<*>)?.mapNotNull { Event.fromMap(it) }?.filter { forDiscover(it) } ?: return@launch
+            if (notes.isEmpty()) return@launch
+            remember(notes)
+            People.want(notes.map { it.pubkey })
+            feed.update { if (it.notes.isNotEmpty()) it else it.copy(notes = notes, source = m["source"] as? String, at = m["at"] as? Long ?: 0) }
+            Startup.mark("feed from cache ${notes.size}")
+        }
+    }
+
+    private fun saveFeed() {
+        val f = feed.value
+        try { feedFile.writeText(Json.stringify(mapOf("source" to f.source, "at" to f.at, "notes" to f.notes.take(40).map { it.toMap() }))) } catch (_: Exception) {}
     }
 
     /** Older notes from the same source. */
@@ -494,12 +525,21 @@ class Social private constructor(private val phone: Phone, context: Context) {
     /** Shown anywhere: no content warning, nothing adult, nobody you muted. */
     fun safe(e: Event) = !Safety.flagged(e) && e.pubkey !in muted.value && e.id !in dismissed.value
     /** In Discover, also only in a language this phone is set to. */
-    private fun forDiscover(e: Event) = safe(e) && Lang.readable(e, languages)
+    private fun forDiscover(e: Event) = safe(e) && !snoozedNow(e.pubkey) && Lang.readable(e, languages)
 
+    /** People whose notes you said you're not interested in, until when (ms): Discover leaves them out for a while. */
+    val snoozed = MutableStateFlow(prefs.getStringSet("snoozed", emptySet())!!.mapNotNull { s ->
+        s.substringAfter(':').toLongOrNull()?.takeIf { it > System.currentTimeMillis() }?.let { s.substringBefore(':') to it } }.toMap())
+
+    /** Not this note, and less like it: the same author is left out of Discover for three days. */
     fun notInterested(e: Event) {
         dismissed.update { it + e.id }
-        prefs.edit().putStringSet("dismissed", dismissed.value.toList().takeLast(2000).toSet()).apply()
+        snoozed.update { it + (e.pubkey to System.currentTimeMillis() + 3 * 86_400_000L) }
+        prefs.edit().putStringSet("dismissed", dismissed.value.toList().takeLast(2000).toSet())
+            .putStringSet("snoozed", snoozed.value.map { (pk, until) -> "$pk:$until" }.toSet()).apply()
     }
+
+    fun snoozedNow(pk: String) = (snoozed.value[pk] ?: 0) > System.currentTimeMillis()
 
     /** Mute someone: hidden here at once, and added to your mute list (kind 10000), signed like a follow. */
     fun mute(pk: String) {
@@ -517,8 +557,12 @@ class Social private constructor(private val phone: Phone, context: Context) {
         }
     }
 
+    /** Your mute list, read from your relays once per run of the app; between runs, what was read is kept here. */
+    @Volatile private var mutesKnown = false
     private suspend fun knowMutes() {
+        if (mutesKnown) return
         val list = newest(10000, mutes, fetch = true) ?: return
+        mutesKnown = true
         mutes = list
         val pks = list.tags.filter { it.size > 1 && it[0] == "p" }.map { it[1] }
         if (pks.isNotEmpty()) { muted.update { it + pks }; prefs.edit().putStringSet("muted", muted.value).apply() }
@@ -566,7 +610,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
 
         private val all = HashMap<String, Social>()
         fun of(phone: Phone): Social = synchronized(all) {
-            all.getOrPut(phone.slot + "/" + phone.ui.value.member?.group?.groupX) { People.init(CosignApp.instance); Social(phone, CosignApp.instance) }
+            all.getOrPut(phone.slot + "/" + phone.ui.value.member?.group?.groupX) { People.init(CosignApp.instance); Social(phone, CosignApp.instance).also { it.restoreFeed() } }
         }
     }
 
