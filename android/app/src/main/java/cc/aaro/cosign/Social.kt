@@ -43,6 +43,8 @@ object Sources {
     val GENERAL = listOf("wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net")
     /** Debug builds only: more relays to read from (a local relay for tests). */
     val extra = MutableStateFlow<List<String>>(emptyList())
+    /** Debug builds only: publish your own likes, follows and mutes to [extra] alone, nowhere public. */
+    @Volatile var localOnly = false
 }
 
 /** Someone's kind 0, as shown. */
@@ -219,12 +221,13 @@ class Social private constructor(private val phone: Phone, context: Context) {
         val f = feed.value
         if (f.loading || (!force && f.notes.isNotEmpty() && System.currentTimeMillis() - f.at < 30 * 60_000)) return
         feed.update { it.copy(loading = true, failed = false) }
-        scope.launch { knowFollows() }
+        scope.launch { knowFollows(); knowMutes() }
         lookedAt = 0
         loadPlaces()
         scope.launch {
             for (src in Sources.FEEDS) {
-                val notes = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 50), 8000).filter { it.kind == 1 }
+                // The curated feed comes first and wins whenever it has enough to show.
+                val notes = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 100), 8000).filter { it.kind == 1 && forDiscover(it) }
                 if (notes.size < 3) continue
                 remember(notes)
                 feed.value = Feed(rank(notes), source = src, at = System.currentTimeMillis())
@@ -243,10 +246,11 @@ class Social private constructor(private val phone: Phone, context: Context) {
         feed.update { it.copy(loading = true) }
         scope.launch {
             val until = f.notes.minOf { it.createdAt } - 1
-            val more = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 40, "until" to until), 8000).filter { it.kind == 1 && f.notes.none { n -> n.id == it.id } }
+            val got = Fetch.query(listOf(src), mapOf("kinds" to listOf(1), "limit" to 60, "until" to until), 8000)
+            val more = got.filter { it.kind == 1 && forDiscover(it) && f.notes.none { n -> n.id == it.id } }
             remember(more)
             People.want(more.map { it.pubkey })
-            feed.update { it.copy(notes = it.notes + more.sortedByDescending { n -> n.createdAt }, loading = false, more = more.isNotEmpty()) }
+            feed.update { it.copy(notes = it.notes + more.sortedByDescending { n -> n.createdAt }, loading = false, more = got.isNotEmpty()) }
         }
     }
 
@@ -325,7 +329,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
                 val filter: Map<String, Any> = if (tag != null) mapOf("kinds" to listOf(1), "#t" to listOf(tag), "limit" to 40)
                     else mapOf("kinds" to listOf(1), "search" to text, "limit" to 40)
                 val relays = if (tag != null) search + Sources.GENERAL else search
-                Fetch.query(relays, filter, 8000).filter { it.kind == 1 }.sortedByDescending { it.createdAt }.take(60)
+                Fetch.query(relays, filter, 8000).filter { it.kind == 1 && safe(it) }.sortedByDescending { it.createdAt }.take(60)
             }
             val p = people.await()
             val n = notes.await()
@@ -367,7 +371,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
         val got = Fetch.query(relays, listOf(mapOf("ids" to listOf(rootId)), mapOf("kinds" to listOf(1), "#e" to listOf(rootId), "limit" to 200)), 7000)
         val root = if (rootId == note.id) note else note(rootId) ?: got.firstOrNull { it.id == rootId }
         // Replies, not notes that only mention it.
-        val replies = got.filter { e -> e.kind == 1 && e.id != rootId && e.tags.any { it.size > 1 && it[0] == "e" && it[1] == rootId && it.getOrNull(3) != "mention" } }
+        val replies = got.filter { e -> e.kind == 1 && e.id != rootId && safe(e) && e.tags.any { it.size > 1 && it[0] == "e" && it[1] == rootId && it.getOrNull(3) != "mention" } }
         val all = listOfNotNull(root) + replies + (if (root == null) listOf(note) else emptyList())
         remember(all)
         People.want(all.map { it.pubkey })
@@ -398,7 +402,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
         if (n.loading || (!force && n.at != 0L && System.currentTimeMillis() - n.at < 5 * 60_000)) return
         notices.update { it.copy(loading = true) }
         scope.launch {
-            val evs = Fetch.query(readRelays(), mapOf("kinds" to listOf(1, 6, 7), "#p" to listOf(me), "limit" to 80), 7000).filter { it.pubkey != me }
+            val evs = Fetch.query(readRelays(), mapOf("kinds" to listOf(1, 6, 7), "#p" to listOf(me), "limit" to 80), 7000).filter { it.pubkey != me && it.pubkey !in muted.value }
             val list = evs.sortedByDescending { it.createdAt }.map { e ->
                 when (e.kind) {
                     7 -> Notice(e, Notice.Type.REACTION, e.tags.lastOrNull { it.size > 1 && it[0] == "e" }?.get(1))
@@ -463,12 +467,57 @@ class Social private constructor(private val phone: Phone, context: Context) {
     private fun followsIn(e: Event?) = e?.tags?.filter { it.size > 1 && it[0] == "p" }?.map { it[1] }?.toSet() ?: emptySet()
 
     /** Your newest follow list: what this phone has seen signed, or what your relays have. */
-    private suspend fun newestContacts(fetch: Boolean): Event? {
+    private suspend fun newestContacts(fetch: Boolean): Event? = newest(3, contacts, fetch)
+
+    /** Your newest version of a list (follows, mutes): what this phone has seen signed, or what your relays have. */
+    private suspend fun newest(kind: Int, have: Event?, fetch: Boolean): Event? {
         val me = me ?: return null
-        val local = listOfNotNull(phone.latest("3"), contacts)
-        val remote = if (fetch) Fetch.query((writeRelays() + Sources.PROFILES).distinct(), mapOf("kinds" to listOf(3), "authors" to listOf(me), "limit" to 1), 6000)
-            .filter { it.pubkey == me && it.kind == 3 } else emptyList()
+        val local = listOfNotNull(phone.latest(kind.toString()), have)
+        val remote = if (fetch) Fetch.query((writeRelays() + Sources.PROFILES).distinct(), mapOf("kinds" to listOf(kind), "authors" to listOf(me), "limit" to 1), 6000)
+            .filter { it.pubkey == me && it.kind == kind } else emptyList()
         return (local + remote).maxByOrNull { it.createdAt }
+    }
+
+    // --- Keeping Discover pleasant ---------------------------------------------------------
+
+    /** People you muted: your mute list's public part, and the ones muted here. */
+    val muted = MutableStateFlow(prefs.getStringSet("muted", emptySet())!!.toSet())
+    /** Notes you said you're not interested in. Only on this phone. */
+    val dismissed = MutableStateFlow(prefs.getStringSet("dismissed", emptySet())!!.toSet())
+    private val languages by lazy { Lang.phone() }
+    private var mutes: Event? = null
+
+    /** Shown anywhere: no content warning, nothing adult, nobody you muted. */
+    fun safe(e: Event) = !Safety.flagged(e) && e.pubkey !in muted.value && e.id !in dismissed.value
+    /** In Discover, also only in a language this phone is set to. */
+    private fun forDiscover(e: Event) = safe(e) && Lang.readable(e, languages)
+
+    fun notInterested(e: Event) {
+        dismissed.update { it + e.id }
+        prefs.edit().putStringSet("dismissed", dismissed.value.toList().takeLast(2000).toSet()).apply()
+    }
+
+    /** Mute someone: hidden here at once, and added to your mute list (kind 10000), signed like a follow. */
+    fun mute(pk: String) {
+        val me = me ?: return
+        if (pk == me) return
+        muted.update { it + pk }
+        prefs.edit().putStringSet("muted", muted.value).apply()
+        scope.launch {
+            val list = newest(10000, mutes, fetch = true)
+            val old = list?.tags ?: emptyList()
+            if (old.any { it.size > 1 && it[0] == "p" && it[1] == pk }) return@launch
+            // The private part (encrypted in content) stays as it was.
+            val ev = Event(me, maxOf(Clock.now(), (list?.createdAt ?: 0) + 1), 10000, old + listOf(listOf("p", pk)), list?.content ?: "").withId()
+            act(ev)
+        }
+    }
+
+    private suspend fun knowMutes() {
+        val list = newest(10000, mutes, fetch = true) ?: return
+        mutes = list
+        val pks = list.tags.filter { it.size > 1 && it[0] == "p" }.map { it[1] }
+        if (pks.isNotEmpty()) { muted.update { it + pks }; prefs.edit().putStringSet("muted", muted.value).apply() }
     }
 
     private suspend fun knowFollows() {
@@ -486,7 +535,8 @@ class Social private constructor(private val phone: Phone, context: Context) {
             message.value = "Couldn't do that right now: ${e.message ?: "no answer"}"; return false
         }
         if (signed.kind == 3) { contacts = signed; follows.value = followsIn(signed) }
-        val n = Fetch.publish(writeRelays(), signed)
+        if (signed.kind == 10000) mutes = signed
+        val n = Fetch.publish(if (Sources.localOnly) Sources.extra.value else writeRelays(), signed)
         if (n == 0) message.value = "Signed, but no relay took it. Try again later."
         return n > 0
     }

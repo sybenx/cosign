@@ -38,6 +38,32 @@ class SocialTest {
         assertEquals("Remove 2 of your 3 relays?", q("Remove 2 of your 3 relays"))
     }
 
+    private fun note(text: String, vararg tags: List<String>) = Event(fiatjaf, 0, 1, tags.toList(), text)
+
+    @Test fun languagesAreGuessedOnlyWhenClear() {
+        assertEquals(setOf("en"), Lang.guess("I think this is the best thing that happened to my week, and you should try it"))
+        assertEquals(setOf("pt"), Lang.guess("Eu não sei o que fazer com isso, mas você tem razão sempre"))
+        assertEquals(setOf("de"), Lang.guess("Ich bin nicht sicher, aber das ist auch eine gute Idee für uns"))
+        assertEquals(setOf("es"), Lang.guess("No sé qué hacer con esto, pero también es muy bueno para la gente"))
+        assertEquals("ja", Lang.guess("今日はとても良い天気ですね。散歩に行きましょう")?.first())
+        assertEquals(true, Lang.guess("Привет всем, как у вас дела сегодня?")?.contains("ru"))
+        assertNull(Lang.guess("GM ☀️"))                          // too short to tell
+        assertNull(Lang.guess("https://example.com/a.jpg #nostr")) // nothing but a link and a tag
+        val en = setOf("en")
+        assertEquals(true, Lang.readable(note("Eu não sei o que fazer com isso", listOf("l", "en", "ISO-639-1")), en)) // its label wins
+        assertEquals(false, Lang.readable(note("Eu não sei o que fazer com isso, mas você tem razão sempre"), en))
+        assertEquals(true, Lang.readable(note("Bitcoin 🚀🚀"), en))
+    }
+
+    @Test fun sensitiveNotesAreFlagged() {
+        assertEquals(true, Safety.flagged(note("look", listOf("content-warning", "spoilers"))))
+        assertEquals(true, Safety.flagged(note("hi", listOf("t", "NSFW"))))
+        assertEquals(true, Safety.flagged(note("new pics #nsfw")))
+        assertEquals(true, Safety.flagged(note("x", listOf("l", "NS-nud", "content-warning"))))
+        assertEquals(false, Safety.flagged(note("#nsfwish is not a tag we know")))
+        assertEquals(false, Safety.flagged(note("a calm note", listOf("t", "nature"))))
+    }
+
     private fun ev(vararg tags: List<String>) = Event(fiatjaf, 0, 1, tags.toList(), "")
 
     @Test fun repliesFindTheirPlace() {

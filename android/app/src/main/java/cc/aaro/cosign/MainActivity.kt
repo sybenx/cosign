@@ -100,5 +100,7 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra("relay")?.let { cc.aaro.cosign.Sources.extra.value = it.split(',').filter(String::isNotBlank) }
         // Stand-in videos from "Tube" in Discover, until its endpoint is live (--es places fake).
         if (intent?.getStringExtra("places") == "fake") Places.fake = true
+        // Your own events to the test relay alone (--ez local_only true).
+        if (intent?.getBooleanExtra("local_only", false) == true) cc.aaro.cosign.Sources.localOnly = true
     }
 }

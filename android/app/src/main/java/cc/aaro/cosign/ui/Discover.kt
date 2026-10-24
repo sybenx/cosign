@@ -34,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Notifications
@@ -41,6 +42,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -170,7 +173,9 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
     val videos by social.videos.collectAsState()
     val me = ui.member!!.group.groupX
     LaunchedEffect(me) { People.want(listOf(me)) }
-    val mixed = remember(feed.notes, videos) { mix(feed.notes, videos) }
+    val muted by social.muted.collectAsState()
+    val dismissed by social.dismissed.collectAsState()
+    val mixed = remember(feed.notes, videos, muted, dismissed) { mix(feed.notes.filter { it.pubkey !in muted && it.id !in dismissed }, videos) }
     // How far down you've looked, in notes: a video that comes late goes below it.
     val notesNow by androidx.compose.runtime.rememberUpdatedState(feed.notes)
     LaunchedEffect(state) {
@@ -347,10 +352,13 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
         Avatar(author, n.pubkey, if (indent > 0) 32 else 40, Modifier.clickable { nav.profile(n.pubkey) })
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(author?.shown ?: shortNpub(n.pubkey), color = Vault.Text, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).clickable { nav.profile(n.pubkey) })
-                Text("  ${since(n.createdAt)}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+            Box(Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(end = 32.dp).align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
+                    Text(author?.shown ?: shortNpub(n.pubkey), color = Vault.Text, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).clickable { nav.profile(n.pubkey) })
+                    Text("  ${since(n.createdAt)}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+                }
+                if (n.pubkey != nav.social.me) Box(Modifier.align(Alignment.CenterEnd)) { NoteMenu(n, author?.shown ?: shortNpub(n.pubkey), nav.social) }
             }
             val to = remember(n.id) { n.tags.lastOrNull { it.size > 1 && it[0] == "p" }?.get(1) }
             LaunchedEffect(n.id) { People.want(body.mentions + listOfNotNull(to)) }
@@ -372,6 +380,19 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
                 }
             }
         }
+    }
+}
+
+/** "⋯": not interested in this note, or mute its author (on this phone and in your mute list). */
+@Composable
+private fun NoteMenu(n: Event, name: String, social: Social) = Box {
+    var open by remember { mutableStateOf(false) }
+    IconButton({ open = true }, Modifier.size(28.dp)) { Icon(Icons.Filled.MoreVert, "More", tint = Vault.Muted, modifier = Modifier.size(18.dp)) }
+    DropdownMenu(open, { open = false }, containerColor = Vault.Surface) {
+        DropdownMenuItem({ Text("Not interested", color = Vault.Text) }, { open = false; social.notInterested(n) })
+        DropdownMenuItem({ Text("Mute $name", color = Vault.Text, maxLines = 1, overflow = TextOverflow.Ellipsis) }, {
+            open = false; social.mute(n.pubkey); social.message.value = "You won't see $name any more."
+        })
     }
 }
 
