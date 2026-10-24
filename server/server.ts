@@ -616,13 +616,15 @@ const page = async () => {
  .qr{background:#fff;padding:10px;border-radius:10px;width:220px} .grid{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
  button{background:none;border:1px solid #5a4520;color:#e9cf97;border-radius:8px;padding:5px 12px;font:inherit;cursor:pointer}
  .site{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid #2a2622} .site:first-child{border-top:0}
+ .open{display:inline-block;background:#7fc8c0;color:#13110f;border-radius:8px;padding:8px 14px;text-decoration:none;font-weight:600;margin-top:6px}
  .held{color:#f2b33d} ul{padding-left:18px;margin:4px 0} li{margin:3px 0}
 </style>
 <h1>${me.name}</h1><div class=muted>${S.group.npub} · 2 of 3</div>
 <div class=card><div id=members></div><div class=muted id=coord style="margin-top:6px"></div></div>
 ${pu ? `<div class=card id=pair><h2>Add your phone</h2><div class=grid><div class=qr>${pairQr}</div>
 <div style="flex:1;min-width:220px">Open <b>Cosign</b> on your phone and scan this. It becomes the third member and your remote control.<br><br>
-<span class=muted>Whoever scans it first becomes that member, so only show it to your phone.</span></div></div></div>` : ''}
+Already on your phone? <a class=open href="${esc(pu)}">Open in Cosign</a><br><br>
+<span class=muted>Whoever scans it (or opens it) first becomes that member, so only show it to your phone.</span></div></div></div>` : ''}
 <div class=card><h2>Sites that can sign as you</h2><div id=sites></div></div>
 <div class=card><h2>Recent changes to your lists</h2><ul id=changes></ul></div>
 <div class=card><h2>Activity</h2><ul id=act></ul></div>

@@ -37,6 +37,14 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="cosign.aaro.cc" />
             </intent-filter>
+            <!-- Your server's "Add your phone" code, as a link on its page, for when the page is
+                 open on this phone and there's nothing to scan. The app asks before joining. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="cosign" />
+            </intent-filter>
             <!-- A site's nostrconnect:// code, from the camera app or a link on this phone.
                  Another signer app may claim it too; Android then asks which. -->
             <intent-filter>
