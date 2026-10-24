@@ -26,6 +26,9 @@ import java.util.concurrent.ConcurrentHashMap
 // the two things you can do here (like a note, follow someone). Read once when asked,
 // never kept subscribed. Your likes and follows sign through your servers like an app's.
 
+/** The app's name, from its one string resource: renaming the app is a one-line change there. */
+val appName: String get() = CosignApp.instance.getString(R.string.app_name)
+
 /** Where things are read from. Lists, so one relay being down never empties a screen. */
 object Sources {
     /** Discover, best first: the first that has notes is the feed. discover.syb.lol runs on one home machine. */
@@ -434,7 +437,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
         val signed = try { phone.signOwn(ev, approved) } catch (e: NeedsApproval) {
             held.value = Held(e.what, ev); return false
         } catch (e: Exception) {
-            message.value = "Couldn't sign: ${e.message ?: "no answer from your servers"}"; return false
+            message.value = "Couldn't do that right now: ${e.message ?: "no answer"}"; return false
         }
         if (signed.kind == 3) { contacts = signed; follows.value = followsIn(signed) }
         val n = Fetch.publish(writeRelays(), signed)

@@ -1254,9 +1254,9 @@ class Phone(private val context: Context, val slot: String = "0") {
         val m = ui.value.member ?: error("Cosign isn't set up yet")
         val own = context.packageName
         // A new grant has to reach your servers before the first request that uses it.
-        val g = appGrant(own) ?: connectApp(own, "Cosign").also { Thread.sleep(2500) }
+        val g = appGrant(own) ?: connectApp(own, appName).also { Thread.sleep(2500) }
         val signed = try { signForApp(g, ev, approved) } catch (_: Revoked) {
-            val again = connectApp(own, "Cosign"); Thread.sleep(2500); signForApp(again, ev, approved)
+            val again = connectApp(own, appName); Thread.sleep(2500); signForApp(again, ev, approved)
         }
         lists.record(signed, m.group.groupX)
         return signed

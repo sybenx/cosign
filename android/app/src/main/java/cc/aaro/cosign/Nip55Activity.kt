@@ -95,15 +95,15 @@ class Nip55Activity : ComponentActivity() {
         val web = callback?.let { webOrigin(it) }
         if (callback != null) {
             returnType = query["returnType"] ?: "signature"; gzip = query["compressionType"] == "gzip"
-            if (web == null) return fail("That page's return address isn't one Cosign answers (it must be https).")
+            if (web == null) return fail("That page's return address isn't one $appName answers (it must be https).")
             pkg = "web:$web"; label = android.net.Uri.parse(web).host ?: web
         } else {
             pkg = callingActivity?.packageName ?: callingPackage ?: ""
             label = try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() } catch (_: Exception) { pkg.ifEmpty { "This app" } }
         }
         when {
-            phone.ui.value.member == null -> stage.value = Stage.Failed("Cosign isn't set up yet. Open Cosign and add this phone to your key first.")
-            pkg.isEmpty() -> stage.value = Stage.Failed("Open this from an app: Cosign can't tell who's asking.")
+            phone.ui.value.member == null -> stage.value = Stage.Failed("$appName isn't set up yet. Open $appName and set up your account first.")
+            pkg.isEmpty() -> stage.value = Stage.Failed("Open this from an app: $appName can't tell who's asking.")
             phone.appGrant(pkg) == null -> stage.value = Stage.Connect
             else -> next()
         }
@@ -115,15 +115,15 @@ class Nip55Activity : ComponentActivity() {
         when (type) {
             "get_public_key" -> answer("result" to phone.ui.value.member!!.group.groupX)
             "sign_event" -> {
-                val ev = try { phone.appEvent(payload) } catch (e: Exception) { return fail("That isn't an event Cosign can sign (${e.message}).") }
+                val ev = try { phone.appEvent(payload) } catch (e: Exception) { return fail("That isn't an event $appName can sign (${e.message}).") }
                 event = ev
-                cc.aaro.cosign.core.Policy.refuse(ev)?.let { return fail("Cosign won't sign this: $it.") }
+                cc.aaro.cosign.core.Policy.refuse(ev)?.let { return fail("$appName won't sign this: $it.") }
                 val hold = phone.holdFor(ev)
                 if (hold != null) stage.value = Stage.Approve(hold) else sign(ev, approved = false)
             }
             "nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt" ->
                 if (!g.dm) stage.value = Stage.Dms else crypt()
-            else -> fail("Cosign doesn't do “$type” yet.")
+            else -> fail("$appName doesn't do “$type” yet.")
         }
     }
 
@@ -203,10 +203,10 @@ class Nip55Activity : ComponentActivity() {
             ) {
                 when (s) {
                     Stage.Connect -> Ask(
-                        "Let $label sign as you?" + (if (CosignApp.instance.accounts.all.count { it.isMember } > 1) " (${phone.label})" else ""),
-                        "It gets its own access, through your servers — not your key. Everyday things sign automatically; anything destructive comes to this phone first.",
-                        "Remove it in Cosign any time.",
-                        no = "Don't connect", yes = "Connect $label",
+                        "Let $label use your account?" + (if (CosignApp.instance.accounts.all.count { it.isMember } > 1) " (${phone.label})" else ""),
+                        "It can post, like and follow as you. Anything destructive, like unfollowing everyone or deleting posts, comes to this phone first.",
+                        "Remove it under Your account in $appName any time.",
+                        no = "Don't connect", yes = "Use it with $label",
                     ) { phone.connectApp(pkg, label); next() }
                     Stage.Dms -> Ask(
                         "Let $label read and send your messages?",
@@ -214,8 +214,8 @@ class Nip55Activity : ComponentActivity() {
                         null, no = "Not now", yes = "Allow",
                     ) { phone.allowDms(phone.appGrant(pkg)!!); crypt() }
                     is Stage.Approve -> Ask(
-                        "Approve?", s.what, "$label asked${whichKey()}. This can't be signed without you.",
-                        no = "Deny", yes = "Approve", amber = true,
+                        cc.aaro.cosign.ui.question(s.what), "$label asked${whichKey()}.", "It doesn't happen unless you say yes.",
+                        no = "Don't", yes = "Yes", amber = true,
                     ) { sign(event!!, approved = true) }
                     is Stage.Working -> {
                         CircularProgressIndicator(color = Vault.Teal, modifier = Modifier.align(Alignment.CenterHorizontally))

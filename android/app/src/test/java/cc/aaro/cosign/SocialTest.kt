@@ -22,6 +22,22 @@ class SocialTest {
         assertNull(Ref.parse("npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w7")) // bad checksum
     }
 
+    @Test fun approvalsAskAboutWhatHappens() {
+        val q = { s: String -> cc.aaro.cosign.ui.question(s) }
+        assertEquals("Unfollow 10 people?", q("Remove 10 of your 30 follows"))
+        assertEquals("Unfollow 30 people and follow 30 people instead?", q("Remove 30 of your 30 follows (and add 30)"))
+        assertEquals("Unfollow all 3 people?", q("Empty your follow list (it has 3 follows)"))
+        assertEquals("Delete 5 posts?", q("Delete 5 of your events"))
+        assertEquals("Delete 5 posts?", q("Delete 5 events for Approval test")) // a batch, as your servers word it
+        assertEquals("Delete your follow list?", q("Delete your follow list"))
+        assertEquals("Remove all 4 bookmarks from your bookmarks?", q("Empty your bookmarks (it has 4 bookmarks)"))
+        assertEquals("Remove all 5 people from your follow set?", q("Empty your follow set (it has 5 persons)"))
+        assertEquals("Clear your profile (picture, about)?", q("Wipe your profile: picture, about"))
+        assertEquals("Erase everything you've ever posted?", q("Ask relays to erase everything you have ever published"))
+        assertEquals("Allow a note dated 2099-01-01?", q("Note dated in the future (2099-01-01)"))
+        assertEquals("Remove 2 of your 3 relays?", q("Remove 2 of your 3 relays"))
+    }
+
     private fun ev(vararg tags: List<String>) = Event(fiatjaf, 0, 1, tags.toList(), "")
 
     @Test fun repliesFindTheirPlace() {

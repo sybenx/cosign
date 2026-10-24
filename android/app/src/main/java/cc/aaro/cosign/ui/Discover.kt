@@ -91,17 +91,18 @@ import cc.aaro.cosign.Phone
 import cc.aaro.cosign.Ref
 import cc.aaro.cosign.Social
 import cc.aaro.cosign.Ui
+import cc.aaro.cosign.appName
 import cc.aaro.cosign.core.Event
 import cc.aaro.cosign.parentOf
 import cc.aaro.cosign.shortNpub
 import kotlinx.coroutines.delay
 
 // The home screen, laid out like a search app: a search box, a bell, your picture (which
-// opens everything about your key and signer), at most one card that needs you, and a
+// opens your account: devices, connected sites, backup; how it works is under Advanced), at most one card that needs you, and a
 // Discover feed. No posting, no replies, no zaps: you can like a note and follow someone.
 
 private sealed class Route {
-    data object Signer : Route()
+    data object Account : Route()
     data object Bell : Route()
     data object Search : Route()
     data class Thread(val id: String) : Route()
@@ -122,7 +123,7 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
     val nav = Nav(open = open, back = back, social = social)
     when (val top = stack.lastOrNull()) {
         null -> Home(phone, ui, social, feedState, nav)
-        Route.Signer -> SignerScreen(phone, ui, onScan, back)
+        Route.Account -> AccountScreen(phone, ui, onScan, onProfile = { ui.member?.group?.groupX?.let { nav.profile(it) } }, onBack = back)
         Route.Bell -> BellScreen(phone, ui, social, nav)
         Route.Search -> SearchScreen(social, nav)
         is Route.Thread -> ThreadScreen(top.id, social, nav)
@@ -132,9 +133,9 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
     social.held.collectAsState().value?.let { h ->
         AlertDialog(
             onDismissRequest = { social.decideHeld(false) },
-            title = { Text("Approve?") },
-            text = { Text(h.what) },
-            confirmButton = { TextButton({ social.decideHeld(true) }) { Text("Approve", color = Vault.Amber) } },
+            title = { Text(question(h.what)) },
+            text = { Text("Your account asks you first before anything like this.") },
+            confirmButton = { TextButton({ social.decideHeld(true) }) { Text("Yes", color = Vault.Amber) } },
             dismissButton = { TextButton({ social.decideHeld(false) }) { Text("Don't") } },
             containerColor = Vault.Surface,
         )
@@ -170,7 +171,7 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Cosign", style = MaterialTheme.typography.titleLarge, color = Vault.Text, modifier = Modifier.weight(1f))
+            Text(appName, style = MaterialTheme.typography.titleLarge, color = Vault.Text, modifier = Modifier.weight(1f))
             val waiting = ui.asks.size + ui.batchAsks.size
             val fresh = notices.list.count { it.event.createdAt > seen }
             IconButton({ nav.open(Route.Bell) }) {
@@ -181,7 +182,7 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
                 }
             }
             Spacer(Modifier.width(4.dp))
-            Avatar(people[me], me, 34, Modifier.clickable { nav.open(Route.Signer) }, "Your key and signer")
+            Avatar(people[me], me, 34, Modifier.clickable { nav.open(Route.Account) }, "Your account")
         }
         Row(
             Modifier.padding(horizontal = 16.dp, vertical = 12.dp).fillMaxWidth().height(52.dp)
@@ -376,7 +377,7 @@ private class Body(val parts: List<Part>, val images: List<Img>, val mentions: L
 }
 
 @Composable
-private fun Avatar(p: Person?, pubkey: String, size: Int, modifier: Modifier = Modifier, description: String? = null) {
+internal fun Avatar(p: Person?, pubkey: String, size: Int, modifier: Modifier = Modifier, description: String? = null) {
     val hue = remember(pubkey) { (pubkey.take(6).toLongOrNull(16) ?: 0L) % 360 }
     NetImage(p?.picture, modifier.size(size.dp).clip(CircleShape), size * 3, description = description ?: p?.shown) {
         Box(Modifier.fillMaxSize().background(Color.hsl(hue.toFloat(), 0.35f, 0.35f)), contentAlignment = Alignment.Center) {
