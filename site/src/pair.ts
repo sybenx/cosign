@@ -105,8 +105,11 @@ function pairCosign(o: PairOptions): { done: Promise<SignerClient>; cancel(): vo
     o.ui.status('Signing in through your servers…');
     const session = newSession(tk.signer, tk.relays);
     const client = new SignerClient(session);
-    await client.connect(tk.t);
-    session.pubkey = await client.getPublicKey();
+    // A refused ticket ends it: close the client, or it keeps its relays open for good.
+    try {
+      await client.connect(tk.t);
+      session.pubkey = await client.getPublicKey();
+    } catch (e) { client.close(); throw e; }
     o.storage?.setItem(SESSION_KEY, JSON.stringify(session));
     return client;
   });

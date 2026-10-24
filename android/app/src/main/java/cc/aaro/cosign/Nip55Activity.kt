@@ -63,6 +63,10 @@ class Nip55Activity : ComponentActivity() {
     private var pkg = ""
     private var label = "This app"
     private var event: Event? = null
+    /** A web page's request (NIP-55 for the web): the answer goes back to this URL, not to an app. */
+    private var callback: String? = null
+    private var returnType = "signature"
+    private var gzip = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,14 +80,26 @@ class Nip55Activity : ComponentActivity() {
     }
 
     private fun handle(intent: Intent) {
-        type = intent.getStringExtra("type") ?: "get_public_key"
-        val raw = intent.dataString?.removePrefix("nostrsigner:") ?: ""
+        val data = intent.dataString?.removePrefix("nostrsigner:") ?: ""
+        // A web page puts everything in the link: nostrsigner:<payload>?type=…&callbackUrl=…
+        val query = data.substringAfter('?', "").split('&').filter { '=' in it }
+            .associate { it.substringBefore('=') to URLDecoder.decode(it.substringAfter('='), "UTF-8") }
+        callback = query["callbackUrl"]?.takeIf { intent.getStringExtra("type") == null }
+        val raw = if (callback != null) data.substringBefore('?') else data
+        type = intent.getStringExtra("type") ?: query["type"] ?: "get_public_key"
         payload = if (raw.startsWith("%7B", ignoreCase = true) || (type != "sign_event" && Regex("%[0-9A-Fa-f]{2}").containsMatchIn(raw)))
             URLDecoder.decode(raw, "UTF-8") else raw
-        peer = intent.getStringExtra("pubkey") ?: ""
+        peer = intent.getStringExtra("pubkey") ?: query["pubkey"] ?: ""
         reqId = intent.getStringExtra("id")
-        pkg = callingActivity?.packageName ?: callingPackage ?: ""
-        label = try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() } catch (_: Exception) { pkg.ifEmpty { "This app" } }
+        val web = callback?.let { webOrigin(it) }
+        if (callback != null) {
+            returnType = query["returnType"] ?: "signature"; gzip = query["compressionType"] == "gzip"
+            if (web == null) return fail("That page's return address isn't one Cosign answers (it must be https).")
+            pkg = "web:$web"; label = android.net.Uri.parse(web).host ?: web
+        } else {
+            pkg = callingActivity?.packageName ?: callingPackage ?: ""
+            label = try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() } catch (_: Exception) { pkg.ifEmpty { "This app" } }
+        }
         when {
             phone.ui.value.member == null -> stage.value = Stage.Failed("Cosign isn't set up yet. Open Cosign and add this phone to your key first.")
             pkg.isEmpty() -> stage.value = Stage.Failed("Open this from an app: Cosign can't tell who's asking.")
@@ -140,7 +156,25 @@ class Nip55Activity : ComponentActivity() {
         }
     }
 
+    /** The site behind a callback URL: https, or http on this machine for a site being built. */
+    private fun webOrigin(url: String): String? {
+        val u = android.net.Uri.parse(url)
+        val host = u.host ?: return null
+        if (u.scheme != "https" && !(u.scheme == "http" && host in setOf("localhost", "127.0.0.1"))) return null
+        return "${u.scheme}://$host${if (u.port > 0) ":${u.port}" else ""}"
+    }
+
     private fun answer(vararg extras: Pair<String, String>) {
+        callback?.let { url ->
+            // The page asked for the whole event or just the result; gzip as "Signer1" + base64.
+            val map = extras.toMap()
+            var value = (if (returnType == "event") map["event"] else null) ?: map["result"] ?: ""
+            if (gzip) value = "Signer1" + java.util.Base64.getEncoder().encodeToString(
+                java.io.ByteArrayOutputStream().also { b -> java.util.zip.GZIPOutputStream(b).use { it.write(value.toByteArray()) } }.toByteArray())
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url + android.net.Uri.encode(value))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            finish()
+            return
+        }
         val data = Intent().putExtra("package", packageName)
         reqId?.let { data.putExtra("id", it) }
         for ((k, v) in extras) data.putExtra(k, v)

@@ -1,32 +1,27 @@
 // Every version of the lists that matter, so a change can be judged against what it
-// replaces, and undone by signing the old one again.
+// replaces, and undone by signing the old one again. Where it's kept is the host's
+// business (archive.json, for the Node host): it hands in what it had and how to keep it.
 
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { AHEAD, ARCHIVED, keyOf, type Ev } from './policy.ts';
 
 const KEEP = 25; // versions per list
-import { trustedNow as now } from './clock.ts';
 
 export class Archive {
   private byKey: Record<string, Ev[]> = {};
-  private file: string;
+  private persist: (byKey: Record<string, Ev[]>) => void;
+  /** The network's time, in seconds: one from the future is judged by it. */
+  private now: () => number;
 
-  constructor(file: string) {
-    this.file = file;
-    if (existsSync(file)) {
-      try { this.byKey = JSON.parse(readFileSync(file, 'utf8')); } catch { this.byKey = {}; }
-    }
+  constructor(byKey: Record<string, Ev[]> | undefined, persist: (byKey: Record<string, Ev[]>) => void, now: () => number) {
+    this.byKey = byKey ?? {}; this.persist = persist; this.now = now;
   }
 
-  private save() {
-    writeFileSync(this.file + '.tmp', JSON.stringify(this.byKey), { mode: 0o600 });
-    renameSync(this.file + '.tmp', this.file);
-  }
+  private save() { this.persist(this.byKey); }
 
   /** The newest version that isn't dated ahead: one from the future is never "the" version. */
-  latest(key: string): Ev | undefined { const t = now(); return this.byKey[key]?.find(e => e.created_at <= t + AHEAD); }
+  latest(key: string): Ev | undefined { const t = this.now(); return this.byKey[key]?.find(e => e.created_at <= t + AHEAD); }
   /** Versions dated in the future, which would block every change on relays that took them. */
-  future(): Ev[] { const t = now(); return this.all().filter(e => e.created_at > t + AHEAD); }
+  future(): Ev[] { const t = this.now(); return this.all().filter(e => e.created_at > t + AHEAD); }
   forget(id: string) { for (const k of Object.keys(this.byKey)) this.byKey[k] = this.byKey[k].filter(e => e.id !== id); this.save(); }
   history(key: string): Ev[] { return this.byKey[key] ?? []; }
   find(id: string): Ev | undefined {
@@ -39,7 +34,8 @@ export class Archive {
     const key = keyOf(e);
     const list = (this.byKey[key] ??= []);
     if (list.some(x => x.id === e.id)) return false;
-    list.push(e);
+    // In front, then by date: of two signed in the same second, the later one stays first.
+    list.unshift(e);
     list.sort((a, b) => b.created_at - a.created_at);
     list.length = Math.min(list.length, KEEP);
     this.save();

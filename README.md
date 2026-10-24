@@ -85,11 +85,11 @@ background service is running.
   about the ticket and hands it over; the site redeems it as the NIP-46 `connect` secret
   and keeps a key of its own, which is what removing it revokes. QRST itself is the
   reference implementation (vendored in `site/vendor`, ported in `android/.../core`).
-- **nostrconnect** (`connectByUri` in `server/server.ts`, `scannedNostrConnect` in `Phone.kt`):
+- **nostrconnect** (`connectByUri` in `server/core/group.ts`, `scannedNostrConnect` in `Phone.kt`):
   the phone passes the site's code to both servers; both add the site and listen on its
   relays, and the one answering sites sends the site's secret back from the signer key.
   When the site asks `switch_relays`, the servers move it onto their own relays.
-- **Signing** (`server/server.ts`, `site/src/client.ts`): NIP-46 over relays to a signer
+- **Signing** (`server/core/group.ts`, `site/src/client.ts`): NIP-46 over relays to a signer
   key both servers hold. The site re-sends each request until answered; the servers keep
   their answers and send them again to a repeat (freshly wrapped — strfry refuses a
   repeated event id). Member-to-member requests are re-sent the same way, and a repeated
@@ -100,7 +100,7 @@ background service is running.
   talk another into co-signing something destructive. When the phone asks you, it tells
   the server to wait the full minute; a decline ends it, and nobody else is asked.
 - **Android signer** (`Nip55Provider.kt`, `Nip55Activity.kt`, the apps section of `Phone.kt`;
-  `onCosignReq` in `server/server.ts`): the app asks the phone, so the phone runs the round
+  `onCosignReq` in `server/core/group.ts`): the app asks the phone, so the phone runs the round
   and a server gives the other half after checking the app's grant and judging the event
   itself. Decryption is done in two halves and finished on the phone. `android/nip55tester`
   is a stand-in app that runs through all of it on an emulator.
@@ -109,7 +109,7 @@ background service is running.
   servers and with the phone (`signed.jsonl`), so undoing a site never depends on how
   many list versions the archive keeps.
 - **Time** (`server/clock.ts`, `core/Clock.kt`): the median Date header of a few HTTPS sites.
-- **Big messages** go between members in 24 KB parts (`sealParts` in `server/net.ts`,
+- **Big messages** go between members in 24 KB parts (`sealParts` in `server/core/seal.ts`,
   `send` in `Phone.kt`): NIP-44 stops at 64 KB, and a large follow list is bigger.
 - **FROST** (`frost/`, Rust): the Zcash Foundation's `frost-secp256k1-tr` (RFC 9591,
   BIP-340 signatures), built to WebAssembly for the server (`server/frost-wasm`, used by
@@ -128,6 +128,19 @@ background service is running.
   `cosign_req`, and their answers; `points` in `ecdh_res`).
 - **Push**: the servers POST "cosign:approve" to the phone's ntfy endpoint — nothing
   else; the request itself comes over relays, sealed.
+- **Shared servers** (`server/core/`, `server/server.ts`, `server/HOSTS.md`): the member
+  logic is a core with no I/O, one group per instance; the Node host runs any number of
+  them in one process with one relay subscription. `node server.ts --root data data/a`
+  adds a host key, and a device can enroll a new group on a running server by writing
+  to it (`server/core/enroll.ts`): the group record and this server's share, checked
+  against the group's share points (`how: 'dealt'`), or the record and a key plan, the
+  key then made by DKG with the device (`how: 'dkg'`, "Create account": no code, no
+  setup step on the server).
+- **Finding servers** (`site/src/servers.ts`, COSIGN.md §9.5): a shared server with an
+  `operator` in `host.json` (or `COSIGN_OPERATOR`) announces itself, kind 30243 signed by
+  its host key; the operator lists it back, kind 10243 (`operatorServers`). Devices
+  `findServers` (plus a seed list), `pingHost` each, and `pickServers` takes the fastest
+  of each operator, never two from one.
 
 ## Tests
 
@@ -138,6 +151,9 @@ cd android && ./gradlew :app:testDebugUnitTest          # Kotlin FROST against t
 cd site && node test/server.e2e.ts                      # tickets, signing, hold, undo, removal
 cd site && node --experimental-transform-types test/pair.e2e.ts   # QRST sign-in, end to end
 cd site && node test/nostrconnect.e2e.ts [relay]         # a plain nostr-tools site, by nostrconnect
+cd site && node test/shared.e2e.ts                       # two keys in one process; enroll a third (starts its own servers)
+cd site && node test/create.e2e.ts                       # create account: a device and one shared server make a key
+cd site && node test/servers.e2e.ts                      # finding and picking servers; a live one announces itself
 cd site && node test/single.e2e.ts                       # phone co-signs; backup steps in; big lists
 cd site && node test/deletion.e2e.ts                     # copies kept, 10 s Undo, one approval per batch
 cd site && node test/undo-site.e2e.ts                    # undo everything one site did

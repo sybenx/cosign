@@ -1,6 +1,7 @@
 # Shares and keys. Never commit these.
 server/data/
 server/data-*/
+server/test-shared/
 server/test-data/
 server/test-emu/
 server/test-weighted/
@@ -18,3 +19,5 @@ site/public/app.js.map
 android/.kotlin/
 deploy/local/state/
 frost/target/
+android/nip55tester/build/
+server/test-*/

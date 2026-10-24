@@ -15,5 +15,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Stands in for a web page's callbackUrl (NIP-55 for the web): logs what Cosign sent back. -->
+        <activity android:name=".CallbackActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="nip55.test" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

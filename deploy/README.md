@@ -23,8 +23,9 @@ stack is left stopped.
    builds the image and starts it. After copying new code, press Update: the image is
    `pull_policy: build`, so Update rebuilds it instead of downloading.
 
-3. On first start it makes a throwaway key (2-of-3: this server, server B, your phone).
-   Open its page on port 8711 and scan "Add your phone" with Cosign.
+3. On first start it makes a throwaway key (2-of-3: this server, server B, your phone)
+   and its own host key. Port 8711 lists every group it serves; open yours (`/g/<id>/`)
+   and scan "Add your phone" with Cosign.
 
 Server B's share is in `/data/cosign/b`. Run it anywhere else (`node server.ts <dir>`
 with a copy of that directory) to have a backup; without it, your phone and this
@@ -33,6 +34,29 @@ server sign everything, and a site gets an error when your phone doesn't answer.
 **On the relay's own stack, only ever press Edit → Deploy.** Update can't work there,
 and Stop/Restart take the relay down. To upgrade Ditto: new binary in `bin/`, bump the
 ARGs in its Dockerfile *and* the `image:` tag in its compose file, then Edit → Deploy.
+
+## One server, many groups
+
+The container is a shared server (`node server.ts --root /data /data/a`): one process,
+one relay subscription, for your group in `a/` and for every group a device enrolls,
+each in `groups/<id>/` with a member key and share of its own. `host.json` holds the
+server's host key (its identity to devices, and where they write to enroll), the port
+of its page, its relays, and who may enroll:
+
+```json
+{ "enroll": "invite", "invites": ["<device pubkey hex>"] }
+```
+
+`"invite"` (the default, with nobody invited) takes on groups only for the devices
+listed; `"open"` takes anyone's. The list is read again for each enrollment, so it can
+change without a restart. `COSIGN_ENROLL` and `COSIGN_INVITES` override the file.
+
+Upgrading a server that ran one group: nothing to do. An existing `/data/a` is served as
+it is, with the same key and share; the first start adds `host.json` and `groups/`.
+`COSIGN_PERSONAL=0` skips the throwaway key on a fresh server meant only for others.
+
+Outside a container: `node server.ts data/a` still runs one group on its own port, and
+`node server.ts --root data data/a` is the shared server.
 
 ## Local rehearsal
 
