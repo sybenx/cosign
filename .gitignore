@@ -21,3 +21,4 @@ deploy/local/state/
 frost/target/
 android/nip55tester/build/
 server/test-*/
+site/test/.*.ts
