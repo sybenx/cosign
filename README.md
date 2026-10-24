@@ -41,7 +41,7 @@ node server.ts data/b       # http://localhost:8712
 cd ../site && npm install && node build.mjs && node serve.mjs   # http://localhost:8790 — a demo site
 ```
 
-1. Install `Cosign-0.4.0.apk` on your phone. Tap **Scan your server's code** and scan the
+1. Install Cosign on your phone (see "Getting the app" below). Tap **Scan your server's code** and scan the
    code on http://localhost:8711. Tap **Add this phone**.
 2. Open http://localhost:8790. In Cosign tap **Connect a site**, scan the demo's code,
    tap **Connect**. On the demo, tap **Sign in**.
