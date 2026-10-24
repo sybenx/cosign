@@ -134,6 +134,8 @@ data class Ui(
     val recovery: Pair<String, Long>? = null,
     /** Just made, imported or joined, with one device and no paper: offer the paper now (once; "Later" is fine). */
     val askPaper: Boolean = false,
+    /** Adding a server: the ones found that this key doesn't use yet (null while looking). */
+    val serverChoice: List<cc.aaro.cosign.net.Servers.Server>? = null,
     val push: String? = null,
 )
 
@@ -362,6 +364,13 @@ class Phone(private val context: Context, val slot: String = "0") {
     }
 
     // --- Scanning ------------------------------------------------------------
+
+    /** A paper backup's code, pasted from a password manager. */
+    fun pastedBackup(text: String) {
+        val t = text.trim()
+        if (!t.startsWith("cosign:backup")) return ui.update { it.copy(error = "Copy your Cosign backup code first (it starts with cosign:backup), then paste it here.") }
+        scanned(t)
+    }
 
     /** Whatever the camera read: your server's code, or a site's. */
     fun scanned(text: String) {
@@ -668,6 +677,60 @@ class Phone(private val context: Context, val slot: String = "0") {
         ui.update { it.copy(recovery = null) }
     }
 
+    // --- Adding a server ("Add a server") ---------------------------------------------------
+    //
+    // A public server joins the key as one more: its host key gives this key a member key
+    // of its own, it's enrolled to wait for its share (how: 'repair'), and this phone vouches
+    // for it with a server already in the key, which makes its one share by repair as for a
+    // device. With a second server the paper backup changes weight (3 → 2): make a new one.
+
+    /** Look for servers this key doesn't use yet. */
+    fun chooseServer() {
+        val m = ui.value.member ?: return
+        ui.update { it.copy(serverChoice = emptyList(), paperStatus = "Looking for servers…") }
+        timer.execute {
+            val have = m.group.members.filter { it.role == "server" }.map { it.name.lowercase() }.toSet()
+            val found = try { cc.aaro.cosign.net.Servers.find() } catch (_: Exception) { emptyList() }
+            val choice = found.filter { it.name.lowercase() !in have && it.relays.none { r -> have.any { h -> r.contains(h) } } }
+            ui.update { it.copy(serverChoice = choice, paperStatus = null) }
+        }
+    }
+    fun closeServerChoice() = ui.update { it.copy(serverChoice = null) }
+
+    /** After your lock: add [s] to this key. */
+    fun addServer(s: cc.aaro.cosign.net.Servers.Server) {
+        val m = ui.value.member ?: return
+        ui.update { it.copy(serverChoice = null) }
+        note("Adding ${s.name}…")
+        timer.execute {
+            val relaysNow = (m.group.relays + s.relays).distinct()
+            connect(relaysNow, m.sk)
+            Thread.sleep(2500)
+            val ask = { body: Map<String, Any?> ->
+                val id = env.random(8).toHex()
+                val f = CompletableFuture<Map<*, *>>()
+                waiting[id] = f
+                val msg = body + ("id" to id)
+                var reply: Map<*, *>? = null
+                for (i in 0 until 6) { send(s.pk, msg); reply = try { f.get(4, TimeUnit.SECONDS) } catch (_: Exception) { null }; if (reply != null) break }
+                waiting.remove(id); reply
+            }
+            val key = ask(mapOf("type" to "enroll_key"))
+            if (key?.get("type") != "enroll_key") return@execute note("Couldn't add ${s.name}: ${key?.get("reason") ?: "it didn't answer"}", "denied")
+            val k = m.group.members.flatMap { it.idxs }.max() + 1
+            val record = mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold, "relays" to relaysNow,
+                "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
+                    (it.shares?.let { sh -> mapOf("shares" to sh.map { p -> mapOf("idx" to p.idx, "sharePub" to p.sharePub) }) } ?: emptyMap()) })
+            val enrolled = ask(mapOf("type" to "enroll", "how" to "repair", "key" to key["key"], "group" to record, "k" to k, "name" to s.name))
+            if (enrolled?.get("type") != "enrolled") return@execute note("Couldn't add ${s.name}: ${enrolled?.get("reason") ?: "it didn't answer"}", "denied")
+            val via = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return@execute
+            send(via.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to key["pk"], "name" to s.name, "relays" to s.relays, "lock" to true, "server" to true, "k" to k))
+            val updated = (ui.value.member ?: return@execute).let { it.copy(group = it.group.copy(relays = relaysNow)) }
+            secrets.saveMembership(Json.stringify(membershipToMap(updated)))
+            ui.update { it.copy(member = updated) }
+        }
+    }
+
     // --- A key moving in from a web page ------------------------------------------------
     //
     // The page that held the key dealt it: each server already has its share (and a claim
@@ -946,12 +1009,18 @@ class Phone(private val context: Context, val slot: String = "0") {
     private fun onMembers(msg: Map<*, *>, m: Membership) {
         val list = (msg["members"] as? List<*>)?.mapNotNull { parseMember(it) } ?: return
         if (list.none { it.idx == m.idx }) return // a list without this phone isn't one to take
+        // One from before a refresh this phone has done (a relay sending it late) has the old points.
+        if (((msg["epoch"] as? Long)?.toInt() ?: m.epoch) < m.epoch) return
         val members = list.map { if (it.idx == m.idx) it.copy(pk = publicKeyHex(m.sk.hexToBytes())) else it }
         val updated = m.copy(group = m.group.copy(members = members))
         secrets.saveMembership(Json.stringify(membershipToMap(updated)))
         val added = members.filter { n -> m.group.members.none { it.idx == n.idx } }
         ui.update { it.copy(member = updated) }
-        for (n in added) note("${n.name} joined your key", "approved")
+        for (n in added) note(if (n.role == "server") "${n.name} is one of your servers now" else "${n.name} joined your key", "approved")
+        // A second server changes the paper's weight (3 → 2): the old one should be replaced.
+        if (added.any { it.role == "server" } && members.any { it.role == "backup" } && members.count { it.role == "server" } == 2) {
+            ui.update { it.copy(askPaper = true) }; note("Make a new paper backup: with a second server, your paper changes", "denied")
+        }
     }
 
     // Joining, on the new device: show a code, wait for a server's welcome and a device's sigma.
@@ -1015,7 +1084,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         }
         val points = shares.map { Point(it.idx, Frost.sharePub(it.secret)) }
         val me = Member(ks[0], w["name"] as? String ?: "This device", "device", publicKeyHex(mySk.hexToBytes()), points[0].sharePub, if (points.size > 1) points else null)
-        val m = Membership(mySk, ks[0], shares, w["signer"] as? String ?: return, group.copy(members = group.members + me))
+        val m = Membership(mySk, ks[0], shares, w["signer"] as? String ?: return, group.copy(members = group.members + me), (w["epoch"] as? Long)?.toInt() ?: 0)
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         send(joinPieces["server"] as String, mapOf("type" to "joined", "id" to w["id"], "sharePub" to me.sharePub, "sharePubs" to points.map { listOf(it.idx, it.sharePub) }))
         joinWith = null
@@ -1258,6 +1327,8 @@ class Phone(private val context: Context, val slot: String = "0") {
         if ((type == "sign_req" || type == "ecdh_req") && System.currentTimeMillis() / 1000 - e.createdAt > 30) return
         if (type == "pair_offer") return onOffer(msg, e.pubkey)
         if (type == "dkg1" || type == "dkg2") { dkg?.take(msg, e.pubkey); return }
+        // A server's host key answering (adding a server): not a member, so before that check.
+        if (type.startsWith("enroll") || type == "pong") { (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }; return }
         if (ui.value.restoring != null && !isMember) return onRestoreMsg(msg, e)
         ui.value.member?.let { m -> if (m.group.members.any { it.pk == e.pubkey } && onRefreshMsg(msg, e.pubkey, m)) return }
         if (joinWith != null && (type == "welcome" || type == "sigma")) return onJoinPiece(msg, e.pubkey)

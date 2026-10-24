@@ -20,7 +20,8 @@ export function restoreShares(sk: string, b: any): { idx: number; secret: string
     return { idx: k, secret: W.repairStep3(then, mine, k) as string };
   });
   // Each refresh since: every dealer's part, checked against its commitments.
-  const parts = b.parts.map((p: any) => ({ epoch: p.epoch, part: open(p) })).filter((p: any) => p.epoch > b.epoch);
+  // Only refreshes the key has reached (epochNow): a part from one that never ran would make these wrong.
+  const parts = b.parts.filter((p: any) => p.epoch > b.epoch && (b.epochNow == null || p.epoch <= b.epochNow)).map((p: any) => ({ epoch: p.epoch, part: open(p) }));
   for (const epoch of [...new Set(parts.map((p: any) => p.epoch))].sort((x: any, y: any) => x - y)) {
     const these = parts.filter((p: any) => p.epoch === epoch).map((p: any) => p.part);
     shares = shares.map(s => {

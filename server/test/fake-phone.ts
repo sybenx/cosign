@@ -53,6 +53,28 @@ const rf = refreshing({ st: () => st, pk, send: (to, m) => send(to, m), save: ()
 let making: { id: string; sk: string; pk: string } | null = null; // a paper backup being made
 let growing: { id: string; welcome?: any; server?: string; sigmas: [number, number, string][] } | null = null;
 const W = createRequire(import.meta.url)('../frost-wasm/cosign_frost.js');
+/** Ask a server's host key for a member key, enroll it to wait for its share, and vouch for it with a server in the key. */
+async function addServer(x: { host: string; relays: string[]; name?: string }) {
+  await pool.add(x.relays);
+  const ask = (m: any) => new Promise<any>(resolve => {
+    m.id = F.bytesToHex(F.randomBytes(6));
+    hostWait.set(m.id, resolve);
+    const again = setInterval(() => send(x.host, m), 4000); send(x.host, m);
+    setTimeout(() => { clearInterval(again); resolve({ type: 'no answer' }); }, 30_000);
+    hostWait.set(m.id, (r: any) => { clearInterval(again); resolve(r); });
+  });
+  const key = await ask({ type: 'enroll_key' });
+  if (key.type !== 'enroll_key') return say(`ADD SERVER FAILED: ${key.reason ?? key.type}`);
+  const k = Math.max(...st.group.members.flatMap((m: any) => m.shares?.map((s: any) => s.idx) ?? [m.idx])) + 1;
+  const record = { groupX: st.group.groupX, threshold: st.group.threshold, relays: [...new Set([...st.group.relays, ...x.relays])], members: st.group.members };
+  const enrolled = await ask({ type: 'enroll', how: 'repair', key: key.key, group: record, k, name: x.name ?? 'New server' });
+  if (enrolled.type !== 'enrolled') return say(`ADD SERVER FAILED: ${enrolled.reason ?? enrolled.type}`);
+  send(servers()[0].pk, { type: 'add_device', id: F.bytesToHex(F.randomBytes(6)), pk: key.pk, name: x.name ?? 'New server', relays: x.relays, lock: true, server: true, k });
+  st.group.relays = record.relays; writeFileSync(stateFile, JSON.stringify(st, null, 2));
+  say(`adding a server as member ${k}`);
+}
+const hostWait = new Map<string, (r: any) => void>();
+
 function growShares() {
   growing = { id: F.bytesToHex(F.randomBytes(6)), sigmas: [] };
   send(servers()[0].pk, { type: 'add_device', id: growing.id, pk, name: 'Restored phone', lock: true, grow: true });
@@ -62,6 +84,7 @@ let restoring = false;
 const sendAsPaper = (to: string, m: object) => { for (const e of sealParts(paper.sk, to, m)) pool.publish(e); };
 
 function handle(msg: any, from: string) {
+  if (msg.id && hostWait.has(msg.id) && msg.type?.startsWith('enroll')) { hostWait.get(msg.id)!(msg); hostWait.delete(msg.id); return; }
   // Restoring from paper: the servers answer the paper's key, then this phone's when it's done.
   if (paper && !st) {
     if (msg.type === 'backup' && !restoring) {
@@ -137,7 +160,10 @@ function handle(msg: any, from: string) {
   }
   if (!st) return;
   // The test reports a device lost as this phone, by writing to it from its own key.
-  if (msg.type === 'test_report' && from === pk) return rf.report(Number(msg.idx));
+  // (A repeat, after the device is gone, is ignored, as the app has no button for it then.)
+  if (msg.type === 'test_report' && from === pk) { if (st.group.members.some((m: any) => m.idx === Number(msg.idx) && !m.removed)) rf.report(Number(msg.idx)); return; }
+  // Adding a server to this key ("Add a server"): {host, relays, name} of a server taking new accounts.
+  if (msg.type === 'test_add_server' && from === pk) { void addServer(msg); return; }
   // Likewise for making a paper backup: written to PAPER_FILE.
   if (msg.type === 'test_backup' && from === pk) {
     const bsk = F.bytesToHex(F.randomBytes(32));
@@ -189,6 +215,7 @@ function handle(msg: any, from: string) {
     say(`RECOVERY asked for ${msg.name}`);
     if (process.env.CANCEL_RECOVERY) for (const s of servers()) send(s.pk, { type: 'cancel_recovery', lock: true });
   } else if (msg.type === 'members') {
+    if ((msg.epoch ?? st.epoch ?? 0) < (st.epoch ?? 0)) return; // from before a refresh we've done
     st.group.members = msg.members.map((m: any) => ({ ...m, pk: m.idx === st.idx ? pk : m.pk }));
     writeFileSync(stateFile, JSON.stringify(st, null, 2));
     say(`members now ${st.group.members.map((m: any) => m.name).join(', ')}`);

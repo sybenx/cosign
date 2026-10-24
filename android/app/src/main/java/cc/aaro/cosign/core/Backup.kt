@@ -25,7 +25,9 @@ object Backup {
             kk to FrostNative.repairStep3(then, Json.stringify(mine), kk)
         }
         val since = (b["epoch"] as Long).toInt()
-        val parts = (b["parts"] as List<*>).map { it as Map<*, *> }.filter { (it["epoch"] as Long).toInt() > since }.map { (it["epoch"] as Long).toInt() to open(it) }
+        // Only refreshes the key has reached (epochNow): a part from one that never ran would make these wrong.
+        val reached = (b["epochNow"] as? Long)?.toInt() ?: Int.MAX_VALUE
+        val parts = (b["parts"] as List<*>).map { it as Map<*, *> }.filter { (it["epoch"] as Long).toInt().let { e -> e > since && e <= reached } }.map { (it["epoch"] as Long).toInt() to open(it) }
         for (epoch in parts.map { it.first }.distinct().sorted()) {
             val these = parts.filter { it.first == epoch }.map { it.second }
             shares = shares.map { (i, s) ->

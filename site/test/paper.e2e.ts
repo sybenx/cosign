@@ -69,6 +69,10 @@ await sleep(3000);
 asPhone(phonePk, { type: 'test_report', idx: json(tabletFile).idx });
 check('a refresh after the tablet is lost; the paper’s part is kept', await waitFor(() => state().epoch === 1 && state().backup?.parts?.length >= 2, 60_000), `${state().backup?.parts?.length} parts`);
 tablet.k.kill();
+// A refresh the phone started and that never ran leaves its part for the paper behind:
+// it must not count (the restore would make wrong shares from it).
+asPhone(server.pk, { type: 'backup_store', epoch: 2, content: 'a part of a refresh that never ran' });
+await sleep(3000);
 
 // A new phone reads the paper while the old one is still around: it cancels.
 phone.k.kill();

@@ -44,7 +44,7 @@ function handle(msg: any, from: string) {
     const shares = ks.map(k => ({ idx: k, secret: W.repairStep3(g, got.sigmas.filter(x => x[0] === k).map(x => x[2]), k) as string }));
     const points = shares.map(x => ({ idx: x.idx, sharePub: W.sharePub(x.secret) }));
     const me = { idx: ks[0], name, role: 'device', pk, sharePub: points[0].sharePub, ...(ks.length > 1 ? { shares: points } : {}) };
-    st = { sk, idx: ks[0], shares, share: shares[0].secret, signer: w.signer, group: { ...w.group, members: [...w.group.members, me] } };
+    st = { sk, idx: ks[0], shares, share: shares[0].secret, signer: w.signer, epoch: w.epoch ?? 0, group: { ...w.group, members: [...w.group.members, me] } };
     writeFileSync(stateFile, JSON.stringify(st, null, 2));
     send(from === got.server ? from : got.server!, { type: 'joined', id: w.id, sharePubs: points.map(p => [p.idx, p.sharePub]), sharePub: points[0].sharePub });
     say(`JOINED ${w.group.npub} as member ${ks[0]} with shares ${ks.join(', ')}`);
@@ -63,6 +63,7 @@ function handle(msg: any, from: string) {
     reply({ ok: true, commits: mine.commits, zs, commit: mine.commits[0], z: zs[0][1] });
     say(`co-signed kind ${ev.kind} for ${srv.name}`);
   } else if (msg.type === 'members') {
+    if ((msg.epoch ?? st.epoch ?? 0) < (st.epoch ?? 0)) return; // from before a refresh we've done
     st.group.members = msg.members;
     say(`members now ${msg.members.map((m: any) => m.name).join(', ')}`);
   }

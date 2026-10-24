@@ -26,6 +26,7 @@ import { History, type Entry } from '../history.ts';
 import type { Io, Loaded } from './io.ts';
 import { DkgRun, type DkgPlan, type DkgResult } from '../dkg.ts';
 import { RefreshRun, type RefreshPlan, type RefreshResult } from '../refresh.ts';
+import { W } from '../wasm.ts';
 import { nip19 } from 'nostr-tools';
 
 // --- State -------------------------------------------------------------------
@@ -64,7 +65,8 @@ export function openGroup(loaded: Loaded, io: Io) {
   const sameSet = (a: number[], b: number[]) => [...a].sort((x, y) => x - y).join() === [...b].sort((x, y) => x - y).join();
   /** The group's other server, if it has one (a key made with one shared server has none). */
   const other = () => members.find(m => m.role === 'server' && m.idx !== me.idx && !m.removed);
-  const others = () => { const o = other(); return o ? [o] : []; };
+  /** Every other server in the group: what one learns, they all should. */
+  const others = () => members.filter(m => m.role === 'server' && m.idx !== me.idx && !m.removed && m.pk);
   /** The phone your server's code added first: pairing only. Everything else is any device. */
   const phone = () => members.find(m => m.role === 'phone')!;
   const isDevice = (m?: Member) => !!m && (m.role === 'phone' || m.role === 'device') && !m.removed;
@@ -92,7 +94,7 @@ export function openGroup(loaded: Loaded, io: Io) {
 
   const send = (toPk: string | null | undefined, msg: object) => { if (toPk) for (const e of sealParts(S.self.sk, toPk, msg)) io.publish(e); };
   const parts = new Parts();
-  const toOther = (msg: object) => send(other()?.pk, msg);
+  const toOther = (msg: object) => { for (const o of others()) send(o.pk, msg); };
   const toDevices = (msg: object) => { for (const d of devices()) send(d.pk, msg); };
 
   const pending = new Map<string, { resolve: (v: any) => void; timer: NodeJS.Timeout; giveUp?: () => void; again?: NodeJS.Timeout }>();
@@ -139,9 +141,15 @@ export function openGroup(loaded: Loaded, io: Io) {
     send(to.pk, msg);
   }
 
+  // Anyone can write to this group's keys: so many messages a minute, and the rest dropped.
+  const PER_MINUTE = Number(process.env.COSIGN_GROUP_PER_MINUTE ?? 600);
+  let windowStart = 0, inWindow = 0, saidBusy = false;
+
   function onEvent(e: Event) {
     const age = now() - e.created_at;
     if (age > 120) return;
+    if (io.now() - windowStart > 60_000) { windowStart = io.now(); inWindow = 0; saidBusy = false; }
+    if (++inWindow > PER_MINUTE) { if (!saidBusy) { saidBusy = true; note(`more than ${PER_MINUTE} messages this minute: dropping the rest`); } return; }
     if (e.kind === KIND_MEMBER) {
       const msg = parts.take(e.pubkey, openFrom(S.self.sk, e));
       // Relays replay recent "ephemeral" events to a new subscription; a request that
@@ -174,6 +182,8 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (msg.type === 'pair_hello') return onPairHello(msg, fromPk);
     if (msg.type === 'pair_ack') return onPairAck(msg, fromPk);
     if (msg.type === 'joined') return onJoined(msg, fromPk); // a new device, not a member until this lands
+    // This server joining a key that exists (enroll how:'repair'): the pieces of its share.
+    if (S.joining && from && (msg.type === 'welcome' || msg.type === 'sigma')) return onJoinPiece(msg, from);
     // Making the key: your phone isn't a member yet, so these come before that check.
     if (msg.type === 'dkg1' || msg.type === 'dkg2') return dkg?.take(msg, fromPk);
     if (msg.type === 'dkg_start') return onDkgStart(msg, from);
@@ -201,7 +211,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'repair_help': { if (from.role === 'server') onRepairHelp(msg, from); return; }
       case 'repair_help_deltas': { if (from.role === 'server') onHelpDeltas(msg, from); return; }
       case 'repair_finish': { if (from.role === 'server') onRepairFinish(msg, from); return; }
-      case 'backup_store': { if (fromPhone && S.backup) { S.backup.parts.push({ from: from.pk!, content: String(msg.content), epoch: Number(msg.epoch) }); save(); toOther({ type: 'backup_sync', backup: S.backup }); } return; }
+      case 'backup_store': { if (fromPhone && S.backup && keepPart({ from: from.pk!, content: String(msg.content), epoch: Number(msg.epoch) })) { save(); toOther({ type: 'backup_sync', backup: S.backup }); } return; }
       case 'backup_sync': { if (from.role === 'server') mergeBackup(msg.backup); return; }
       case 'backup_get': { if (from.role === 'backup') sendBackup(from); return; }
       case 'recover': { if (from.role === 'backup') startRecovery(msg, from); return; }
@@ -347,7 +357,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     let u: URL;
     try { u = new URL(uri); } catch { return; }
     const client = (u.host || u.pathname.replace(/^\/+/, '')).toLowerCase();
-    const relays = [...new Set(u.searchParams.getAll('relay').filter(r => /^wss?:\/\//.test(r)).map(normRelay))];
+    const relays = [...new Set(u.searchParams.getAll('relay').filter(r => /^wss?:\/\//.test(r)).map(normRelay))].slice(0, 4);
     const secret = u.searchParams.get('secret');
     if (u.protocol !== 'nostrconnect:' || !/^[0-9a-f]{64}$/.test(client) || !relays.length || !secret) return note('ignored a damaged nostrconnect code');
     if (!S.signer) return note('ignored a nostrconnect code: this group has no signer key');
@@ -885,7 +895,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   // (a sigma) to the newcomer, who adds the two. Neither helper ever has the new share.
 
   interface Adding {
-    ks: number[]; helpers: number[]; pk: string; name: string; by: Member; local: Map<string, string[]>; at: number; backup?: boolean; grow?: boolean; pieces?: Piece[];
+    ks: number[]; helpers: number[]; pk: string; name: string; by: Member; local: Map<string, string[]>; at: number; backup?: boolean; grow?: boolean; asServer?: boolean; relays?: string[]; pieces?: Piece[];
     /** Other servers helping when the vouching device and this server hold fewer than the threshold between them. */
     extras: Member[]; fromExtras: Map<string, [number, number, number, string][]>; toExtras: Map<string, [number, number, number, string][]>; toBy: [number, number, number, string][];
   }
@@ -905,13 +915,16 @@ export function openGroup(loaded: Loaded, io: Io) {
     // One device vouching is instant only with its own lock, asked for right then.
     if (msg.lock !== true) throw new Error('adding a device needs this phone’s lock');
     // The new device gets as many shares as the one vouching for it (3 in a weighted key).
-    // A paper backup gets 2, or 3 while there's only one server (COSIGN.md §3).
+    // A paper backup gets 2, or 3 while there's only one server (COSIGN.md §3). A server
+    // being added (`server`, enrolled on its host to wait for this) gets 1, at the index
+    // the device gave both.
     const backup = msg.backup === true;
+    const asServer = msg.server === true;
     const next = Math.max(...members.flatMap(sharesOf)) + 1;
-    const count = backup ? (members.filter(m => m.role === 'server' && !m.removed).length < 2 ? 3 : 2) : grow ? 3 : sharesOf(by).length;
+    const count = backup ? (members.filter(m => m.role === 'server' && !m.removed).length < 2 ? 3 : 2) : grow ? 3 : asServer ? 1 : sharesOf(by).length;
     // A paper must never be enough to sign alone (keys made before weighted ones have threshold 2).
     if (backup && count >= S.group.threshold) throw new Error('this key is too old for a paper backup: its paper could sign on its own');
-    const ks = Array.from({ length: count }, (_, i) => next + i);
+    const ks = asServer && Number.isInteger(msg.k) && msg.k >= next ? [msg.k as number] : Array.from({ length: count }, (_, i) => next + i);
     // The vouching device and this server, and if that's short of the threshold (a device
     // restored from a 2-share paper, say), other servers too.
     const extras: Member[] = [];
@@ -935,9 +948,10 @@ export function openGroup(loaded: Loaded, io: Io) {
         else toBy.push([k, s.idx, j, d]);
       }
     }
-    const a: Adding = { ks, helpers, pk, name: String(msg.name ?? (backup ? 'Paper backup' : 'A device')).slice(0, 40), by, local, at: io.now(), backup, grow, extras, fromExtras: new Map(), toExtras, toBy };
+    const a: Adding = { ks, helpers, pk, name: String(msg.name ?? (backup ? 'Paper backup' : asServer ? 'A server' : 'A device')).slice(0, 40), by, local, at: io.now(), backup, grow, asServer, extras, fromExtras: new Map(), toExtras, toBy };
     adding.set(String(msg.id), a);
-    const relays = (msg.relays ?? []).filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r));
+    const relays = (msg.relays ?? []).filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r)).slice(0, 4);
+    if (asServer) a.relays = relays;
     if (relays.length) await io.listen(relays);
     note(`${by.name} is adding ${msg.name ?? 'a device'}${extras.length ? `, with ${extras.map(e => e.name).join(', ')}` : ''}`);
     // The other servers first: the device needs their deltas along with ours.
@@ -1004,7 +1018,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (a.backup) return backupPiece(a, String(msg.id), { from: me.pk!, content: sealTo(a.pk, { sigmas }), epoch: S.epoch ?? 0 });
     const one = sigmas.length === 1 ? { k: a.ks[0], sigma: sigmas[0][2] } : {};
     send(a.pk, {
-      type: 'welcome', id: msg.id, ks: a.ks, helpers: a.helpers, sigmas, name: a.name, signer: S.signer?.pk ?? null, ...one,
+      type: 'welcome', id: msg.id, ks: a.ks, helpers: a.helpers, sigmas, name: a.name, signer: S.signer?.pk ?? null, epoch: S.epoch ?? 0, ...one,
       group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays, members: publicMembers() },
     });
   }
@@ -1022,14 +1036,16 @@ export function openGroup(loaded: Loaded, io: Io) {
       Object.assign(a.by, { sharePub: shares[0].sharePub, shares });
       save();
       toOther({ type: 'members', members });
-      toDevices({ type: 'members', members: publicMembers() });
+      toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
       return note(`${a.by.name} has a device's full shares now`);
     }
-    members.push({ idx: a.ks[0], name: a.name, role: 'device', pk: a.pk, sharePub: shares[0].sharePub, push: null, ...(shares.length > 1 ? { shares } : {}) });
+    members.push({ idx: a.ks[0], name: a.name, role: a.asServer ? 'server' : 'device', pk: a.pk, sharePub: shares[0].sharePub, push: null, ...(shares.length > 1 ? { shares } : {}) });
+    // A new server may be reachable only where it listens (a Worker is its own relay): keep listening there.
+    if (a.asServer && a.relays?.length) { S.group.relays = [...new Set([...S.group.relays, ...a.relays])].slice(0, 8); void io.listen(a.relays); }
     lastSeen.set(a.ks[0], io.now());
     save();
     toOther({ type: 'members', members });
-    toDevices({ type: 'members', members: publicMembers() });
+    toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
     note(`${a.name} joined, vouched for by ${a.by.name}`);
   }
 
@@ -1050,7 +1066,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       // Only a change of which shares it holds: points move by refresh, which each server works out itself.
       if (m.shares && !m.removed && mine.role !== 'server' && !sameSet(m.shares.map(x => x.idx), sharesOf(mine))) { Object.assign(mine, { shares: m.shares, sharePub: m.sharePub }); dirty = true; }
     }
-    if (dirty) { save(); toDevices({ type: 'members', members: publicMembers() }); }
+    if (dirty) { save(); toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 }); }
   }
 
   // --- Adding your phone --------------------------------------------------------
@@ -1179,7 +1195,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       save();
       send(target.pk, { type: 'removed', by: by.name });
       toOther({ type: 'members', members });
-      toDevices({ type: 'members', members: publicMembers() });
+      toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
       note(`${by.name} reported ${target.name} lost: it can't take part in anything now`);
     }
     if (msg.plan) startRefresh(msg.plan as RefreshPlan, by);
@@ -1199,7 +1215,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     // Devices that aren't here now get the plan and our part when they're next seen; the
     // paper's part is kept, sealed to it, for whenever it's used (COSIGN.md §8.2).
     for (const [pk, part] of refresh.outgoing()) if (S.backup && pk === S.backup.pk) {
-      S.backup.parts.push({ from: me.pk!, content: sealTo(pk, part), epoch: plan.epoch });
+      keepPart({ from: me.pk!, content: sealTo(pk, part), epoch: plan.epoch });
       save(); toOther({ type: 'backup_sync', backup: S.backup });
     } else if (devices().some(d => d.pk === pk)) {
       holdMail(pk, { from: me.pk!, msg: { type: 'refresh_plan', plan }, epoch: plan.epoch });
@@ -1221,8 +1237,15 @@ export function openGroup(loaded: Loaded, io: Io) {
     myIdxs = myShares.map(s => s.idx);
     delete S.self.share;
     S.epoch = r.epoch;
+    // The paper's parts for this epoch are its dealers' only: drop any from a refresh that was started and never ran.
+    if (S.backup && refresh) {
+      const dealers = refresh.plan.dealers;
+      S.backup.dealers = { ...S.backup.dealers, [r.epoch]: dealers };
+      S.backup.parts = S.backup.parts.filter((p: Piece) => p.epoch !== r.epoch || dealers.includes(p.from));
+      toOther({ type: 'backup_sync', backup: S.backup });
+    }
     save();
-    toDevices({ type: 'members', members: publicMembers() });
+    toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
     note(`your key moved to epoch ${r.epoch}: the lost device's pieces no longer combine with anything`);
   }
 
@@ -1255,6 +1278,33 @@ export function openGroup(loaded: Loaded, io: Io) {
     for (const x of S.mail[m.pk!]) send(m.pk, x.msg && x.from === me.pk ? x.msg : { type: 'mail', from: x.from, content: x.content });
   }
 
+  // --- Joining a key that exists, as a server (enroll how:'repair') ---------------------------
+
+  const joinSigmas: [number, number, string][] = [];
+  let joinWelcome: any = null;
+  function onJoinPiece(msg: any, from: Member) {
+    if (msg.type === 'welcome' && from.role === 'server') joinWelcome = { ...msg, from: from.pk };
+    joinSigmas.push(...(msg.sigmas ?? []));
+    const w = joinWelcome;
+    const k = S.joining.k;
+    if (!w || !(w.ks ?? []).includes(k)) return;
+    const mine = joinSigmas.filter(x => x[0] === k).map(x => x[2]);
+    if (mine.length < (w.helpers?.length ?? 99)) return;
+    let secret: string;
+    try { secret = W.repairStep3(JSON.stringify({ groupX, threshold: S.group.threshold, members: Sig.sharePoints(S.group).filter(p => p.sharePub) }), mine, k); }
+    catch (e: any) { return note(`couldn't make this server's share: ${e.message}`); }
+    const pub = W.sharePub(secret);
+    me.sharePub = pub;
+    S.self.shares = myShares = [{ idx: k, secret }];
+    myIdxs = [k];
+    delete S.joining;
+    save();
+    send(w.from, { type: 'joined', id: w.id, sharePubs: [[k, pub]], sharePub: pub });
+    note(`joined ${S.group.npub} as a server`);
+    // Once the others have us, tell them we don't answer sites (if we don't).
+    setTimeout(() => toOther({ type: 'members', members }), 4000);
+  }
+
   // --- The paper backup (COSIGN.md §8) ---------------------------------------------------
   //
   // A key printed on paper, with share indices of its own in the member list, whose
@@ -1285,15 +1335,33 @@ export function openGroup(loaded: Loaded, io: Io) {
     save();
     toOther({ type: 'members', members });
     toOther({ type: 'backup_sync', backup: S.backup });
-    toDevices({ type: 'members', members: publicMembers() });
+    toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
     send(a.by.pk, { type: 'backup_made', id, pieces: a.pieces });
     note(`${a.by.name} made a paper backup (${a.ks.length} shares)`);
   }
+
+  /**
+   * Keep one refresh's part for the paper (one per dealer and epoch, the latest), but only
+   * for a refresh still to come or the one just done by its own dealers: a part from a
+   * refresh that never ran would make the paper's shares wrong.
+   */
+  function keepPart(p: Piece & { epoch: number }): boolean {
+    const b = S.backup;
+    const e = S.epoch ?? 0;
+    if (!b || !(p.epoch >= e) || p.epoch < 1) return false;
+    if (p.epoch === e && !(b.dealers?.[e] ?? []).includes(p.from)) return false;
+    b.parts = b.parts.filter((x: Piece) => !(x.from === p.from && x.epoch === p.epoch));
+    b.parts.push(p);
+    return true;
+  }
+  /** The parts that count: every epoch reached since the paper was made, from that epoch's dealers. */
+  const usableParts = () => (S.backup?.parts ?? []).filter((p: Piece) => p.epoch <= (S.epoch ?? 0) && (!S.backup.dealers?.[p.epoch] || S.backup.dealers[p.epoch].includes(p.from)));
 
   function mergeBackup(b: any) {
     if (!b?.pk) return;
     if (!S.backup || S.backup.pk !== b.pk) S.backup = { ...b, pieces: [], parts: [] };
     for (const p of b.pieces ?? []) if (!S.backup.pieces.some((x: Piece) => x.from === p.from)) S.backup.pieces.push(p);
+    S.backup.dealers = { ...b.dealers, ...S.backup.dealers };
     for (const p of b.parts ?? []) if (!S.backup.parts.some((x: Piece) => x.from === p.from && x.epoch === p.epoch)) S.backup.parts.push(p);
     save();
   }
@@ -1302,7 +1370,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   function sendBackup(b: Member) {
     if (!S.backup || S.backup.pk !== b.pk) return;
     send(b.pk, {
-      type: 'backup', ...S.backup, epochNow: S.epoch ?? 0, recovery: S.recovery ?? null, signer: S.signer?.pk ?? null,
+      type: 'backup', ...S.backup, parts: usableParts(), epochNow: S.epoch ?? 0, recovery: S.recovery ?? null, signer: S.signer?.pk ?? null,
       group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays, members: publicMembers() },
     });
   }
@@ -1329,7 +1397,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     lastSeen.set(b.idx, io.now());
     save();
     toOther({ type: 'members', members });
-    toDevices({ type: 'members', members: publicMembers() });
+    toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
     send(r.pk, { type: 'recovered', idx: b.idx });
     note(`${r.name} is one of your devices now, from your paper backup. Make a new paper backup, and report your old phone lost if you've lost it.`);
   }
@@ -1365,7 +1433,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   /** Once, when the host starts serving this group. */
   function start() {
     // Without a signer key this server never answers sites; the others must know not to wait for it.
-    if (!S.signer && !me.noSites) { me.noSites = true; save(); setTimeout(() => toOther({ type: 'members', members }), 4000); }
+    if (!S.signer && !me.noSites) { me.noSites = true; save(); if (!S.joining) setTimeout(() => toOther({ type: 'members', members }), 4000); }
     // Enrolled to make a key that doesn't exist yet (core/enroll.ts): run the plan with the others.
     if (S.dkg && !groupX) { dkg = new DkgRun(S.dkg, me.pk!, send, onDkgDone); dkg.start(); }
     // Sites that came by nostrconnect may be listening on relays of their own.

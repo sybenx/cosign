@@ -83,7 +83,7 @@ fun App(phone: Phone, ui: Ui) {
             ui.joinCode != null && ui.member == null -> JoinCode(ui.joinCode, ui.error, phone::cancelJoin)
             ui.restoring != null && ui.member == null -> RestoringScreen(ui.restoring, phone::cancelRestore)
             ui.member == null -> Column(Modifier.fillMaxSize()) {
-                Box(Modifier.weight(1f)) { Welcome(ui.error, onJoin = phone::startJoin) { phone.clearError(); scanning = true } }
+                Box(Modifier.weight(1f)) { Welcome(ui.error, onJoin = phone::startJoin, onScan = { phone.clearError(); scanning = true }, onPaste = phone::pastedBackup) }
                 // A place for another key: the ones you have are a tap away.
                 val others = CosignApp.instance.accounts.all.filter { it !== phone && it.isMember }
                 if (others.isNotEmpty()) TextButton({ CosignApp.instance.accounts.forget(phone.slot); CosignApp.instance.accounts.show(others.first().slot) },
@@ -101,6 +101,7 @@ fun App(phone: Phone, ui: Ui) {
         ui.removedBy?.let { RemovedSheet(it, phone) }
         ui.paper?.let { PaperSheet(it, phone::closePaper) }
         if (ui.askPaper && ui.paper == null && ui.paperStatus == null) PaperPrompt(phone)
+        ui.serverChoice?.let { ServerChoiceSheet(it, ui.paperStatus, phone) }
         ui.recovery?.let { RecoverySheet(it.first, it.second, phone) }
     }
 }
@@ -110,7 +111,8 @@ private fun Page(content: @Composable ColumnScope.() -> Unit) =
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp, vertical = 16.dp), content = content)
 
 @Composable
-private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit) = Page {
+private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit, onPaste: (String) -> Unit) = Page {
+    val context = androidx.compose.ui.platform.LocalContext.current
     Spacer(Modifier.weight(1f))
     Text("Cosign", style = MaterialTheme.typography.headlineMedium, color = Vault.Text)
     Spacer(Modifier.height(12.dp))
@@ -129,6 +131,7 @@ private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit) = Pa
     Spacer(Modifier.height(8.dp))
     TextButton(onJoin, Modifier.align(Alignment.CenterHorizontally)) { Text("Already use Cosign on another device? Join with it", color = Vault.Teal) }
     TextButton(onScan, Modifier.align(Alignment.CenterHorizontally)) { Text("Lost your phone? Scan your paper backup", color = Vault.Muted) }
+    TextButton({ onPaste(pasted(context)) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Or paste your backup code", color = Vault.Muted) }
 }
 
 @Composable
@@ -333,6 +336,7 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             }
         }
         item { TextButton(onScan, contentPadding = PaddingValues(0.dp)) { Text("Add a device", color = Vault.Teal) } }
+        if (m.group.threshold >= 4) item { TextButton({ phone.chooseServer() }, contentPadding = PaddingValues(0.dp)) { Text("Add a server", color = Vault.Teal) } }
         // Keys from before weighted ones (threshold 2) can't have a paper: it could sign alone.
         if (m.group.threshold >= 4) item { PaperRow(m.group.members.any { it.role == "backup" }, ui.paperStatus, phone) }
 
@@ -575,6 +579,42 @@ private fun KeysSheet(current: Phone, onClose: () -> Unit) {
     }
 }
 
+/** Servers this key doesn't use yet: pick one to add (after this phone's lock). */
+@Composable
+private fun ServerChoiceSheet(choice: List<cc.aaro.cosign.net.Servers.Server>, status: String?, phone: Phone) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var picked by remember { mutableStateOf<cc.aaro.cosign.net.Servers.Server?>(null) }
+    val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == android.app.Activity.RESULT_OK) picked?.let(phone::addServer)
+    }
+    BackHandler { phone.closeServerChoice() }
+    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
+                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
+        ) {
+            Text("Add a server", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Spacer(Modifier.height(8.dp))
+            Text("It holds one share of your key, never enough to sign alone. Your key stays the same.", color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(12.dp))
+            if (status != null) Text(status, color = Vault.Muted)
+            else if (choice.isEmpty()) Text("No other public server found right now.", color = Vault.Muted)
+            for (s in choice) TextButton({
+                picked = s
+                val ask = lockIntent(context, "Add ${s.name}", "Confirm it's you to add a server to your key")
+                if (ask == null) phone.lockMissing() else lock.launch(ask)
+            }, Modifier.fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(s.name, color = Vault.Teal)
+                    Text("Run by ${cc.aaro.cosign.core.Nip19.npub(s.operator).take(12)}…${if (s.version.isNotEmpty()) " · Cosign ${s.version}" else ""}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton({ phone.closeServerChoice() }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Cancel", color = Vault.Text) }
+        }
+    }
+}
+
 /** One device and no paper: a card at the top until there's one or the other. */
 @Composable
 private fun PaperCard(phone: Phone) = Card(Vault.AmberEdge, Vault.AmberGround) {
@@ -594,7 +634,7 @@ private fun PaperPrompt(phone: Phone) {
         ) {
             Text("Make your paper backup", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
             Spacer(Modifier.height(10.dp))
-            Text("If you lose this phone, your key can't be recovered without it. It takes a minute: print it or photograph it onto something offline.",
+            Text("If you lose this phone, your key can't be recovered without it. It takes a minute: print it, or keep it in a password manager.",
                 style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
             Spacer(Modifier.height(16.dp))
             OutlinedButton({ phone.laterPaper() }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Later", color = Vault.Text) }
@@ -645,22 +685,40 @@ private fun PaperSheet(code: String, onClose: () -> Unit) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp)) {
             Text("Your paper backup", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
             Spacer(Modifier.height(10.dp))
-            Text("Print this, or photograph it onto something offline, and keep it somewhere safe. With it and your server, you can get your key back on a new phone, after a wait your other devices can stop. Cosign won't show it again.",
+            Text("Print it or keep it in a password manager, somewhere safe. With it and your server, you can get your key back on a new phone, after a wait your other devices can stop. Cosign won't show it again.",
                 color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(16.dp))
             val qr = remember(code) { qrBitmap(code, 720) }
-            androidx.compose.foundation.Image(qr.asImageBitmap(), "Paper backup", Modifier.fillMaxWidth().aspectRatio(1f).background(Color.White, RoundedCornerShape(12.dp)).padding(12.dp))
+            androidx.compose.foundation.Image(qr.asImageBitmap(), "Paper backup", Modifier.fillMaxWidth(0.8f).align(Alignment.CenterHorizontally).aspectRatio(1f).background(Color.White, RoundedCornerShape(12.dp)).padding(12.dp))
             Spacer(Modifier.height(12.dp))
             Text(code, fontFamily = PlexMono, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.weight(1f))
+            // Printing also offers "Save as PDF".
             OutlinedButton({
-                context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, code), "Save your paper backup"))
-            }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Print or save…", color = Vault.Text) }
+                androidx.print.PrintHelper(context).apply { scaleMode = androidx.print.PrintHelper.SCALE_MODE_FIT }.printBitmap("Cosign backup", qr)
+            }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Print or save the QR", color = Vault.Text) }
+            Spacer(Modifier.height(10.dp))
+            var copied by remember { mutableStateOf(false) }
+            OutlinedButton({ copySecret(context, "Cosign backup", code); copied = true }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) {
+                Text(if (copied) "Copied" else "Copy to a password manager", color = Vault.Text)
+            }
+            Text("Keep it in a password manager, not in notes or photos.", color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
             Spacer(Modifier.height(10.dp))
             Button(onClose, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("I've kept it safe") }
         }
     }
 }
+
+/** Copy a secret, marked sensitive so the keyboard and clipboard preview don't show it. */
+private fun copySecret(context: android.content.Context, label: String, text: String) {
+    val clip = android.content.ClipData.newPlainText(label, text)
+    clip.description.extras = android.os.PersistableBundle().apply { putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true) }
+    context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
+}
+
+/** What's on the clipboard, as text (the paper backup's code, pasted from a password manager). */
+private fun pasted(context: android.content.Context): String =
+    context.getSystemService(android.content.ClipboardManager::class.java).primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
 
 /** This phone, being restored from a paper backup. */
 @Composable
