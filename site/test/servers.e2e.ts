@@ -12,7 +12,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { finalizeEvent, generateSecretKey, getPublicKey, type Event } from 'nostr-tools/pure';
 import { SimplePool } from 'nostr-tools/pool';
 import { hexToBytes } from '@noble/hashes/utils.js';
-import { announcement, operatorServers, parseAnnouncement, verify, findServers, pickServers, relayQuery, pingHost, type Server } from '../src/servers.ts';
+import { announcement, operatorServers, parseAnnouncement, verify, findServers, pickServers, sharedOperators, relayQuery, pingHost, type Server } from '../src/servers.ts';
 
 const serverDir = new URL('../../server/', import.meta.url).pathname;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -43,11 +43,14 @@ check('a tampered announcement is refused', parseAnnouncement(forged) === null);
 
 const speed = new Map([[a1.pk, 80], [a2.pk, 20], [b1.pk, 50], [c1.pk, 5], [d1.pk, 1], [x1.pk, 2]]);
 const picked = await pickServers(all, { ping: async s => speed.get(s.pk) ?? null });
-check('picks one per operator, fastest first, only verified and open', picked.map(s => s.pk).join() === [a2.pk, b1.pk].join(), picked.map(s => `${s.operator.slice(0, 6)}:${s.ms}`).join(' '));
-const without = await pickServers(all, { ping: async s => s.pk === a2.pk ? null : speed.get(s.pk) ?? null });
+check('one per operator first (fastest), only verified and open; then fills from the same operators', picked.map(s => s.pk).join() === [a2.pk, b1.pk, a1.pk].join(), picked.map(s => `${s.operator.slice(0, 6)}:${s.ms}`).join(' '));
+check('and says which operator runs more than one', JSON.stringify(sharedOperators(picked)) === JSON.stringify([opA.pk]));
+const distinct = await pickServers(all, { ping: async s => speed.get(s.pk) ?? null, distinct: true });
+check('with distinct, never two from one operator', distinct.map(s => s.pk).join() === [a2.pk, b1.pk].join());
+const without = await pickServers(all, { ping: async s => s.pk === a2.pk ? null : speed.get(s.pk) ?? null, distinct: true });
 check('a server that doesn’t answer is skipped for its operator’s next', without.map(s => s.pk).join() === [b1.pk, a1.pk].join());
 const own = await pickServers(all, { ping: async s => speed.get(s.pk) ?? null, exclude: [opA.pk] });
-check('an operator already in use (your own server’s) isn’t picked again', own.map(s => s.pk).join() === b1.pk);
+check('an operator left out isn’t picked at all', own.map(s => s.pk).join() === b1.pk);
 
 const seeded = await findServers({ query: async () => [], seeds: [{ pubkey: b1.pk, relays: ['wss://relay.example'], operator: opB.pk }] });
 check('with nothing found, the seed list still gives servers', seeded.length === 1 && seeded[0].verified && seeded[0].pk === b1.pk);

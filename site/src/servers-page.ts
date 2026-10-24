@@ -13,7 +13,9 @@ const host = (s: Server) => s.nip05 ?? (s.https ? new URL(s.https).host : s.rela
 async function main() {
   const all = (await findServers({ query: relayQuery(5000) })).filter(s => s.verified);
   const open = all.filter(s => s.enroll === 'open');
-  $('count').textContent = open.length === 1 ? 'One public server so far.' : `${open.length} public servers.`;
+  const operators = new Set(open.map(s => s.operator));
+  $('count').textContent = (open.length === 1 ? 'One public server so far.' : `${open.length} public servers`)
+    + (open.length > 1 && operators.size === 1 ? ', all run by one operator.' : open.length > 1 ? `, run by ${operators.size} operator${operators.size === 1 ? '' : 's'}.` : '');
   $('list').innerHTML = all.map(s => `<div class="server" id="s-${s.pk}">
     <div class="name">${esc(host(s))} <span class="muted small" data-ms>checking…</span></div>
     <div class="muted small">Run by <a href="https://njump.me/${nip19.npubEncode(s.operator)}">${short(nip19.npubEncode(s.operator))}</a>

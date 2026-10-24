@@ -56,7 +56,7 @@ no worse than that baseline, this document takes it without ceremony.
 | Piece | Weight | Job |
 |---|---|---|
 | Each device (extension, phone, iPad…) | 3 | Coordinates its own signing. Judges what's destructive and asks the user. Connects and removes sites. |
-| Each server (typically three, different operators) | 1 | Always on. Adds the missing point. Keeps list history for Undo, enforces waits, wakes devices. |
+| Each server (typically three, ideally different operators) | 1 | Always on. Adds the missing point. Keeps list history for Undo, enforces waits, wakes devices. |
 | Paper backup (optional) | 2 | Opens the current backup piece, which lives gift-wrapped on relays (§8). |
 
 | Together | Points | Signs? |
@@ -128,11 +128,19 @@ What the user does:
     the key — the same exposure as importing an nsec (§3, "Creating the key").
   Groups made under 0.1 (threshold 2) were test keys only and may simply be recreated.
 - **A server holds exactly one share.** No server may hold more, whoever runs it.
-- **Servers have different operators.** No operator other than the user may run more
-  than one of a group's servers. Two servers from one operator plus a stolen paper
-  backup would be 4 points, with the wait (§7.4) enforced only by that operator. A
-  public server, a friend's and the user's own make three; the user may run any number
-  of devices.
+- **Servers SHOULD have different operators.** Clients prefer three servers from three
+  operators. When fewer operators exist, a client fills the remaining places from one
+  operator's servers, says so plainly in setup and settings, and swaps them out by
+  refresh (§7.3) as other operators appear (§9.5). A public server, a friend's and the
+  user's own make three; the user may run any number of devices.
+  - **Why that is safe enough:** one operator's servers together are at most 3 points
+    and can never sign. Its real exposure — that operator plus a stolen paper backup
+    reaching 4 points, with the wait (§7.4) in that operator's hands — already exists
+    with a single server and the paper at weight 3 (below), so filling from one operator
+    adds none.
+  - **Why it is better than one server:** a server losing its data, or vanishing, no
+    longer strands an account that has one device and no paper backup; that device and
+    another server still make 4.
 - **Creating the key**: a new identity SHOULD be created by distributed key generation
   between the user's first device — a phone, or just as well a browser extension — and
   its servers, so no one sees it whole. An existing nsec is split
@@ -343,7 +351,7 @@ server never holds their signer key, so it never sees their requests at all.
 ### 6.1 Connecting
 
 - **By code (primary).** The site shows a QRST code for the published profile
-  [`signer-ticket`](https://github.com/sybenx/qr-secret-transfer/blob/main/profiles/signer-ticket.md) (QRST §5.2
+  [`signer-ticket`](https://github.com/sybenx/qr-secret-transfer/pull/14) (QRST §5.2
   shape: `{pubkey, signer, relays, t, expires}`). The user scans it with a member
   device and taps **Connect**. The device tells the holders of the signer key about the
   ticket; the site redeems it as a NIP-46 `connect` secret and keeps a key of its own,
@@ -495,8 +503,8 @@ A wait applies to:
 During a wait, every server MUST notify every member (push, the members' own screens,
 and the server's web page), and **any one member can cancel**. Signing goes on as usual
 throughout; the wait only delays trusting the newcomer. **Every server enforces it** by
-refusing to take part before the wait ends, so it holds unless two servers' operators
-collude — which is why servers have different operators (§3).
+refusing to take part before the wait ends, so it holds unless the operators of two
+servers collude — or are one operator (§3).
 
 Nothing else waits. Signing, approvals, connecting and removing sites, and removing
 devices are never delayed.
@@ -590,12 +598,12 @@ A public server MUST NOT coordinate a decryption, MUST NOT hold a NIP-46 signer 
 ### 9.3 Several servers
 
 A group has several servers, typically three, each holding one share, each with its own
-copy of the archive, and each run by a **different operator** (§3). Any one of them
-answering is enough (§5.1), so a server being down, slow or gone changes nothing the
-user can see, and no server is central. A client MUST refuse two servers from one
-outside operator and say why. Clients SHOULD keep a list of servers known to be
-reliable and suggest three from different operators at setup; the user may replace any
-of them with their own.
+copy of the archive, and ideally each run by a **different operator** (§3). Any one of
+them answering is enough (§5.1), so a server being down, slow or gone changes nothing
+the user can see, and no server is central. Clients SHOULD keep a list of servers known
+to be reliable and suggest three from different operators at setup, filling from one
+operator's servers only when no others exist, and saying so (§3). The user may replace
+any of them with their own.
 
 ### 9.4 Load (non-normative)
 
@@ -620,8 +628,10 @@ The list of servers lives on Nostr, not on one website.
 - **Clients ship a seed list** `[{pubkey, relays, operator}]` so a fresh install works,
   merged with announcements found on the user's relays and on the seed relays.
 - **Picking servers:** one ping round trip per candidate at setup, then a rolling record
-  of answer times and failures from real signing (§5.1). Three servers with **three
-  distinct operator pubkeys**, never two from one operator (§3). A server the user runs
+  of answer times and failures from real signing (§5.1). Three servers, preferring
+  **three distinct operator pubkeys**; when fewer operators exist, the rest come from
+  one operator's servers, shown as such, and are swapped by refresh as other operators
+  appear (§3). A server the user runs
   is preferred and counts as one of their own devices. Settings show each server's
   operator by name.
 - **Swapping a server** is a refresh with the new server in place of the old (§7.3): the
@@ -630,9 +640,10 @@ The list of servers lives on Nostr, not on one website.
 **Limit.** Operators are pubkeys, so one person with two npubs can pose as two
 operators. Everyday signing stays safe — all three servers are still 3 points — but such a
 person running two of a group's servers, plus a stolen paper backup, would have 4 points
-with the wait (§7.4) in their own hands, and their two servers could fail together.
-Seed lists and the operator names shown in settings are the defence: clients SHOULD seed
-only operators known to be distinct people.
+with the wait (§7.4) in their own hands, and their two servers could fail together. That
+is the same exposure as two servers openly from one operator (§3). Seed lists and the
+operator names shown in settings are the defence: clients SHOULD seed only operators
+known to be distinct people.
 
 ## 10. Notifications
 
@@ -688,8 +699,9 @@ will be assigned before 1.0:
   every honest server.
 - **A stolen paper** needs a surviving device, or two servers and a wait that every
   member is told about.
-- **One person posing as two operators** (two npubs) could run two of a group's servers;
-  with a stolen paper backup that is 4 points (§9.5).
+- **One operator running two or more of a group's servers** — openly, or posing as two
+  with two npubs — plus a stolen paper backup is 4 points, with the wait in that
+  operator's hands (§3, §9.5). The same exposure exists with a single server.
 - **The identity is permanent.** 4 points of one epoch in a thief's hands cannot be
   undone.
 
@@ -699,9 +711,14 @@ will be assigned before 1.0:
 
 ## Status
 
+**Beta.** Signing uses an audited FROST library (ZF `frost-secp256k1-tr`); the protocol
+around it — key creation, repair, refresh, recovery, the doors — has not had an outside
+review.
+
 0.2-draft, 2026-10-24. 0.1 (2026-10-23) used equal pieces with threshold 2 and one
 server plus the phone as the everyday pair; 0.2 moves to weighted pieces (devices 3,
-servers 1, paper 2, threshold 4), several servers run by different operators, and the
+servers 1, paper 2, threshold 4), several servers ideally run by different operators,
+and the
 device as coordinator and gate.
 
 The reference implementation is [sybenx/cosign](https://github.com/sybenx/cosign): a

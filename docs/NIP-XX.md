@@ -7,7 +7,7 @@ Threshold Co-Signing
 `draft` `optional`
 
 A user's key is split with FROST into weighted pieces held by their own devices and by
-**co-signers**: always-on services, typically relays, run by different operators.
+**co-signers**: always-on services, typically relays, ideally run by different operators.
 Signing takes 4 points: each device holds 3, each co-signer 1, a paper backup 2. So a
 device plus any one co-signer signs, two devices sign, and all the co-signers together
 never can. Sites keep using NIP-07, NIP-46 and NIP-55 unchanged; this NIP defines
@@ -127,8 +127,7 @@ A co-signer MUST:
    device without its lock, or in any round using the backup's shares without a
    surviving device, until 3 days after sending `wait` to every member, unless a member
    sends `cancel`.
-9. Hold exactly one share per group, and refuse to join a group in which its operator
-   already runs another co-signer.
+9. Hold exactly one share per group.
 
 A co-signer that is a relay SHOULD accept `kind:21059` and `kind:1059` wraps addressed
 to its member keys from any connection, and deliver wraps addressed to the group's
@@ -154,8 +153,10 @@ A device MUST:
 - **Operator's server list** (`kind:10243`), signed by the operator: one
   `["p", <co-signer host key>]` per server. A co-signer belongs to an operator only when
   each names the other.
-- Clients pick co-signers with distinct operator pubkeys and SHOULD prefer those with the
-  best measured answer times. Clients ship a seed list so a fresh install works.
+- Clients SHOULD pick co-signers with distinct operator pubkeys, and among those prefer
+  the best measured answer times. When fewer operators exist, a client MAY fill from
+  one operator's co-signers, MUST show that to the user, and SHOULD replace them by
+  refresh as other operators appear. Clients ship a seed list so a fresh install works.
 
 ## Site access
 

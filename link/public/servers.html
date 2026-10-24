@@ -17,7 +17,7 @@
 <body>
   <h1>Cosign servers</h1>
   <p>A Cosign key is split between your devices and your servers: your phone holds 3 shares, each server 1, and it takes 4 to sign. A server can't sign on its own, and it never sees your key.</p>
-  <p><b id="count">Looking…</b> Every server here announces itself on Nostr, and either its operator lists it back or Cosign's seed list vouches for it. This is the same list the app and the browser extension pick from, never two from one operator.</p>
+  <p><b id="count">Looking…</b> Every server here announces itself on Nostr, and either its operator lists it back or Cosign's seed list vouches for it. This is the same list the app and the browser extension pick from: a different operator for each server where there are enough, and where there aren't, the app says so, and swaps one in later as more appear.</p>
   <div id="list"></div>
   <p>syb.lol is run by Cosign's author, who will keep running it. More operators wanted: running your own, public or private, is encouraged, not required. A private one counts as one of your own devices; a public one helps everyone.</p>
   <p class="small">

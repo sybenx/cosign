@@ -8,15 +8,21 @@ A server's job is to be the always-on fourth point: it adds its share to what yo
 device signs, keeps a history of your lists so you can undo, enforces the safety waits,
 and wakes your devices when something needs you. It never holds enough to act alone.
 
+> **Beta.** Cosign signs with an audited FROST library, but the protocol built around
+> it — how pieces are made, refreshed, recovered and moved — hasn't had an outside
+> review yet.
+
 This page says what a server must do, what it can see, and how to run the reference
 server. The full design is [COSIGN.md](COSIGN.md) (servers: §9), and the wire format is
 [NIP-XX.md](NIP-XX.md). How apps choose servers is [choosing-servers.md](choosing-servers.md).
 
 ## How many servers exist today
 
-**One public server, as of 24 October 2026: syb.lol, run by Cosign's author.** Its
-host key starts `040e022d…`, its operator key `f5073ea2…`, and anyone can enroll. The live
-list is on [cosign.aaro.cc](https://cosign.aaro.cc/), so this number goes out of date.
+**Cosign launches with three public servers, all run by its author, on different
+hardware:** syb.lol, a Cloudflare Worker, and a third still to be announced. As of 24
+October 2026, syb.lol is live (host key `040e022d…`, operator key `f5073ea2…`, anyone can
+enroll). The live list is on [cosign.aaro.cc/servers](https://cosign.aaro.cc/servers), so
+this paragraph goes out of date.
 
 > I run syb.lol and will keep running it. I'd love others to run public servers too;
 > here's how. If you already run a relay, sidecar packages for popular relay software are
@@ -24,13 +30,30 @@ list is on [cosign.aaro.cc](https://cosign.aaro.cc/), so this number goes out of
 
 What that means for you:
 
-- With only one server, your **paper backup counts 3 points instead of 2**, so the
-  paper plus that one server can still recover your account if you lose every device.
-- **More operators are wanted.** Three servers run by three different people is the
-  design. Until then, everything still works, but one operator is doing a job meant for
-  three.
-- **The app adds servers on its own** as new ones announce themselves. You don't need to
-  do anything.
+- **One operator, for now.** The design wants three servers from three different
+  people. Until other operators exist, the app fills your three places from one
+  operator's servers and **says so** in setup and settings. As other operators appear,
+  it swaps them in on its own, by a refresh. You don't need to do anything.
+- **That's no less safe than one server.** All of one operator's servers together are
+  3 points and can never sign without you. The real risk — that operator plus someone
+  who stole your paper backup — exists just the same with a single server.
+- **It's safer than one server.** If one server loses its data or disappears, your
+  device and another server still sign, even if you have no paper backup.
+- With fewer than two servers, your **paper backup counts 3 points instead of 2**, so
+  the paper plus one server can still recover your account.
+- **If that one operator disappears entirely**, everyone's servers go at once. With two
+  devices, or a device and your paper backup, you still have enough to add servers from
+  someone else. **With one device and no paper backup, the account is lost** — the same
+  as with syb.lol alone. Print the paper backup.
+
+### What different operators don't protect against
+
+While the person who runs the servers also publishes the app, spreading servers across
+operators buys little: a malicious app update would be a bigger lever than any server.
+That's why the **outside review** behind the beta label matters more than server
+diversity right now. The mitigations for the app itself are **reproducible builds**, so
+anyone can check a release matches the source, and **Zapstore pinning the release
+certificate**, so an update signed by anyone else won't install.
 
 ## Do I need my own server?
 
@@ -49,9 +72,9 @@ These come from [COSIGN.md](COSIGN.md); the section is given for each.
 - **Be always on and reachable over relays** (§4.2, §9.1). A server needs no public
   address: it connects out to relays like any app. An HTTPS address is optional.
 - **Hold exactly one share per account** (§3). Never more, whoever runs it.
-- **Run as one operator per account.** No one but the user may run two of the same
-  account's servers (§3, §9.3). Two servers from one operator plus a stolen paper backup
-  would be 4 points, with only that operator enforcing the wait.
+- **Say who runs it.** Its announcement names its operator (§9.5), so apps can prefer
+  servers from different people for each account and show users when they can't (§3,
+  §9.3).
 - **Destroy old shares after a refresh** (§7.3). When a device is reported lost, every
   piece is renewed and the old ones must be gone for good: no snapshots, backups,
   version history or log lines that keep them. Some hosts keep history you can't turn
@@ -105,7 +128,8 @@ musts above:
   extension or the Android app are not affected.
 
 Until both are fixed, use NIP-46 sites with a public server only if you're fine with
-its operator seeing those requests.
+its operator seeing those requests. A server that holds no signer key, such as the
+Cloudflare Worker server, never answers NIP-46 sites at all.
 
 ## Running the reference server
 

@@ -4,8 +4,10 @@
 // counts as an operator's only when both name each other. A fresh install starts from
 // a seed list, so it works before it has seen any announcement.
 //
-// Picking: one ping round trip each, then the fastest server of each operator, never
-// two from one operator, as many as asked for (three, normally).
+// Picking: one ping round trip each, then the fastest server of each operator first,
+// as many as asked for (three, normally). With fewer operators than that, the rest come
+// from operators already picked, and `sharedOperators` says so: the user must be told
+// (COSIGN.md §9.5), and a refresh swaps one out when another operator appears.
 //
 // I/O comes in from outside (`query`, `ping`), so this runs in a page, an extension or
 // a test alike; `relayQuery` and `pingHost` are ready-made ones over nostr-tools.
@@ -106,11 +108,12 @@ export async function findServers(o: { query: Query; relays?: string[]; seeds?: 
 }
 
 /**
- * Up to `n` servers for a new key: verified, taking new people (or this device is
- * invited), answering, and one per operator, fastest first. `ping` gives a round trip in
- * ms, or null for no answer. `exclude`: operators already used (the user's own server's).
+ * Up to `n` servers for a new key: verified, taking new people, answering. The fastest of
+ * each operator first; then, if that's fewer than `n`, the fastest of the rest. `ping`
+ * gives a round trip in ms, or null for no answer. `exclude`: operators to leave out
+ * entirely (`distinct: true` also stops at one per operator).
  */
-export async function pickServers(servers: Server[], o: { ping: (s: Server) => Promise<number | null>; n?: number; exclude?: string[] }): Promise<(Server & { ms: number })[]> {
+export async function pickServers(servers: Server[], o: { ping: (s: Server) => Promise<number | null>; n?: number; exclude?: string[]; distinct?: boolean }): Promise<(Server & { ms: number })[]> {
   const n = o.n ?? 3;
   const candidates = servers.filter(s => s.verified && s.enroll === 'open' && !o.exclude?.includes(s.operator));
   const timed = (await Promise.all(candidates.map(async s => ({ ...s, ms: await o.ping(s).catch(() => null) }))))
@@ -118,8 +121,12 @@ export async function pickServers(servers: Server[], o: { ping: (s: Server) => P
     .sort((a, b) => a.ms - b.ms);
   const picked: (Server & { ms: number })[] = [];
   for (const s of timed) if (picked.length < n && !picked.some(p => p.operator === s.operator)) picked.push(s);
+  if (!o.distinct) for (const s of timed) if (picked.length < n && !picked.includes(s)) picked.push(s);
   return picked;
 }
+
+/** Operators that run more than one of these servers: tell the user (COSIGN.md §9.5). */
+export const sharedOperators = (picked: Server[]) => [...new Set(picked.map(s => s.operator).filter((op, i, all) => all.indexOf(op) !== i))];
 
 // --- Ready-made I/O over nostr-tools ---------------------------------------------------
 

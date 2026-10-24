@@ -22,17 +22,25 @@ The list of servers lives on Nostr, not on any one website.
   has found anything. They add whatever announcements they find on your relays and the
   starter relays.
 
-The live list is on [cosign.aaro.cc](https://cosign.aaro.cc/). As of 24 October 2026
-there is one public server, syb.lol.
+The live list is on [cosign.aaro.cc/servers](https://cosign.aaro.cc/servers). Cosign
+launches with three public servers run by its author on different hardware (syb.lol, a
+Cloudflare Worker and a third to be announced); as of 24 October 2026, syb.lol is
+live.
 
 ## Picking three
 
 When you create an account, the app:
 
 1. **Pings each candidate once** and keeps the ones that answer.
-2. **Picks three with three different operators.** Never two from the same operator:
-   two from one person plus a stolen paper backup would be enough to sign, with only
-   that person enforcing the 3-day wait.
+2. **Prefers three different operators.** When there aren't enough, it fills the rest
+   from one operator's servers, **tells you so**, and swaps them for other operators'
+   servers by a refresh as those appear. This is no less safe than a single server: one
+   operator's servers together can't sign, and the risk of that operator plus a stolen
+   paper backup is the same with one server as with three. It is more reliable: if one
+   server loses its data, your device and another server still sign. If that operator
+   disappears entirely, an account with one device and no paper backup is lost, as it
+   would be with a single server; with a second device or the paper, you add servers
+   from elsewhere.
 3. **Prefers your own server** if you run one. It counts as one of your own devices,
    so it costs no privacy.
 4. **Shows each server's operator by name** in settings, so you can see who you're
@@ -64,8 +72,9 @@ same, and the old server's share stops working with anything.
 ## The known limit
 
 An operator is just a pubkey, so **one person with two npubs can pose as two
-operators**. Everyday signing stays safe, because all three servers together still can't
-sign without you. But that person could then run two of your three servers, and with a
+operators** — the same exposure as one operator openly running two of your servers.
+Everyday signing stays safe, because all three servers together still can't sign without
+you. But that person could then run two of your three servers, and with a
 stolen paper backup they would have enough to recover your account, with the 3-day wait
 in their own hands. Their two servers could also fail together.
 
