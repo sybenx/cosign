@@ -8,6 +8,8 @@ services:
     image: cosign-server:0.9.0
     platform: linux/amd64
     user: "1000:1000"
+    environment:
+      COSIGN_PERSONAL: dealt   # A and B on one Mac, on purpose: a rehearsal
     volumes:
       - ./state/cosign:/data
     ports:

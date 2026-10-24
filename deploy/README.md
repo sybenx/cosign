@@ -23,13 +23,11 @@ stack is left stopped.
    builds the image and starts it. After copying new code, press Update: the image is
    `pull_policy: build`, so Update rebuilds it instead of downloading.
 
-3. On first start it makes a throwaway key (2-of-3: this server, server B, your phone)
-   and its own host key. Port 8711 lists every group it serves; open yours (`/g/<id>/`)
-   and scan "Add your phone" with Cosign.
-
-Server B's share is in `/data/cosign/b`. Run it anywhere else (`node server.ts <dir>`
-with a copy of that directory) to have a backup; without it, your phone and this
-server sign everything, and a site gets an error when your phone doesn't answer.
+3. On first start it makes its own host key and a key of your own (`/data/a`): no key
+   yet, and your phone and this server make it together, so neither can sign alone.
+   Port 8711 lists every group it serves; open yours (`/g/<id>/`) and scan "Add your
+   phone" with Cosign. (Before 0.11.2 this was a throwaway 2-of-3 with server B's share
+   in `/data/b` on the same box; that's now only `COSIGN_PERSONAL=dealt`.)
 
 **On the relay's own stack, only ever press Edit → Deploy.** Update can't work there,
 and Stop/Restart take the relay down. To upgrade Ditto: new binary in `bin/`, bump the
@@ -53,7 +51,7 @@ change without a restart. `COSIGN_ENROLL` and `COSIGN_INVITES` override the file
 
 Upgrading a server that ran one group: nothing to do. An existing `/data/a` is served as
 it is, with the same key and share; the first start adds `host.json` and `groups/`.
-`COSIGN_PERSONAL=0` skips the throwaway key on a fresh server meant only for others.
+`COSIGN_PERSONAL=0` skips that key of your own on a fresh server meant only for others.
 
 Outside a container: `node server.ts data/a` still runs one group on its own port, and
 `node server.ts --root data data/a` is the shared server.

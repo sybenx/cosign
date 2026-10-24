@@ -70,12 +70,11 @@ if (weighted) {
   if (!single) write('b', { port: port + 1, self: { idx: 2, sk: skB, shares: [] }, ...common, pairing: null });
   console.log(`
 No key yet. It's made when your phone scans Server A's code: your phone 3 shares,
-each server 1, any 4 sign.
+${single ? 'this server 1, and your phone and it sign together' : 'each server 1, any 4 sign'}.
 
-Start the servers:
+Start the server${single ? '' : 's'}:
   node server.ts ${name}/a      http://localhost:${port}   (shows the code to add your phone)
-  node server.ts ${name}/b      http://localhost:${port + 1}
-`);
+${single ? '' : `  node server.ts ${name}/b      http://localhost:${port + 1}\n`}`);
   process.exit(0);
 }
 
