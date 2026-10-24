@@ -31,8 +31,10 @@ object SignerTicketProfile : Profile<SignerTicket> {
         val pubkey = m["pubkey"] as? String; val signer = m["signer"] as? String; val t = m["t"] as? String
         val relays = (m["relays"] as? List<*>)?.filterIsInstance<String>()
         val expires = m["expires"] as? Long
-        if (m["v"] != 1L || pubkey == null || !HEX32.matches(pubkey) || signer == null || !HEX32.matches(signer) || t == null || relays.isNullOrEmpty() || expires == null)
+        if (m["v"] != 1L || pubkey == null || !HEX32.matches(pubkey) || signer == null || !HEX32.matches(signer) || t == null || !Regex("^[0-9a-f]{32}$").matches(t) || expires == null)
             return Checked.Bad("malformed ticket")
+        if (relays.isNullOrEmpty() || relays.size > 6 || !relays.all { Regex("^wss://\\S+$").matches(it) }) return Checked.Bad("bad relays")
+        if (expires < System.currentTimeMillis() / 1000) return Checked.Bad("expired")
         return Checked.Ok(SignerTicket(pubkey, signer, relays, t, expires))
     }
 

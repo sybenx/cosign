@@ -339,7 +339,8 @@ class Phone(private val context: Context) {
         if (params?.profile == CosignMemberProfile.id) return moveIn(params)
         // A sign-in code that carries a nostrconnect:// fallback (`nc`, site/src/pair.ts):
         // use the ticket if it's one for us, the fallback if not.
-        val nc = t.substringAfter('#', "").split('&').firstOrNull { it.startsWith("nc=") }?.let { Uri.decode(it.removePrefix("nc=")) }
+        val rest = if ('#' in t) t.substringAfter('#') else t.substringAfter('?', "") // an https link, or its qrst: form
+        val nc = rest.split('&').firstOrNull { it.startsWith("nc=") }?.let { Uri.decode(it.removePrefix("nc=")) }
         if (nc != null && nc.startsWith("nostrconnect:") && (params == null || params.profile != SignerTicketProfile.id || params.mode != Mode.OFFER))
             return scannedNostrConnect(nc)
         when {

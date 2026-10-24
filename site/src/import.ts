@@ -20,12 +20,14 @@ import { Transfer, Store, browserEnv, type KeyValue } from '../vendor/qrst-web/i
 import { SignerClient, newSession } from './client.ts';
 import { cosignMember, type MemberMove } from './member.ts';
 import { findServers, pickServers, relayQuery, pingHost, type Server } from './servers.ts';
-import { DEFAULT_RELAYS, type Signer } from './pair.ts';
+import { DEFAULT_RELAYS, DEFAULT_BOUNCE, handoffLink, type Signer } from './pair.ts';
 
 export interface ImportUi {
   status(text: string): void;
-  /** Draw this as a QR code (and offer it as a link). */
+  /** Draw this as a QR code. */
   code(uri: string): void;
+  /** For an "Open Cosign" button on this same device: the code as a `qrst:` link. */
+  open?(link: string): void;
   /** Your phone shows five digits: ask for them and pass them on. `left`: tries remaining. */
   enterCode(left: number, submit: (digits: string) => void): void;
 }
@@ -35,8 +37,8 @@ export interface ImportOptions {
   secretKey: string | Uint8Array;
   /** This page's origin: the ticket it signs in with is for it. */
   origin: string;
-  /** Where the code points if a phone's camera app opens it (QRST §11.2a). */
-  baseUrl: string;
+  /** Where the code points if a phone's camera app opens it (QRST §11.2a). Default DEFAULT_BOUNCE. */
+  baseUrl?: string;
   storage?: KeyValue;
   /** Servers to use instead of finding them (site/src/servers.ts). */
   servers?: Server[];
@@ -132,12 +134,12 @@ export function importToPhone(o: ImportOptions): { done: Promise<Signer>; cancel
     // The phone's three, by QRST: it shows five digits, you type them here.
     const move: MemberMove = { v: 1, group, idx: 1, shares: phoneShares.map(s => ({ idx: s.idx, secret: s.secret })), signer: signer.pk, claim };
     const store = new Store(o.storage, () => Math.floor(Date.now() / 1000), [], o.relays ?? DEFAULT_RELAYS);
-    const t = transfer = Transfer.show({ profile: cosignMember, store, env: browserEnv(), baseUrl: o.baseUrl, origin: o.origin, check: 'type' }, 'sender', move);
+    const t = transfer = Transfer.show({ profile: cosignMember, store, env: browserEnv(), baseUrl: o.baseUrl ?? DEFAULT_BOUNCE, origin: o.origin, check: 'type' }, 'sender', move);
     await new Promise<void>((resolve, reject) => {
       let shown = '', asked = -1;
       t.onChange = () => {
         const v = t.view();
-        if (v.uri && v.uri !== shown) { shown = v.uri; o.ui.code(v.uri); o.ui.status('Scan this with Cosign on your phone.'); }
+        if (v.uri && v.uri !== shown) { shown = v.uri; o.ui.code(v.uri); o.ui.open?.(handoffLink(v.uri)); o.ui.status('Scan this with Cosign on your phone.'); }
         if (v.session.phase === 'release' && v.session.attemptsLeft !== asked) {
           asked = v.session.attemptsLeft;
           o.ui.enterCode(v.session.attemptsLeft, d => t.enterCode(d));

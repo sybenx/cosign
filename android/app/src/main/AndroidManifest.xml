@@ -45,6 +45,14 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="cosign" />
             </intent-filter>
+            <!-- The same sign-in code in QRST's neutral form (qrst://npub…?…), which a page hands
+                 to an app on this phone without any website in between. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="qrst" />
+            </intent-filter>
             <!-- A site's nostrconnect:// code, from the camera app or a link on this phone.
                  Another signer app may claim it too; Android then asks which. -->
             <intent-filter>
