@@ -131,7 +131,8 @@ A co-signer MUST:
    device without its lock, or in any round using the backup's shares without a
    surviving device, until 3 days after sending `wait` to every member, unless a
    member device sends `cancel`.
-9. Hold exactly one share per group.
+9. Hold exactly one share per group, and never delete a finished group's share for
+   inactivity; only the guarded `forget` (after its wait) deletes it.
 10. Never connect to private, loopback, carrier-grade NAT or cloud-metadata addresses
     because a relay or push address in a group record, a site's request or a new device
     names one; resolve and check at every connect. Push only to `https://` hosts the

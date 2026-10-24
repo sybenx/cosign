@@ -251,7 +251,7 @@ export class CosignHost extends DurableObject {
 
   async alarm() {
     for (const x of this.groups.values()) x.g.tick();
-    // Let go of accounts strangers enrolled that never finished, or that no device has used in 30 days.
+    // Let go of accounts strangers enrolled that never finished being set up (never a finished one).
     for (const x of [...this.groups.values()]) { const why = x.g.stale(); if (why) { console.log(`[${x.id}] letting it go: ${why}`); await x.g.forget(); } }
     // Every 6 h, and as soon as a new version is running (its announcement says which).
     const last = Number(this.get('announced') ?? 0);

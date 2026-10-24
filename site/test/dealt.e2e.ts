@@ -129,7 +129,7 @@ check('a stranger starts an account and never finishes it', half.type === 'enrol
 const halfDir = `${serverDir}test-dealt/h1/groups/${half.group}`;
 const doneDir = `${serverDir}test-dealt/h1/groups/${enrolled[0].group}`;
 check('it is let go once its window passes', await waitFor(() => !existsSync(halfDir), 30_000));
-check('the account in use stays', existsSync(doneDir));
+check('a finished account stays, however long it sits idle', existsSync(doneDir));
 
 site.close();
 console.log(failures ? `${failures} failed` : 'all passed');

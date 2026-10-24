@@ -583,7 +583,7 @@ check against that epoch's commitments. The paper is now worth 2 points:
 
 A refresh follows every use of the backup.
 
-### 8.4 When no server answers: the escape hatch (not built)
+### 8.4 When no server answers: the escape hatch
 
 If **no server has answered for 7 days**, a device plus the paper backup (5 points), or
 two devices (6), MAY rebuild the key on one device, after the device's lock and a plain
@@ -647,7 +647,14 @@ NOT connect to private, loopback, carrier-grade NAT (tailnet) or cloud-metadata
 addresses because a stranger named them, and SHOULD resolve and check each address at
 every connect, not once. It SHOULD cap what one stranger can use: accounts held, new
 accounts per hour, messages per account per minute, relays per account and relay
-connections overall. Push MUST be `https://` to hosts the operator allows, without
+connections overall. It SHOULD let go of an account a stranger started enrolling and
+never finished (reference: after a day), and MAY cap how many unfinished enrollments it
+holds.
+
+**A server MUST NOT delete a finished account's share for inactivity.** Its share may be
+all that stands between a user with one device and losing the account, and every server
+of an account may share one operator and one setting. A finished account's share goes
+only through the guarded actions of §7.6. Push MUST be `https://` to hosts the operator allows, without
 following redirects.
 
 ### 9.3 Several servers

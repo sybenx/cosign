@@ -95,6 +95,9 @@ These come from [COSIGN.md](COSIGN.md); the section is given for each.
   read what those sites send.
 - **Refuse a device the moment it's reported lost** (§7.2).
 - **Drop replayed requests**: one already answered, or older than 30 seconds (§5.2).
+- **Never delete a finished account's share for inactivity** (§9.2). Only an enrollment a
+  stranger never finished may be dropped. A share goes only when one of the user's
+  devices asks, through the guarded, cancellable "remove the servers' pieces" (§7.6).
 - **Never connect where a stranger points it.** Accounts, sites and new devices name
   relays and push addresses, and anyone can create an account on an open server. A
   public server must not connect to private, loopback, tailnet/CGNAT or cloud-metadata
@@ -178,7 +181,7 @@ only `COSIGN_PERSONAL=dealt`, and it says so in the log.)
 
 | Setting | Default | What it does |
 |---|---|---|
-| `COSIGN_MAX_GROUPS` | 5000 | Accounts this server takes at most. One a stranger started and never finished is let go after a day, and any no device has used in 30 days after that (`COSIGN_UNFINISHED_AFTER`, `COSIGN_IDLE_AFTER`, in seconds). |
+| `COSIGN_MAX_GROUPS` | 5000 | Accounts this server takes at most. One a stranger started and never finished setting up is let go after a day (`COSIGN_UNFINISHED_AFTER`, in seconds); a finished account is never let go for being idle. |
 | `COSIGN_ENROLL_PER_HOUR` | 30 | New accounts per hour. |
 | `COSIGN_GROUP_PER_MINUTE` | 600 | Messages per account per minute; the rest are dropped. |
 | `COSIGN_MAX_RELAYS` | 300 | Relay connections at most. |

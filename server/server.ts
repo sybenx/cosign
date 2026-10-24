@@ -320,7 +320,7 @@ setInterval(() => { for (const x of groups.values()) x.g.tick(); }, 10_000);
 const clockNote = (t: string) => console.log(`[clock] ${t}`);
 void checkClock(clockNote);
 setInterval(() => void checkClock(clockNote), 30 * 60_000);
-// Hourly: let go of accounts strangers enrolled that never finished, or that no device has used in 30 days.
+// Hourly: let go of accounts strangers enrolled that never finished being set up (never a finished one).
 const ageOut = () => { for (const x of [...groups.values()]) { const why = x.g.stale(); if (why) { console.log(`[${x.label}] letting it go: ${why}`); void x.g.forget(); } } };
 setInterval(ageOut, Number(process.env.COSIGN_AGE_EVERY ?? 3600_000));
 setTimeout(ageOut, 60_000);
