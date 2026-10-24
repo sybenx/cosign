@@ -486,17 +486,36 @@ class Phone(private val context: Context) {
     /** No screen lock: one device can only vouch instantly with one, so it can't add a device yet. */
     fun lockMissing() = ui.update { it.copy(adding = null, error = "Set a screen lock on this phone first: adding a device needs it.") }
 
-    /** A server's half of the repair: add ours, send the server its delta and the new device our sigma. */
+    /**
+     * A server's half of the repair. Each of our shares splits its part of each new share
+     * into a delta per helper share: the server's go back to it, and ours, with the
+     * server's deltas for them, sum to sigmas sealed to the new device.
+     */
     private fun onRepair(msg: Map<*, *>, from: Member, m: Membership) {
         val id = msg["id"] as? String ?: return
-        val k = (msg["k"] as? Long)?.toInt() ?: return
         val newPk = msg["pk"] as? String ?: return
         val helpers = (msg["helpers"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
-        if (m.idx !in helpers || from.idx !in helpers) return
-        val d = (Json.parse(FrostNative.repairStep1(groupJson(m), m.idx, m.share, Json.stringify(helpers), k)) as List<*>).associate { (it as List<*>)[0].toString() to (it[1] as String) }
-        val sigma = FrostNative.repairStep2(Json.stringify(listOf(d[m.idx.toString()], msg["delta"] as String)))
-        send(from.pk!!, mapOf("type" to "repair_delta", "id" to id, "delta" to d[from.idx.toString()]))
-        send(newPk, mapOf("type" to "sigma", "id" to id, "k" to k, "sigma" to sigma))
+        if (!helpers.containsAll(m.idxs) || !helpers.containsAll(from.idxs)) return
+        val ks = (msg["ks"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: listOfNotNull((msg["k"] as? Long)?.toInt())
+        // [k, from, to, delta]; or the earlier one-share form.
+        val fromSrv = (msg["deltas"] as? List<*>)?.map { it as List<*> }
+            ?: listOf(listOf(ks.first().toLong(), from.idx.toLong(), m.idx.toLong(), msg["delta"] as? String ?: return))
+        val group = groupJson(m)
+        val local = HashMap<Pair<Int, Int>, MutableList<String>>()
+        val toSrv = mutableListOf<List<Any>>()
+        for (k in ks) for (sh in m.shares) {
+            for (d in Json.parse(FrostNative.repairStep1(group, sh.idx, sh.secret, Json.stringify(helpers), k)) as List<*>) {
+                val j = ((d as List<*>)[0] as Long).toInt(); val delta = d[1] as String
+                if (j in m.idxs) local.getOrPut(k to j) { mutableListOf() }.add(delta) else toSrv.add(listOf(k, sh.idx, j, delta))
+            }
+        }
+        val sigmas = ks.flatMap { k -> m.idxs.map { j ->
+            val theirs = fromSrv.filter { (it[0] as Long).toInt() == k && (it[2] as Long).toInt() == j }.map { it[3] as String }
+            listOf(k, j, FrostNative.repairStep2(Json.stringify(local[k to j].orEmpty() + theirs)))
+        } }
+        val one = sigmas.size == 1
+        send(from.pk!!, mapOf("type" to "repair_delta", "id" to id, "deltas" to toSrv) + (if (one) mapOf("delta" to toSrv[0][3]) else emptyMap()))
+        send(newPk, mapOf("type" to "sigma", "id" to id, "sigmas" to sigmas) + (if (one) mapOf("k" to ks[0], "sigma" to sigmas[0][2]) else emptyMap()))
     }
 
     /** Who's in your key now: a server added or removed someone. */
@@ -529,23 +548,32 @@ class Phone(private val context: Context) {
     fun cancelJoin() { joinWith = null; relays?.stop(); relays = null; sk = null; ui.update { it.copy(joinCode = null) } }
 
     private fun onJoinPiece(msg: Map<*, *>, fromPk: String) {
-        if (msg["type"] == "welcome") { joinPieces["welcome"] = msg; joinPieces["server"] = fromPk } else joinPieces["sigma"] = msg["sigma"] as? String ?: return
+        // A sigma per helper share for each new share, from the server's welcome and the vouching device: [k, helper, sigma].
+        @Suppress("UNCHECKED_CAST")
+        val pieces = (joinPieces.getOrPut("sigmas") { java.util.Collections.synchronizedList(mutableListOf<List<Any?>>()) } as MutableList<List<Any?>>)
+        if (msg["type"] == "welcome") {
+            joinPieces["welcome"] = msg; joinPieces["server"] = fromPk
+            pieces.addAll((msg["sigmas"] as? List<*>)?.map { it as List<*> } ?: listOf(listOf(msg["k"], 0L, msg["sigma"])))
+        } else pieces.addAll((msg["sigmas"] as? List<*>)?.map { it as List<*> } ?: listOf(listOf(msg["k"], -1L, msg["sigma"] as? String ?: return)))
         val w = joinPieces["welcome"] as? Map<*, *> ?: return
-        val sigma2 = joinPieces["sigma"] as? String ?: return
         val mySk = joinWith ?: return
         val group = parseGroup(w["group"]) ?: return
-        val k = (w["k"] as? Long)?.toInt() ?: return
+        val ks = (w["ks"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: listOfNotNull((w["k"] as? Long)?.toInt())
+        val need = (w["helpers"] as? List<*>)?.size ?: 2
+        val forK = { k: Int -> pieces.toList().filter { (it[0] as? Long)?.toInt() == k }.map { it[2] as String } }
+        if (ks.isEmpty() || ks.any { forK(it).size < need }) return
         val g = groupJson(group)
-        val share = try { FrostNative.repairStep3(g, Json.stringify(listOf(w["sigma"], sigma2)), k) } catch (e: Exception) {
+        val shares = try { ks.map { k -> Share(k, FrostNative.repairStep3(g, Json.stringify(forK(k)), k)) } } catch (e: Exception) {
             return ui.update { it.copy(error = "The pieces didn't add up to a share of that key. Nothing was kept.") }
         }
-        val me = Member(k, w["name"] as? String ?: "This device", "device", publicKeyHex(mySk.hexToBytes()), Frost.sharePub(share))
-        val m = Membership(mySk, k, listOf(Share(k, share)), w["signer"] as? String ?: return, group.copy(members = group.members + me))
+        val points = shares.map { Point(it.idx, Frost.sharePub(it.secret)) }
+        val me = Member(ks[0], w["name"] as? String ?: "This device", "device", publicKeyHex(mySk.hexToBytes()), points[0].sharePub, if (points.size > 1) points else null)
+        val m = Membership(mySk, ks[0], shares, w["signer"] as? String ?: return, group.copy(members = group.members + me))
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
-        send(joinPieces["server"] as String, mapOf("type" to "joined", "id" to w["id"], "sharePub" to me.sharePub))
+        send(joinPieces["server"] as String, mapOf("type" to "joined", "id" to w["id"], "sharePub" to me.sharePub, "sharePubs" to points.map { listOf(it.idx, it.sharePub) }))
         joinWith = null
         ui.update { it.copy(member = m, joinCode = null) }
-        note("Joined. This device holds 1 of ${group.members.size + 1} shares of ${group.npub.take(16)}…")
+        note("Joined. This device holds ${shares.size} of ${group.members.sumOf { it.points.size } + shares.size} shares of ${group.npub.take(16)}…")
         start() // same relays and key: it keeps the connection the joined message just went out on
     }
 

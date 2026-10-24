@@ -60,7 +60,27 @@ check('a site gets the new key', (await site.getPublicKey()) === phone.group.gro
 const ev = await site.signEvent({ kind: 1, content: 'made by nobody', tags: [] }).catch(e => e);
 check('the phone (3) and a server (1) sign', verifyEvent(ev) && ev.pubkey === phone.group.groupX);
 
+// A tablet joins: the phone vouches, and it gets 3 shares of its own by repair.
+const dev = spawn('node', ['test/fake-device.ts', 'Test tablet'], { cwd: serverDir, env: { ...process.env } });
+let devOut = '';
+dev.stdout.on('data', d => { devOut += d; });
+while (!devOut.includes('JOIN ')) await sleep(200);
+const join = new URL(devOut.split('JOIN ')[1].split('\n')[0].replace('cosign:', 'cosign://'));
+await sleep(2500);
+const t2 = Date.now();
+ctl.publish(sealTo(phone.sk, servers[0].pk, { type: 'add_device', id: `${Date.now()}w`, pk: join.searchParams.get('pk'), name: 'Test tablet', relays: join.searchParams.getAll('r'), lock: true }));
+while (!devOut.includes('JOINED') && Date.now() - t2 < 40_000) await sleep(250);
+check('the tablet gets 3 shares by repair', /JOINED .* with shares \d+, \d+, \d+/.test(devOut), `${Date.now() - t2} ms: ${devOut.split('\n').find(l => l.includes('JOINED')) ?? ''}`);
+await sleep(2000);
+const tablet = state('a').group.members.find((m: any) => m.pk === join.searchParams.get('pk'));
+check('the servers list it with its 3 shares', tablet?.shares?.length === 3 && state('b').group.members.some((m: any) => m.pk === tablet.pk));
+
 phoneProc.kill();
+await sleep(12_000); // until the phone counts as gone
+const ev2 = await site.signEvent({ kind: 1, content: 'from the tablet', tags: [] }).catch(e => e);
+check('with the phone gone, the tablet (3) and a server (1) sign', verifyEvent(ev2) && ev2.pubkey === phone.group.groupX, String(ev2?.message ?? ''));
+
+dev.kill();
 await sleep(1000);
 const t1 = Date.now();
 const err = await site.signEvent({ kind: 1, content: 'servers alone', tags: [] }).then(() => null, e => e as Error);

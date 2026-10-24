@@ -88,12 +88,20 @@ function handle(msg: any, from: string) {
     const points = myShares().map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
     send(from, { type: 'ecdh_res', id: msg.id, ok: true, points, point: points[0] });
   } else if (msg.type === 'repair') {
-    // Vouching for a new device: our part of its share, half to the server, half to it.
-    const d = Sig.repairStep1(st.group, st.idx, st.share, msg.helpers, msg.k);
-    const sigma = Sig.repairStep2([d.find(x => x[0] === st.idx)![1], msg.delta]);
-    send(from, { type: 'repair_delta', id: msg.id, delta: d.find(x => x[0] === srv.idx)![1] });
-    send(msg.pk, { type: 'sigma', id: msg.id, k: msg.k, sigma });
-    say(`vouched for a new device as member ${msg.k}`);
+    // Vouching for a new device: each of our shares splits its part of each new share
+    // into deltas; the server's go to it, ours are summed here into sigmas for the device.
+    const mine = myShares(), idxs = mine.map(x => x.idx);
+    const ks: number[] = msg.ks ?? [msg.k];
+    const fromSrv: [number, number, number, string][] = msg.deltas ?? [[msg.k, srv.idx, st.idx, msg.delta]];
+    const local = new Map<string, string[]>(); const toSrv: [number, number, number, string][] = [];
+    for (const k of ks) for (const x of mine) for (const [j, d] of Sig.repairStep1(st.group, x.idx, x.secret, msg.helpers, k)) {
+      if (idxs.includes(j)) local.set(`${k}:${j}`, [...local.get(`${k}:${j}`) ?? [], d]); else toSrv.push([k, x.idx, j, d]);
+    }
+    const sigmas = ks.flatMap(k => idxs.map(j => [k, j, Sig.repairStep2([...local.get(`${k}:${j}`) ?? [], ...fromSrv.filter(t => t[0] === k && t[2] === j).map(t => t[3])])]));
+    const one = sigmas.length === 1;
+    send(from, { type: 'repair_delta', id: msg.id, deltas: toSrv, ...(one ? { delta: toSrv[0][3] } : {}) });
+    send(msg.pk, { type: 'sigma', id: msg.id, sigmas, ...(one ? { k: ks[0], sigma: sigmas[0][2] } : {}) });
+    say(`vouched for a new device: shares ${ks.join(', ')}`);
   } else if (msg.type === 'members') {
     st.group.members = msg.members.map((m: any) => ({ ...m, pk: m.idx === st.idx ? pk : m.pk }));
     writeFileSync(stateFile, JSON.stringify(st, null, 2));

@@ -474,7 +474,7 @@ async function frostSign(unsigned: any, by: string, opts: { undo?: string; site?
   throw new Error(declined ? 'You declined this on your phone.'
     : hold ? `Waiting for your phone timed out: ${hold}.`
     : tried.length && tried.every(t => t.endsWith('no answer'))
-      ? (other().pk ? 'Neither your phone nor your backup server answered. Is Cosign running on your phone?' : 'Your phone didn’t answer. Is Cosign running on it?')
+      ? (other().pk && enough(other()) ? 'Neither your phone nor your backup server answered. Is Cosign running on your phone?' : 'Your phone didn’t answer. Is Cosign running on it?')
     : `Couldn't sign: ${tried.join('; ') || 'nobody to ask'}`);
 }
 
@@ -865,8 +865,10 @@ function pushPhone() {
 // splits its weighted part of f(k) into deltas, they trade one, and each seals its sum
 // (a sigma) to the newcomer, who adds the two. Neither helper ever has the new share.
 
-interface Adding { k: number; pk: string; name: string; by: Member; mine: string; at: number }
+interface Adding { ks: number[]; helpers: number[]; pk: string; name: string; by: Member; local: Map<string, string[]>; at: number }
 const adding = new Map<string, Adding>();
+/** Deltas waiting to be summed, by new share and the helper share they're for. */
+const slot = (k: number, j: number) => `${k}:${j}`;
 
 async function addDevice(msg: any, by: Member) {
   const pk = String(msg.pk ?? '');
@@ -874,35 +876,57 @@ async function addDevice(msg: any, by: Member) {
   if (members.some(m => m.pk === pk && !m.removed)) throw new Error('that device is already one of yours');
   // One device vouching is instant only with its own lock, asked for right then.
   if (msg.lock !== true) throw new Error('adding a device needs this phone’s lock');
-  const k = Math.max(...members.map(m => m.idx)) + 1;
-  const helpers = [by.idx, me.idx].sort((a, b) => a - b);
-  const deltas = Sig.repairStep1(S.group, me.idx, myShares[0].secret, helpers, k);
-  adding.set(String(msg.id), { k, pk, name: String(msg.name ?? 'A device').slice(0, 40), by, mine: deltas.find(d => d[0] === me.idx)![1], at: Date.now() });
+  // The new device gets as many shares as the one vouching for it (3 in a weighted key).
+  const next = Math.max(...members.flatMap(sharesOf)) + 1;
+  const ks = sharesOf(by).map((_, i) => next + i);
+  const helpers = [...sharesOf(by), ...myIdxs].sort((a, b) => a - b);
+  if (helpers.length < S.group.threshold) throw new Error('not enough shares to vouch with');
+  // Each of our shares splits its part of f(k) into a delta per helper share: ours stay
+  // here, the vouching device's go to it.
+  const local = new Map<string, string[]>();
+  const toBy: [number, number, number, string][] = [];
+  for (const k of ks) for (const s of myShares) {
+    for (const [j, d] of Sig.repairStep1(S.group, s.idx, s.secret, helpers, k)) {
+      if (myIdxs.includes(j)) local.set(slot(k, j), [...local.get(slot(k, j)) ?? [], d]);
+      else toBy.push([k, s.idx, j, d]);
+    }
+  }
+  adding.set(String(msg.id), { ks, helpers, pk, name: String(msg.name ?? 'A device').slice(0, 40), by, local, at: Date.now() });
   const relays = (msg.relays ?? []).filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r));
   if (relays.length) await pool.add(relays);
-  send(by.pk, { type: 'repair', id: msg.id, k, helpers, delta: deltas.find(d => d[0] === by.idx)![1], pk });
+  // `k`/`delta`: the earlier one-share form, for an app not updated yet.
+  const one = ks.length === 1 && myShares.length === 1 ? { k: ks[0], delta: toBy[0][3] } : {};
+  send(by.pk, { type: 'repair', id: msg.id, ks, helpers, deltas: toBy, pk, ...one });
   note(`${by.name} is adding ${msg.name ?? 'a device'}`);
 }
 
 function onRepairDelta(msg: any, from: Member) {
   const a = adding.get(String(msg.id));
   if (!a || a.by.idx !== from.idx || Date.now() - a.at > 120_000) return;
-  const sigma = Sig.repairStep2([a.mine, String(msg.delta)]);
+  const theirs: [number, number, number, string][] = msg.deltas ?? [[a.ks[0], from.idx, myIdxs[0], String(msg.delta)]];
+  const sigmas: [number, number, string][] = [];
+  for (const k of a.ks) for (const j of myIdxs) {
+    const ds = [...a.local.get(slot(k, j)) ?? [], ...theirs.filter(t => t[0] === k && t[2] === j && sharesOf(from).includes(t[1])).map(t => String(t[3]))];
+    if (ds.length !== a.helpers.length) return note(`${a.name}: pieces missing; not added`);
+    sigmas.push([k, j, Sig.repairStep2(ds)]);
+  }
+  const one = sigmas.length === 1 ? { k: a.ks[0], sigma: sigmas[0][2] } : {};
   send(a.pk, {
-    type: 'welcome', id: msg.id, k: a.k, sigma, name: a.name, signer: S.signer.pk,
+    type: 'welcome', id: msg.id, ks: a.ks, helpers: a.helpers, sigmas, name: a.name, signer: S.signer.pk, ...one,
     group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays, members: publicMembers() },
   });
 }
 
-/** The newcomer has its share and checked it against the group: it's a member now. */
+/** The newcomer has its shares and checked them against the group: it's a member now. */
 function onJoined(msg: any, fromPk: string) {
   const a = adding.get(String(msg.id));
   if (!a || a.pk !== fromPk) return;
   adding.delete(String(msg.id));
-  const sharePub = Sig.sharePubAt(S.group, a.k);
-  if (msg.sharePub !== sharePub) return note(`${a.name} didn't end up with the right share; not added`);
-  members.push({ idx: a.k, name: a.name, role: 'device', pk: a.pk, sharePub, push: null });
-  lastSeen.set(a.k, Date.now());
+  const theirs = new Map<number, string>(msg.sharePubs ?? [[a.ks[0], msg.sharePub]]);
+  const shares = a.ks.map(k => ({ idx: k, sharePub: Sig.sharePubAt(S.group, k) }));
+  if (shares.some(s => theirs.get(s.idx) !== s.sharePub)) return note(`${a.name} didn't end up with the right shares; not added`);
+  members.push({ idx: a.ks[0], name: a.name, role: 'device', pk: a.pk, sharePub: shares[0].sharePub, push: null, ...(shares.length > 1 ? { shares } : {}) });
+  lastSeen.set(a.ks[0], Date.now());
   save();
   toOther({ type: 'members', members });
   toDevices({ type: 'members', members: publicMembers() });
