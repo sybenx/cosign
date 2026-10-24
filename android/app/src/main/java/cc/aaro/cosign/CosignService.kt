@@ -41,6 +41,7 @@ class CosignService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Startup.mark("service")
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(STATUS, "Connection", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) })
         nm.createNotificationChannel(NotificationChannel(ASKS, "Signing requests", NotificationManager.IMPORTANCE_HIGH))
@@ -48,6 +49,7 @@ class CosignService : Service() {
         else startForeground(STATUS_ID, statusNote())
         listenAll()
         for (p in accounts.all) if (p.isMember) p.start()
+        Startup.mark("service done")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -78,7 +80,7 @@ class CosignService : Service() {
 
     private fun statusNote() = NotificationCompat.Builder(this, STATUS)
         .setSmallIcon(R.drawable.ic_stat)
-        .setContentTitle("Cosign")
+        .setContentTitle(appName)
         .setContentText(statusText())
         .setOngoing(true).setSilent(true).setShowWhen(false)
         .setContentIntent(openApp())
@@ -100,9 +102,9 @@ class CosignService : Service() {
         )
         val n = NotificationCompat.Builder(this, ASKS)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("Approve?" + forKey(p))
-            .setContentText(ask.hold)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("${ask.hold}\n${ask.app} asked."))
+            .setContentTitle(cc.aaro.cosign.ui.question(ask.hold) + forKey(p))
+            .setContentText("${ask.app} asked")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("${ask.app} asked. It doesn't happen unless you say yes."))
             .setSubText(ask.app)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -126,11 +128,11 @@ class CosignService : Service() {
     /** A deletion in its few seconds: Undo stops it. */
     private fun deleting(p: Phone, d: Deleting) {
         if (!canNotify()) return
-        val what = "Deleting ${d.count} event${if (d.count == 1) "" else "s"} for ${d.by}" + forKey(p)
+        val what = "Deleting ${d.count} post${if (d.count == 1) "" else "s"} for ${d.by}" + forKey(p)
         val n = NotificationCompat.Builder(this, ASKS)
             .setSmallIcon(R.drawable.ic_stat)
             .setContentTitle(what)
-            .setContentText("Nostr can't take a deletion back. Cosign keeps a copy.")
+            .setContentText("A deletion can't be fully taken back. $appName keeps a copy.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOnlyAlertOnce(true)
             .setTimeoutAfter((d.until - System.currentTimeMillis()).coerceAtLeast(1000))
@@ -145,9 +147,9 @@ class CosignService : Service() {
         if (!canNotify()) return
         val n = NotificationCompat.Builder(this, ASKS)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("Approve?" + forKey(p))
-            .setContentText(b.text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("${b.text}\nNostr can't take a deletion back. Cosign keeps copies."))
+            .setContentTitle(cc.aaro.cosign.ui.question(b.text) + forKey(p))
+            .setContentText("${b.by} asked")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("${b.by} asked. A deletion can't be fully taken back; $appName keeps copies."))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setTimeoutAfter((b.expiresAt - System.currentTimeMillis()).coerceAtLeast(1000))
             .setAutoCancel(true)

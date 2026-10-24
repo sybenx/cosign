@@ -14,8 +14,11 @@ class CosignApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Startup.mark("app")
         accounts = Accounts(this)
+        Startup.mark("accounts")
         if (accounts.all.any { it.isMember }) CosignService.start(this)
+        Startup.mark("app done")
     }
 
     companion object {

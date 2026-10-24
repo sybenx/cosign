@@ -25,7 +25,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -62,6 +66,7 @@ import cc.aaro.cosign.Offer
 import cc.aaro.cosign.Phone
 import cc.aaro.cosign.Site
 import cc.aaro.cosign.Ui
+import cc.aaro.cosign.appName
 import kotlinx.coroutines.delay
 import java.text.DateFormat
 import java.util.Date
@@ -87,9 +92,9 @@ fun App(phone: Phone, ui: Ui) {
                 // A place for another key: the ones you have are a tap away.
                 val others = CosignApp.instance.accounts.all.filter { it !== phone && it.isMember }
                 if (others.isNotEmpty()) TextButton({ CosignApp.instance.accounts.forget(phone.slot); CosignApp.instance.accounts.show(others.first().slot) },
-                    Modifier.align(Alignment.CenterHorizontally).safeDrawingPadding().padding(bottom = 12.dp)) { Text("Back to ${others.first().label}", color = Vault.Muted) }
+                    Modifier.align(Alignment.CenterHorizontally).safeDrawingPadding().padding(bottom = 12.dp)) { Text("Back to ${accountName(others.first())}", color = Vault.Muted) }
             }
-            else -> Home(phone, ui) { phone.clearError(); scanning = true }
+            else -> Discover(phone, ui) { phone.clearError(); scanning = true }
         }
         // With several keys, every question says which one it's about.
         val which = if (CosignApp.instance.accounts.all.count { it.isMember } > 1) phone.label else null
@@ -102,7 +107,6 @@ fun App(phone: Phone, ui: Ui) {
         ui.paper?.let { PaperSheet(it, phone::closePaper) }
         if (ui.askPaper && ui.paper == null && ui.paperStatus == null) PaperPrompt(phone)
         ui.serverChoice?.let { ServerChoiceSheet(it, ui.paperStatus, phone) }
-        ui.recovery?.let { RecoverySheet(it.first, it.second, phone) }
     }
 }
 
@@ -114,24 +118,25 @@ private fun Page(content: @Composable ColumnScope.() -> Unit) =
 private fun Welcome(error: String?, onJoin: () -> Unit, onScan: () -> Unit, onPaste: (String) -> Unit) = Page {
     val context = androidx.compose.ui.platform.LocalContext.current
     Spacer(Modifier.weight(1f))
-    Text("Cosign", style = MaterialTheme.typography.headlineMedium, color = Vault.Text)
+    Text(appName, style = MaterialTheme.typography.headlineMedium, color = Vault.Text)
     Spacer(Modifier.height(12.dp))
     Text(
-        "Your Nostr key, split between your two servers and this phone. Sites sign through your servers; " +
-            "this phone is where you connect them, remove them, and approve anything destructive.",
+        "Search and discover what people are posting. With an account you can like and follow, and sign in to sites; " +
+            "anything destructive waits for you on this phone.",
         style = MaterialTheme.typography.bodyLarge, color = Vault.Muted,
     )
     error?.let { Spacer(Modifier.height(16.dp)); Text(it, color = Vault.Danger, style = MaterialTheme.typography.bodyMedium) }
     Spacer(Modifier.weight(1f))
     Button(onScan, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
-        Text("Scan your server's code", style = MaterialTheme.typography.labelLarge)
+        Text("Create your account", style = MaterialTheme.typography.labelLarge)
     }
     Spacer(Modifier.height(8.dp))
-    Text("It's on your server's page, under “Add your phone”.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted, modifier = Modifier.align(Alignment.CenterHorizontally))
+    Text("Scan the code on the page where you're setting it up, under “Add your phone”.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted,
+        modifier = Modifier.align(Alignment.CenterHorizontally))
     Spacer(Modifier.height(8.dp))
-    TextButton(onJoin, Modifier.align(Alignment.CenterHorizontally)) { Text("Already use Cosign on another device? Join with it", color = Vault.Teal) }
-    TextButton(onScan, Modifier.align(Alignment.CenterHorizontally)) { Text("Lost your phone? Scan your paper backup", color = Vault.Muted) }
-    TextButton({ onPaste(pasted(context)) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Or paste your backup code", color = Vault.Muted) }
+    TextButton(onJoin, Modifier.align(Alignment.CenterHorizontally)) { Text("Sign in with another device", color = Vault.Teal) }
+    TextButton(onScan, Modifier.align(Alignment.CenterHorizontally)) { Text("Restore from your backup", color = Vault.Muted) }
+    TextButton({ onPaste(pasted(context)) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Paste your backup code instead", color = Vault.Muted) }
 }
 
 @Composable
@@ -147,19 +152,17 @@ private fun Joining(text: String, onCancel: () -> Unit) = Page {
 @Composable
 private fun JoinPrompt(offer: Offer, onJoin: () -> Unit, onCancel: () -> Unit) = if (offer.plan != null) MakeKeyPrompt(onJoin, onCancel) else Page {
     Spacer(Modifier.height(24.dp))
-    Text("Add this phone?", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
-    Spacer(Modifier.height(12.dp))
-    Text(short(offer.group.npub), fontFamily = PlexMono, color = Vault.Teal, style = MaterialTheme.typography.titleMedium)
+    Text("Use your account on this phone?", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+    Spacer(Modifier.height(8.dp))
+    Text(short(offer.group.npub), fontFamily = PlexMono, color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
     Spacer(Modifier.height(20.dp))
-    Text(
-        "This phone will hold 1 of ${offer.group.members.size} shares of this key. Any ${offer.group.threshold} of your servers and this phone can sign; none of them alone.",
-        color = Vault.Text, style = MaterialTheme.typography.bodyLarge,
-    )
+    Text("This phone gets its own part of your account. Nothing can post as you from just one place, this phone included.",
+        color = Vault.Text, style = MaterialTheme.typography.bodyLarge)
     Spacer(Modifier.height(12.dp))
-    Text("Almost everything signs without asking. Anything destructive — most of your follows gone, your profile wiped, a pile of deletions — waits for you here.",
+    Text("Almost everything happens without asking. Anything destructive — unfollowing most people, wiping your profile, deleting a pile of posts — waits for you here.",
         color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
     Spacer(Modifier.weight(1f))
-    Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Add this phone", style = MaterialTheme.typography.labelLarge) }
+    Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Use it on this phone", style = MaterialTheme.typography.labelLarge) }
     Spacer(Modifier.height(8.dp))
     TextButton(onCancel, Modifier.fillMaxWidth()) { Text("Not now", color = Vault.Muted) }
 }
@@ -168,17 +171,17 @@ private fun JoinPrompt(offer: Offer, onJoin: () -> Unit, onCancel: () -> Unit) =
 @Composable
 private fun MakeKeyPrompt(onJoin: () -> Unit, onCancel: () -> Unit) = Page {
     Spacer(Modifier.height(24.dp))
-    Text("Make your key?", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+    Text("Create your account?", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
     Spacer(Modifier.height(20.dp))
     Text(
-        "This phone and your servers make a new key together. Nobody ever holds all of it, not even this phone. This phone and either server can sign; your servers alone can't.",
+        "This phone and the page you scanned set it up together. Nobody holds all of it, not even this phone, so a lost phone or a hacked site can't post as you.",
         color = Vault.Text, style = MaterialTheme.typography.bodyLarge,
     )
     Spacer(Modifier.height(12.dp))
-    Text("Almost everything signs without asking. Anything destructive — most of your follows gone, your profile wiped, a pile of deletions — waits for you here.",
+    Text("Almost everything happens without asking. Anything destructive — unfollowing most people, wiping your profile, deleting a pile of posts — waits for you here.",
         color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
     Spacer(Modifier.weight(1f))
-    Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Make my key", style = MaterialTheme.typography.labelLarge) }
+    Button(onJoin, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Create my account", style = MaterialTheme.typography.labelLarge) }
     Spacer(Modifier.height(8.dp))
     TextButton(onCancel, Modifier.fillMaxWidth()) { Text("Not now", color = Vault.Muted) }
 }
@@ -246,20 +249,20 @@ private fun ConnectSheet(c: Connect, which: String?, onConnect: () -> Unit, onCl
         ) {
             when (c.stage) {
                 Connect.Stage.CONFIRM -> {
-                    Text("Let ${c.origin} sign as you?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                    Text("Use your account on ${c.origin}?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
                     which?.let { Text("as $it", fontFamily = PlexMono, color = Vault.Teal, style = MaterialTheme.typography.bodyMedium) }
                     Spacer(Modifier.height(10.dp))
-                    Text("It gets its own access, through your servers — not your key. Everyday things sign automatically; anything destructive comes to this phone first.",
+                    Text("It can post, like and follow as you. Anything destructive, like unfollowing everyone or deleting posts, comes to this phone first.",
                         style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
                     Spacer(Modifier.height(6.dp))
-                    Text("Remove it here any time. That stops future signing; it doesn't undo what it already signed.",
+                    Text("Remove it under Your account any time. That stops it from then on; it doesn't undo what it already did.",
                         style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
                     Spacer(Modifier.height(20.dp))
                     // Declining is never the weaker control; the affirmative one names the site.
                     OutlinedButton(onClose, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Don't connect", color = Vault.Text) }
                     Spacer(Modifier.height(10.dp))
                     Button(onConnect, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
-                        Text("Connect ${c.origin}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("Use it on ${c.origin}", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Connect.Stage.WORKING -> Column {
@@ -284,50 +287,60 @@ private fun ConnectSheet(c: Connect, which: String?, onConnect: () -> Unit, onCl
     }
 }
 
+/**
+ * Your account, behind your picture on the home screen: your profile, devices, connected
+ * apps and sites, keeping it safe, and what changed. How it works (servers, relays) is under Advanced.
+ */
 @Composable
-private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
+internal fun AccountScreen(phone: Phone, ui: Ui, onScan: () -> Unit, onProfile: () -> Unit, onBack: () -> Unit) {
     val m = ui.member!!
     var leaving by remember { mutableStateOf(false) }
+    var advanced by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
+    val people by cc.aaro.cosign.People.known.collectAsState()
+    val me = people[m.group.groupX]
 
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            Text("Cosign", style = MaterialTheme.typography.labelMedium, color = Vault.Muted)
-            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onBack, Modifier.padding(end = 8.dp).size(32.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Vault.Text)
+                }
+                Text("Your account", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            }
+            Spacer(Modifier.height(16.dp))
             var switching by remember { mutableStateOf(false) }
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { switching = true }) {
-                Text(short(m.group.npub), fontFamily = PlexMono, style = MaterialTheme.typography.titleLarge, color = Vault.Text)
-                Text("  ▾", color = Vault.Muted, style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).clickable(onClick = onProfile), verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(me, m.group.groupX, 52)
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text(me?.name ?: "Your profile", style = MaterialTheme.typography.titleMedium, color = Vault.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (me?.name == null) Text("No name or picture yet", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+                        Text(short(m.group.npub), fontFamily = PlexMono, style = MaterialTheme.typography.labelSmall, color = Vault.Muted)
+                    }
+                }
+                TextButton({ switching = true }) { Text("Switch ▾", color = Vault.Teal) }
             }
             if (switching) KeysSheet(phone) { switching = false }
-            // Another key of yours with something waiting: say so here too, not only in notifications.
+            // Another account of yours with something waiting: say so here too, not only in notifications.
             val waiting = CosignApp.instance.accounts.all.filter { it !== phone }.map { it to it.ui.collectAsState().value }
                 .filter { (_, u) -> u.asks.isNotEmpty() || u.batchAsks.isNotEmpty() }
             for ((p, u) in waiting) TextButton({ CosignApp.instance.accounts.show(p.slot) }, contentPadding = PaddingValues(0.dp)) {
-                Text("${p.label}: ${u.asks.size + u.batchAsks.size} waiting for you. Switch", color = Vault.AmberText, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (mem in m.group.members) Chip(if (mem.idx == m.idx) "This phone" else mem.name, ui.online[mem.idx] == true, Modifier.weight(1f))
-            }
-            if (ui.relaysUp == 0) Text("No relay connection. Retrying…", color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
-        }
-        // Until there's a paper or a second device, this stays at the top.
-        if (phone.needsPaper) item { PaperCard(phone) }
-        item {
-            Button(onScan, Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
-                Text("Connect a site", style = MaterialTheme.typography.labelLarge)
+                Text("${accountName(p)}: ${u.asks.size + u.batchAsks.size} waiting for you. Switch", color = Vault.AmberText, style = MaterialTheme.typography.bodySmall)
             }
             ui.error?.let { Text(it, color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp)) }
         }
+        // The paper backup's nudge is on the home screen; here it's under Keep your account safe.
+        ui.recovery?.let { (name, until) -> if (!RecoveryOk.has(until)) item { RecoveryCard(name, until, phone) } }
         items(ui.future, key = { "future:" + it.id }) { f -> FutureCard(f) { phone.removeFuture(f) } }
         items(ui.deleting, key = { "deleting:" + it.batch }) { d -> DeletingCard(d, now) { phone.cancelDeletion(d.batch) } }
         items(ui.batchAsks, key = { "batch:" + it.batch }) { b -> BatchCard(b, now) { approve -> phone.decideBatch(b.batch, approve) } }
         items(ui.asks, key = { "ask:" + it.id }) { ask -> AskCard(ask, now) { approve -> phone.decide(ask.id, approve) } }
 
         item { Heading("Your devices") }
-        items(m.group.members.filter { it.role != "server" }, key = { "member:" + it.idx }) { d ->
+        items(m.group.members.filter { it.role != "server" && it.role != "backup" }, key = { "member:" + it.idx }) { d ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(8.dp).background(if (d.idx == m.idx || ui.online[d.idx] == true) Vault.Teal else Vault.Field, CircleShape))
                 Spacer(Modifier.width(10.dp))
@@ -336,50 +349,83 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
             }
         }
         item { TextButton(onScan, contentPadding = PaddingValues(0.dp)) { Text("Add a device", color = Vault.Teal) } }
-        if (m.group.threshold >= 4) item { TextButton({ phone.chooseServer() }, contentPadding = PaddingValues(0.dp)) { Text("Add a server", color = Vault.Teal) } }
-        // Keys from before weighted ones (threshold 2) can't have a paper: it could sign alone.
-        if (m.group.threshold >= 4) item { PaperRow(m.group.members.any { it.role == "backup" }, ui.paperStatus, phone) }
 
-        item { Heading("Sites that can sign as you") }
-        if (ui.sites.isEmpty()) item { Muted("None yet. Tap Connect a site and scan a site's sign-in code.") }
+        item { Heading("Apps and sites you're signed in to") }
+        item {
+            Button(onScan, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
+                Text("Sign in to a site", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        if (ui.sites.isEmpty()) item { Muted("None yet. To use your account on a website, tap Sign in to a site and scan the code it shows.") }
         // One entry per website, with each way it's connected inside.
         items(ui.sites.groupBy { it.origin }.toList(), key = { "site:" + it.first }) { (origin, grants) ->
             SiteGroup(origin, grants, onRemove = phone::removeSite, onUndo = phone::askUndoSite)
         }
 
-        item { Heading("Recent changes to your lists") }
-        if (ui.changes.isEmpty()) item { Muted("Follows, profile, relays, bookmarks… every change shows up here, with Undo.") }
+        // Accounts from before weighted keys (threshold 2) can't have a paper: it could sign alone.
+        if (m.group.threshold >= 4) {
+            item { Heading("Keep your account safe") }
+            item { PaperRow(m.group.members.any { it.role == "backup" }, ui.paperStatus, phone) }
+        }
+
+        item { Heading("Recent changes") }
+        if (ui.changes.isEmpty()) item { Muted("Follows, profile, bookmarks… every change shows up here, with Undo.") }
         items(ui.changes.take(12), key = { "change:" + it.id }) { ChangeRow(it) { phone.undo(it) } }
 
         if (ui.deleted.isNotEmpty()) {
-            item { Heading("Deleted — copies kept") }
+            item { Heading("Deleted, with copies kept") }
             items(ui.deleted, key = { "deleted:" + it.id }) { DeletedRow(it) { phone.repost(it) } }
         }
 
-        item { Heading("On this phone") }
-        items(ui.log.take(20)) { LogLine(it) }
         item {
-            Spacer(Modifier.height(12.dp))
-            Muted("${ui.relaysUp}/${m.group.relays.size} relays · " + if (ui.push != null) "ntfy wakes this phone for approvals" else "no ntfy: approvals arrive while Cosign is running")
-            TextButton({ leaving = true }, contentPadding = PaddingValues(0.dp)) { Text("Remove this phone from your key", color = Vault.Danger, style = MaterialTheme.typography.bodySmall) }
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp).clickable { advanced = !advanced }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Advanced", style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.weight(1f))
+                Text(if (advanced) "▴" else "▾", color = Vault.Muted)
+            }
+        }
+        if (advanced) {
+            item {
+                Muted("Your account is a Nostr key, split between this phone and your servers. Any of your servers with this phone can sign; your servers alone can't.")
+                Spacer(Modifier.height(10.dp))
+                val context = androidx.compose.ui.platform.LocalContext.current
+                Text(short(m.group.npub), fontFamily = PlexMono, color = Vault.Text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.clickable {
+                    context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("npub", m.group.npub))
+                })
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (mem in m.group.members) Chip(if (mem.idx == m.idx) "This phone" else mem.name, ui.online[mem.idx] == true, Modifier.weight(1f))
+                }
+                if (ui.relaysUp == 0) Text("No relay connection. Retrying…", color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+            }
+            if (m.group.threshold >= 4) item { TextButton({ phone.chooseServer() }, contentPadding = PaddingValues(0.dp)) { Text("Add a server", color = Vault.Teal) } }
+            item { Heading("On this phone") }
+            items(ui.log.take(20)) { LogLine(it) }
+            item {
+                Spacer(Modifier.height(12.dp))
+                Muted("${ui.relaysUp}/${m.group.relays.size} relays · " + if (ui.push != null) "ntfy wakes this phone for approvals" else "no ntfy: approvals arrive while $appName is running")
+                TextButton({ leaving = true }, contentPadding = PaddingValues(0.dp)) { Text("Remove this phone from your account", color = Vault.Danger, style = MaterialTheme.typography.bodySmall) }
+            }
         }
     }
 
     if (leaving) AlertDialog(
         onDismissRequest = { leaving = false },
         title = { Text("Remove this phone?") },
-        text = { Text("This deletes the share on this phone. Your servers keep signing everyday things, but nothing destructive can be approved until you set up a new key.") },
+        text = { Text("This deletes this phone's share of your key. Your servers keep signing everyday things, but nothing destructive can be approved until you set up a new key.") },
         confirmButton = { TextButton({ leaving = false; phone.leave() }) { Text("Delete the share", color = Vault.Danger) } },
         dismissButton = { TextButton({ leaving = false }) { Text("Keep it") } },
         containerColor = Vault.Surface,
     )
 }
 
+/** An account, as you know it: its name, else its npub, shortened. */
+internal fun accountName(p: Phone) = p.ui.value.member?.group?.groupX?.let { cc.aaro.cosign.People.known.value[it]?.name } ?: p.label
+
 @Composable private fun Heading(text: String) = Text(text, style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.padding(top = 10.dp))
 @Composable private fun Muted(text: String) = Text(text, style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
 
 @Composable
-private fun FutureCard(f: Future, onRemove: () -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
+internal fun FutureCard(f: Future, onRemove: () -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
     Text("Dated in the future", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText)
     Spacer(Modifier.height(4.dp))
     Text(f.text, style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
@@ -388,21 +434,44 @@ private fun FutureCard(f: Future, onRemove: () -> Unit) = Card(Vault.AmberEdge, 
 }
 
 @Composable
-private fun AskCard(ask: Ask, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
+internal fun AskCard(ask: Ask, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
     val left = ((ask.expiresAt - now) / 1000).coerceAtLeast(0)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("Approve?", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText, modifier = Modifier.weight(1f))
+        Text(question(ask.hold), style = MaterialTheme.typography.titleMedium, color = Vault.Text, modifier = Modifier.weight(1f))
         Text("${left}s", fontFamily = PlexMono, color = Vault.AmberText, style = MaterialTheme.typography.bodySmall)
     }
-    Spacer(Modifier.height(4.dp))
-    Text(ask.hold, style = MaterialTheme.typography.titleMedium, color = Vault.Text)
     Spacer(Modifier.height(6.dp))
-    Text("${ask.app} asked", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+    Text("${ask.app} asked. It doesn't happen unless you say yes.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
     Spacer(Modifier.height(14.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedButton({ onDecide(false) }, Modifier.weight(1f).height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Deny", color = Vault.Text) }
-        Button({ onDecide(true) }, Modifier.weight(1f).height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.OnAmber)) { Text("Approve", fontWeight = FontWeight.SemiBold) }
+    YesNo(onDecide)
+}
+
+/** Yes or no to something that needs you. No is never the weaker button. */
+@Composable
+private fun YesNo(onDecide: (Boolean) -> Unit) = Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    OutlinedButton({ onDecide(false) }, Modifier.weight(1f).height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Don't", color = Vault.Text) }
+    Button({ onDecide(true) }, Modifier.weight(1f).height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.OnAmber)) { Text("Yes", fontWeight = FontWeight.SemiBold) }
+}
+
+/**
+ * What needs you, as a question about what would happen: "Remove 212 of your 230 follows"
+ * becomes "Unfollow 212 people?". The words come from the policy (here and on your servers).
+ */
+internal fun question(what: String): String {
+    val s = what.trim().removeSuffix(".").removeSuffix("?")
+    fun people(n: String) = if (n == "1") "1 person" else "$n people"
+    Regex("^Remove (\\d+) of your \\d+ follows?(?: \\(and add (\\d+)\\))?$").matchEntire(s)?.let {
+        val add = it.groupValues[2]
+        return "Unfollow ${people(it.groupValues[1])}" + (if (add.isEmpty()) "" else " and follow ${people(add)} instead") + "?"
     }
+    Regex("^Empty your follow list \\(it has (\\d+) follows?\\)$").matchEntire(s)?.let { return "Unfollow all ${people(it.groupValues[1])}?" }
+    Regex("^Empty your (.+) \\(it has (\\d+) (.+)\\)$").matchEntire(s)?.let { return "Remove all ${it.groupValues[2]} ${it.groupValues[3].replace("persons", "people")} from your ${it.groupValues[1]}?" }
+    Regex("^(.+) dated in the future \\((.+)\\)$").matchEntire(s)?.let { return "Allow a ${it.groupValues[1].lowercase()} dated ${it.groupValues[2]}?" }
+    Regex("^Delete (\\d+) (?:of your )?events?(?: for .*)?$").matchEntire(s)?.let { val n = it.groupValues[1]; return "Delete $n post${if (n == "1") "" else "s"}?" }
+    Regex("^Delete (?:several|some) events?(?: for .*)?$").matchEntire(s)?.let { return "Delete several posts?" }
+    Regex("^Wipe your profile: (.+)$").matchEntire(s)?.let { return "Clear your profile (${it.groupValues[1]})?" }
+    if (s.startsWith("Ask relays to erase everything")) return "Erase everything you've ever posted?"
+    return "$s?"
 }
 
 @Composable
@@ -424,33 +493,28 @@ private fun SiteGroup(origin: String, grants: List<Site>, onRemove: (Site) -> Un
 }
 
 @Composable
-private fun DeletingCard(d: Deleting, now: Long, onUndo: () -> Unit) = Card(Vault.Line, Vault.Surface) {
+internal fun DeletingCard(d: Deleting, now: Long, onUndo: () -> Unit) = Card(Vault.Line, Vault.Surface) {
     val left = ((d.until - now) / 1000).coerceAtLeast(0)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text("Deleting ${d.count} event${if (d.count == 1) "" else "s"} for ${d.by.removePrefix("https://")}", style = MaterialTheme.typography.titleSmall, color = Vault.Text)
-            Text("in ${left}s · Cosign keeps a copy", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+            Text("Deleting ${d.count} post${if (d.count == 1) "" else "s"} for ${d.by.removePrefix("https://")}", style = MaterialTheme.typography.titleSmall, color = Vault.Text)
+            Text("in ${left}s · a copy is kept here", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
         }
         Button(onUndo, colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Undo") }
     }
 }
 
 @Composable
-private fun BatchCard(b: BatchAsk, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
+internal fun BatchCard(b: BatchAsk, now: Long, onDecide: (Boolean) -> Unit) = Card(Vault.AmberEdge, Vault.AmberGround) {
     val left = ((b.expiresAt - now) / 1000).coerceAtLeast(0)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("Approve?", style = MaterialTheme.typography.labelMedium, color = Vault.AmberText, modifier = Modifier.weight(1f))
+        Text(question(b.text), style = MaterialTheme.typography.titleMedium, color = Vault.Text, modifier = Modifier.weight(1f))
         Text("${left}s", fontFamily = PlexMono, color = Vault.AmberText, style = MaterialTheme.typography.bodySmall)
     }
-    Spacer(Modifier.height(4.dp))
-    Text(b.text, style = MaterialTheme.typography.titleMedium, color = Vault.Text)
     Spacer(Modifier.height(6.dp))
-    Text("Nostr can't take a deletion back. Cosign keeps copies, so you can post them again.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+    Text("${b.by.removePrefix("https://")} asked. A deletion can't be fully taken back; a copy is kept here, so you can post them again.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
     Spacer(Modifier.height(14.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedButton({ onDecide(false) }, Modifier.weight(1f).height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Deny", color = Vault.Text) }
-        Button({ onDecide(true) }, Modifier.weight(1f).height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Amber, Vault.OnAmber)) { Text("Approve", fontWeight = FontWeight.SemiBold) }
-    }
+    YesNo(onDecide)
 }
 
 @Composable
@@ -482,7 +546,7 @@ fun UndoSiteSheet(sum: SiteSummary, onUndo: () -> Unit, onClose: () -> Unit) {
                 if (sum.lists.isNotEmpty()) add("puts your ${sum.lists.joinToString(" and ")} back to how ${if (sum.lists.size == 1) "it was" else "they were"} before it changed ${if (sum.lists.size == 1) "it" else "them"}")
                 if (sum.deletable > 0) add("deletes the other ${sum.deletable} it posted")
             }
-            Text("This ${if (parts.size > 1) parts.dropLast(1).joinToString(", ") + " and " + parts.last() else parts.first()}." + if (sum.deletable > 0) " Nostr can't take a deletion back; Cosign keeps copies." else "",
+            Text("This ${if (parts.size > 1) parts.dropLast(1).joinToString(", ") + " and " + parts.last() else parts.first()}." + if (sum.deletable > 0) " A deletion can't be fully taken back; $appName keeps copies." else "",
                 style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
             Spacer(Modifier.height(20.dp))
             OutlinedButton(onClose, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Cancel", color = Vault.Text) }
@@ -540,9 +604,9 @@ private fun short(npub: String) = if (npub.length > 20) npub.take(12) + "…" + 
 @Composable
 private fun JoinCode(code: String, error: String?, onCancel: () -> Unit) = Page {
     Spacer(Modifier.height(24.dp))
-    Text("Join your key", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+    Text("Sign in with another device", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
     Spacer(Modifier.height(10.dp))
-    Text("On a device that already uses Cosign, tap Add a device and scan this. That device will ask for its lock.", style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
+    Text("On your other phone, open $appName, tap your picture, then Add a device, and scan this. It asks for that phone's screen lock.", style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
     Spacer(Modifier.height(24.dp))
     val qr = remember(code) { qrBitmap(code, 720) }
     androidx.compose.foundation.Image(qr.asImageBitmap(), "Join code", Modifier.fillMaxWidth().then(Modifier.aspectRatio(1f)).background(Color.White, RoundedCornerShape(12.dp)).padding(12.dp))
@@ -564,17 +628,17 @@ private fun KeysSheet(current: Phone, onClose: () -> Unit) {
     BackHandler { onClose() }
     androidx.compose.ui.window.Dialog(onClose) {
         Column(Modifier.background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp)) {
-            Text("Your keys on this phone", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Text("Your accounts on this phone", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
             Spacer(Modifier.height(12.dp))
             for (p in accounts.all.filter { it.isMember || it === current }) {
                 TextButton({ accounts.show(p.slot); onClose() }, Modifier.fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
-                    Text((if (p === current) "● " else "○ ") + p.label, fontFamily = PlexMono, color = if (p === current) Vault.Teal else Vault.Text, modifier = Modifier.fillMaxWidth())
+                    Text((if (p === current) "● " else "○ ") + accountName(p), color = if (p === current) Vault.Teal else Vault.Text, modifier = Modifier.fillMaxWidth())
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Text("Each key has its own servers, sites and history; adding one doesn't touch the others.", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+            Text("Each account has its own devices, sites and history; adding one doesn't touch the others.", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(12.dp))
-            Button({ accounts.add(); onClose() }, Modifier.fillMaxWidth().height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Add another key") }
+            Button({ accounts.add(); onClose() }, Modifier.fillMaxWidth().height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Add another account") }
         }
     }
 }
@@ -617,10 +681,10 @@ private fun ServerChoiceSheet(choice: List<cc.aaro.cosign.net.Servers.Server>, s
 
 /** One device and no paper: a card at the top until there's one or the other. */
 @Composable
-private fun PaperCard(phone: Phone) = Card(Vault.AmberEdge, Vault.AmberGround) {
+internal fun PaperCard(phone: Phone) = Card(Vault.AmberEdge, Vault.AmberGround) {
     Text("Make your paper backup", style = MaterialTheme.typography.titleMedium, color = Vault.AmberText)
     Spacer(Modifier.height(4.dp))
-    Text("If you lose this phone, your key can't be recovered without it. Or add another device.", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
+    Text("If you lose this phone, you can't get your account back without it. Or add another device.", color = Vault.Text, style = MaterialTheme.typography.bodyMedium)
     PaperButton(phone, "Make it now")
 }
 
@@ -634,7 +698,7 @@ private fun PaperPrompt(phone: Phone) {
         ) {
             Text("Make your paper backup", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
             Spacer(Modifier.height(10.dp))
-            Text("If you lose this phone, your key can't be recovered without it. It takes a minute: print it, or keep it in a password manager.",
+            Text("If you lose this phone, you can't get your account back without it. It takes a minute: print it, or keep it in a password manager.",
                 style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
             Spacer(Modifier.height(16.dp))
             OutlinedButton({ phone.laterPaper() }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Later", color = Vault.Text) }
@@ -652,7 +716,7 @@ private fun PaperButton(phone: Phone, text: String, filled: Boolean = false, aft
         if (it.resultCode == android.app.Activity.RESULT_OK) { after(); phone.makePaper() }
     }
     val go = {
-        val ask = lockIntent(context, "Make a paper backup", "Confirm it's you to make a backup of your key")
+        val ask = lockIntent(context, "Make a paper backup", "Confirm it's you to make a backup of your account")
         if (ask == null) phone.lockMissing() else lock.launch(ask)
     }
     if (filled) Button(go, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text(text) }
@@ -667,11 +731,11 @@ private fun PaperRow(made: Boolean, status: String?, phone: Phone) {
         if (it.resultCode == android.app.Activity.RESULT_OK) phone.makePaper()
     }
     Column(Modifier.padding(top = 6.dp)) {
-        Text(if (made) "Paper backup: made" else "No paper backup yet. If you lose this phone, it's how you get your key back.",
+        Text(if (made) "Paper backup: made" else "No paper backup yet. If you lose this phone, it's how you get your account back.",
             color = if (made) Vault.Text else Vault.AmberText, style = MaterialTheme.typography.bodyMedium)
         if (status != null) Text(status, color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
         else TextButton({
-            val ask = lockIntent(context, "Make a paper backup", "Confirm it's you to make a backup of your key")
+            val ask = lockIntent(context, "Make a paper backup", "Confirm it's you to make a backup of your account")
             if (ask == null) phone.lockMissing() else lock.launch(ask)
         }, contentPadding = PaddingValues(0.dp)) { Text(if (made) "Make a new one" else "Make a paper backup", color = Vault.Teal) }
     }
@@ -685,7 +749,7 @@ private fun PaperSheet(code: String, onClose: () -> Unit) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp)) {
             Text("Your paper backup", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
             Spacer(Modifier.height(10.dp))
-            Text("Print it or keep it in a password manager, somewhere safe. With it and your server, you can get your key back on a new phone, after a wait your other devices can stop. Cosign won't show it again.",
+            Text("Print it or keep it in a password manager, somewhere safe. With it you can get your account back on a new phone, after a wait your other devices can stop. $appName won't show it again.",
                 color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(16.dp))
             val qr = remember(code) { qrBitmap(code, 720) }
@@ -695,11 +759,11 @@ private fun PaperSheet(code: String, onClose: () -> Unit) {
             Spacer(Modifier.weight(1f))
             // Printing also offers "Save as PDF".
             OutlinedButton({
-                androidx.print.PrintHelper(context).apply { scaleMode = androidx.print.PrintHelper.SCALE_MODE_FIT }.printBitmap("Cosign backup", qr)
+                androidx.print.PrintHelper(context).apply { scaleMode = androidx.print.PrintHelper.SCALE_MODE_FIT }.printBitmap("$appName backup", qr)
             }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Print or save the QR", color = Vault.Text) }
             Spacer(Modifier.height(10.dp))
             var copied by remember { mutableStateOf(false) }
-            OutlinedButton({ copySecret(context, "Cosign backup", code); copied = true }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) {
+            OutlinedButton({ copySecret(context, "$appName backup", code); copied = true }, Modifier.fillMaxWidth().height(48.dp), border = BorderStroke(1.dp, Vault.Line)) {
                 Text(if (copied) "Copied" else "Copy to a password manager", color = Vault.Text)
             }
             Text("Keep it in a password manager, not in notes or photos.", color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
@@ -724,44 +788,45 @@ private fun pasted(context: android.content.Context): String =
 @Composable
 private fun RestoringScreen(r: cc.aaro.cosign.Restoring, onCancel: () -> Unit) = Page {
     Spacer(Modifier.height(24.dp))
-    Text("Restoring from paper", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
+    Text("Restoring your account", style = MaterialTheme.typography.headlineSmall, color = Vault.Text)
     Spacer(Modifier.height(16.dp))
     if (!r.failed && r.until == null) CircularProgressIndicator(color = Vault.Teal)
     Text(r.text, color = if (r.failed) Vault.Danger else Vault.Text, style = MaterialTheme.typography.bodyLarge)
     r.until?.let {
         Spacer(Modifier.height(10.dp))
-        Text("Ready after ${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(it * 1000))}. Keep Cosign installed; it finishes by itself.",
+        Text("Ready after ${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(it * 1000))}. Keep $appName installed; it finishes by itself.",
             color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
     }
     Spacer(Modifier.weight(1f))
     TextButton(onCancel, Modifier.align(Alignment.CenterHorizontally)) { Text(if (r.failed) "Start again" else "Stop restoring", color = Vault.Muted) }
 }
 
+/** "It's me": the paper backup being used is yours. Kept for as long as the app runs, by the wait's end. */
+internal object RecoveryOk {
+    private val ok = androidx.compose.runtime.mutableStateListOf<Long>()
+    fun has(until: Long) = until in ok
+    fun add(until: Long) { ok += until }
+}
+
 /** Your paper backup is being used for another phone. If that isn't you, stop it (with this phone's lock). */
 @Composable
-private fun RecoverySheet(name: String, until: Long, phone: Phone) {
+internal fun RecoveryCard(name: String, until: Long, phone: Phone) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var hidden by remember { mutableStateOf(false) }
-    if (hidden) return
     val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == android.app.Activity.RESULT_OK) phone.cancelRecovery()
     }
-    Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
-        Column(
-            Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
-                .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
-        ) {
-            Text("Your paper backup is being used", style = MaterialTheme.typography.titleLarge, color = Vault.Amber)
-            Spacer(Modifier.height(10.dp))
-            Text("$name is getting your key from your paper backup. If that isn't you, stop it now: someone has your paper.",
-                style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
-            Spacer(Modifier.height(20.dp))
-            OutlinedButton({ hidden = true }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("It's me", color = Vault.Text) }
-            Spacer(Modifier.height(10.dp))
+    Card(Vault.AmberEdge, Vault.AmberGround) {
+        Text("Your paper backup is being used", style = MaterialTheme.typography.titleMedium, color = Vault.Amber)
+        Spacer(Modifier.height(6.dp))
+        Text("$name is getting into your account with your paper backup. If that isn't you, stop it now: someone has your paper.",
+            style = MaterialTheme.typography.bodyMedium, color = Vault.Text)
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton({ RecoveryOk.add(until) }, Modifier.weight(1f).height(48.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("It's me", color = Vault.Text) }
             Button({
                 val ask = lockIntent(context, "Stop it", "Confirm it's you to stop your paper backup being used")
                 if (ask == null) phone.lockMissing() else lock.launch(ask)
-            }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Danger, Vault.Ground)) { Text("Stop it") }
+            }, Modifier.weight(1f).height(48.dp), colors = ButtonDefaults.buttonColors(Vault.Danger, Vault.Ground)) { Text("Stop it") }
         }
     }
 }
@@ -786,7 +851,7 @@ private fun ReportLostSheet(d: cc.aaro.cosign.Member, phone: Phone) {
         ) {
             Text("Report ${d.name} lost?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
             Spacer(Modifier.height(10.dp))
-            Text("From now on your servers won't sign with it, and your key's shares are renewed so what it holds stops working. Your key stays the same.",
+            Text("From now on it can't do anything for your account, and what it holds stops working. Your account stays the same.",
                 style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
             Spacer(Modifier.height(6.dp))
             Text("If you find it, add it again as a new device.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
@@ -794,7 +859,7 @@ private fun ReportLostSheet(d: cc.aaro.cosign.Member, phone: Phone) {
             OutlinedButton({ phone.cancelReportLost() }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Cancel", color = Vault.Text) }
             Spacer(Modifier.height(10.dp))
             Button({
-                val ask = lockIntent(context, "Report ${d.name} lost", "Confirm it's you to remove a device from your key")
+                val ask = lockIntent(context, "Report ${d.name} lost", "Confirm it's you to remove a device from your account")
                 if (ask == null) phone.lockMissing() else lock.launch(ask)
             }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Danger, Vault.Ground)) { Text("Unlock and report") }
         }
@@ -839,19 +904,19 @@ private fun AddDeviceSheet(a: cc.aaro.cosign.AddingDevice, phone: Phone) {
             Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
                 .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
         ) {
-            Text("Add ${a.name} to your key?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+            Text("Add ${a.name} to your account?", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
             Spacer(Modifier.height(10.dp))
-            Text("It gets a share of its own and can sign as you, with your server, like this phone. This phone and your server make its share together; neither ever has it.",
+            Text("It gets its own part of your account and can approve things, like this phone. This phone sets it up; nothing ever holds all of your account.",
                 style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
             Spacer(Modifier.height(6.dp))
-            Text("Cosign asks for this phone's lock first.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
+            Text("$appName asks for this phone's lock first.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
             Spacer(Modifier.height(20.dp))
             OutlinedButton({ phone.cancelAddDevice() }, Modifier.fillMaxWidth().height(52.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Don't add", color = Vault.Text) }
             Spacer(Modifier.height(10.dp))
             Button({
                 val kg = context.getSystemService(android.app.KeyguardManager::class.java)
                 @Suppress("DEPRECATION") // BiometricPrompt needs a FragmentActivity; this asks for the same lock
-                val ask = if (kg.isDeviceSecure) kg.createConfirmDeviceCredentialIntent("Add ${a.name}", "Confirm it's you to add a device to your key") else null
+                val ask = if (kg.isDeviceSecure) kg.createConfirmDeviceCredentialIntent("Add ${a.name}", "Confirm it's you to add a device to your account") else null
                 if (ask == null) phone.lockMissing() else lock.launch(ask)
             }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Unlock and add") }
         }

@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Startup.mark("activity", once = false)
         // The app is always dark; keep the system bar icons light whatever the phone's theme.
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         val accounts = CosignApp.instance.accounts
@@ -91,9 +92,16 @@ class MainActivity : ComponentActivity() {
     }
 
     // Debug builds only: hand the app a pairing code without a camera, for the
-    // emulator (adb shell am start -n cc.aaro.cosign/.MainActivity --es pair '<code>').
+    // emulator (adb shell am start -n cc.aaro.cosign/.MainActivity --es pair '<code>'), and
+    // extra relays to read from (--es relay ws://10.0.2.2:10547).
     private fun testHook(intent: Intent?) {
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         intent?.getStringExtra("pair")?.let { CosignApp.instance.phone.scanned(it) }
+        // A relay of the test's own (a local one, say) for the home screen to read from too.
+        intent?.getStringExtra("relay")?.let { cc.aaro.cosign.Sources.extra.value = it.split(',').filter(String::isNotBlank) }
+        // Stand-in videos from "Tube" in Discover, until its endpoint is live (--es places fake).
+        if (intent?.getStringExtra("places") == "fake") Places.fake = true
+        // Your own events to the test relay alone (--ez local_only true).
+        if (intent?.getBooleanExtra("local_only", false) == true) cc.aaro.cosign.Sources.localOnly = true
     }
 }

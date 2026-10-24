@@ -1,0 +1,691 @@
+package cc.aaro.cosign.ui
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import cc.aaro.cosign.CosignApp
+import cc.aaro.cosign.Notice
+import cc.aaro.cosign.People
+import cc.aaro.cosign.Person
+import cc.aaro.cosign.Phone
+import cc.aaro.cosign.PlaceCard
+import cc.aaro.cosign.Ref
+import cc.aaro.cosign.Social
+import cc.aaro.cosign.Startup
+import cc.aaro.cosign.Ui
+import cc.aaro.cosign.appName
+import cc.aaro.cosign.core.Event
+import cc.aaro.cosign.parentOf
+import cc.aaro.cosign.shortNpub
+import kotlinx.coroutines.delay
+
+// The home screen, laid out like a search app: a search box, a bell, your picture (which
+// opens your account: devices, connected sites, backup; how it works is under Advanced), at most one card that needs you, and a
+// Discover feed. No posting, no replies, no zaps: you can like a note and follow someone.
+
+private sealed class Route {
+    data object Account : Route()
+    data object Bell : Route()
+    data object Search : Route()
+    data class Thread(val id: String) : Route()
+    data class Profile(val pubkey: String) : Route()
+}
+
+@Composable
+fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
+    val social = remember(phone) { Social.of(phone) }
+    val stack = remember { mutableStateListOf<Route>() }
+    val feedState = rememberLazyListState()
+    val open: (Route) -> Unit = { stack.add(it) }
+    val back: () -> Unit = { stack.removeAt(stack.lastIndex) }
+    if (stack.isNotEmpty()) BackHandler(onBack = back)
+    // Read on open and when you come back to it; nothing in between.
+    LifecycleEventEffect(Lifecycle.Event.ON_START) { social.loadFeed(); social.loadNotices() }
+
+    val nav = Nav(open = open, back = back, social = social)
+    when (val top = stack.lastOrNull()) {
+        null -> Home(phone, ui, social, feedState, nav)
+        Route.Account -> AccountScreen(phone, ui, onScan, onProfile = { ui.member?.group?.groupX?.let { nav.profile(it) } }, onBack = back)
+        Route.Bell -> BellScreen(phone, ui, social, nav)
+        Route.Search -> SearchScreen(social, nav)
+        is Route.Thread -> ThreadScreen(top.id, social, nav)
+        is Route.Profile -> ProfileScreen(top.pubkey, social, nav)
+    }
+
+    social.held.collectAsState().value?.let { h ->
+        AlertDialog(
+            onDismissRequest = { social.decideHeld(false) },
+            title = { Text(question(h.what)) },
+            text = { Text("Your account asks you first before anything like this.") },
+            confirmButton = { TextButton({ social.decideHeld(true) }) { Text("Yes", color = Vault.Amber) } },
+            dismissButton = { TextButton({ social.decideHeld(false) }) { Text("Don't") } },
+            containerColor = Vault.Surface,
+        )
+    }
+    val message by social.message.collectAsState()
+    message?.let { text ->
+        LaunchedEffect(text) { delay(4500); social.message.value = null }
+        Box(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), contentAlignment = Alignment.BottomCenter) {
+            Text(text, color = Vault.Text, style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.background(Vault.Edge, RoundedCornerShape(10.dp)).padding(horizontal = 16.dp, vertical = 12.dp))
+        }
+    }
+}
+
+private class Nav(val open: (Route) -> Unit, val back: () -> Unit, val social: Social) {
+    fun thread(id: String) = open(Route.Thread(id))
+    fun profile(pk: String) = open(Route.Profile(pk))
+    fun search(q: String) { social.search(q); open(Route.Search) }
+}
+
+// --- Home ------------------------------------------------------------------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav: Nav) {
+    val feed by social.feed.collectAsState()
+    val people by People.known.collectAsState()
+    val liked by social.liked.collectAsState()
+    val notices by social.notices.collectAsState()
+    val seen by social.seenAt.collectAsState()
+    val videos by social.videos.collectAsState()
+    val me = ui.member!!.group.groupX
+    LaunchedEffect(me) { People.want(listOf(me)) }
+    val muted by social.muted.collectAsState()
+    val dismissed by social.dismissed.collectAsState()
+    val snoozed by social.snoozed.collectAsState()
+    val mixed = remember(feed.notes, videos, muted, dismissed, snoozed) {
+        mix(feed.notes.filter { it.pubkey !in muted && it.id !in dismissed && !social.snoozedNow(it.pubkey) }, videos)
+    }
+    // How far down you've looked, in notes: a video that comes late goes below it.
+    val notesNow by androidx.compose.runtime.rememberUpdatedState(feed.notes)
+    LaunchedEffect(state) {
+        snapshotFlow { state.layoutInfo.visibleItemsInfo.lastOrNull()?.key }.collect { key ->
+            val i = notesNow.indexOfFirst { it.id == key }
+            if (i > social.lookedAt) social.lookedAt = i
+        }
+    }
+    val context = LocalContext.current
+    LaunchedEffect(Unit) { Startup.mark("home composed", once = false) }
+    if (mixed.isNotEmpty()) LaunchedEffect(Unit) { androidx.compose.runtime.withFrameNanos { }; Startup.mark("first cards painted", once = false) }
+
+    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(appName, style = MaterialTheme.typography.titleLarge, color = Vault.Text, modifier = Modifier.weight(1f))
+            val waiting = ui.asks.size + ui.batchAsks.size
+            val fresh = notices.list.count { it.event.createdAt > seen }
+            IconButton({ nav.open(Route.Bell) }) {
+                Box {
+                    Icon(Icons.Outlined.Notifications, "Notifications", tint = Vault.Text)
+                    if (waiting + fresh > 0) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(9.dp)
+                        .background(if (waiting > 0) Vault.Amber else Vault.Teal, CircleShape))
+                }
+            }
+            Spacer(Modifier.width(4.dp))
+            Avatar(people[me], me, 34, Modifier.clickable { nav.open(Route.Account) }, "Your account")
+        }
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 12.dp).fillMaxWidth().height(52.dp)
+                .background(Vault.Surface, RoundedCornerShape(26.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(26.dp))
+                .clickable { social.clearSearch(); nav.open(Route.Search) }.padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.Search, null, tint = Vault.Muted)
+            Spacer(Modifier.width(12.dp))
+            Text("Search people, notes, #tags", color = Vault.Muted, style = MaterialTheme.typography.bodyLarge)
+        }
+
+        PullToRefreshBox(feed.loading && feed.notes.isNotEmpty(), { social.loadFeed(force = true); social.loadNotices(force = true) }, Modifier.fillMaxSize()) {
+            LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 24.dp)) {
+                item(key = "needs") { NeedsYou(phone, ui, social) { nav.open(Route.Bell) } }
+                ui.error?.let { e -> item(key = "error") { Text(e, color = Vault.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) } }
+                if (feed.notes.isEmpty() && (feed.loading || feed.at == 0L && !feed.failed)) item(key = "loading") {
+                    Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
+                }
+                if (feed.failed) item(key = "failed") {
+                    Column(Modifier.padding(24.dp)) {
+                        Text("Discover isn't answering right now.", color = Vault.Text)
+                        TextButton({ social.loadFeed(force = true) }, contentPadding = PaddingValues(0.dp)) { Text("Try again", color = Vault.Teal) }
+                    }
+                }
+                if (feed.notes.isNotEmpty()) item(key = "title") {
+                    Text("Discover", style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 4.dp))
+                }
+                items(mixed, key = { if (it is Event) it.id else "place:" + (it as PlaceCard).id }) { item ->
+                    if (item is PlaceCard) VideoCard(item) { openInBrowser(context, item.url) }
+                    else (item as Event).let { n -> NoteCard(n, people, n.id in liked, nav, onLike = { social.like(n) }, maxLines = 12) }
+                    HorizontalDivider(color = Vault.Edge)
+                }
+                if (feed.notes.isNotEmpty()) item(key = "end") {
+                    LaunchedEffect(feed.notes.size) { social.loadMore() }
+                    Text(if (feed.loading) "Loading…" else if (!feed.more) "That's all for now." else "",
+                        color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(20.dp))
+                    feed.source?.let { Text("Discover from ${it.removePrefix("wss://").substringBefore('/')}", color = Vault.Field, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp)) }
+                }
+            }
+        }
+    }
+}
+
+/** Notes, with a place's cards between them: from [Social.Videos.start] on, one every 4 to 6 notes, never two together. */
+private fun mix(notes: List<Event>, v: Social.Videos): List<Any> {
+    if (v.cards.isEmpty() || v.start < 0) return notes
+    val out = ArrayList<Any>(notes.size + v.cards.size)
+    var next = v.start; var shown = 0
+    notes.forEachIndexed { i, n ->
+        if (i == next && shown < v.cards.size) { out += v.cards[shown]; next += 4 + shown % 3; shown++ }
+        out += n
+    }
+    return out
+}
+
+/** A video from a place you're signed in to: a big picture with its length, the title, the channel, and where it's from. */
+@Composable
+private fun VideoCard(c: PlaceCard, onOpen: () -> Unit) = Column(Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 12.dp)) {
+    // No thumbnail: a plain card, the length beside the title instead.
+    if (c.thumb != null) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp))) {
+            NetImage(c.thumb, Modifier.fillMaxSize(), 1080, description = c.title)
+            c.duration?.let { d ->
+                Text(length(d), color = Color.White, style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color(0xCC000000), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+    Text(c.title, color = Vault.Text, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    Spacer(Modifier.height(4.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(c.label, color = Vault.Teal, style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.border(1.dp, Vault.TealEdge, RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(c.channel + if (c.thumb == null && c.duration != null) " · ${length(c.duration)}" else "", color = Vault.Muted, style = MaterialTheme.typography.bodySmall,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+private fun length(s: Int) = if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+
+/**
+ * Open a page in a Custom Tab, inside this app, when the browser has them. These two extras
+ * are what androidx.browser's CustomTabsIntent sets; any other browser just opens the page.
+ */
+private fun openInBrowser(context: android.content.Context, url: String) {
+    val i = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+    i.putExtras(android.os.Bundle().apply { putBinder("android.support.customtabs.extra.SESSION", null) })
+    i.putExtra("android.support.customtabs.extra.TOOLBAR_COLOR", android.graphics.Color.rgb(0x13, 0x11, 0x0F))
+    try { context.startActivity(i) } catch (_: android.content.ActivityNotFoundException) {}
+}
+
+/** At most one card: the thing that needs you most. The rest are behind the bell. */
+@Composable
+private fun NeedsYou(phone: Phone, ui: Ui, social: Social, onMore: () -> Unit) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val counting = ui.asks.isNotEmpty() || ui.batchAsks.isNotEmpty() || ui.deleting.isNotEmpty()
+    if (counting) LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
+    val cards = needs(phone, ui)
+    // Another key of yours with something waiting.
+    val others = CosignApp.instance.accounts.all.filter { it !== phone }.map { it to it.ui.collectAsState().value }
+        .filter { (_, u) -> u.asks.isNotEmpty() || u.batchAsks.isNotEmpty() }
+    if (cards.isEmpty() && others.isEmpty()) return
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        cards.firstOrNull()?.let { NeedCard(it, phone, now) }
+        if (cards.size > 1) TextButton(onMore, contentPadding = PaddingValues(0.dp)) { Text("${cards.size - 1} more waiting for you", color = Vault.AmberText) }
+        for ((p, u) in others) TextButton({ CosignApp.instance.accounts.show(p.slot) }, contentPadding = PaddingValues(0.dp)) {
+            Text("${p.label}: ${u.asks.size + u.batchAsks.size} waiting for you. Switch", color = Vault.AmberText, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+/** What needs you, most pressing first. */
+private sealed class Need {
+    data class Approve(val ask: cc.aaro.cosign.Ask) : Need()
+    data class Batch(val b: cc.aaro.cosign.BatchAsk) : Need()
+    data class Deleting(val d: cc.aaro.cosign.Deleting) : Need()
+    data class Recovery(val name: String, val until: Long) : Need()
+    data class Future(val f: cc.aaro.cosign.Future) : Need()
+    data object Paper : Need()
+}
+
+private fun needs(phone: Phone, ui: Ui): List<Need> = buildList {
+    ui.asks.forEach { add(Need.Approve(it)) }
+    ui.batchAsks.forEach { add(Need.Batch(it)) }
+    ui.deleting.forEach { add(Need.Deleting(it)) }
+    ui.recovery?.let { if (!RecoveryOk.has(it.second)) add(Need.Recovery(it.first, it.second)) }
+    ui.future.forEach { add(Need.Future(it)) }
+    if (phone.needsPaper) add(Need.Paper)
+}
+
+@Composable
+private fun NeedCard(n: Need, phone: Phone, now: Long) = when (n) {
+    is Need.Approve -> AskCard(n.ask, now) { approve -> phone.decide(n.ask.id, approve) }
+    is Need.Batch -> BatchCard(n.b, now) { approve -> phone.decideBatch(n.b.batch, approve) }
+    is Need.Deleting -> DeletingCard(n.d, now) { phone.cancelDeletion(n.d.batch) }
+    is Need.Recovery -> RecoveryCard(n.name, n.until, phone)
+    is Need.Future -> FutureCard(n.f) { phone.removeFuture(n.f) }
+    Need.Paper -> PaperCard(phone)
+}
+
+// --- Notes -------------------------------------------------------------------------------
+
+@Composable
+private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav: Nav, onLike: () -> Unit, maxLines: Int = Int.MAX_VALUE, indent: Int = 0, lit: Boolean = false) {
+    val author = people[n.pubkey]
+    val body = remember(n.id) { Body.of(n) }
+    Row(
+        Modifier.fillMaxWidth().background(if (lit) Vault.TealGround else Color.Transparent)
+            .clickable { nav.thread(n.id) }.padding(start = 16.dp + (indent * 14).dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+    ) {
+        Avatar(author, n.pubkey, if (indent > 0) 32 else 40, Modifier.clickable { nav.profile(n.pubkey) })
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Box(Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(end = 32.dp).align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
+                    Text(author?.shown ?: shortNpub(n.pubkey), color = Vault.Text, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).clickable { nav.profile(n.pubkey) })
+                    Text("  ${since(n.createdAt)}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+                }
+                if (n.pubkey != nav.social.me) Box(Modifier.align(Alignment.CenterEnd)) { NoteMenu(n, author?.shown ?: shortNpub(n.pubkey), nav.social) }
+            }
+            val to = remember(n.id) { n.tags.lastOrNull { it.size > 1 && it[0] == "p" }?.get(1) }
+            LaunchedEffect(n.id) { People.want(body.mentions + listOfNotNull(to)) }
+            if (indent == 0 && parentOf(n) != null) {
+                Text("Replying to ${to?.let { people[it]?.shown ?: shortNpub(it) } ?: "a note"}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+            }
+            val text = remember(n.id, people.size) { body.annotated(people, nav) }
+            if (text.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(text, color = Vault.Text, style = MaterialTheme.typography.bodyMedium, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+            }
+            // In a list, one picture, no taller than it is wide; a thread shows them all, whole.
+            val full = maxLines == Int.MAX_VALUE
+            for (img in body.images.take(if (full) 6 else 1)) {
+                Spacer(Modifier.height(8.dp))
+                NetImage(img.url, Modifier.fillMaxWidth().aspectRatio(img.ratio.coerceIn(if (full) 0.6f else 1f, 2.2f)).clip(RoundedCornerShape(12.dp)), 1080, description = "Picture")
+            }
+            if (!full && body.images.size > 1) Text("+${body.images.size - 1} more", color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onLike, Modifier.offset(x = (-12).dp)) {
+                    Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, if (liked) "Liked" else "Like", tint = if (liked) Vault.Amber else Vault.Muted, modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+    }
+}
+
+/** "⋯": not interested in this note, or mute its author (on this phone and in your mute list). */
+@Composable
+private fun NoteMenu(n: Event, name: String, social: Social) = Box {
+    var open by remember { mutableStateOf(false) }
+    // A plain icon on every card (an IconButton each costs a visible frame on a slow phone); the menu only once it's open.
+    Icon(Icons.Filled.MoreVert, "More", tint = Vault.Muted, modifier = Modifier.size(28.dp).clip(CircleShape).clickable { open = true }.padding(5.dp))
+    if (open) DropdownMenu(true, { open = false }, containerColor = Vault.Surface) {
+        DropdownMenuItem({ Text("Not interested", color = Vault.Text) }, { open = false; social.notInterested(n) })
+        DropdownMenuItem({ Text("Mute $name", color = Vault.Text, maxLines = 1, overflow = TextOverflow.Ellipsis) }, {
+            open = false; social.mute(n.pubkey); social.message.value = "You won't see $name any more."
+        })
+    }
+}
+
+/** A note's text, cut up: pictures apart, mentions and #tags made tappable. */
+private class Body(val parts: List<Part>, val images: List<Img>, val mentions: List<String>) {
+    sealed class Part {
+        data class Plain(val s: String) : Part()
+        data class Link(val url: String) : Part()
+        data class Mention(val pubkey: String) : Part()
+        data class Quote(val id: String) : Part()
+        data class Tag(val tag: String) : Part()
+    }
+    data class Img(val url: String, val ratio: Float)
+
+    fun annotated(people: Map<String, Person>, nav: Nav): AnnotatedString = buildAnnotatedString {
+        val style = TextLinkStyles(SpanStyle(color = Vault.Teal))
+        for (p in parts) when (p) {
+            is Part.Plain -> append(p.s)
+            is Part.Link -> withLink(LinkAnnotation.Url(p.url, style)) { append(p.url.removePrefix("https://").let { if (it.length > 40) it.take(38) + "…" else it }) }
+            is Part.Mention -> withLink(LinkAnnotation.Clickable(p.pubkey, style) { nav.profile(p.pubkey) }) { append("@" + (people[p.pubkey]?.shown ?: shortNpub(p.pubkey))) }
+            is Part.Quote -> withLink(LinkAnnotation.Clickable(p.id, style) { nav.thread(p.id) }) { append("↪ quoted note") }
+            is Part.Tag -> withLink(LinkAnnotation.Clickable(p.tag, style) { nav.search("#" + p.tag) }) { append("#" + p.tag) }
+        }
+    }.let { if (it.text.isBlank()) AnnotatedString("") else it }
+
+    companion object {
+        private val TOKEN = Regex("(https?://[^\\s<>\"]+)|nostr:((?:npub|nprofile|note|nevent)1[02-9ac-hj-np-z]+)|(?<=^|\\s)#([\\p{L}\\p{N}_]{1,40})")
+        private val IMAGE = Regex("\\.(jpe?g|png|gif|webp|avif)(\\?.*)?$", RegexOption.IGNORE_CASE)
+
+        fun of(e: Event): Body {
+            val dims = e.tags.filter { it.isNotEmpty() && it[0] == "imeta" }.mapNotNull { t ->
+                val f = t.drop(1).associate { it.substringBefore(' ') to it.substringAfter(' ') }
+                val (w, h) = f["dim"]?.split('x')?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size == 2 && it[1] > 0 } ?: return@mapNotNull null
+                f["url"]?.let { it to w / h }
+            }.toMap()
+            val parts = ArrayList<Part>(); val images = ArrayList<Img>(); val mentions = ArrayList<String>()
+            var at = 0
+            val text = e.content.trim()
+            for (m in TOKEN.findAll(text)) {
+                if (m.range.first > at) parts += Part.Plain(text.substring(at, m.range.first))
+                at = m.range.last + 1
+                val url = m.groups[1]?.value?.trimEnd('.', ',', ')', '!', '?')
+                val ref = m.groups[2]?.value
+                val tag = m.groups[3]?.value
+                when {
+                    url != null && IMAGE.containsMatchIn(url) -> images += Img(url, dims[url] ?: 1.5f)
+                    url != null -> parts += Part.Link(url)
+                    ref != null -> when (val r = Ref.parse(ref)) {
+                        is Ref.Profile -> { parts += Part.Mention(r.pubkey); mentions += r.pubkey }
+                        is Ref.Note -> parts += Part.Quote(r.id)
+                        null -> parts += Part.Plain(m.value)
+                    }
+                    tag != null -> parts += Part.Tag(tag)
+                }
+            }
+            if (at < text.length) parts += Part.Plain(text.substring(at))
+            // Pictures leave blank lines behind; tidy them.
+            val tidy = parts.mapIndexed { i, p -> if (p is Part.Plain) Part.Plain(p.s.replace(Regex("\\n{3,}"), "\n\n").let { s -> if (i == parts.lastIndex) s.trimEnd() else s }) else p }
+            return Body(tidy, images, mentions)
+        }
+    }
+}
+
+@Composable
+internal fun Avatar(p: Person?, pubkey: String, size: Int, modifier: Modifier = Modifier, description: String? = null) {
+    val hue = remember(pubkey) { (pubkey.take(6).toLongOrNull(16) ?: 0L) % 360 }
+    NetImage(p?.picture, modifier.size(size.dp).clip(CircleShape), size * 3, description = description ?: p?.shown) {
+        Box(Modifier.fillMaxSize().background(Color.hsl(hue.toFloat(), 0.35f, 0.35f)), contentAlignment = Alignment.Center) {
+            // No profile (yet): a figure, not a letter of an npub.
+            if (p?.name == null) Icon(Icons.Filled.Person, null, tint = Vault.Text, modifier = Modifier.size((size * 0.6).dp))
+            else Text(p.shown.take(1).uppercase(), color = Vault.Text, style = if (size > 50) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+private fun since(t: Long): String {
+    val s = System.currentTimeMillis() / 1000 - t
+    return when {
+        s < 60 -> "now"; s < 3600 -> "${s / 60}m"; s < 86400 -> "${s / 3600}h"; s < 7 * 86400 -> "${s / 86400}d"
+        else -> java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()).format(java.util.Date(t * 1000))
+    }
+}
+
+@Composable
+private fun TopBar(title: String, nav: Nav) = Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    IconButton(nav.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Vault.Text) }
+    Text(title, style = MaterialTheme.typography.titleMedium, color = Vault.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
+// --- A thread ------------------------------------------------------------------------------
+
+@Composable
+private fun ThreadScreen(id: String, social: Social, nav: Nav) = Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+    TopBar("Thread", nav)
+    val people by People.known.collectAsState()
+    val liked by social.liked.collectAsState()
+    val thread by produceState<List<Pair<Event, Int>>?>(null, id) { value = social.thread(id) }
+    when {
+        thread == null -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
+        thread!!.isEmpty() -> Text("Couldn't find this note.", color = Vault.Muted, modifier = Modifier.padding(20.dp))
+        else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            items(thread!!, key = { it.first.id }) { (e, depth) ->
+                NoteCard(e, people, e.id in liked, nav, onLike = { social.like(e) }, indent = minOf(depth, 4), lit = e.id == id && depth > 0)
+                if (depth == 0) HorizontalDivider(color = Vault.Edge)
+            }
+        }
+    }
+}
+
+// --- A profile -----------------------------------------------------------------------------
+
+@Composable
+private fun ProfileScreen(pk: String, social: Social, nav: Nav) = Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+    val people by People.known.collectAsState()
+    val liked by social.liked.collectAsState()
+    val follows by social.follows.collectAsState()
+    val busy by social.busy.collectAsState()
+    val p = people[pk]
+    LaunchedEffect(pk) { People.want(listOf(pk)) }
+    TopBar(p?.shown ?: "Profile", nav)
+    val notes by produceState<List<Event>?>(null, pk) { value = social.notesBy(pk) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item(key = "head") {
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(p, pk, 72)
+                    Spacer(Modifier.width(16.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(p?.shown ?: shortNpub(pk), style = MaterialTheme.typography.titleLarge, color = Vault.Text)
+                        p?.nip05?.let { Text(it.removePrefix("_@"), color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                val context = LocalContext.current
+                Text(shortNpub(pk), fontFamily = PlexMono, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.clickable {
+                    context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("npub", cc.aaro.cosign.core.Nip19.npub(pk)))
+                    social.message.value = "Copied the npub"
+                })
+                p?.about?.let { Spacer(Modifier.height(10.dp)); Text(it, color = Vault.Text, style = MaterialTheme.typography.bodyMedium) }
+                Spacer(Modifier.height(14.dp))
+                when {
+                    pk == social.me -> Text("This is you", color = Vault.Muted)
+                    pk in busy || follows == null -> OutlinedButton({}, Modifier.height(44.dp), enabled = false, border = BorderStroke(1.dp, Vault.Line)) {
+                        CircularProgressIndicator(Modifier.size(18.dp), color = Vault.Teal, strokeWidth = 2.dp)
+                    }
+                    pk in follows!! -> OutlinedButton({ social.follow(pk, false) }, Modifier.height(44.dp), border = BorderStroke(1.dp, Vault.Line)) { Text("Following · Unfollow", color = Vault.Text) }
+                    else -> Button({ social.follow(pk, true) }, Modifier.height(44.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Follow") }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            HorizontalDivider(color = Vault.Edge)
+        }
+        when {
+            notes == null -> item(key = "loading") { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) } }
+            notes!!.isEmpty() -> item(key = "none") { Text("No notes found.", color = Vault.Muted, modifier = Modifier.padding(20.dp)) }
+            else -> items(notes!!, key = { it.id }) { n ->
+                NoteCard(n, people, n.id in liked, nav, onLike = { social.like(n) }, maxLines = 12)
+                HorizontalDivider(color = Vault.Edge)
+            }
+        }
+    }
+}
+
+// --- Search ----------------------------------------------------------------------------------
+
+@Composable
+private fun SearchScreen(social: Social, nav: Nav) = Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+    val found by social.found.collectAsState()
+    val people by People.known.collectAsState()
+    val liked by social.liked.collectAsState()
+    var q by remember { mutableStateOf(found?.query ?: "") }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { if (found == null) focus.requestFocus() }
+    val go = {
+        when (val r = Ref.parse(q)) {
+            is Ref.Profile -> nav.profile(r.pubkey)
+            is Ref.Note -> nav.thread(r.id)
+            null -> social.search(q)
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(nav.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Vault.Text) }
+        TextField(
+            q, { q = it }, Modifier.weight(1f).focusRequester(focus), singleLine = true,
+            placeholder = { Text("People, notes, #tags, npub…", color = Vault.Muted) },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { go() }),
+            trailingIcon = { if (q.isNotEmpty()) IconButton({ q = ""; social.clearSearch(); focus.requestFocus() }) { Icon(Icons.Filled.Close, "Clear", tint = Vault.Muted) } },
+            shape = RoundedCornerShape(26.dp),
+            colors = TextFieldDefaults.colors(focusedContainerColor = Vault.Surface, unfocusedContainerColor = Vault.Surface, focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent, focusedTextColor = Vault.Text, unfocusedTextColor = Vault.Text, cursorColor = Vault.Teal),
+        )
+    }
+    val f = found ?: return@Column Text("Search names, words or #hashtags. Paste an npub or a note link to open it.",
+        color = Vault.Muted, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(20.dp))
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        if (f.loading) item(key = "loading") { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) } }
+        if (f.people.isNotEmpty()) {
+            item(key = "ph") { Heading("People") }
+            items(f.people.take(8), key = { "p" + it }) { pk ->
+                val p = people[pk]
+                Row(Modifier.fillMaxWidth().clickable { nav.profile(pk) }.padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(p, pk, 40)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(p?.shown ?: shortNpub(pk), color = Vault.Text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(p?.nip05?.removePrefix("_@") ?: p?.about ?: shortNpub(pk), color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+        if (f.notes.isNotEmpty()) {
+            item(key = "nh") { Heading("Notes") }
+            items(f.notes, key = { it.id }) { n ->
+                NoteCard(n, people, n.id in liked, nav, onLike = { social.like(n) }, maxLines = 12)
+                HorizontalDivider(color = Vault.Edge)
+            }
+        }
+        if (!f.loading && f.people.isEmpty() && f.notes.isEmpty()) item(key = "none") { Text("Nothing found for “${f.query}”.", color = Vault.Muted, modifier = Modifier.padding(20.dp)) }
+    }
+}
+
+@Composable private fun Heading(text: String) = Text(text, style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp))
+
+// --- The bell ----------------------------------------------------------------------------------
+
+@Composable
+private fun BellScreen(phone: Phone, ui: Ui, social: Social, nav: Nav) = Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+    TopBar("Notifications", nav)
+    val notices by social.notices.collectAsState()
+    val people by People.known.collectAsState()
+    // What was new when you opened this stays marked while you look.
+    val seenBefore = remember { social.seenAt.value }
+    LaunchedEffect(Unit) { social.loadNotices(force = true) }
+    LaunchedEffect(notices.at) { if (notices.at != 0L) social.markSeen() }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    if (ui.asks.isNotEmpty() || ui.batchAsks.isNotEmpty() || ui.deleting.isNotEmpty()) LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
+    val cards = needs(phone, ui)
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        if (cards.isNotEmpty()) {
+            item(key = "ch") { Heading("For your key") }
+            items(cards) { c -> Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) { NeedCard(c, phone, now) } }
+        }
+        item(key = "nh") { Heading("Replies, mentions and likes") }
+        if (notices.list.isEmpty()) item(key = "empty") {
+            if (notices.loading) Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
+            else Text("Nothing yet. When someone replies to you, mentions you or likes your notes, it shows up here.", color = Vault.Muted,
+                style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        }
+        items(notices.list, key = { it.event.id }) { n -> NoticeRow(n, people, n.event.createdAt > seenBefore, social, nav) }
+    }
+}
+
+@Composable
+private fun NoticeRow(n: Notice, people: Map<String, Person>, fresh: Boolean, social: Social, nav: Nav) {
+    val who = people[n.event.pubkey]
+    val what = when (n.type) {
+        Notice.Type.REPLY -> "replied"
+        Notice.Type.MENTION -> "mentioned you"
+        Notice.Type.REPOST -> "reposted your note"
+        Notice.Type.REACTION -> n.event.content.let { if (it == "+" || it.isEmpty()) "liked your note" else if (it.startsWith(":")) "reacted to your note" else "reacted $it" }
+    }
+    val text = when (n.type) {
+        Notice.Type.REPLY, Notice.Type.MENTION -> n.event.content
+        else -> n.about?.let { social.note(it)?.content } ?: ""
+    }
+    Row(
+        Modifier.fillMaxWidth().background(if (fresh) Vault.TealGround else Color.Transparent)
+            .clickable { n.about?.let(nav::thread) }.padding(horizontal = 20.dp, vertical = 12.dp),
+    ) {
+        Avatar(who, n.event.pubkey, 36, Modifier.clickable { nav.profile(n.event.pubkey) })
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row {
+                Text(who?.shown ?: shortNpub(n.event.pubkey), color = Vault.Text, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Text(" $what · ${since(n.event.createdAt)}", color = Vault.Muted, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+            }
+            if (text.isNotBlank()) Text(text, color = if (n.type == Notice.Type.REPLY || n.type == Notice.Type.MENTION) Vault.Text else Vault.Muted,
+                style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
