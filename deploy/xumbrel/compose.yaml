@@ -35,7 +35,7 @@ services:
   # reachable on the LAN and tailnet only. syb.lol's tunnel goes to 13131, never here.
   cosign:
     build: ./cosign
-    image: cosign-server:0.4.0
+    image: cosign-server:0.5.0
     user: "1000:1000"
     environment:
       COSIGN_RELAY_MAP: wss://syb.lol=ws://relay:13131

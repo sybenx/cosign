@@ -201,7 +201,10 @@ private fun Home(phone: Phone, ui: Ui, onScan: () -> Unit) {
 
         item { Heading("Sites that can sign as you") }
         if (ui.sites.isEmpty()) item { Muted("None yet. Tap Connect a site and scan a site's sign-in code.") }
-        items(ui.sites, key = { it.pk }) { SiteRow(it) { phone.removeSite(it) } }
+        // One entry per website, with each way it's connected inside.
+        items(ui.sites.groupBy { it.origin }.toList(), key = { it.first }) { (origin, grants) ->
+            SiteGroup(origin, grants, onRemove = phone::removeSite)
+        }
 
         item { Heading("Recent changes to your lists") }
         if (ui.changes.isEmpty()) item { Muted("Follows, profile, relays, bookmarks… every change shows up here, with Undo.") }
@@ -248,15 +251,20 @@ private fun AskCard(ask: Ask, now: Long, onDecide: (Boolean) -> Unit) = Card(Vau
 }
 
 @Composable
-private fun SiteRow(site: Site, onRemove: () -> Unit) = Row(
+private fun SiteGroup(origin: String, grants: List<Site>, onRemove: (Site) -> Unit) = Column(
     Modifier.fillMaxWidth().background(Vault.Surface, RoundedCornerShape(12.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(12.dp)).padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
-    verticalAlignment = Alignment.CenterVertically,
 ) {
-    Column(Modifier.weight(1f)) {
-        Text(site.origin.removePrefix("https://"), color = Vault.Text, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("used ${ago(site.lastUsed)}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(origin.removePrefix("https://"), color = Vault.Text, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        if (grants.size > 1) TextButton({ grants.forEach(onRemove) }) { Text("Remove all", color = Vault.AmberText) }
     }
-    TextButton(onRemove) { Text("Remove", color = Vault.AmberText) }
+    for (g in grants.sortedByDescending { it.lastUsed }) Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "${g.via ?: if (g.parent == null) "Connected by code" else "Connected"} · used ${ago(g.lastUsed)}",
+            color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+        )
+        TextButton({ onRemove(g) }) { Text("Remove", color = Vault.AmberText) }
+    }
 }
 
 @Composable

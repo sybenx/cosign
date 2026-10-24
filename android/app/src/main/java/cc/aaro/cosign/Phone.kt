@@ -40,7 +40,8 @@ data class Membership(val sk: String, val idx: Int, val share: String, val signe
 data class Offer(val fromPk: String, val token: String, val idx: Int, val share: String, val signer: String, val group: Group)
 /** Something destructive, waiting for you. */
 data class Ask(val id: String, val fromPk: String, val via: String, val app: String, val event: Event, val msg: String, val commit: Frost.Commit, val hold: String, val expiresAt: Long)
-data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long)
+/** A grant. [parent]: the connected site (the extension) that added it; [via]: what connected it. */
+data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long, val parent: String? = null, val via: String? = null)
 data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean)
 data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
 data class Line(val ts: Long, val text: String, val kind: String = "info")
@@ -324,7 +325,8 @@ class Phone(private val context: Context) {
 
     fun removeSite(site: Site) {
         for (s in servers()) send(s.pk!!, mapOf("type" to "revoke", "pk" to site.pk))
-        ui.update { it.copy(sites = it.sites.filter { x -> x.pk != site.pk }) }
+        // Removing the extension removes every site it added; your servers do the same.
+        ui.update { it.copy(sites = it.sites.filter { x -> x.pk != site.pk && x.parent != site.pk }) }
         note("Removed ${site.origin}", "denied")
     }
 
@@ -381,7 +383,8 @@ class Phone(private val context: Context) {
 
     private fun onState(msg: Map<*, *>) {
         val sites = (msg["sites"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
-            Site(it["pk"] as? String ?: return@let null, it["origin"] as? String ?: "a site", it["added"] as? Long ?: 0, it["lastUsed"] as? Long ?: 0) } } ?: return
+            Site(it["pk"] as? String ?: return@let null, it["origin"] as? String ?: "a site", it["added"] as? Long ?: 0, it["lastUsed"] as? Long ?: 0,
+                it["parent"] as? String, it["via"] as? String) } } ?: return
         val changes = (msg["changes"] as? List<*>)?.mapNotNull { x -> (x as? Map<*, *>)?.let {
             Change(it["id"] as? String ?: return@let null, it["text"] as? String ?: "", it["by"] as? String ?: "", it["at"] as? Long ?: 0, it["held"] == true, it["undone"] == true) } } ?: emptyList()
         ui.update { it.copy(sites = sites.sortedByDescending { s -> s.lastUsed }, changes = changes) }

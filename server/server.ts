@@ -29,7 +29,11 @@ import { Archive } from './archive.ts';
 // --- State -------------------------------------------------------------------
 
 interface Member { idx: number; name: string; role: 'server' | 'phone'; pk: string | null; sharePub: string; push?: string | null }
-interface Site { pk: string; origin: string; added: number; lastUsed: number; revoked?: number; relays?: string[] }
+/**
+ * A grant. `parent` is set for one a connected site added under itself (the browser
+ * extension adds one per website it signs for); `via` names what connected it.
+ */
+interface Site { pk: string; origin: string; added: number; lastUsed: number; revoked?: number; relays?: string[]; parent?: string; via?: string }
 interface Ticket { t: string; origin: string; expires: number; used?: boolean }
 interface Change { id: string; key: string; kind: number; at: number; text: string; by: string; held?: boolean; undone?: boolean }
 
@@ -225,10 +229,10 @@ async function onSiteRequest(e: Event) {
   try {
     const s = site(e.pubkey);
     if (req.method === 'connect') {
-      if (s?.revoked) return answer({ error: 'Access for this site was removed. Connect it again from your phone.' });
+      if (s?.revoked) return answer({ error: 'revoked: Access for this site was removed. Connect it again from your phone.' });
       if (s) return answer({ result: 'ack' });
       const ticket = (S.tickets as Ticket[]).find(t => t.t === req.params?.[1]);
-      if (!ticket || ticket.used || ticket.expires < now()) return answer({ error: 'This ticket is not valid. Scan the code again with your phone.' });
+      if (!ticket || ticket.used || ticket.expires < now()) return answer({ error: 'bad-ticket: This ticket is not valid. Scan the code again with your phone.' });
       ticket.used = true;
       S.sites.push({ pk: e.pubkey, origin: ticket.origin, added: now(), lastUsed: now() } satisfies Site);
       save(); syncTo(); pushState();
@@ -238,12 +242,14 @@ async function onSiteRequest(e: Event) {
     if (req.method === 'ping') return answer({ result: 'pong' });
     // Signing out of a site is removing it.
     if (req.method === 'logout') { if (s && !s.revoked) revoke(s.pk, 'by signing out'); return answer({ result: 'ack' }); }
-    if (!s) return answer({ error: 'Not connected. Scan this site’s code with your phone.' });
-    if (s.revoked) return answer({ error: 'Access for this site was removed on your phone.' });
+    // Errors start with a stable code ("revoked: …") so a site can act on them without reading English.
+    if (!s) return answer({ error: 'not-connected: Not connected. Scan this site’s code with your phone.' });
+    if (s.revoked) return answer({ error: 'revoked: Access for this site was removed on your phone.' });
     s.lastUsed = now();
 
     switch (req.method) {
       case 'get_public_key': return answer({ result: groupX });
+      case 'cosign_add_site': return answer(addChild(s, req.params ?? []));
       // Move the site onto the relays your servers already use: the ones known to carry this.
       case 'switch_relays': return answer({ result: JSON.stringify(S.group.relays) });
       case 'get_relays': return answer({ result: JSON.stringify(Object.fromEntries(S.group.relays.map((r: string) => [r, { read: true, write: true }]))) });
@@ -285,10 +291,30 @@ async function connectByUri(uri: string, origin: string) {
   toPhone({ type: 'connected', pk: client, origin });
 }
 
+/**
+ * A connected site (the extension) gives one website a grant of its own, under itself:
+ * listed on your phone inside that website's entry, removed with it or on its own.
+ */
+function addChild(parent: Site, params: unknown[]): object {
+  const [pk, origin, via] = params.map(p => String(p ?? ''));
+  if (parent.parent) return { error: 'not-allowed: Only a site you connected with your phone can add others.' };
+  if (!/^[0-9a-f]{64}$/.test(pk) || !origin) return { error: 'bad-request: cosign_add_site takes [pubkey, origin, via].' };
+  const have = site(pk);
+  if (have?.revoked) return { error: 'revoked: Access for this site was removed on your phone.' };
+  if (have) return have.parent === parent.pk ? { result: 'ack' } : { error: 'not-allowed: That key already belongs to another site.' };
+  S.sites.push({ pk, origin: origin.slice(0, 200), added: now(), lastUsed: now(), parent: parent.pk, via: (via || parent.origin).slice(0, 80) } satisfies Site);
+  save(); syncTo(); pushState();
+  note(`${origin} connected, through ${via || parent.origin}`);
+  return { result: 'ack' };
+}
+
 function revoke(pk: string, where: string, quiet = false) {
   const s = site(pk);
   if (!s || s.revoked) return;
-  s.revoked = now(); save();
+  s.revoked = now();
+  // Removing the extension removes every site it added.
+  for (const c of S.sites as Site[]) if (c.parent === pk && !c.revoked) c.revoked = s.revoked;
+  save();
   if (!quiet) toOther({ type: 'revoke', pk });
   pushState();
   note(`removed ${s.origin} ${where}`);
@@ -485,7 +511,7 @@ function mergeSync(msg: any) {
 function pushState() {
   toPhone({
     type: 'state',
-    sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: s.origin, added: s.added, lastUsed: s.lastUsed })),
+    sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: s.origin, added: s.added, lastUsed: s.lastUsed, parent: s.parent ?? null, via: s.via ?? null })),
     changes: (S.changes as Change[]).slice(0, 30),
   });
 }
@@ -560,7 +586,8 @@ function status() {
     me: me.name, npub: S.group.npub, coordinating: coordinating(),
     members: members.map(m => ({ name: m.name, online: !!m.pk && online(m), paired: !!m.pk, self: m.idx === me.idx })),
     relays: pool.status(), pairing: !!S.pairing,
-    sites: (S.sites as Site[]).filter(s => !s.revoked).map(s => ({ pk: s.pk, origin: esc(s.origin), lastUsed: ago(s.lastUsed) })),
+    sites: (S.sites as Site[]).filter(s => !s.revoked).sort((a, b) => b.lastUsed - a.lastUsed)
+      .map(s => ({ pk: s.pk, origin: esc(s.origin), via: esc(s.via ?? (s.parent ? 'Connected' : 'Connected by code')), lastUsed: ago(s.lastUsed) })),
     changes: (S.changes as Change[]).slice(0, 15).map(c => ({ text: esc(c.text), by: esc(c.by), when: ago(c.at), held: !!c.held, undone: !!c.undone })),
     activity: activity.map(a => ({ ts: a.ts, text: esc(a.text) })),
   };
@@ -595,7 +622,8 @@ async function revoke(pk){ await fetch('/revoke',{method:'POST',body:pk}); tick(
 async function tick(){const s=await (await fetch('/status')).json();
  $('members').innerHTML=s.members.map(m=>'<div class=row><span class="dot '+(m.online?'on':'')+'"></span>'+m.name+(m.self?' <span class=muted>(this one)</span>':'')+(m.paired?'':' <span class=muted>— not added</span>')+'</div>').join('');
  $('coord').textContent=(s.coordinating?'Answering your sites. ':'Standing by. ')+s.relays.filter(r=>r.up).length+'/'+s.relays.length+' relays';
- $('sites').innerHTML=s.sites.map(x=>'<div class=site><div>'+x.origin+'<div class=muted style="font-size:13px">used '+x.lastUsed+'</div></div><button data-pk="'+x.pk+'">Remove</button></div>').join('')||'<div class=muted>None yet. Scan a site’s code with your phone.</div>';
+ const groups={};for(const x of s.sites)(groups[x.origin]??=[]).push(x);
+ $('sites').innerHTML=Object.entries(groups).map(([o,g])=>'<div class=site style="display:block"><div>'+o+'</div>'+g.map(x=>'<div class=row style="justify-content:space-between"><span class=muted style="font-size:13px">'+x.via+' · used '+x.lastUsed+'</span><button data-pk="'+x.pk+'">Remove</button></div>').join('')+'</div>').join('')||'<div class=muted>None yet. Scan a site’s code with your phone.</div>';
  for(const b of document.querySelectorAll('button[data-pk]')) b.onclick=()=>revoke(b.dataset.pk);
  $('changes').innerHTML=s.changes.map(c=>'<li class="'+(c.held?'held':'')+'">'+c.text+' <span class=muted>· '+c.by+' · '+c.when+(c.undone?' · undone':'')+'</span></li>').join('')||'<li class=muted>None yet.</li>';
  $('act').innerHTML=s.activity.map(a=>'<li><span class=muted>'+new Date(a.ts).toLocaleTimeString()+'</span> '+a.text+'</li>').join('')||'<li class=muted>Nothing yet.</li>';

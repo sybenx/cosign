@@ -5,7 +5,7 @@
 services:
   cosign:
     build: ../../server
-    image: cosign-server:0.4.0
+    image: cosign-server:0.5.0
     platform: linux/amd64
     user: "1000:1000"
     volumes:
@@ -13,7 +13,7 @@ services:
     ports:
       - 8741:8711
   cosign-b:
-    image: cosign-server:0.4.0
+    image: cosign-server:0.5.0
     platform: linux/amd64
     user: "1000:1000"
     command: ["node", "server.ts", "/data/b"]

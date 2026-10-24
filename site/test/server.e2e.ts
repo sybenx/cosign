@@ -62,10 +62,13 @@ if (want('sign')) {
     const change = latestState?.changes?.find((c: any) => c.id === f0.id);
     check('the phone sees the change', !!change, change?.text);
     asPhone({ type: 'undo', id: f0.id });
-    await sleep(6000);
-    asPhone({ type: 'state_req' });
-    await sleep(2500);
-    const after = latestState?.changes?.find((c: any) => c.id === f0.id);
+    let after: any;
+    for (let i = 0; i < 6 && !after?.undone; i++) { // republishing can take a while on slow relays
+      await sleep(2500);
+      asPhone({ type: 'state_req' });
+      await sleep(1000);
+      after = latestState?.changes?.find((c: any) => c.id === f0.id);
+    }
     check('undo puts the follow list back', !!after?.undone);
   }
 }
