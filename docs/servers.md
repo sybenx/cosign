@@ -178,7 +178,7 @@ only `COSIGN_PERSONAL=dealt`, and it says so in the log.)
 
 | Setting | Default | What it does |
 |---|---|---|
-| `COSIGN_MAX_GROUPS` | 1000 | Accounts this server takes at most. |
+| `COSIGN_MAX_GROUPS` | 5000 | Accounts this server takes at most. One a stranger started and never finished is let go after a day, and any no device has used in 30 days after that (`COSIGN_UNFINISHED_AFTER`, `COSIGN_IDLE_AFTER`, in seconds). |
 | `COSIGN_ENROLL_PER_HOUR` | 30 | New accounts per hour. |
 | `COSIGN_GROUP_PER_MINUTE` | 600 | Messages per account per minute; the rest are dropped. |
 | `COSIGN_MAX_RELAYS` | 300 | Relay connections at most. |

@@ -208,7 +208,7 @@ async function onHostMessage(e: Event) {
   if (msg.type === 'enroll_key') return reply({ type: 'enroll_key', id: msg.id, ...newMemberKey(cfg.sk) });
   if (msg.type !== 'enroll') return;
   // An open server is still one machine: so many groups, so many new ones an hour.
-  const maxGroups = Number(process.env.COSIGN_MAX_GROUPS ?? 1000), perHour = Number(process.env.COSIGN_ENROLL_PER_HOUR ?? 30);
+  const maxGroups = Number(process.env.COSIGN_MAX_GROUPS ?? 5000), perHour = Number(process.env.COSIGN_ENROLL_PER_HOUR ?? 30);
   while (enrolledAt.length && Date.now() - enrolledAt[0] > 3600_000) enrolledAt.shift();
   if (groups.size >= maxGroups) return reply({ type: 'enroll_failed', id: msg.id, reason: 'full: This server takes no more accounts. Try another.' });
   if (enrolledAt.length >= perHour) return reply({ type: 'enroll_failed', id: msg.id, reason: 'busy: This server has taken on many accounts this hour. Try again later.' });
@@ -320,5 +320,9 @@ setInterval(() => { for (const x of groups.values()) x.g.tick(); }, 10_000);
 const clockNote = (t: string) => console.log(`[clock] ${t}`);
 void checkClock(clockNote);
 setInterval(() => void checkClock(clockNote), 30 * 60_000);
+// Hourly: let go of accounts strangers enrolled that never finished, or that no device has used in 30 days.
+const ageOut = () => { for (const x of [...groups.values()]) { const why = x.g.stale(); if (why) { console.log(`[${x.label}] letting it go: ${why}`); void x.g.forget(); } } };
+setInterval(ageOut, Number(process.env.COSIGN_AGE_EVERY ?? 3600_000));
+setTimeout(ageOut, 60_000);
 if (host?.operator) setTimeout(() => void announceLoop(), 5000);
 if (host) console.log(`[host] ${host.pk} · ${groups.size} group${groups.size === 1 ? '' : 's'} · enroll: ${host.enroll}${host.enroll === 'invite' ? ` (${host.invites.length} invited)` : ''}`);

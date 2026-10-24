@@ -171,6 +171,8 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (from) {
       const wasOnline = online(from);
       lastSeen.set(from.idx, io.now());
+      // When a device was last here, kept (hourly at most) for the host's age-out.
+      if (isDevice(from) && now() - (S.deviceSeen ?? 0) > 3600) { S.deviceSeen = now(); save(); }
       // The other server just came back: bring it up to date.
       if (!wasOnline && from.role === 'server') syncTo();
     }
@@ -1440,6 +1442,9 @@ export function openGroup(loaded: Loaded, io: Io) {
   interface Piece { from: string; content: string; epoch: number }
   /** How long recovery waits. Three days; shorter for tests. */
   const WAIT = Number(process.env.COSIGN_RECOVERY_WAIT ?? 3 * 86400);
+  // The host's age-out (stale()): seconds. Accounts from before it start counting now.
+  const UNFINISHED_AFTER = Number(process.env.COSIGN_UNFINISHED_AFTER ?? 86400), IDLE_AFTER = Number(process.env.COSIGN_IDLE_AFTER ?? 30 * 86400);
+  if (S.enrolled && S.deviceSeen == null && groupX) S.deviceSeen = now();
   const sealTo = (pk: string, body: object) => nip44.v2.encrypt(JSON.stringify(body), nip44.v2.utils.getConversationKey(F.hexToBytes(S.self.sk), pk));
 
   /** A helper's pieces for a paper being made: ours and the vouching device's. With both, it's a member. */
@@ -1605,6 +1610,20 @@ export function openGroup(loaded: Loaded, io: Io) {
     get groupX() { return groupX; },
     state: S,
     relays, start, tick, onEvent, status, pairingUri,
+    /**
+     * Why a host should let this account go, or null: one a stranger enrolled that never
+     * finished (a day on), or that no device has spoken to in 30 days. Only for accounts
+     * enrolled here, never one set up on this machine (its own /data/a).
+     */
+    stale(): string | null {
+      if (!S.enrolled) return null;
+      const finished = !!groupX && !S.dkg && !S.joining && devices().length > 0;
+      if (!finished && now() - S.enrolled.at > UNFINISHED_AFTER) return 'it never finished being set up';
+      if (now() - (S.deviceSeen ?? S.enrolled.at) > IDLE_AFTER) return 'no device has used it in 30 days';
+      return null;
+    },
+    /** Delete everything for it here, for real (io.forget). */
+    forget: () => io.forget?.(),
     revoke: (pk: string, where: string) => revoke(pk, where),
   };
 }

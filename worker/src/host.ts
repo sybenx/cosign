@@ -214,7 +214,7 @@ export class CosignHost extends DurableObject {
     if (msg.type === 'enroll_key') return reply({ type: 'enroll_key', id: msg.id, ...newMemberKey(this.host.sk) });
     if (msg.type !== 'enroll') return;
     // One Durable Object is one machine: so many groups, so many new ones an hour.
-    const maxGroups = Number(this.env.COSIGN_MAX_GROUPS ?? 1000), perHour = Number(this.env.COSIGN_ENROLL_PER_HOUR ?? 30);
+    const maxGroups = Number(this.env.COSIGN_MAX_GROUPS ?? 5000), perHour = Number(this.env.COSIGN_ENROLL_PER_HOUR ?? 30);
     while (this.enrolledAt.length && Date.now() - this.enrolledAt[0] > 3600_000) this.enrolledAt.shift();
     if (this.groups.size >= maxGroups) return reply({ type: 'enroll_failed', id: msg.id, reason: 'full: This server takes no more accounts. Try another.' });
     if (this.enrolledAt.length >= perHour) return reply({ type: 'enroll_failed', id: msg.id, reason: 'busy: This server has taken on many accounts this hour. Try again later.' });
@@ -251,6 +251,8 @@ export class CosignHost extends DurableObject {
 
   async alarm() {
     for (const x of this.groups.values()) x.g.tick();
+    // Let go of accounts strangers enrolled that never finished, or that no device has used in 30 days.
+    for (const x of [...this.groups.values()]) { const why = x.g.stale(); if (why) { console.log(`[${x.id}] letting it go: ${why}`); await x.g.forget(); } }
     // Every 6 h, and as soon as a new version is running (its announcement says which).
     const last = Number(this.get('announced') ?? 0);
     if (Date.now() - last > 6 * 3600_000 || this.get('announcedVersion') !== VERSION) {

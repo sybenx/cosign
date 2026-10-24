@@ -7,7 +7,7 @@
 //
 //   node test/dealt.e2e.ts        (starts and stops everything itself, in server/test-dealt/)
 
-import { readFileSync, openSync, mkdirSync } from 'node:fs';
+import { readFileSync, openSync, mkdirSync, existsSync } from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { verifyEvent, getEventHash, getPublicKey } from 'nostr-tools/pure';
@@ -28,7 +28,7 @@ const hex = (n = 32) => bytesToHex(randomBytes(n));
 execFileSync('rm', ['-rf', serverDir + 'test-dealt']);
 mkdirSync(serverDir + 'logs', { recursive: true });
 const hosts = [8993, 8994].map((port, i) => spawn('node', ['server.ts', '--root', `test-dealt/h${i + 1}`, '--port', String(port)], {
-  cwd: serverDir, env: { ...process.env, COSIGN_ENROLL: 'open' }, stdio: ['ignore', openSync(serverDir + `logs/dealt-h${i + 1}.log`, 'w'), openSync(serverDir + `logs/dealt-h${i + 1}.log`, 'a')],
+  cwd: serverDir, env: { ...process.env, COSIGN_ENROLL: 'open', COSIGN_UNFINISHED_AFTER: '8', COSIGN_AGE_EVERY: '1000' }, stdio: ['ignore', openSync(serverDir + `logs/dealt-h${i + 1}.log`, 'w'), openSync(serverDir + `logs/dealt-h${i + 1}.log`, 'a')],
 }));
 const done = (code: number) => { for (const h of hosts) h.kill(); process.exit(code); };
 await sleep(3000);
@@ -113,6 +113,23 @@ const all = JSON.stringify({ groupX: dealt.groupX, threshold: 4, members: dealt.
 const from = (idxs: number[]) => { try { return getPublicKey(W.reconstruct(all, JSON.stringify(idxs.map(i => [i, sh(i).secret])))); } catch { return null; } };
 check('four shares make the key again', from([1, 2, 3, 4]) === npubX);
 check('three don’t', from([1, 2, 3]) === null);
+
+// --- Age-out: an account a stranger started and never finished is let go -----------------
+
+const k2 = await ask(hostCfg[0].pk, { type: 'enroll_key' });
+const [nobody, other] = [pubOf(hex()), pubOf(hex())];
+const half = await ask(hostCfg[0].pk, {
+  type: 'enroll', how: 'dkg', key: k2.key, signer: { sk: signerSk, pk: pubOf(signerSk) },
+  group: { threshold: 4, relays, members: [
+    { idx: 1, name: 'Nobody', role: 'phone', pk: nobody, sharePub: '', shares: [1, 2, 3].map(idx => ({ idx, sharePub: '' })) },
+    { idx: 4, name: 'Server 1', role: 'server', pk: k2.pk, sharePub: '' }, { idx: 5, name: 'Server 2', role: 'server', pk: other, sharePub: '' }] },
+  plan: { session: hex(16), threshold: 4, holders: [{ idx: 1, pk: nobody }, { idx: 2, pk: nobody }, { idx: 3, pk: nobody }, { idx: 4, pk: k2.pk }, { idx: 5, pk: other }] },
+});
+check('a stranger starts an account and never finishes it', half.type === 'enrolled' && existsSync(`${serverDir}test-dealt/h1/groups/${half.group}`), half.reason);
+const halfDir = `${serverDir}test-dealt/h1/groups/${half.group}`;
+const doneDir = `${serverDir}test-dealt/h1/groups/${enrolled[0].group}`;
+check('it is let go once its window passes', await waitFor(() => !existsSync(halfDir), 30_000));
+check('the account in use stays', existsSync(doneDir));
 
 site.close();
 console.log(failures ? `${failures} failed` : 'all passed');
