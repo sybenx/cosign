@@ -35,20 +35,20 @@ When you create an account, the app:
 2. **Prefers three different operators.** When there aren't enough, it fills the rest
    from one operator's servers and **tells you so**. When other operators appear, you
    can add their servers yourself (Home → **Add a server**); swapping them in
-   automatically is planned. This is no less safe than a single server: one
-   operator's servers together can't sign, and the risk of that operator plus a stolen
-   paper backup is the same with one server as with three. It is more reliable: if one
-   server loses its data, your device and another server still sign. If that operator
-   disappears entirely, an account with one device and no paper backup is lost, as it
-   would be with a single server; with a second device or the paper, you add servers
-   from elsewhere.
+   automatically is planned. One operator's servers together still can't sign. The
+   cost is that this operator plus someone who stole your paper backup would be enough,
+   with the 3-day wait in their hands. Three servers are still worth it: if one loses
+   its data, your device and another server still sign. If that operator disappears
+   entirely, an account with one device and no paper backup is lost; with a second
+   device or the paper, the escape hatch ([COSIGN.md](COSIGN.md) §8.4) lets you rebuild
+   the key after 7 days and set up new servers.
 3. **Prefers your own server** if you run one. It counts as one of your own devices,
    so it costs no privacy.
 4. **Shows each server's operator by name** in settings, so you can see who you're
    trusting.
 
-With fewer than two servers available, your paper backup counts 3 points instead of
-2, so you can still recover with the paper and the one server.
+Every account starts with at least two servers (at launch, three), so your paper
+backup plus two of them can always recover it.
 
 ## Signing
 
@@ -76,7 +76,8 @@ then, a dead server simply never answers, and your device signs with the others.
 ## The known limit
 
 An operator is just a pubkey, so **one person with two npubs can pose as two
-operators** — the same exposure as one operator openly running two of your servers.
+operators** — the same exposure as one operator openly running two of your servers,
+which is how every account starts at launch.
 Everyday signing stays safe, because all three servers together still can't sign without
 you. But that person could then run two of your three servers, and with a
 stolen paper backup they would have enough to recover your account, with the 3-day wait

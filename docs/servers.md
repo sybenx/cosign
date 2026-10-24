@@ -30,22 +30,24 @@ this paragraph goes out of date.
 
 What that means for you:
 
+- **All launch servers are run by one person, and they see everything you sign through
+  them** (see "What a server can see" below).
 - **One operator, for now.** The design wants three servers from three different
   people. Until other operators exist, the app fills your three places from one
   operator's servers and **says so** in setup and settings. When other operators
   appear, you can add their servers from Home → **Add a server**. Swapping them in
   automatically is planned.
-- **That's no less safe than one server.** All of one operator's servers together are
-  3 points and can never sign without you. The real risk — that operator plus someone
-  who stole your paper backup — exists just the same with a single server.
-- **It's safer than one server.** If one server loses its data or disappears, your
-  device and another server still sign, even if you have no paper backup.
-- With fewer than two servers, your **paper backup counts 3 points instead of 2**, so
-  the paper plus one server can still recover your account.
-- **If that one operator disappears entirely**, everyone's servers go at once. With two
-  devices, or a device and your paper backup, you still have enough to add servers from
-  someone else. **With one device and no paper backup, the account is lost** — the same
-  as with syb.lol alone. Print the paper backup.
+- **What one operator can and can't do.** All of one operator's servers together are
+  3 points and can never sign without you. The risk is that operator plus someone who
+  stole your paper backup: 2 + 2 = 4, with the 3-day wait in that operator's hands.
+- **Why three servers anyway.** If one server loses its data or disappears, your device
+  and another server still sign, even if you have no paper backup.
+- **If that one operator disappears entirely**, every server goes at once and nothing
+  signs. After 7 days with no server answering, a device plus your paper backup, or two
+  devices, can rebuild your key on one device (the *escape hatch*, [COSIGN.md](COSIGN.md)
+  §8.4): you then hold a whole nsec, as with any other app, and can split it again with
+  new servers. **With one device and no paper backup, the account is lost.** Print the
+  paper backup.
 
 ### What different operators don't protect against
 
@@ -84,9 +86,10 @@ These come from [COSIGN.md](COSIGN.md); the section is given for each.
   could bring back.
 - **Enforce the 3-day wait** (§7.4, §8.3). When someone uses a paper backup without any
   surviving device, or adds a device without that device's lock, the server tells every
-  device and refuses to take part for 3 days unless one of them cancels.
-- **Give only its half of a decryption, and never finish one** (§5.6). The device
-  finishes it, so a server never sees what your messages say.
+  device and refuses to take part for 3 days unless one of them cancels, confirmed with
+  its lock.
+- **Give only its half of a decryption, and never finish one** (§5.6), and give it only
+  to your active devices: never to a paper backup key or a removed device.
 - **Never hold a site's NIP-46 signer key if it's a public server** (§6.1, §9.2). Only
   your devices, and servers you run yourself, may hold it, because whoever holds it can
   read what those sites send.
@@ -126,18 +129,16 @@ and the others only if that one is slow, so most of what you sign is seen by one
 
 ## Where the reference server falls short today
 
-As of 24 October 2026 the reference server (Cosign 0.11) does not yet meet two of the
-musts above:
+As of 24 October 2026 the reference server does not yet meet one of the musts above:
 
-- **It holds a NIP-46 signer key** for the accounts it serves, so it can read requests
-  from sites that connect by a `nostrconnect://` code. Per-site signer keys held only by
-  your devices are designed but not built.
-- **It finishes decryptions for those NIP-46 sites.** Sites that use the browser
-  extension or the Android app are not affected.
+- **It holds a NIP-46 signer key** for the accounts it serves, so it can read the
+  signing requests of sites that connect by a `nostrconnect://` code. Per-site signer
+  keys held only by your devices are designed but not built.
 
-Until both are fixed, use NIP-46 sites with a public server only if you're fine with
-its operator seeing those requests. A server that holds no signer key, such as the
-Cloudflare Worker server, never answers NIP-46 sites at all.
+Until they are, a public server **refuses NIP-46 encrypt and decrypt requests**, so
+those sites can sign through it but can't read or send your DMs. Sites that use the
+browser extension or the Android app are not affected. A server that holds no signer
+key, such as the Cloudflare Worker server, never answers NIP-46 sites at all.
 
 ## Running the reference server
 

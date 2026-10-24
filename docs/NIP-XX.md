@@ -31,9 +31,9 @@ The design, the user experience and the reasoning are in
 - FROST as in RFC 9591, ciphersuite `FROST(secp256k1, SHA-256)` with the BIP-340
   challenge (as `frost-secp256k1-tr`). Odd-y group keys are negated as in BIP-340.
   Resulting signatures are ordinary BIP-340 signatures.
-- Threshold `t = 4`. A device holds 3 shares, a co-signer exactly 1, the backup 2; every
-  share has a unique index `i ≥ 1`. A member with several shares acts as several FROST
-  participants.
+- Threshold `t = 4`. A device holds 3 shares, a co-signer exactly 1, the backup always
+  2; every share has a unique index `i ≥ 1`. A member with several shares acts as
+  several FROST participants. A group starts with at least two co-signers.
 - The **device coordinates** every round it takes part in. Rounds sent to several
   co-signers at once are independent, each with fresh coordinator nonces; the
   coordinator completes the first and discards the rest.
@@ -97,9 +97,10 @@ request `id`. A message larger than 24 KB of plaintext is split into parts
 | `refresh` | dealer → member | the member's delta of a zero-constant polynomial, with commitments |
 | `ack` | member → dealer | the new piece verified |
 | `remove` | member → members | a member key, and that the sender confirmed with its device lock |
-| `contest` / `settle` | removed member → members / third device → members | "this wasn't me" / which side is the user's |
-| `wait` / `cancel` | co-signer → members / member → co-signers | a pending addition or backup use, and when it completes |
+| `wait` / `cancel` | co-signer → members / device → co-signers | a pending addition or backup use, and when it completes / cancel, confirmed with the device's lock |
 | `finalized` | initiator → members | the epoch is complete; old pieces may be destroyed |
+| `take_out` / `released` / `noted` | device → co-signers / co-signer → device | take the account out: after the wait, the co-signer's shares sealed to the device; with the paper, `noted` before the device shows the key |
+| `forget` | device → co-signers | stop at once; delete this co-signer's pieces after the wait |
 
 A signing round MAY be collapsed into one request and one answer: the coordinator sends
 its commitment in `sign`, and the co-signer generates a fresh nonce and returns its
@@ -121,12 +122,15 @@ A co-signer MUST:
 5. Keep the recent versions of the user's replaceable lists (kinds 0, 3, 10000–10030,
    30000–30030; reference 25 each), built only from events validly signed by the group.
 6. Never finish a decryption for a user it does not belong to (it returns partials
-   only), and never hold a NIP-46 signer key for such a user.
+   only), and never hold a NIP-46 signer key for such a user. Give decryption partials
+   only to active member devices: never to the backup key or a removed member. Until
+   per-site signer keys exist, a co-signer that still holds a NIP-46 signer key for a
+   user it does not belong to refuses NIP-46 encrypt and decrypt requests.
 7. Destroy its old piece once a refresh verifies, with no copy kept anywhere.
 8. Enforce waits: refuse to take part in a `repair` for a new device vouched for by one
    device without its lock, or in any round using the backup's shares without a
-   surviving device, until 3 days after sending `wait` to every member, unless a member
-   sends `cancel`.
+   surviving device, until 3 days after sending `wait` to every member, unless a
+   member device sends `cancel`.
 9. Hold exactly one share per group.
 10. Never connect to private, loopback, carrier-grade NAT or cloud-metadata addresses
     because a relay or push address in a group record, a site's request or a new device
@@ -144,7 +148,14 @@ A device MUST:
 - coordinate its own rounds, judge every event against its own archive (COSIGN.md
   §5.3), and ask the user before signing one that would destroy something;
 - ask for its own lock (biometric or passcode) at the moment it vouches for a new
-  device, reports a device lost, contests or settles a removal, or approves a held event;
+  device, reports a device lost, cancels a wait, or approves a held event. Today this
+  is a claim co-signers cannot check; a hardware-bound user-verification key is planned;
+- carry the epoch in every round with no co-signer, refuse any round below the newest
+  epoch it has seen, and fetch the latest group record after coming online before
+  taking part in such a round;
+- rebuild the key without first telling the co-signers only through the escape hatch:
+  no co-signer has answered for 7 days, and a device with the paper backup, or two
+  devices, confirm with the lock after a plain warning (COSIGN.md §8.4);
 - prefer another of the user's own awake devices over a co-signer it does not operate,
   and otherwise ask its fastest co-signer first, without adding delay (COSIGN.md §5.1);
 - send `history` for every archived-kind event it signs without a co-signer.

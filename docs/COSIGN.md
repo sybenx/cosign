@@ -111,12 +111,9 @@ What the user does:
   A member with several shares is simply several FROST participant identifiers on one
   machine; no new cryptography is involved. A typical group — two devices, three
   servers, paper — is 11 shares.
-- **Paper weight while there are fewer than two servers: 3.** With one server, paper (2)
-  plus that server (1) could never reach 4, and losing the only device would lose the
-  key. So while an account has fewer than two servers the paper holds **3** shares, and
-  paper plus the one server recovers, after the wait (§7.4). When a second server is
-  added, the refresh that adds it (§7.3) renews the backup piece at weight 2 (§8.2),
-  and the old 3-share piece stops combining with anything.
+- **At least two servers, from the start.** An account is created with two or more
+  servers (at launch, three), so the paper (2) plus two servers can always recover it
+  (§8.3). The paper is always worth 2.
 - **Indices**: every share has a **unique** index. There are no replicas.
 - **Changing the threshold or weights** of an existing group keeps the same key. Either:
   - **redistribute** (preferred): enough current holders each split their own
@@ -125,7 +122,9 @@ What the user does:
     reference library (ZF `frost-secp256k1-tr`) has no built-in for this, but it needs
     only scalar arithmetic on top of it; or
   - **rebuild and re-split** on one trusted device, which deals the new shares and wipes
-    the key — the same exposure as importing an nsec (§3, "Creating the key").
+    the key — the same exposure as importing an nsec (§3, "Creating the key"). A client
+    MUST tell the servers, and so every device, before it rebuilds or shows the key
+    (*announce before showing*); the escape hatch of §8.4 is the one exception.
   Groups made under 0.1 (threshold 2) were test keys only and may simply be recreated.
 - **A server holds exactly one share.** No server may hold more, whoever runs it.
 - **Servers SHOULD have different operators.** Clients prefer three servers from three
@@ -134,11 +133,10 @@ What the user does:
   specified: swapping them out automatically by refresh as other operators appear;
   today a device adds a server by hand, §9.5.)* A public server, a friend's and the
   user's own make three; the user may run any number of devices.
-  - **Why that is safe enough:** one operator's servers together are at most 3 points
-    and can never sign. Its real exposure — that operator plus a stolen paper backup
-    reaching 4 points, with the wait (§7.4) in that operator's hands — already exists
-    with a single server and the paper at weight 3 (below), so filling from one operator
-    adds none.
+  - **What it costs:** one operator's servers together are at most 3 points and can
+    never sign. Its exposure is that operator plus a stolen paper backup: 2 + 2 = 4
+    points, with the wait (§7.4) in that operator's hands — the same as two colluding
+    operators. Accepted at launch, and shown to the user.
   - **Why it is better than one server:** a server losing its data, or vanishing, no
     longer strands an account that has one device and no paper backup; that device and
     another server still make 4.
@@ -181,7 +179,7 @@ not a re-implementation.
 **Several such apps on one device.** Where the platform lets apps share a signer
 (Android, through NIP-55), the apps on a device SHOULD share the one member already
 there rather than each holding a piece. Where it does not (iOS), each app MAY join as a
-member of its own, listed by app and device ("*Primal* on *iPhone*"). Two such apps on
+member of its own, listed by app and device ("*Primal* on *iPhone*") *(not built)*. Two such apps on
 one device hold 6 points and can sign together without any server; as with §5.5, that is
 no worse than today's one app holding the nsec, and reporting the device lost (§7.2)
 removes both.
@@ -325,13 +323,17 @@ mutes, relays, bookmarks, sets; reference: the last 25 per list). Every change s
 every device's history in plain words, with **Undo**, which republishes the archived
 version (a routine signature).
 
-### 5.5 Without any server
+### 5.5 Without any server *(not built)*
 
 Two member devices (6 points) MAY sign together without any server, using the same
-checks (§5.2) against whatever archive they have. This is what keeps the user signing
-while every server is down, and what lets two devices replace servers (§7.3). Two of the
-user's own devices are not bound by any server's policy; that is accepted, as it is
-strictly better than one device holding the key.
+checks (§5.2) against whatever archive they have. This keeps the user signing while every
+server is down. Two of the user's own devices are not bound by any server's policy; that
+is accepted, as it is strictly better than one device holding the key.
+
+- **Epochs.** A device-only round carries the epoch. A device refuses any round below the
+  newest epoch it has seen, and after coming online fetches the latest epoch record
+  before taking part in any device-only round, so a device removed while it was offline
+  (§7.2) cannot sign with one that missed the news.
 
 ### 5.6 Decryption
 
@@ -340,6 +342,9 @@ done in one round as NKM §7.6a: the members taking part return Lagrange-weighte
 partials `λ_i·s_i·P` for shares worth 4 points between them (a device's 3 and a
 server's 1); the coordinator adds them. The coordinator learns the shared
 secret; the others learn only `P`.
+
+**Who gets a partial.** Servers give decryption partials only to active member
+devices — never to the backup key, and never to a removed member.
 
 **A server operated by anyone but the user MUST NOT coordinate a decryption.** It gives
 its partial and never finishes one. With a device coordinating (§5.1) this is the
@@ -455,10 +460,16 @@ unlocking the phone that holds the nsec. That is what the device lock is for: th
 device MUST ask for it at the moment of vouching, even when the device is already
 unlocked.
 
+**Today the lock is a claim the device makes.** Servers take the device's word that it
+asked. *Planned:* a hardware-bound user-verification key — an Android Keystore P-256 key
+that needs user authentication, or a WebAuthn credential with user verification — whose
+signature the servers check. A device without one will then count as vouching without
+its lock, so the wait applies.
+
 ### 7.2 Removing a device ("report lost")
 
 From any member device, **confirmed with that device's own lock** (biometric or
-passcode) at that moment, or from a server's web page with a passkey:
+passcode) at that moment (or from a server's web page with a passkey, *not built*):
 
 1. **Instant block.** Every member MUST refuse rounds with the removed `E.pub` from
    that moment, so a stolen device (3) can no longer find its fourth point.
@@ -466,12 +477,10 @@ passcode) at that moment, or from a server's web page with a passkey:
    of removal for a device that was merely retired.
 2. **Refresh** (§7.3), so the removed device's piece no longer combines with anything.
 3. **Notice to every member, the removed one included** — "*Phone* was removed from
-   *Laptop*." The removed device, if it is in fact the user's, can answer **This wasn't
-   me**, confirmed with its own lock.
-4. **A race is settled by a third device.** After "This wasn't me", both the remover and
-   the removed are blocked. A third member device, confirmed with its own lock, picks
-   which one is the user's; the other stays removed. With no third device, the paper
-   backup settles it.
+   *Laptop*."
+
+**Removal is final.** A device removed by mistake is added again (§7.1) by a remaining
+device or with the paper backup.
 
 ### 7.3 Refresh
 
@@ -498,16 +507,19 @@ Refresh runs after every removal, after the backup is used, and MAY run on a sch
 A wait applies to:
 
 - adding a device vouched for by only one member device (§7.1);
-- using the paper backup (§8.3).
+- using the paper backup without a surviving device (§8.3);
+- taking the account out with the servers' shares, and removing the servers' pieces
+  (§7.6).
 
 During a wait, every server MUST notify every member (push, the members' own screens,
-and the server's web page), and **any one member can cancel**. Signing goes on as usual
+and the server's web page), and **any one member device can cancel**, confirmed with its
+lock. Cancel is the only action during a wait. Signing goes on as usual
 throughout; the wait only delays trusting the newcomer. **Every server enforces it** by
 refusing to take part before the wait ends, so it holds unless the operators of two
 servers collude — or are one operator (§3).
 
-Nothing else waits. Signing, approvals, connecting and removing sites, and removing
-devices are never delayed.
+Nothing else waits. Signing, approvals, connecting and removing sites, and reporting a
+device lost are never delayed.
 
 ### 7.5 Replacing the phone
 
@@ -516,13 +528,31 @@ devices are never delayed.
 - **Phone lost**: report it from another device or a server's web page (§7.2), then
   add the new phone (§7.1). With two other devices vouching, instant; with one, a wait.
 
+### 7.6 Taking the account out, and removing the servers' pieces
+
+Both are **guarded**, like reporting a device lost: each needs the lock of a live
+member device, every device is told and woken, and a waiting one can be cancelled by any
+device with its lock (§7.4).
+
+- **Take out** gives the user their whole key back, as an nsec.
+  - **With servers:** after the wait (§7.4), each server seals its share to the device
+    that asked; the device adds them to its own and rebuilds the key.
+  - **With the paper backup:** the device already holds enough (5 points), so there is
+    no wait, but it MUST first be heard by a server, which answers `noted` for that
+    request and tells every device, before the device shows the key (*announce before
+    showing*). The escape hatch (§8.4) is the one exception.
+- **Remove the servers' pieces** ("forget"): a server stops signing and decrypting for
+  the account at once, and deletes its pieces for real after the wait — the files on a
+  Node server, the KV entry and every row on the Worker.
+
 ## 8. Backup and recovery
 
 ### 8.1 The paper backup
 
-The user prints a **backup key** once, as a QR. The backup member has its own share
-indices in the member list — 2, or 3 while the account has fewer than two servers
-(§3) — but **nobody online holds its piece**.
+The user prints a **backup key** once, as a QR. The backup member has its own 2 share
+indices in the member list, but **nobody online holds its piece**. Printing a new paper
+runs a refresh (§7.3) that drops the old backup's indices, so the old paper is
+worthless.
 
 *Planned, not yet specified:* the paper also as 24 BIP-39 words of the backup secret,
 labelled as a Cosign backup and not a NIP-06 or wallet seed; restoring from the words
@@ -533,7 +563,7 @@ unannounced.
 ### 8.2 Keeping the backup piece current
 
 At setup and after every refresh, members holding 4 points between them compute the
-backup's shares (2, or 3, §3) by repair (§7.1 step 1). Each gift-wraps **only its own
+backup's 2 shares by repair (§7.1 step 1). Each gift-wraps **only its own
 contributions** to the backup key and stores them widely: on several relays as kind 1059
 **with no expiration**, on every server, and on every member device. No member can
 open them, and no member ever sees the backup piece.
@@ -544,24 +574,31 @@ combine with current pieces — so it does not matter if a relay keeps them.
 ### 8.3 Using the backup
 
 Scan the paper. Fetch the newest epoch's contributions from any source, add them, and
-check against that epoch's commitments. The paper is now worth 2 points (3 while the
-account has fewer than two servers):
+check against that epoch's commitments. The paper is now worth 2 points:
 
-- with any surviving device (5 or 6): sign, refresh, and add new devices;
+- with any surviving device (5): sign, refresh, and add new devices;
 - with two servers (4): the same, **after a wait** (§7.4) that both enforce, since a
   stolen paper plus two servers would otherwise be enough;
-- with one server: nothing at weight 2; at weight 3, the same as two servers, after a
-  wait that the one server enforces.
+- with one server (3): nothing.
 
 A refresh follows every use of the backup.
 
-### 8.4 What survives what
+### 8.4 When no server answers: the escape hatch (not built)
+
+If **no server has answered for 7 days**, a device plus the paper backup (5 points), or
+two devices (6), MAY rebuild the key on one device, after the device's lock and a plain
+warning: the whole key will then sit on that device, as an nsec does today. From there
+the user can keep using it as an nsec, or split it again with new servers (§3, "rebuild
+and re-split"). This is the one case where a client rebuilds the key without first
+telling the servers (§3, *announce before showing*), because none are answering.
+
+### 8.5 What survives what
 
 | Lost | Still signing | Getting back to normal |
 |---|---|---|
 | A device | any other device + a server | report it; add the new device |
-| A server | nothing changes: the other servers answer | replace it at leisure |
-| Every server | two devices (6) | add new servers |
+| A server | nothing changes: the other servers answer | add another server |
+| Every server | nothing (device-only signing, §5.5, is not built) | after 7 days, the escape hatch (§8.4) |
 | Every device | paper + two servers, after a wait | add new devices |
 | Everything but the paper | nothing | — (the key is gone) |
 
@@ -599,7 +636,10 @@ holds one share per user, worth one point: it signs nothing alone, and all of a 
 servers together (3) still sign nothing.
 
 A public server MUST NOT coordinate a decryption, MUST NOT hold a NIP-46 signer key
-(§6.1), and MUST destroy old pieces on refresh.
+(§6.1), and MUST destroy old pieces on refresh. Until per-site signer keys exist, a
+public server that still holds a NIP-46 signer key MUST refuse NIP-46 `nip04_*` and
+`nip44_*` encrypt and decrypt requests: NIP-46 sites can sign through it, but not
+read or send DMs.
 
 **What strangers can make it reach.** Accounts, sites and new devices name relays and
 push addresses, and on an open server anyone can create an account. A public server MUST
@@ -695,7 +735,7 @@ will be assigned before 1.0:
 | HOLD / APPROVAL | server → device; device → members |
 | REPAIR_CONTRIBUTION | member → new device or backup key |
 | REFRESH_DELTA / SHARE_ACK | dealer → member; member → dealer |
-| REMOVE / CONTEST | member → members; removed member → members |
+| REMOVE | member → members |
 | WAIT_NOTICE / WAIT_CANCEL | server → members; member → server |
 | EPOCH_FINALIZED | initiator → members |
 
@@ -709,7 +749,11 @@ will be assigned before 1.0:
 - **A site holds no piece.** Removing its grant ends it.
 - **A lost device** is blocked at once and worthless after the refresh.
 - **Two of the user's own devices** can sign without any server and its policy.
-  Accepted (§5.5).
+  Accepted (§5.5, not built).
+- **Decryption partials** go only to active member devices, never to the paper key or a
+  removed member (§5.6).
+- **The device lock is a claim** the device makes today; servers cannot check it until
+  the hardware-bound key of §7.1 is built.
 - **A stolen unlocked device plus one cooperating server** is 4 points: the same as the
   everyday pair, and at the accepted baseline. Reporting the device lost blocks it at
   every honest server.
@@ -717,7 +761,7 @@ will be assigned before 1.0:
   member is told about.
 - **One operator running two or more of a group's servers** — openly, or posing as two
   with two npubs — plus a stolen paper backup is 4 points, with the wait in that
-  operator's hands (§3, §9.5). The same exposure exists with a single server.
+  operator's hands (§3, §9.5). At launch every public server has one operator.
 - **The identity is permanent.** 4 points of one epoch in a thief's hands cannot be
   undone.
 
@@ -734,8 +778,9 @@ review.
 0.2-draft, 2026-10-24. 0.1 (2026-10-23) used equal pieces with threshold 2 and one
 server plus the phone as the everyday pair; 0.2 moves to weighted pieces (devices 3,
 servers 1, paper 2, threshold 4), several servers ideally run by different operators,
-and the
-device as coordinator and gate.
+and the device as coordinator and gate. After two outside reviews (2026-10-24): removal
+is final (no contest), the paper is always weight 2 with at least two servers, decryption
+partials go only to active devices, and the 7-day escape hatch (§8.4) is added.
 
 The reference implementation is [sybenx/cosign](https://github.com/sybenx/cosign): a
 server, an Android app and a browser extension, with FROST from ZF
@@ -751,8 +796,10 @@ server, an Android app and a browser extension, with FROST from ZF
   nsec out of a web app into the phone in one scan (§3, "Creating the key").
 
 **Not built yet:** per-site NIP-46 signer keys held only by the user's devices (§6.1).
-Until they are, the server holds a NIP-46 signer key and finishes decryptions for
-nostrconnect sites. The DM prompt is not built either. Planned and not yet specified:
+Until they are, the server holds a NIP-46 signer key for nostrconnect sites, and a
+public server refuses their encrypt and decrypt requests (§9.2). Also not built: the DM
+prompt, device-only signing (§5.5), the passkey page for reporting a device (§7.2),
+per-app members on iOS (§4.1), and the hardware-bound lock (§7.1). Planned and not yet specified:
 the 24-word paper (§8.1), automatic server swaps (§3, §9.5) and the member library
 (§4.3). Feature freeze since 2026-10-24: nothing new is added to this document until real
 use calls for it. Exactly which parts of §5.1 and
