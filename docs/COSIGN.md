@@ -130,8 +130,9 @@ What the user does:
 - **A server holds exactly one share.** No server may hold more, whoever runs it.
 - **Servers SHOULD have different operators.** Clients prefer three servers from three
   operators. When fewer operators exist, a client fills the remaining places from one
-  operator's servers, says so plainly in setup and settings, and swaps them out by
-  refresh (§7.3) as other operators appear (§9.5). A public server, a friend's and the
+  operator's servers and says so plainly in setup and settings. *(Planned, not yet
+  specified: swapping them out automatically by refresh as other operators appear;
+  today a device adds a server by hand, §9.5.)* A public server, a friend's and the
   user's own make three; the user may run any number of devices.
   - **Why that is safe enough:** one operator's servers together are at most 3 points
     and can never sign. Its real exposure — that operator plus a stolen paper backup
@@ -197,9 +198,8 @@ offline members.
 
 ### 4.3 The member library
 
-To make §4.1 concrete, implementations SHOULD use, and the reference implementation
-SHALL publish, a **member library** that holds everything a member needs and nothing of
-any app's interface:
+*Planned, not yet specified.* The intent, to make §4.1 concrete: a **member library**
+that holds everything a member needs and nothing of any app's interface:
 
 - the group record, shares, nonces and their storage hooks (§3);
 - coordinating and joining rounds, including hedging across servers (§5.1);
@@ -520,9 +520,15 @@ devices are never delayed.
 
 ### 8.1 The paper backup
 
-The user prints a **backup key** once, as a QR (and, optionally, words). The backup
-member has its own share indices in the member list — 2, or 3 while the account has
-fewer than two servers (§3) — but **nobody online holds its piece**.
+The user prints a **backup key** once, as a QR. The backup member has its own share
+indices in the member list — 2, or 3 while the account has fewer than two servers
+(§3) — but **nobody online holds its piece**.
+
+*Planned, not yet specified:* the paper also as 24 BIP-39 words of the backup secret,
+labelled as a Cosign backup and not a NIP-06 or wallet seed; restoring from the words
+alone by asking known servers' host keys, with a request signed by the backup key over
+a server's nonce (`backup_find`); and a warning when every server is private or
+unannounced.
 
 ### 8.2 Keeping the backup piece current
 
@@ -595,6 +601,15 @@ servers together (3) still sign nothing.
 A public server MUST NOT coordinate a decryption, MUST NOT hold a NIP-46 signer key
 (§6.1), and MUST destroy old pieces on refresh.
 
+**What strangers can make it reach.** Accounts, sites and new devices name relays and
+push addresses, and on an open server anyone can create an account. A public server MUST
+NOT connect to private, loopback, carrier-grade NAT (tailnet) or cloud-metadata
+addresses because a stranger named them, and SHOULD resolve and check each address at
+every connect, not once. It SHOULD cap what one stranger can use: accounts held, new
+accounts per hour, messages per account per minute, relays per account and relay
+connections overall. Push MUST be `https://` to hosts the operator allows, without
+following redirects.
+
 ### 9.3 Several servers
 
 A group has several servers, typically three, each holding one share, each with its own
@@ -630,12 +645,13 @@ The list of servers lives on Nostr, not on one website.
 - **Picking servers:** one ping round trip per candidate at setup, then a rolling record
   of answer times and failures from real signing (§5.1). Three servers, preferring
   **three distinct operator pubkeys**; when fewer operators exist, the rest come from
-  one operator's servers, shown as such, and are swapped by refresh as other operators
-  appear (§3). A server the user runs
+  one operator's servers, shown as such (§3). A server the user runs
   is preferred and counts as one of their own devices. Settings show each server's
   operator by name.
-- **Swapping a server** is a refresh with the new server in place of the old (§7.3): the
-  old server's share stops combining with anything.
+- **Adding a server** to an existing account: a device and an existing server make
+  the new server's share by repair (§7.1 step 1), started by the user (**Add a
+  server**). *(Planned, not yet specified: swapping a dead or slow server out
+  automatically by refresh, §7.3.)*
 
 **Limit.** Operators are pubkeys, so one person with two npubs can pose as two
 operators. Everyday signing stays safe — all three servers are still 3 points — but such a
@@ -736,7 +752,10 @@ server, an Android app and a browser extension, with FROST from ZF
 
 **Not built yet:** per-site NIP-46 signer keys held only by the user's devices (§6.1).
 Until they are, the server holds a NIP-46 signer key and finishes decryptions for
-nostrconnect sites. The DM prompt is not built either. Exactly which parts of §5.1 and
+nostrconnect sites. The DM prompt is not built either. Planned and not yet specified:
+the 24-word paper (§8.1), automatic server swaps (§3, §9.5) and the member library
+(§4.3). Feature freeze since 2026-10-24: nothing new is added to this document until real
+use calls for it. Exactly which parts of §5.1 and
 §7 the server and app follow is tracked in the repository, not here.
 
 The browser extension (2026-10-24) runs the same library: a

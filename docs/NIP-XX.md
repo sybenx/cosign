@@ -128,6 +128,10 @@ A co-signer MUST:
    surviving device, until 3 days after sending `wait` to every member, unless a member
    sends `cancel`.
 9. Hold exactly one share per group.
+10. Never connect to private, loopback, carrier-grade NAT or cloud-metadata addresses
+    because a relay or push address in a group record, a site's request or a new device
+    names one; resolve and check at every connect. Push only to `https://` hosts the
+    operator allows, without following redirects.
 
 A co-signer that is a relay SHOULD accept `kind:21059` and `kind:1059` wraps addressed
 to its member keys from any connection, and deliver wraps addressed to the group's
@@ -177,4 +181,4 @@ user's devices and by co-signers the user operates.
 - A Nostr key cannot be replaced. 4 points of one epoch in a thief's hands is the
   identity, permanently; removal plus refresh exists to stop that from happening.
 - `kind:24301`, `kind:30242`, `kind:30243` and `kind:10243` are provisional. None
-  appears in the NIPs registry, its open pull requests or its issues as of 2026-10-24.
+  appears in the NIPs registry, its pull requests or its issues as of 2026-10-24.

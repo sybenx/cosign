@@ -26,6 +26,7 @@ import { enrollers, memberSk, newMemberKey } from './core/enroll.ts';
 import { loadGroup, groupFiles, isGroupDir, createGroup, writeJson } from './files.ts';
 import { groupPage, hostPage, esc } from './page.ts';
 import { checkClock, trustedNow } from './clock.ts';
+import { relayAllowed, allowedRelays, pushAllowed } from './egress.ts';
 
 const args = process.argv.slice(2);
 const opt = (name: string) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
@@ -44,8 +45,8 @@ const DEFAULT_RELAYS = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.ne
 // host.json: the host key (its identity across everyone it serves, and where devices
 // write to enroll), the port of its page, its relays, and who may enroll: "open", or
 // "invite" with `invites`, device pubkeys. It's read again for each enrollment, so the
-// invite list can change without a restart. COSIGN_ENROLL and COSIGN_INVITES, if set,
-// win over the file.
+// invite list can change without a restart. COSIGN_ENROLL, COSIGN_INVITES and COSIGN_RELAYS,
+// if set, win over the file.
 //
 // With an `operator` (the pubkey of whoever runs it), the host announces itself so
 // devices can find it (COSIGN.md §9.5): kind 30243, signed by the host key. The operator
@@ -54,6 +55,7 @@ const DEFAULT_RELAYS = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.ne
 
 interface HostConfig { sk: string; pk: string; port: number; relays: string[]; enroll: 'open' | 'invite'; invites: string[]; operator?: string; https?: string }
 const hostFile = root ? join(root, 'host.json') : null;
+let warnedOperator = false;
 function hostConfig(): HostConfig | null {
   if (!hostFile) return null;
   const c = JSON.parse(readFileSync(hostFile, 'utf8')) as HostConfig;
@@ -62,7 +64,12 @@ function hostConfig(): HostConfig | null {
   c.invites ??= [];
   if (process.env.COSIGN_OPERATOR) c.operator = process.env.COSIGN_OPERATOR;
   if (process.env.COSIGN_HTTPS) c.https = process.env.COSIGN_HTTPS;
-  if (c.operator?.startsWith('npub1')) c.operator = nip19.decode(c.operator).data as string;
+  const relays = process.env.COSIGN_RELAYS?.split(',').map(r => r.trim()).filter(Boolean);
+  if (relays?.length) c.relays = relays;
+  if (c.operator?.startsWith('npub1')) {
+    try { c.operator = nip19.decode(c.operator).data as string; } catch { c.operator = 'bad'; }
+  }
+  if (c.operator && !/^[0-9a-f]{64}$/.test(c.operator)) { if (!warnedOperator) console.log("COSIGN_OPERATOR isn't a valid npub or hex key; not announcing"); warnedOperator = true; delete c.operator; }
   return c;
 }
 if (root && hostFile && !existsSync(hostFile)) {
@@ -86,16 +93,21 @@ const idOf = (pk: string) => pk.slice(0, 16);
 const relaysOf = (x: Served) => [...new Set([...x.g.relays(), ...x.extra])];
 
 const pool = new Pool([], onEvent, t => console.log(`[relays] ${t}`));
+// Strangers name relays and push endpoints here: only public places, and not too many (egress.ts).
+pool.guard = relayAllowed;
+pool.max = Number(process.env.COSIGN_MAX_RELAYS ?? 300);
 
-async function publishOut(relays: string[], e: Event) {
-  const targets = [...new Set(relays.map(dial))];
+/** How many relays took it. */
+async function publishOut(relays: string[], e: Event): Promise<number> {
+  const targets = [...new Set((await allowedRelays(relays)).slice(0, 12).map(dial))];
   const p = new SimplePool();
-  await Promise.allSettled(p.publish(targets, e as any));
+  const r = await Promise.allSettled(p.publish(targets, e as any));
   p.close(targets);
+  return r.filter(x => x.status === 'fulfilled').length;
 }
 
 async function query(relays: string[], filter: Filter, maxWait: number): Promise<Event[]> {
-  const targets = [...new Set(relays.map(dial))];
+  const targets = [...new Set((await allowedRelays(relays)).slice(0, 12).map(dial))];
   const p = new SimplePool();
   try { return await p.querySync(targets, filter, { maxWait }); } finally { p.close(targets); }
 }
@@ -110,8 +122,8 @@ function serve(dir: string): Served | undefined {
   const io: Io = {
     publish: e => pool.publish(e, relaysOf(x)),
     listen: async (relays, ms) => { for (const r of relays) x.extra.add(normRelay(r)); await pool.add(relays, ms); },
-    publishOut, query,
-    push: url => fetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' } }),
+    publishOut: async (r, e) => { await publishOut(r, e); }, query,
+    push: async url => { if (await pushAllowed(url)) return fetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' }, redirect: 'manual' }); },
     now: () => Date.now(),
     trustedNow,
     save: groupFiles(dir),
@@ -152,6 +164,8 @@ function onEvent(e: Event) {
 
 const hostParts = new Parts();
 const enrolling = new Set<string>();
+/** When each recent enrollment happened, for the hourly cap. */
+const enrolledAt: number[] = [];
 
 async function onHostMessage(e: Event) {
   if (Date.now() / 1000 - e.created_at > 120) return;
@@ -166,6 +180,11 @@ async function onHostMessage(e: Event) {
     return reply({ type: 'enroll_failed', id: msg.id, reason: 'not-invited: This server only takes on groups for people it invited.' });
   if (msg.type === 'enroll_key') return reply({ type: 'enroll_key', id: msg.id, ...newMemberKey(cfg.sk) });
   if (msg.type !== 'enroll') return;
+  // An open server is still one machine: so many groups, so many new ones an hour.
+  const maxGroups = Number(process.env.COSIGN_MAX_GROUPS ?? 1000), perHour = Number(process.env.COSIGN_ENROLL_PER_HOUR ?? 30);
+  while (enrolledAt.length && Date.now() - enrolledAt[0] > 3600_000) enrolledAt.shift();
+  if (groups.size >= maxGroups) return reply({ type: 'enroll_failed', id: msg.id, reason: 'full: This server takes no more accounts. Try another.' });
+  if (enrolledAt.length >= perHour) return reply({ type: 'enroll_failed', id: msg.id, reason: 'busy: This server has taken on many accounts this hour. Try again later.' });
   try {
     const sk = memberSk(cfg.sk, String(msg.key ?? ''));
     const pk = pubOf(sk);
@@ -181,6 +200,7 @@ async function onHostMessage(e: Event) {
       const state = await enroller({ msg, from: e.pubkey, memberSk: sk, holds, now: Date.now() });
       const dir = join(root!, 'groups', idOf(pk));
       createGroup(dir, state);
+      enrolledAt.push(Date.now());
       const x = serve(dir)!;
       await pool.add(relaysOf(x), 4000);
       pool.setFilters(filters());
@@ -197,15 +217,21 @@ async function onHostMessage(e: Event) {
 
 /** Where announcements go, besides the host's own relays: where devices look for them. */
 const DISCOVERY = ['wss://syb.lol', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.damus.io'];
-async function announce() {
+async function announce(): Promise<boolean> {
   const cfg = hostConfig();
-  if (!cfg?.operator || !/^[0-9a-f]{64}$/.test(cfg.operator)) return;
+  if (!cfg?.operator) return true;
   const e = finalizeEvent({
     kind: 30243, created_at: Math.floor(Date.now() / 1000),
     tags: [['d', 'cosign-server'], ['p', cfg.operator, '', 'operator']],
     content: JSON.stringify({ relays: cfg.relays, https: cfg.https ?? null, enroll: cfg.enroll, version: VERSION }),
   }, hexToBytes(cfg.sk));
-  await publishOut([...cfg.relays, ...DISCOVERY], e);
+  return await publishOut([...cfg.relays, ...DISCOVERY], e) > 0;
+}
+/** Every 6 h, or a minute after a try no relay took. */
+async function announceLoop() {
+  const ok = await announce().catch(() => false);
+  if (!ok) console.log('announcement not taken by any relay; trying again in a minute');
+  setTimeout(() => void announceLoop(), ok ? 6 * 3600_000 : 60_000);
 }
 
 // --- Status pages ---------------------------------------------------------------
@@ -265,5 +291,5 @@ setInterval(() => { for (const x of groups.values()) x.g.tick(); }, 10_000);
 const clockNote = (t: string) => console.log(`[clock] ${t}`);
 void checkClock(clockNote);
 setInterval(() => void checkClock(clockNote), 30 * 60_000);
-if (host?.operator) { setTimeout(() => void announce(), 5000); setInterval(() => void announce(), 6 * 3600_000); }
+if (host?.operator) setTimeout(() => void announceLoop(), 5000);
 if (host) console.log(`[host] ${host.pk} · ${groups.size} group${groups.size === 1 ? '' : 's'} · enroll: ${host.enroll}${host.enroll === 'invite' ? ` (${host.invites.length} invited)` : ''}`);

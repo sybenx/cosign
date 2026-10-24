@@ -58,6 +58,9 @@ export function newMemberKey(hostSk: string) {
   return { key, pk: pubOf(memberSk(hostSk, key)) };
 }
 
+/** A group's relays, at most: the host connects to each, and a stranger chose them. */
+const MAX_RELAYS = 8;
+
 const sameSet = (a: number[], b: number[]) => [...a].sort((x, y) => x - y).join() === [...b].sort((x, y) => x - y).join();
 const mod = (a: bigint) => F.Point.Fn.create(a);
 const pointOf = (hex: string) => { try { return F.Point.fromHex(hex); } catch { return null; } };
@@ -91,7 +94,7 @@ function dealt({ msg, from, memberSk: sk, holds, now }: Enrolling) {
   if (!g || typeof g.groupX !== 'string' || !/^[0-9a-f]{64}$/.test(g.groupX) || !Array.isArray(g.members) || !Array.isArray(g.relays)) throw new Error('bad-group: That group record is damaged.');
   const threshold = Number(g.threshold);
   if (!Number.isInteger(threshold) || threshold < 2) throw new Error('bad-group: A group needs a threshold of at least 2.');
-  const relays = g.relays.filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r));
+  const relays = g.relays.filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r)).slice(0, MAX_RELAYS);
   if (!relays.length) throw new Error('bad-group: A group needs relays.');
   const members: Member[] = g.members.map((m: any) => ({
     idx: Number(m.idx), name: String(m.name ?? 'A member').slice(0, 40), role: m.role === 'server' ? 'server' : m.role === 'phone' ? 'phone' : 'device',
@@ -170,7 +173,7 @@ function dkg({ msg, from, memberSk: sk, now }: Enrolling) {
   if (!g || !Array.isArray(g.members) || !Array.isArray(g.relays)) throw new Error('bad-group: That group record is damaged.');
   const threshold = Number(g.threshold);
   if (!Number.isInteger(threshold) || threshold < 2) throw new Error('bad-group: A group needs a threshold of at least 2.');
-  const relays = g.relays.filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r));
+  const relays = g.relays.filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r)).slice(0, MAX_RELAYS);
   if (!relays.length) throw new Error('bad-group: A group needs relays.');
   const members = membersOf(g);
   const pk = pubOf(sk);
@@ -196,5 +199,32 @@ function dkg({ msg, from, memberSk: sk, now }: Enrolling) {
   };
 }
 
+/**
+ * Joining a key that already exists, as one more server ("Add a server"): the record as it
+ * is, this server at index `k` with no share yet. One of the user's devices vouches for it
+ * with a server already in the key (add_device {server: true}); the repair's sigmas arrive
+ * here, and the group finishes with its share (core/group.ts, `joining`).
+ */
+function repair({ msg, from, memberSk: sk, now }: Enrolling) {
+  const g = msg.group;
+  if (!g || !/^[0-9a-f]{64}$/.test(String(g.groupX)) || !Array.isArray(g.members) || !Array.isArray(g.relays)) throw new Error('bad-group: That group record is damaged.');
+  const threshold = Number(g.threshold);
+  if (!Number.isInteger(threshold) || threshold < 2) throw new Error('bad-group: A group needs a threshold of at least 2.');
+  const k = Number(msg.k);
+  const members = membersOf(g);
+  const pk = pubOf(sk);
+  if (!Number.isInteger(k) || k < 1 || members.some(m => (m.shares?.map(s => s.idx) ?? [m.idx]).includes(k))) throw new Error('bad-index: That share index is taken.');
+  if (members.some(m => m.pk === pk)) throw new Error('bad-group: This server is already in that group.');
+  const relays = g.relays.filter((r: unknown) => typeof r === 'string' && /^wss?:\/\//.test(r)).slice(0, MAX_RELAYS);
+  members.push({ idx: k, name: String(msg.name ?? 'A server').slice(0, 40), role: 'server', pk, sharePub: '', push: null });
+  return {
+    self: { idx: k, sk, shares: [] },
+    group: { groupX: g.groupX, npub: nip19.npubEncode(g.groupX), threshold, relays, members },
+    signer: null, sites: [], tickets: [], changes: [], pairing: null,
+    joining: { k, at: Math.floor(now / 1000) },
+    enrolled: { at: Math.floor(now / 1000), by: from, how: 'repair' },
+  };
+}
+
 /** Every way a server can be given a share in a new group, by the `how` of the message. */
-export const enrollers: Record<string, Enroller> = { dealt, dkg };
+export const enrollers: Record<string, Enroller> = { dealt, dkg, repair };

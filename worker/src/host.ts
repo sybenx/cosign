@@ -39,6 +39,7 @@ export class CosignHost extends DurableObject {
   private recent: { at: number; e: Event }[] = [];
   private hostParts = new Parts();
   private enrolling = new Set<string>();
+  private enrolledAt: number[] = [];
   private startedAt = Date.now();
 
   constructor(ctx: any, env: any) {
@@ -96,7 +97,12 @@ export class CosignHost extends DurableObject {
       listen: async () => {},             // devices come to it; it dials nothing
       publishOut: async () => {},         // it never answers sites, so it never publishes for them
       query: async () => [],              // the archive reaches it from the other servers (sync)
-      push: url => fetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' } }),
+      // Only to a push service it knows (ntfy.sh, plus COSIGN_PUSH_HOSTS), and no redirects.
+      push: async url => {
+        let u: URL; try { u = new URL(url); } catch { return; }
+        const hosts = ['ntfy.sh', ...String(this.env.COSIGN_PUSH_HOSTS ?? '').split(',').map(h => h.trim()).filter(Boolean)];
+        if (u.protocol === 'https:' && !u.username && hosts.includes(u.hostname.toLowerCase())) return fetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' }, redirect: 'manual' });
+      },
       now: () => Date.now(),
       trustedNow,
       save: {
@@ -197,6 +203,11 @@ export class CosignHost extends DurableObject {
       return reply({ type: 'enroll_failed', id: msg.id, reason: 'not-invited: This server only takes on groups for people it invited.' });
     if (msg.type === 'enroll_key') return reply({ type: 'enroll_key', id: msg.id, ...newMemberKey(this.host.sk) });
     if (msg.type !== 'enroll') return;
+    // One Durable Object is one machine: so many groups, so many new ones an hour.
+    const maxGroups = Number(this.env.COSIGN_MAX_GROUPS ?? 1000), perHour = Number(this.env.COSIGN_ENROLL_PER_HOUR ?? 30);
+    while (this.enrolledAt.length && Date.now() - this.enrolledAt[0] > 3600_000) this.enrolledAt.shift();
+    if (this.groups.size >= maxGroups) return reply({ type: 'enroll_failed', id: msg.id, reason: 'full: This server takes no more accounts. Try another.' });
+    if (this.enrolledAt.length >= perHour) return reply({ type: 'enroll_failed', id: msg.id, reason: 'busy: This server has taken on many accounts this hour. Try again later.' });
     try {
       const sk = memberSk(this.host.sk, String(msg.key ?? ''));
       const pk = pubOf(sk);
@@ -216,6 +227,7 @@ export class CosignHost extends DurableObject {
         this.put(`g:${id}`, plain);
         this.put('groups', JSON.stringify([...this.groups.keys(), id]));
         await this.open(id, secret);
+        this.enrolledAt.push(Date.now());
         this.groups.get(id)!.g.start();
         console.log(`[host] took on ${state.group.npub ?? 'a key still to be made'} (${id}) for ${e.pubkey.slice(0, 8)}…`);
         reply({ type: 'enrolled', id: msg.id, pk, group: id });

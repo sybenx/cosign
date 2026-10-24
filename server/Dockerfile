@@ -16,6 +16,6 @@ COPY frost-wasm ./frost-wasm
 # on the host, or a named volume, which takes this directory's owner when it's created.
 RUN mkdir -p /data && chown 1000:1000 /data
 USER 1000:1000
-ENV HOST=0.0.0.0
+ENV HOST=0.0.0.0 UV_THREADPOOL_SIZE=16
 EXPOSE 8711
 CMD ["./start.sh"]

@@ -32,8 +32,9 @@ What that means for you:
 
 - **One operator, for now.** The design wants three servers from three different
   people. Until other operators exist, the app fills your three places from one
-  operator's servers and **says so** in setup and settings. As other operators appear,
-  it swaps them in on its own, by a refresh. You don't need to do anything.
+  operator's servers and **says so** in setup and settings. When other operators
+  appear, you can add their servers from Home → **Add a server**. Swapping them in
+  automatically is planned.
 - **That's no less safe than one server.** All of one operator's servers together are
   3 points and can never sign without you. The real risk — that operator plus someone
   who stole your paper backup — exists just the same with a single server.
@@ -91,6 +92,13 @@ These come from [COSIGN.md](COSIGN.md); the section is given for each.
   read what those sites send.
 - **Refuse a device the moment it's reported lost** (§7.2).
 - **Drop replayed requests**: one already answered, or older than 30 seconds (§5.2).
+- **Never connect where a stranger points it.** Accounts, sites and new devices name
+  relays and push addresses, and anyone can create an account on an open server. A
+  public server must not connect to private, loopback, tailnet/CGNAT or cloud-metadata
+  addresses because of one, and should check every address each time it connects
+  (§9.1).
+- **Limit what one stranger can use**: how many accounts it takes, how fast new ones
+  arrive, how many messages an account may send, and how many relays it connects to.
 
 **Should:**
 
@@ -148,20 +156,50 @@ The reference server is Node, in [`server/`](../server/). It runs in Docker.
    ```
 
 2. **Pick its relays** (`COSIGN_RELAYS`, comma-separated): relays your users' devices
-   also use. A server
-   beside a relay can reach it over the local network while telling devices its public
-   address; see [`deploy/README.md`](../deploy/README.md).
+   also use. A server beside a relay can reach it over the local network while telling
+   devices its public address; see [`deploy/README.md`](../deploy/README.md).
 3. **Choose who may enroll**: `COSIGN_ENROLL=open` for anyone, or `invite` with
-   `COSIGN_INVITES` listing device pubkeys (hex, comma-separated). The list is read again for each enrollment,
-   so you can change it without a restart.
+   `COSIGN_INVITES` listing device pubkeys (hex, comma-separated). The list is read
+   again for each enrollment, so you can change it without a restart.
 4. **Say who runs it**: `COSIGN_OPERATOR` is your npub, and `COSIGN_HTTPS` its public
    page, if it has one. Then publish your own kind 10243 list naming the server's host
    key, so apps count it as yours.
 5. **Keep port 8711 private** unless it's behind a login. It's the server's own page
    and lists every account it serves.
 
-`COSIGN_PERSONAL=0` skips the throwaway test account a fresh server otherwise makes for
-itself. Leave it out to try the server with your own phone.
+On first start a fresh server also makes a key of your own: its page shows an "Add your
+phone" code, and your phone and this server make the key together, so neither can sign
+alone. `COSIGN_PERSONAL=0` skips it, for a server meant only for others. (Before 0.11.2
+the default was a throwaway 2-of-3 that left two shares on the same box; that's now
+only `COSIGN_PERSONAL=dealt`, and it says so in the log.)
+
+### Limits and reach (all optional, Cosign 0.11.2)
+
+| Setting | Default | What it does |
+|---|---|---|
+| `COSIGN_MAX_GROUPS` | 1000 | Accounts this server takes at most. |
+| `COSIGN_ENROLL_PER_HOUR` | 30 | New accounts per hour. |
+| `COSIGN_GROUP_PER_MINUTE` | 600 | Messages per account per minute; the rest are dropped. |
+| `COSIGN_MAX_RELAYS` | 300 | Relay connections at most. |
+| `COSIGN_RELAY_ALLOW` | none | Relay URLs (comma-separated) this server may reach even if they aren't public. Normally it reaches only `wss://` relays whose names resolve to public addresses, checked at every connect. A sidecar relay mapped with `COSIGN_RELAY_MAP` is always allowed. |
+| `COSIGN_PUSH_HOSTS` | ntfy.sh only | Extra push hosts. Push is `https://` only, with no redirects. |
+
+Fixed: at most 8 relays per account, 4 per site's nostrconnect code, and 4 per new
+device.
+
+### Adding a server to existing accounts
+
+A device can add a new server to an account it already has (on Home, **Add a server** under the device list):
+the device and an existing server make the new server's share together by repair,
+without anyone seeing the whole key. So when your server appears, people can move to it
+without starting over.
+
+### The Cloudflare Worker server
+
+[`worker/`](../worker/) is a reference server that runs on Cloudflare's free tier. It
+holds no NIP-46 signer key, so it never answers NIP-46 sites. It keeps its shares in
+Workers KV and everything else in its Durable Object's SQLite, so Cloudflare's 30-day
+point-in-time history never holds a share.
 
 **Look after its storage like a key store**: no snapshots or backups that keep old
 shares after a refresh (see "Destroy old shares" above).

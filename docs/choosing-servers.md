@@ -33,8 +33,9 @@ When you create an account, the app:
 
 1. **Pings each candidate once** and keeps the ones that answer.
 2. **Prefers three different operators.** When there aren't enough, it fills the rest
-   from one operator's servers, **tells you so**, and swaps them for other operators'
-   servers by a refresh as those appear. This is no less safe than a single server: one
+   from one operator's servers and **tells you so**. When other operators appear, you
+   can add their servers yourself (Home → **Add a server**); swapping them in
+   automatically is planned. This is no less safe than a single server: one
    operator's servers together can't sign, and the risk of that operator plus a stolen
    paper backup is the same with one server as with three. It is more reliable: if one
    server loses its data, your device and another server still sign. If that operator
@@ -63,11 +64,14 @@ For each everyday thing you sign:
 So most of what you sign is seen by one server, and a slow server costs you a third of
 a second, not a failure.
 
-## Replacing a server
+## Adding and replacing servers
 
-When a server goes away or keeps failing, the app swaps it for another by **refreshing**
-your account's pieces with the new server in place of the old one. Your npub stays the
-same, and the old server's share stops working with anything.
+You can add a server to your account at any time from Home → **Add a server**. Your
+device and an existing server make the new server's share together, without anyone
+seeing your whole key, and your npub stays the same.
+
+Swapping out a server that's gone or keeps failing, automatically, is planned. Until
+then, a dead server simply never answers, and your device signs with the others.
 
 ## The known limit
 

@@ -30,6 +30,9 @@ export class Pool {
   urls: string[];
   private onEvent: (e: Event, relay: string) => void;
   private log: (t: string) => void;
+  /** A server's check on where it may connect (egress.ts), asked at every connect; and how many relays at most. */
+  guard?: (url: string) => Promise<boolean>;
+  max = Infinity;
   constructor(urls: string[], onEvent: (e: Event, relay: string) => void, log: (t: string) => void = () => {}) {
     this.urls = [...urls]; this.onEvent = onEvent; this.log = log;
   }
@@ -48,13 +51,18 @@ export class Pool {
   /** Listen on more relays too (a site's own). Resolves once they're up, or after `ms`. */
   async add(urls: string[], ms = 6000) {
     const want = [...new Set(urls.map(normRelay))];
-    for (const u of want) if (!this.conns.has(u)) { this.urls.push(u); this.connect(u); }
+    for (const u of want) if (!this.conns.has(u)) {
+      if (this.conns.size >= this.max) { this.log(`not adding ${u}: already at ${this.max} relays`); continue; }
+      this.urls.push(u); this.connect(u);
+    }
     const until = Date.now() + ms;
     while (want.some(u => !this.conns.get(u)) && Date.now() < until) await new Promise(r => setTimeout(r, 200));
   }
 
   private async connect(url: string) {
     this.conns.set(url, null);
+    // Not somewhere this server may go (now: what a name points to can change).
+    if (this.guard && !(await this.guard(url).catch(() => false))) { this.log(`refused relay ${url}`); setTimeout(() => this.connect(url), 600_000); return; }
     try {
       const r = await Relay.connect(dial(url));
       r.onclose = () => { this.conns.set(url, null); setTimeout(() => this.connect(url), 5000); };
