@@ -1,0 +1,49 @@
+# ditto-relay: Aaro's public relay wss://syb.lol (soapbox Ditto Relay 2.0.0 official binary, checksum-verified in Dockerfile).
+# Moved from Took (Rancher Desktop, H:\Programs\ditto-relay-v2) on 2026-10-20 to free Took's RAM.
+# Runtime files live in the dind data dir (relative binds don't resolve under Dockge):
+#   /data/ditto-relay = xumbrel ~/umbrel/app-data/dockge/data/docker/ditto-relay
+#     config/ (ditto-relay.toml + secret.key = relay identity for NIP-85), data/ (LMDB + search index), assets/, Caddyfile
+# Runs as uid 1000 because the files on the host are owned by the umbrel user.
+# Port 13131 on the host: syb.lol via cloudflared, plus Took's nostr-archive mirror and nostr-diamonds over the LAN (10.0.0.10:13131).
+services:
+  relay:
+    build: .
+    image: ditto-relay:2.0.0
+    user: "1000:1000"
+    volumes:
+      - /data/ditto-relay/config:/etc/ditto-relay:ro
+      - /data/ditto-relay/data:/data
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    restart: unless-stopped
+  caddy:
+    image: caddy:2-alpine
+    volumes:
+      - /data/ditto-relay/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /data/ditto-relay/assets:/assets:ro
+    ports:
+      - 13131:13131
+    depends_on:
+      - relay
+    restart: unless-stopped
+  # Cosign server A beside the relay (from ~/cosign/server, copied to ./cosign). Talks to
+  # the relay inside this network, tells phones and sites wss://syb.lol. Throwaway key,
+  # made on first start in /data/cosign (= ~/umbrel/app-data/dockge/data/docker/cosign,
+  # owned by uid 1000). Its page (pairing code, sites, Remove) has no login: port 8711 is
+  # reachable on the LAN and tailnet only. syb.lol's tunnel goes to 13131, never here.
+  cosign:
+    build: ./cosign
+    image: cosign-server:0.4.0
+    user: "1000:1000"
+    environment:
+      COSIGN_RELAY_MAP: wss://syb.lol=ws://relay:13131
+      COSIGN_RELAYS: wss://syb.lol,wss://nos.lol,wss://relay.primal.net
+    volumes:
+      - /data/cosign:/data
+    ports:
+      - 8711:8711
+    depends_on:
+      - relay
+    restart: unless-stopped

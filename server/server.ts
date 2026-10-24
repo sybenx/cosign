@@ -22,7 +22,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import QRCode from 'qrcode';
 import * as F from './frost.ts';
-import { Pool, sealParts, openFrom, Parts, normRelay, KIND_MEMBER, KIND_NIP46 } from './net.ts';
+import { Pool, sealParts, openFrom, Parts, normRelay, dial, KIND_MEMBER, KIND_NIP46 } from './net.ts';
 import { ARCHIVED, assess, keyOf, kindName } from './policy.ts';
 import { Archive } from './archive.ts';
 
@@ -449,7 +449,7 @@ async function undo(changeId: string) {
 async function publishOut(e: Event) {
   const list = archive.latest('10002');
   const mine = (list?.tags ?? []).filter(t => t[0] === 'r' && t[2] !== 'read').map(t => t[1]);
-  const targets = [...new Set([...mine, ...S.group.relays])];
+  const targets = [...new Set([...mine, ...S.group.relays].map(dial))];
   const p = new SimplePool();
   await Promise.allSettled(p.publish(targets, e as any));
   p.close(targets);
@@ -539,7 +539,7 @@ setTimeout(syncTo, 4000);
 // against something.
 async function fetchArchive() {
   const p = new SimplePool();
-  const relays = [...new Set([...S.group.relays, 'wss://relay.damus.io'])];
+  const relays = [...new Set([...S.group.relays, 'wss://relay.damus.io'].map(dial))];
   try {
     const events = await p.querySync(relays, { authors: [groupX], kinds: [...ARCHIVED] }, { maxWait: 6000 });
     let n = 0;

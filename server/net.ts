@@ -19,6 +19,13 @@ const now = () => Math.floor(Date.now() / 1000);
 /** One spelling per relay, so a site's "wss://x/" and our "wss://x" share a connection. */
 export const normRelay = (u: string) => u.trim().replace(/\/+$/, '').toLowerCase();
 
+// Where to actually connect for a relay, when that differs from its public address: a
+// server running beside its relay (COSIGN_RELAY_MAP="wss://syb.lol=ws://relay:13131")
+// reaches it inside the compose network, but tells phones and sites the public one.
+const relayMap = new Map((process.env.COSIGN_RELAY_MAP ?? '').split(',').filter(x => x.includes('='))
+  .map(x => x.split('=', 2).map(normRelay) as [string, string]));
+export const dial = (url: string) => relayMap.get(normRelay(url)) ?? url;
+
 export class Pool {
   private conns = new Map<string, Relay | null>();
   private seen = new Set<string>();
@@ -46,7 +53,7 @@ export class Pool {
   private async connect(url: string) {
     this.conns.set(url, null);
     try {
-      const r = await Relay.connect(url);
+      const r = await Relay.connect(dial(url));
       r.onclose = () => { this.conns.set(url, null); setTimeout(() => this.connect(url), 5000); };
       this.conns.set(url, r);
       // Ask only for what was sent in the last minute: member traffic is live.

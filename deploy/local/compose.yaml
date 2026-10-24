@@ -1,0 +1,23 @@
+# Local rehearsal of deploy/ditto-relay.compose.yaml: the Cosign server image as server A
+# and B, with wss://syb.lol (the real Ditto 2.0.0) as the only relay. From here the
+# containers reach syb.lol over the internet; beside the relay they'd use
+# COSIGN_RELAY_MAP to reach it inside the compose network instead.
+services:
+  cosign:
+    build: ../../server
+    image: cosign-server:0.4.0
+    platform: linux/amd64
+    user: "1000:1000"
+    volumes:
+      - ./state/cosign:/data
+    ports:
+      - 8741:8711
+  cosign-b:
+    image: cosign-server:0.4.0
+    platform: linux/amd64
+    user: "1000:1000"
+    command: ["node", "server.ts", "/data/b"]
+    volumes:
+      - ./state/cosign:/data
+    ports:
+      - 8742:8712

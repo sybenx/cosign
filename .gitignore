@@ -14,3 +14,4 @@ site/public/app.js
 site/public/app.js.map
 *.apk
 android/.kotlin/
+deploy/local/state/

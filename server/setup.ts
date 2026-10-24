@@ -4,13 +4,14 @@
 //   node setup.ts --nsec nsec1... split a key you already have
 //   node setup.ts --force         overwrite existing data/
 //   node setup.ts --dir test-data --port 8721   a second group beside it, for tests
+//   node setup.ts --dir /data --relays wss://syb.lol,wss://nos.lol   (in a container)
 //
 // Share 1 goes to server A, share 2 to server B, and share 3 waits on server A
 // until your phone scans A's pairing code. Once the phone has it, A deletes it.
 // This script sees all three shares at once: that is what a trusted dealer is.
 
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { nip19 } from 'nostr-tools';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import { deal } from './frost.ts';
@@ -21,7 +22,7 @@ const force = args.includes('--force');
 const nsecArg = args[args.indexOf('--nsec') + 1];
 const opt = (name: string) => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
 const name = opt('--dir') ?? 'data';
-const root = join(import.meta.dirname, name);
+const root = resolve(import.meta.dirname, name);
 const port = Number(opt('--port') ?? 8711);
 
 if (existsSync(join(root, 'a', 'state.json')) && !force) {
@@ -40,7 +41,7 @@ if (args.includes('--nsec')) {
 const dealt = deal(secretHex, 3, 2);
 const key = () => bytesToHex(randomBytes(32));
 const skA = key(), skB = key(), signerSk = key();
-const relays = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'];
+const relays = opt('--relays')?.split(',').map(r => r.trim()).filter(Boolean) ?? ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'];
 
 const group = {
   groupX: dealt.groupX,
