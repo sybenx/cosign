@@ -675,7 +675,13 @@ export function openGroup(loaded: Loaded, io: Io) {
     const pk = String(msg.pk ?? '');
     if (!/^[0-9a-f]{64}$/.test(pk)) return;
     const s = site(pk);
-    if (s && !s.revoked) return pushState();
+    if (s && !s.revoked) {
+      // The same grant, under a new name: an app renamed itself (Cosign became Marble).
+      // Only your own device ever says so — this is `fromPhone` — so it is simply taken.
+      const now = String(msg.origin ?? '').slice(0, 80);
+      if (now && now !== s.origin) { note(`${s.origin} is called ${now} now`); s.origin = now; save(); syncTo(); }
+      return pushState();
+    }
     // `via`: which of your devices it's on (the extension says "Chrome on Mac").
     const named = typeof msg.via === 'string' && msg.via.trim() ? msg.via.trim().slice(0, 40) : null;
     const via = named ?? 'App on this phone';

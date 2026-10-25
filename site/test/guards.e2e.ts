@@ -157,6 +157,20 @@ as(ph.sk, { type: 'take_out', id: t3, lock: true, paper: true });
 check('the server answers this request, signed by its member key', await waitFor(() => got(phonePk, m => m.type === 'noted' && m.id === t3), 15_000));
 check('and every device hears it was taken out', await waitFor(() => got(tabletPk, m => m.type === 'guard' && m.id === t3 && m.paper && m.state === 'done'), 15_000));
 
+// --- An app that was renamed keeps its grant ------------------------------------------------
+//
+// The app this signer is part of was renamed (Cosign became Marble) and says so with the
+// grant it already has. Only one of your devices is ever heard on that.
+
+const grantPk = 'a'.repeat(63) + '1';
+as(tb.sk, { type: 'app_grant', pk: grantPk, origin: 'Cosign', via: 'App on this phone' });
+check('an app connects', await waitFor(() => state().sites?.some((x: any) => x.pk === grantPk && x.origin === 'Cosign'), 15_000));
+as(tb.sk, { type: 'app_grant', pk: grantPk, origin: 'Marble', via: 'App on this phone' });
+check('renamed, it keeps the same grant under the new name',
+  await waitFor(() => state().sites?.some((x: any) => x.pk === grantPk && x.origin === 'Marble'), 15_000),
+  (state().sites ?? []).filter((x: any) => x.pk === grantPk).map((x: any) => x.origin).join(', '));
+check('and it is still one grant, as it was added', state().sites.filter((x: any) => x.pk === grantPk).length === 1);
+
 // --- Reported lost: at once, and for good -------------------------------------------------
 
 as(tb.sk, { type: 'remove_member', id: hex(), idx: ph.idx });

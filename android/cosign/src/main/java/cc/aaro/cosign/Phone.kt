@@ -1498,9 +1498,18 @@ class Signer(private val context: Context, val slot: String = "0") {
     private fun store(g: AppGrant) = apps.edit().putString(g.pkg, Json.stringify(mapOf("pk" to g.pk, "label" to g.label, "dm" to g.dm))).apply()
 
     fun connectApp(pkg: String, label: String): AppGrant {
-        val g = appGrant(pkg) ?: AppGrant(pkg, env.random(32).toHex(), label, false).also(::store)
+        val had = appGrant(pkg)
+        // This app's own grant follows its name: one made when it was called Cosign still
+        // said so after it became Marble. Another app's label stays as it was when you
+        // allowed it, so nothing can take on a name you already trusted.
+        val renamed = had != null && pkg == context.packageName && had.label != label
+        val g = when {
+            had == null -> AppGrant(pkg, env.random(32).toHex(), label, false).also(::store)
+            renamed -> had.copy(label = label).also(::store)
+            else -> had
+        }
         for (s in servers()) send(s.pk!!, mapOf("type" to "app_grant", "pk" to g.pk, "origin" to g.label))
-        note("Connected ${g.label}", "approved")
+        if (had == null) note("Connected ${g.label}", "approved")
         timer.schedule({ requestState() }, 2, TimeUnit.SECONDS)
         return g
     }
