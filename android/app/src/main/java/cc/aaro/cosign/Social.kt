@@ -381,7 +381,8 @@ class Social private constructor(private val phone: Phone, context: Context) {
         val gen = searchGen.incrementAndGet()
         found.value = Found(text)
         val t0 = android.os.SystemClock.uptimeMillis()
-        fun mark(what: String) = if (searchGen.get() != gen) Unit else android.util.Log.i("CosignSearch", "\"$text\" $what at ${android.os.SystemClock.uptimeMillis() - t0} ms; top: " +
+        // Debug builds only: what was searched and who came up are the user's business, not the log's.
+        fun mark(what: String) = if (!debuggable || searchGen.get() != gen) Unit else android.util.Log.i("CosignSearch", "\"$text\" $what at ${android.os.SystemClock.uptimeMillis() - t0} ms; top: " +
             found.value?.people?.take(3)?.joinToString { pk -> (People.known.value[pk]?.shown ?: pk.take(8)) + " " + pk.take(8) })
         searching = scope.launch {
             val tag = text.removePrefix("#").takeIf { text.startsWith("#") && it.isNotBlank() && !it.contains(' ') }?.lowercase()
@@ -471,6 +472,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
     }
 
     private val searchGen = java.util.concurrent.atomic.AtomicInteger()
+    private val debuggable = CosignApp.instance.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
     @Volatile private var fofCache: Map<String, Int>? = null
     /** For each person, how many of the people you follow follow them (from up to 300 follow lists). */
     private suspend fun friendsOfFriends(): Map<String, Int> {
