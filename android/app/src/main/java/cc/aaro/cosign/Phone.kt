@@ -1345,7 +1345,9 @@ class Signer(private val context: Context, val slot: String = "0") {
         val name = android.os.Build.MODEL.ifBlank { "A device" }
         val code = "cosign:join?pk=${publicKeyHex(sk.hexToBytes())}&name=${Uri.encode(name)}&" + relays.joinToString("&") { "r=" + Uri.encode(it) }
         ui.update { it.copy(joinCode = code, error = null) }
-        android.util.Log.d("Cosign", "join code: $code") // for testing on an emulator, where nothing can scan the screen
+        // Debug builds only: the code names this device and its relays, which is nobody's business but the user's.
+        if (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+            android.util.Log.d("Cosign", "join code: $code") // for testing on an emulator, where nothing can scan the screen
     }
 
     /**
