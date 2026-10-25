@@ -748,13 +748,29 @@ class Signer(private val context: Context, val slot: String = "0") {
                 waiting.remove(id); reply
             }
             val tok = code?.let { mapOf("token" to it) } ?: emptyMap()
-            val key = ask(mapOf("type" to "enroll_key") + tok)
+            // Some servers take on accounts only for the people their owner follows or
+            // invited (server/join.ts). They say so, and this answers with whose account it
+            // is: a kind 27235 signed by the account itself, naming this server and the key
+            // being enrolled. Nothing is signed or sent unless a server asks for it.
+            val wantsProof = { r: Map<*, *>? -> ((r?.get("reason") as? String) ?: "").startsWith("proof-needed") }
+            var proof: Map<String, Any?> = emptyMap()
+            var key = ask(mapOf("type" to "enroll_key") + tok)
+            if (wantsProof(key)) {
+                note("${s.name} asks whose account this is…")
+                proof = try {
+                    val tags = listOf(listOf("u", "cosign:server?pk=${s.pk}"), listOf("method", "ENROLL"), listOf("p", publicKeyHex(m.sk.hexToBytes())))
+                    mapOf("proof" to signOwn(Event(m.group.groupX, env.now(), 27235, tags, "").withId()).toMap())
+                } catch (e: Exception) {
+                    return@execute note("Couldn't add ${s.name}: it only takes accounts its owner knows, and showing it whose this is didn't work (${e.message ?: "no answer"})", "denied")
+                }
+                key = ask(mapOf("type" to "enroll_key") + tok + proof)
+            }
             if (key?.get("type") != "enroll_key") return@execute note("Couldn't add ${s.name}: ${key?.get("reason") ?: "it didn't answer"}", "denied")
             val k = m.group.members.flatMap { it.idxs }.max() + 1
             val record = mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold, "relays" to relaysNow,
                 "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
                     (it.shares?.let { sh -> mapOf("shares" to sh.map { p -> mapOf("idx" to p.idx, "sharePub" to p.sharePub) }) } ?: emptyMap()) })
-            val enrolled = ask(mapOf("type" to "enroll", "how" to "repair", "key" to key["key"], "group" to record, "k" to k, "name" to s.name) + tok)
+            val enrolled = ask(mapOf("type" to "enroll", "how" to "repair", "key" to key["key"], "group" to record, "k" to k, "name" to s.name) + tok + proof)
             if (enrolled?.get("type") != "enrolled") return@execute note("Couldn't add ${s.name}: ${enrolled?.get("reason") ?: "it didn't answer"}", "denied")
             val via = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return@execute
             send(via.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to key["pk"], "name" to s.name, "relays" to s.relays, "lock" to true, "server" to true, "k" to k))
@@ -1666,6 +1682,11 @@ class Signer(private val context: Context, val slot: String = "0") {
             "take_out_failed", "forget_failed" -> { ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "Not done: ${msg["reason"]}")) } }
             "add_failed" -> { note("Couldn't add the device: ${msg["reason"]}", "denied"); ui.update { it.copy(error = "Couldn't add the device: ${msg["reason"]}") } }
             "connected" -> onConnected(msg)
+            // Whoever runs that server stopped serving this account, and is deleting its piece.
+            "server_left" -> {
+                note("${from.name} stopped serving this account. Add another server, so you always have one to sign with.", "denied")
+                ui.update { it.copy(error = "${from.name} stopped serving this account. Open Servers and add another one.") }
+            }
             "cosign_res", "ecdh_res" -> (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }
             "logged" -> (msg["entry"] as? Map<*, *>)?.let { signedLog.appendText(Json.stringify(it) + "\n") }
             "deleting" -> {

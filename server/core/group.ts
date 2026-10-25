@@ -1698,6 +1698,17 @@ export function openGroup(loaded: Loaded, io: Io) {
     },
     /** Delete everything for it here, for real (io.forget). */
     forget: () => io.forget?.(),
+    /**
+     * Whoever runs this server stopped serving this account: its devices are told, so the
+     * app can say so and offer another server, and then everything here goes. Nothing is
+     * held back — a server can always stop; the account still has its other servers (and
+     * its paper backup), and the page says so before anyone presses it.
+     */
+    leave: () => {
+      toDevices({ type: 'server_left', pk: me.pk, name: me.name });
+      note('whoever runs this server stopped serving this account; deleting its pieces');
+      setTimeout(() => void io.forget?.(), 2000);
+    },
     revoke: (pk: string, where: string) => revoke(pk, where),
   };
 }

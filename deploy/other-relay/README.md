@@ -23,7 +23,8 @@ docker compose -f compose.host.yaml up -d
 ```
 
 This shares the machine's network, so the server reaches the relay on localhost. It
-starts as `invite` (private): a box like this is often at home. `COSIGN_ENROLL=open`
+starts private — its own page says who can join (only you, the people you follow, the
+people you invite, or anyone), and your phone joins by the code there. `COSIGN_ENROLL=open`
 lets strangers store pieces of their keys there, from your home IP; a public server
 belongs on a VPS, with its outbound connections limited. Its page
 listens on `127.0.0.1:8711` only. It needs Linux: Docker Desktop on macOS and Windows

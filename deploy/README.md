@@ -46,8 +46,9 @@ It only connects out, so it needs no open port, no domain and no TLS of its own.
 | `COSIGN_OPERATOR` | your npub. The server names you in its announcement (kind 30243). |
 | `RELAY_URL` | your relay's public `wss://` address, as phones and sites reach it |
 | `RELAY_INTERNAL`, `RELAY_NETWORK` | where this container reaches the relay inside Docker, and that network's name |
-| `COSIGN_ENROLL` | `open` (the default beside a relay): anyone can create an account with it. `invite`: only `COSIGN_INVITES`. Open means strangers' key pieces on that machine: it belongs on a VPS, with its outbound connections limited, not at home. |
-| `COSIGN_INVITES` | device pubkeys (hex, comma separated) allowed when `invite` |
+| `COSIGN_ENROLL` | who can join: `open` (the default beside a relay) anyone · `invite` the npubs in `COSIGN_INVITES` · `follows` whoever the owner follows · `owner` nobody but the person running it. Open means strangers' key pieces on that machine: it belongs on a VPS, with its outbound connections limited, not at home. Leave it out and the server's own page chooses. |
+| `COSIGN_INVITES` | npubs (or device pubkeys in hex), comma separated, allowed when `invite` |
+| `COSIGN_OWNER` | your npub, for `follows` (defaults to `COSIGN_OPERATOR`) |
 | `EXTRA_RELAYS` | other relays it uses besides yours (default `wss://nos.lol,wss://relay.primal.net`) |
 | `COSIGN_HTTPS` | its public page, if you put one behind a login (optional) |
 | `COSIGN_VERSION` | image tag, default `0.12` (`ghcr.io/sybenx/cosign-server`) |
@@ -164,12 +165,21 @@ server's host key (its identity to devices, and where they write to enroll), the
 of its page, its relays, and who may enroll:
 
 ```json
-{ "enroll": "invite", "invites": ["<device pubkey hex>"] }
+{ "enroll": "invite", "invites": ["<npub, as hex>"], "owner": "<your npub, as hex>" }
 ```
 
-`"invite"` (the default, with nobody invited) takes on groups only for the devices
-listed; `"open"` takes anyone's. The list is read again for each enrollment, so it can
-change without a restart. `COSIGN_ENROLL` and `COSIGN_INVITES` override the file.
+Four values, all of them set from the server's own page (**Who can join**) or here:
+`"owner"` (the default on a fresh server) takes nobody but the person running it;
+`"follows"` takes the people `owner` follows; `"invite"` takes the npubs listed; `"open"`
+takes anyone. In every one of them, **a code from the server's page always works** — that
+is how your own phone joins, and the only way a brand-new account can, since a key that
+doesn't exist yet has no npub to go by.
+
+Someone bringing an account they already have proves it: the app signs a kind 27235 event
+naming this server and the key it is enrolling with, and the server checks that against
+the list (or the owner's kind 3 follows, kept for ten minutes). The file is read again for
+each enrollment, so it can change without a restart. `COSIGN_ENROLL`, `COSIGN_INVITES` and
+`COSIGN_OWNER` override the file, and the page says so when they do.
 
 Upgrading a server that ran one group: nothing to do. An existing `/data/a` is served as
 it is, with the same key and share; the first start adds `host.json` and `groups/`.

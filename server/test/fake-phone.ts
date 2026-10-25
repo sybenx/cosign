@@ -7,7 +7,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { getEventHash } from 'nostr-tools/pure';
+import { getEventHash, finalizeEvent } from 'nostr-tools/pure';
 import * as F from '../frost.ts';
 import * as Sig from '../sign.ts';
 import { DkgRun } from '../dkg.ts';
@@ -16,6 +16,7 @@ import { restoreShares } from '../backup.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { nip19 } from 'nostr-tools';
 import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../net.ts';
+import { proofTemplate } from '../join.ts';
 
 const args = process.argv.slice(2);
 const deny = args.includes('--deny');
@@ -54,7 +55,7 @@ let making: { id: string; sk: string; pk: string } | null = null; // a paper bac
 let growing: { id: string; welcome?: any; server?: string; sigmas: [number, number, string][] } | null = null;
 const W = createRequire(import.meta.url)('../frost-wasm/cosign_frost.js');
 /** Ask a server's host key for a member key, enroll it to wait for its share, and vouch for it with a server in the key. */
-async function addServer(x: { host: string; relays: string[]; name?: string; token?: string }) {
+async function addServer(x: { host: string; relays: string[]; name?: string; token?: string; proveWith?: string }) {
   await pool.add(x.relays);
   const ask = (m: any) => new Promise<any>(resolve => {
     m.id = F.bytesToHex(F.randomBytes(6));
@@ -64,11 +65,17 @@ async function addServer(x: { host: string; relays: string[]; name?: string; tok
     hostWait.set(m.id, (r: any) => { clearInterval(again); resolve(r); });
   });
   const tok = x.token ? { token: x.token } : {};
-  const key = await ask({ type: 'enroll_key', ...tok });
+  // Who this account belongs to, for a server that takes on the people its owner follows
+  // or invited (join.ts). The app signs this with the account it already has; here it's a
+  // plain key the test invited. Asked for only when the server says it needs one.
+  const proof = () => x.proveWith ? { proof: finalizeEvent(proofTemplate(x.host, pk, Math.floor(Date.now() / 1000)), F.hexToBytes(x.proveWith)) } : {};
+  const wants = (r: any) => String(r?.reason ?? '').startsWith('proof-needed');
+  let key = await ask({ type: 'enroll_key', ...tok });
+  if (wants(key) && x.proveWith) { say('this server wants to know whose account this is'); key = await ask({ type: 'enroll_key', ...tok, ...proof() }); }
   if (key.type !== 'enroll_key') return say(`ADD SERVER FAILED: ${key.reason ?? key.type}`);
   const k = Math.max(...st.group.members.flatMap((m: any) => m.shares?.map((s: any) => s.idx) ?? [m.idx])) + 1;
   const record = { groupX: st.group.groupX, threshold: st.group.threshold, relays: [...new Set([...st.group.relays, ...x.relays])], members: st.group.members };
-  const enrolled = await ask({ type: 'enroll', how: 'repair', key: key.key, group: record, k, name: x.name ?? 'New server', ...tok });
+  const enrolled = await ask({ type: 'enroll', how: 'repair', key: key.key, group: record, k, name: x.name ?? 'New server', ...tok, ...proof() });
   if (enrolled.type !== 'enrolled') return say(`ADD SERVER FAILED: ${enrolled.reason ?? enrolled.type}`);
   send(servers()[0].pk, { type: 'add_device', id: F.bytesToHex(F.randomBytes(6)), pk: key.pk, name: x.name ?? 'New server', relays: x.relays, lock: true, server: true, k });
   st.group.relays = record.relays; writeFileSync(stateFile, JSON.stringify(st, null, 2));
@@ -167,6 +174,8 @@ function handle(msg: any, from: string) {
   if (msg.type === 'test_report' && from === pk) { if (st.group.members.some((m: any) => m.idx === Number(msg.idx) && !m.removed)) rf.report(Number(msg.idx)); return; }
   // Adding a server to this key ("Add a server"): {host, relays, name} of a server taking new accounts.
   if (msg.type === 'test_add_server' && from === pk) { void addServer(msg); return; }
+  // Whoever runs a server stopped serving this account (its page): say so, as the app would.
+  if (msg.type === 'server_left') { say(`SERVER LEFT: ${msg.name}`); return; }
   // Likewise for making a paper backup: written to PAPER_FILE.
   if (msg.type === 'test_backup' && from === pk) {
     const bsk = F.bytesToHex(F.randomBytes(32));

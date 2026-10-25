@@ -28,6 +28,7 @@ import { loadGroup, groupFiles, isGroupDir, createGroup, writeJson } from './fil
 import { groupPage, hostPage, esc } from './page.ts';
 import { checkClock, trustedNow } from './clock.ts';
 import { relayTarget, pushTarget, pinnedAgent, looksPublic } from './egress.ts';
+import { mayJoin, followList, modeOf, modeName, announced, MODES, type Mode } from './join.ts';
 import { fetch as pinnedFetch } from 'undici';
 
 const args = process.argv.slice(2);
@@ -55,25 +56,35 @@ const DEFAULT_RELAYS = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.ne
 // lists it back from their own key (kind 10243, site/src/servers.ts operatorServers).
 // `https`: its public page, if it has one. COSIGN_OPERATOR and COSIGN_HTTPS win here too.
 
-interface HostConfig { sk: string; pk: string; port: number; relays: string[]; enroll: 'open' | 'invite'; invites: string[]; operator?: string; https?: string;
+interface HostConfig { sk: string; pk: string; port: number; relays: string[]; enroll: Mode; invites: string[]; operator?: string;
+  /** Whose server it is: the npub whose follows may join, in that mode (the operator's, by default). */
+  owner?: string; https?: string;
   /** One-time codes from this server's page ("Add this server to your account"): COSIGN.md §9.6. */
   adds?: Record<string, { at: number; used?: number }> }
 const hostFile = root ? join(root, 'host.json') : null;
 let warnedOperator = false;
+/** An npub or hex key as hex, 'bad' if it is neither, undefined if there was nothing. */
+const asKey = (v: string | undefined): string | undefined => {
+  const k = v?.trim();
+  if (!k) return undefined;
+  if (k.startsWith('npub1')) { try { const d = nip19.decode(k).data as string; return /^[0-9a-f]{64}$/.test(d) ? d : 'bad'; } catch { return 'bad'; } }
+  return /^[0-9a-f]{64}$/.test(k) ? k : 'bad';
+};
 function hostConfig(): HostConfig | null {
   if (!hostFile) return null;
   const c = JSON.parse(readFileSync(hostFile, 'utf8')) as HostConfig;
-  if (process.env.COSIGN_ENROLL) c.enroll = process.env.COSIGN_ENROLL === 'open' ? 'open' : 'invite';
+  if (process.env.COSIGN_ENROLL) c.enroll = modeOf(process.env.COSIGN_ENROLL);
+  c.enroll = modeOf(c.enroll);
   if (process.env.COSIGN_INVITES) c.invites = process.env.COSIGN_INVITES.split(',').map(s => s.trim()).filter(Boolean);
-  c.invites ??= [];
+  c.invites = (c.invites ?? []).map(asKey).filter((k): k is string => !!k && k !== 'bad');
   if (process.env.COSIGN_OPERATOR) c.operator = process.env.COSIGN_OPERATOR;
+  if (process.env.COSIGN_OWNER) c.owner = process.env.COSIGN_OWNER;
   if (process.env.COSIGN_HTTPS) c.https = process.env.COSIGN_HTTPS;
   const relays = process.env.COSIGN_RELAYS?.split(',').map(r => r.trim()).filter(Boolean);
   if (relays?.length) c.relays = relays;
-  if (c.operator?.startsWith('npub1')) {
-    try { c.operator = nip19.decode(c.operator).data as string; } catch { c.operator = 'bad'; }
-  }
-  if (c.operator && !/^[0-9a-f]{64}$/.test(c.operator)) { if (!warnedOperator) console.log("COSIGN_OPERATOR isn't a valid npub or hex key; not announcing"); warnedOperator = true; delete c.operator; }
+  c.operator = asKey(c.operator); c.owner = asKey(c.owner);
+  if (c.operator === 'bad') { if (!warnedOperator) console.log("the operator isn't a valid npub or hex key; not announcing"); warnedOperator = true; delete c.operator; }
+  if (c.owner === 'bad') delete c.owner;
   return c;
 }
 if (root && hostFile && !existsSync(hostFile)) {
@@ -82,7 +93,9 @@ if (root && hostFile && !existsSync(hostFile)) {
   writeJson(hostFile, {
     sk, pk: pubOf(sk), port: Number(portArg ?? process.env.COSIGN_PORT ?? 8711),
     relays: process.env.COSIGN_RELAYS?.split(',').map(r => r.trim()).filter(Boolean) ?? DEFAULT_RELAYS,
-    enroll: 'invite', invites: [],
+    // A fresh server takes only its owner (plus a code from its page). One started with
+    // an invite list meant "the people I invite" before there were four modes, and still does.
+    enroll: modeOf(process.env.COSIGN_ENROLL ?? (process.env.COSIGN_INVITES ? 'invite' : 'owner')), invites: [],
   }, true);
 }
 const host = hostConfig();
@@ -192,6 +205,8 @@ function onEvent(e: Event) {
 // --- Taking on a new group (core/enroll.ts) -----------------------------------------
 
 const hostParts = new Parts();
+/** Who the owner follows, for that mode (join.ts): asked of the relays, kept ten minutes. */
+const follows = followList(query);
 const enrolling = new Set<string>();
 /** When each recent enrollment happened, for the hourly cap. */
 const enrolledAt: number[] = [];
@@ -206,8 +221,12 @@ async function onHostMessage(e: Event) {
   if (!msg.type.startsWith('enroll')) return;
   const cfg = hostConfig()!; // fresh: the invite list and the codes may have changed
   const code = typeof msg.token === 'string' && liveAdd(cfg, msg.token) ? msg.token : null;
-  if (cfg.enroll !== 'open' && !cfg.invites.includes(e.pubkey) && !code)
-    return reply({ type: 'enroll_failed', id: msg.id, reason: 'not-invited: This server only takes on accounts for people it invited. Open its page for a code.' });
+  const verdict = await mayJoin({
+    mode: cfg.enroll, code: !!code, hostPk: cfg.pk, devicePk: e.pubkey, invites: cfg.invites,
+    owner: cfg.owner ?? cfg.operator, relays: cfg.relays, now: Date.now(),
+    ...('proof' in msg ? { proof: msg.proof } : {}),
+  }, follows);
+  if (!verdict.ok) return reply({ type: 'enroll_failed', id: msg.id, reason: verdict.reason });
   if (msg.type === 'enroll_key') return reply({ type: 'enroll_key', id: msg.id, ...newMemberKey(cfg.sk) });
   if (msg.type !== 'enroll') return;
   // An open server is still one machine: so many groups, so many new ones an hour.
@@ -236,7 +255,8 @@ async function onHostMessage(e: Event) {
       pool.setFilters(filters());
       x.g.start();
       if (code) useAddCode(code);
-      console.log(`[host] took on ${state.group.npub ?? "a key still to be made"} as ${x.g.name} (${x.id}), for ${e.pubkey.slice(0, 8)}…${code ? ' (by a code from its page)' : ''}`);
+      const how = code ? ' (by a code from its page)' : verdict.as ? ` (for ${verdict.as.slice(0, 8)}…, proved)` : '';
+      console.log(`[host] took on ${state.group.npub ?? "a key still to be made"} as ${x.g.name} (${x.id}), for ${e.pubkey.slice(0, 8)}…${how}`);
       reply({ type: 'enrolled', id: msg.id, pk, group: x.id });
     } finally { enrolling.delete(pk); }
   } catch (err: any) {
@@ -263,7 +283,7 @@ function addCode(): string | null {
   for (const [t, a] of Object.entries(adds)) if (!a.used && Date.now() - a.at < ADD_CODE_LIFE) return uriFor(cfg, t);
   const t = bytesToHex(randomBytes(16));
   const kept = Object.fromEntries(Object.entries(adds).filter(([, a]) => Date.now() - a.at < 24 * ADD_CODE_LIFE).slice(-50));
-  saveHost({ ...cfg, adds: { ...kept, [t]: { at: Date.now() } } });
+  saveHost({ adds: { ...kept, [t]: { at: Date.now() } } });
   return uriFor(cfg, t);
 }
 const uriFor = (cfg: HostConfig, t: string) =>
@@ -273,13 +293,78 @@ const uriFor = (cfg: HostConfig, t: string) =>
 function useAddCode(t: string) {
   const cfg = hostConfig();
   if (!cfg?.adds?.[t]) return;
-  saveHost({ ...cfg, adds: { ...cfg.adds, [t]: { ...cfg.adds[t], used: Date.now() } } });
+  saveHost({ adds: { ...cfg.adds, [t]: { ...cfg.adds[t], used: Date.now() } } });
 }
 
-/** Keep the file's own fields (sk, port…) and write back what changed; env overrides are never written. */
-function saveHost(next: HostConfig) {
+/** Write back these fields of host.json, keeping the rest (sk, port…); what the environment sets is never written. */
+function saveHost(patch: Partial<HostConfig>) {
   const onDisk = JSON.parse(readFileSync(hostFile!, 'utf8'));
-  writeJson(hostFile!, { ...onDisk, adds: next.adds }, true);
+  writeJson(hostFile!, { ...onDisk, ...patch }, true);
+}
+
+// --- Who can join, from the page (join.ts) ---------------------------------------------
+
+const envPinned = () => ({ enroll: !!process.env.COSIGN_ENROLL, owner: !!process.env.COSIGN_OWNER, invites: !!process.env.COSIGN_INVITES });
+const npubOf = (k: string | null | undefined) => { try { return k ? nip19.npubEncode(k) : null; } catch { return null; } };
+const joinStatus = (c: HostConfig) => ({
+  enroll: c.enroll, name: modeName(c.enroll), announced: announced(c.enroll),
+  owner: npubOf(c.owner ?? c.operator), ownerIsOperator: !c.owner && !!c.operator,
+  invites: c.invites.map(npubOf).filter(n => !!n) as string[], pinned: envPinned(),
+});
+
+/** The "Who can join" card, saved. Anything the environment sets is left as it is. */
+function setJoin(body: any): object {
+  const cfg = hostConfig();
+  if (!cfg) return { ok: false, reason: 'This server has no settings of its own.' };
+  const pinned = envPinned();
+  const patch: Partial<HostConfig> = {};
+  if (body?.enroll !== undefined && !pinned.enroll) {
+    if (!MODES.includes(body.enroll)) return { ok: false, reason: 'That is not one of the four.' };
+    patch.enroll = body.enroll;
+  }
+  if (body?.owner !== undefined && !pinned.owner) {
+    const k = asKey(String(body.owner));
+    if (k === 'bad') return { ok: false, reason: 'That is not an npub.' };
+    patch.owner = k ?? '';
+  }
+  if (Array.isArray(body?.invites) && !pinned.invites) {
+    const keys = [...new Set(body.invites.map((v: any) => asKey(String(v))))];
+    if (keys.includes('bad')) return { ok: false, reason: 'One of those is not an npub.' };
+    patch.invites = keys.filter((k): k is string => !!k).slice(0, 500);
+  }
+  if (!Object.keys(patch).length) return { ok: false, reason: 'Nothing here to change.' };
+  saveHost(patch);
+  const now = hostConfig()!;
+  console.log(`[host] who can join: ${modeName(now.enroll)}${now.enroll === 'invite' ? ` (${now.invites.length} invited)` : ''}`);
+  // Its announcement says "open" or "invite" (§9.5), so a change to that is published.
+  if (patch.enroll && now.operator) void announce().catch(() => {});
+  return { ok: true, ...joinStatus(now) };
+}
+
+// --- The accounts it serves, as whoever runs it sees them -------------------------------
+//
+// A name and picture come from each account's own kind 0 on this server's relays, kept
+// half an hour. The browser loads a picture straight from wherever it lives, so only
+// https ones are passed on, and the page asks for them without a referrer.
+
+const profiles = new Map<string, { name: string; picture: string; at: number }>();
+const PROFILE_AGE = Number(process.env.COSIGN_PROFILE_AGE ?? 1800) * 1000;
+async function fetchProfiles() {
+  const cfg = hostConfig();
+  if (!cfg) return;
+  const want = [...new Set([...groups.values()].map(x => x.g.groupX).filter((p): p is string => !!p))]
+    .filter(p => Date.now() - (profiles.get(p)?.at ?? 0) > PROFILE_AGE).slice(0, 200);
+  if (!want.length) return;
+  const evs = await query([...cfg.relays, ...DISCOVERY], { kinds: [0], authors: want }, 5000).catch(() => []);
+  const newest = new Map<string, Event>();
+  for (const e of evs) if ((newest.get(e.pubkey)?.created_at ?? 0) < e.created_at) newest.set(e.pubkey, e);
+  for (const p of want) {
+    const had = profiles.get(p), e = newest.get(p);
+    if (!e) { profiles.set(p, { name: had?.name ?? '', picture: had?.picture ?? '', at: Date.now() }); continue; }
+    let name = '', picture = '';
+    try { const c = JSON.parse(e.content); name = String(c.display_name || c.name || '').slice(0, 48); picture = String(c.picture ?? ''); } catch { /* not JSON */ }
+    profiles.set(p, { name, picture: /^https:\/\/[^\s"']{1,300}$/.test(picture) ? picture : '', at: Date.now() });
+  }
 }
 
 // --- Announcing itself (COSIGN.md §9.5) ------------------------------------------------
@@ -294,7 +379,7 @@ async function announce(): Promise<boolean> {
   const e = finalizeEvent({
     kind: 30243, created_at: Math.floor(Date.now() / 1000),
     tags: [['d', 'cosign-server'], ['p', cfg.operator, '', 'operator']],
-    content: JSON.stringify({ relays: cfg.relays, https: cfg.https ?? null, enroll: cfg.enroll, version: VERSION }),
+    content: JSON.stringify({ relays: cfg.relays, https: cfg.https ?? null, enroll: announced(cfg.enroll), version: VERSION }),
   }, hexToBytes(cfg.sk));
   return await publishOut([...cfg.relays, ...DISCOVERY], e) > 0;
 }
@@ -309,13 +394,43 @@ async function announceLoop() {
 
 const groupStatus = (x: Served) => ({ ...x.g.status(), version: VERSION, relays: pool.status(relaysOf(x)) });
 function hostStatus() {
+  const cfg = hostConfig();
   return {
-    version: VERSION, started: startedAt, host: host?.pk ?? null, enroll: host?.enroll ?? null, relays: pool.status(),
+    version: VERSION, started: startedAt, host: host?.pk ?? null, enroll: cfg?.enroll ?? null, relays: pool.status(),
+    join: cfg ? joinStatus(cfg) : null,
     groups: [...groups.values()].map(x => {
       const s = x.g.status();
-      return { id: x.id, me: esc(s.me), npub: s.npub, coordinating: s.coordinating, pairing: s.pairing, signedToday: s.signedToday, members: s.members.length, online: s.members.filter(m => m.online).length, sites: s.sites.length };
+      const p = x.g.groupX ? profiles.get(x.g.groupX) : undefined;
+      // Whether the person would still have enough to sign if this server went away.
+      const live = (x.g.state.group.members as { role?: string; removed?: boolean; idx: number }[]).filter(m => !m.removed);
+      const others = live.filter(m => m.role === 'server' && m.idx !== x.g.state.self.idx).length;
+      return { id: x.id, me: esc(s.me), npub: s.npub, name: esc(p?.name ?? ''), picture: p?.picture ?? '',
+        coordinating: s.coordinating, pairing: s.pairing, signedToday: s.signedToday,
+        members: s.members.length, online: s.members.filter(m => m.online).length, sites: s.sites.length,
+        devices: live.filter(m => m.role === 'phone' || m.role === 'device').length, otherServers: others };
     }),
   };
+}
+
+/**
+ * A POST from this page itself, and not from another site open in the same browser.
+ * Browsers say where a request came from (Sec-Fetch-Site), and a cross-site page can't
+ * send JSON without a preflight this server never answers. Anything without that header
+ * (curl, the tests) is the person at the machine, which is who the page is for.
+ */
+function fromThisPage(req: import('node:http').IncomingMessage): boolean {
+  const site = req.headers['sec-fetch-site'];
+  if (typeof site === 'string' && site !== 'same-origin' && site !== 'none') return false;
+  const origin = req.headers.origin;
+  if (origin && origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) return false;
+  return String(req.headers['content-type'] ?? '').startsWith('application/json');
+}
+
+/** A POST body, as JSON (the page's own, behind whatever login the host has). */
+async function readBody(req: import('node:http').IncomingMessage): Promise<any> {
+  let body = '';
+  for await (const c of req) { body += c; if (body.length > 200_000) return null; }
+  try { return JSON.parse(body || '{}'); } catch { return null; }
 }
 
 type Res = import('node:http').ServerResponse;
@@ -339,7 +454,19 @@ if (host) listen(host.port, async (req, res) => {
   const path = (req.url ?? '/').split('?')[0];
   if (path === '/status') return json(res, hostStatus());
   if (path === '/add-code') return json(res, { uri: addCode() });
-  if (path === '/') return html(res, await hostPage({ pk: host.pk, enroll: host.enroll, relays: host.relays, version: VERSION, addUri: addCode() }));
+  if ((path === '/settings' || path === '/remove-account') && req.method === 'POST' && !fromThisPage(req)) {
+    res.statusCode = 403; return json(res, { ok: false, reason: 'Not from this page.' });
+  }
+  if (path === '/settings' && req.method === 'POST') return json(res, setJoin(await readBody(req)));
+  if (path === '/remove-account' && req.method === 'POST') {
+    const b = await readBody(req);
+    const x = typeof b?.id === 'string' ? groups.get(b.id) : undefined;
+    if (!x) { res.statusCode = 404; return json(res, { ok: false, reason: 'No such account here.' }); }
+    console.log(`[${x.label}] removed from this server by whoever runs it`);
+    x.g.leave();
+    return json(res, { ok: true });
+  }
+  if (path === '/') return html(res, await hostPage({ pk: host.pk, relays: host.relays, version: VERSION, addUri: addCode() }));
   const m = /^\/g\/([0-9a-f]{16})(\/.*)?$/.exec(path);
   const x = m && groups.get(m[1]);
   if (!x) { res.statusCode = 404; return res.end(); }
@@ -368,4 +495,6 @@ const ageOut = () => { for (const x of [...groups.values()]) { const why = x.g.s
 setInterval(ageOut, Number(process.env.COSIGN_AGE_EVERY ?? 3600_000));
 setTimeout(ageOut, 60_000);
 if (host?.operator) setTimeout(() => void announceLoop(), 5000);
-if (host) console.log(`[host] ${host.pk} · ${groups.size} group${groups.size === 1 ? '' : 's'} · enroll: ${host.enroll}${host.enroll === 'invite' ? ` (${host.invites.length} invited)` : ''}`);
+// Names and pictures for the accounts list, every ten minutes (each one asked for every half hour).
+if (host) { setTimeout(() => void fetchProfiles(), 8000); setInterval(() => void fetchProfiles(), Number(process.env.COSIGN_PROFILES_EVERY ?? 600_000)); }
+if (host) console.log(`[host] ${host.pk} · ${groups.size} group${groups.size === 1 ? '' : 's'} · who can join: ${modeName(host.enroll)}${host.enroll === 'invite' ? ` (${host.invites.length} invited)` : ''}`);

@@ -21,7 +21,9 @@ items below "Planned, not yet specified".
    paper or two devices rebuild the key locally, after the lock and a warning.
 
 Smaller, any 0.12.x: **Report** in Discover's ⋯ menu (hide at once, report to the feed's
-curation).
+curation); **search** in Marble, led by the NIP-50 relays that answer fastest (syb.lol,
+relay.ditto.pub), follows first, pasted npub/nevent/NIP-05 resolved, ranked by exact name,
+a checked NIP-05 and the social graph — taking what works from the user's Wisp fork.
 
 ## Paused
 
@@ -66,6 +68,12 @@ phone is a home screen like a search app's. One screen, no tabs:
 Before building it: a short screen-by-screen plan, checked with the user.
 
 ## Done, for reference
+
+**Who can join a server** (built, in the next release): its page sets one of four — only me, people I follow,
+people I invite, anyone — and lists the accounts it serves, with a way to stop serving
+one. Someone bringing an account they already have proves whose it is with a signed kind
+27235; a code from the page still works in every mode, and is the only way in for a
+brand-new account.
 
 Several keys on one phone (0.11.1); adding a device with two or three parties (repair
 with extra servers); Add a server (0.11.2).

@@ -15,7 +15,8 @@ services:
     network_mode: host
     environment:
       COSIGN_OPERATOR: ${COSIGN_OPERATOR:?put your npub in .env}
-      COSIGN_ENROLL: ${COSIGN_ENROLL:-invite}
+      # Left to the server's own page (Who can join) unless .env says otherwise.
+      COSIGN_ENROLL: ${COSIGN_ENROLL:-}
       COSIGN_INVITES: ${COSIGN_INVITES:-}
       COSIGN_HTTPS: ${COSIGN_HTTPS:-}
       COSIGN_PERSONAL: "0"

@@ -113,7 +113,9 @@ async function ask(from: string, hostPk: string, msg: any) {
 }
 
 const refused = await ask(stranger, host1.pk, { type: 'enroll_key' });
-check('a host that takes only invited devices turns away anyone else', refused.type === 'enroll_failed' && refused.reason.startsWith('not-invited'), refused.reason);
+// A device nobody invited is asked whose account it is (server/join.ts); proving it would
+// still not get it in, since neither that key nor its npub is on the list.
+check('a host that takes only invited devices turns away anyone else', refused.type === 'enroll_failed' && refused.reason.startsWith('proof-needed'), refused.reason);
 const [key1, key2] = await Promise.all([ask(dealer, host1.pk, { type: 'enroll_key' }), ask(dealer, host2.pk, { type: 'enroll_key' })]);
 check('both hosts hand out a member key for the new group', key1.type === 'enroll_key' && key2.type === 'enroll_key' && key1.pk !== key2.pk);
 
