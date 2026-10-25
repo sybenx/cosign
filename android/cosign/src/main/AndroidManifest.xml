@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application>
+        <!-- Everything that holds or uses the key runs in its own process, ":signer" (Proc.kt):
+             the shares, FROST, the relays a key's servers use, NIP-55 and site sign-in. The
+             app's own process reaches it only through SignerService. An app that uses this
+             library puts its screens for the signer (Cosign.Host, Nip55Request) in ":signer" too. -->
+        <service
+            android:name="cc.aaro.cosign.SignerService"
+            android:process=":signer"
+            android:exported="false" />
+
+        <!-- Android signer (NIP-55), in the background: apps on this phone that the person has
+             connected sign through the app, without it opening. Anything that needs the person
+             answers null, and the asking app opens the app's nostrsigner: activity (Nip55Request). -->
+        <provider
+            android:name="cc.aaro.cosign.Nip55Provider"
+            android:process=":signer"
+            android:exported="true"
+            android:authorities="${applicationId}.GET_PUBLIC_KEY;${applicationId}.SIGN_EVENT;${applicationId}.NIP04_ENCRYPT;${applicationId}.NIP04_DECRYPT;${applicationId}.NIP44_ENCRYPT;${applicationId}.NIP44_DECRYPT;${applicationId}.DECRYPT_ZAP_EVENT" />
+    </application>
+</manifest>

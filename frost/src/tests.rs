@@ -1,11 +1,11 @@
-// Shares from Cosign's earlier dealer (android/app/src/test/resources/frost.json) sign
+// Shares from Cosign's earlier dealer (android/cosign/src/test/resources/frost.json) sign
 // with the library and give signatures that verify as plain BIP-340 under the group key.
 
 use super::*;
 use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey as SchnorrKey};
 
 fn vectors() -> serde_json::Value {
-    serde_json::from_str(include_str!("../../android/app/src/test/resources/frost.json")).unwrap()
+    serde_json::from_str(include_str!("../../android/cosign/src/test/resources/frost.json")).unwrap()
 }
 
 fn group_of(v: &serde_json::Value) -> (Group, Vec<(u16, String)>) {

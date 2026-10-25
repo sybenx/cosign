@@ -1,56 +1,70 @@
 # Cosign (beta)
 
-Sign in to apps and sites with your phone, without your account sitting whole in any one
-place. **It's split into pieces: each of your devices holds 3, each server 1, and it
-takes 4 to act for you.** The device you're using plus any one server can; the servers
-on their own never can. Lose a device and you report it; lose every device and a paper
-backup gets you back in, after a wait your other devices can stop.
+A protocol and library for Nostr accounts that no one place holds whole. **A key is split
+into FROST shares: each of your devices holds 3, each server 1, a paper backup 2, and it
+takes 4 to sign.** A device plus any one server can sign; the servers on their own never
+can. Lose a device and you report it, and the remaining shares are refreshed; lose every
+device and the paper backup gets you back in, after a wait your other devices can stop.
 
 **Beta.** The signing maths is the Zcash Foundation's audited FROST library. Cosign's own
 protocol around it hasn't had an outside review yet.
 
-## Marble, and any other app
+This repository is the protocol: the spec, the server, the Cloudflare Worker, the web
+pieces sites use, and the Android library apps build on. It has no app of its own.
 
-**Marble is Cosign's reference app**, for Android, and a proof of concept. It's a sign-in
-app with a home screen: search, a Discover feed, and a bell for replies, mentions and
-anything that needs you. Your account, devices, sites and backups are behind your
-picture.
+- [The design](docs/COSIGN.md) and [the wire format](docs/NIP-XX.md).
+- `frost/`: FROST shares and signing (Rust), for the server (WebAssembly) and the phone (JNI).
+- `server/`: the Cosign server; `worker/`: the same as a Cloudflare Worker; `deploy/`:
+  running one beside popular relays.
+- `site/`: what a site uses to sign people in (and cosign.aaro.cc/servers); `link/`: cosign.aaro.cc.
+- `android/cosign`: the Android library. `android/nip55tester`: a stand-in for another
+  app, for testing NIP-55 on an emulator.
 
-**Any app can implement Cosign.** The protocol is open: see [the design](docs/COSIGN.md)
-and [the wire format](docs/NIP-XX.md). Apps that build it in will be featured above
-Marble wherever a site suggests a sign-in app.
+## Apps
 
-## What it does
+**Any app can build Cosign in.** Apps that do will be featured above Marble wherever a
+site suggests a sign-in app.
 
-- **Create an account that no one ever holds whole**: your phone and your servers make
-  it together. Or **bring an account you already have** over from a web app in one scan.
-- **Sign in to sites** by scanning their code and tapping *Connect*. Sites with their own
-  older style of sign-in code work the same way. Each site gets access of its own, which
-  you remove with one tap.
-- **Other apps on your phone sign in through Marble.**
-- **Everyday things go through at once.** Destructive ones — most of the people you
-  follow gone, your profile wiped, one of your lists emptied, a pile of deletions, a
-  request to erase everything — ask you first, judged by what they do, not what they are.
-- **Undo.** Every change to your lists is kept, with Undo. You can undo everything one
-  site did in one go. Deletions wait 10 seconds, and Marble keeps a copy with *Post
-  again*.
-- **Nothing dated in the future** goes out if it's a list or your profile, so one wrong
-  clock can't block every later change.
-- **Add your other devices** (a second phone, a tablet) by scanning a code and
-  confirming with your phone's lock. Only the new device ever holds its pieces.
-- **Report a device lost**, with your lock: every server blocks it at once, and your
-  remaining pieces are renewed so its pieces are worthless. It's final; a device removed
-  by mistake is simply added again.
-- **Paper backup**: a code to print, save as a PDF or keep in a password manager. With
-  any one of your devices it works at once; with two servers it gets your account back
-  after a 3-day wait that any of your devices can cancel.
-- **Take your account out** whenever you like, to use without Cosign, or have the
-  servers delete their pieces. Both are announced to all your devices and can be
-  cancelled.
+[Marble](https://github.com/sybenx/marble) is one app built on the library, for Android,
+with a browser extension. It uses Cosign only through the library, the way any other app
+would.
+
+## The Android library
+
+`android/cosign` (Gradle `cc.aaro.cosign:cosign`) holds the whole signing side of an
+Android app: the shares (sealed with the Android Keystore), FROST, making and joining a
+key, the member logic and its relays, refresh, the paper backup, site sign-in (NIP-46),
+and NIP-55 for other apps on the phone. It draws nothing: what needs the person's answer
+reaches the app through callbacks, and the app draws it.
+
+Everything that holds or uses a share runs in a process of its own, `:signer` (the
+library's manifest puts its components there). The app's own process, which shows
+strangers' posts and pictures, only ever asks it, through `SignerService`, and never sees
+a share.
+
+- **Setting up:** call `Cosign.init(application, host)` from your `Application.onCreate`
+  (it runs in both processes). In the app's process, `Cosign.accounts` is the list of
+  accounts on the phone; each one (`Phone`) has its state as a `StateFlow<Ui>` with the
+  secrets taken out, and actions by name (`createAccount`, `scanned`, `accept`, `signOwn`,
+  …). In `:signer`, `Cosign.signers` holds the keys themselves (`Signer`).
+- **What the library asks of the app:**
+  - `Cosign.Host.reveal(context, slot)`: show the paper backup's code or a taken-out key,
+    from an activity of the app's in `:signer`.
+  - `Signer.Listener`: a request that waits for the person's OK (`onAsk`, `onBatch`), a
+    deletion in its few seconds (`onDeleting`), something to say (`onNotice`), the
+    connection (`onStatus`). The app answers with `decide`, `decideBatch` and
+    `cancelDeletion`, and shows these as notifications, from a foreground service of its
+    own in `:signer` if it wants to stay reachable.
+  - `Nip55Request`: the app's activity for `nostrsigner:` (in `:signer`) hands it each
+    intent, draws its `stage`, and calls `connect`, `allowDms`, `approve` or `reject`.
+    The library's `Nip55Provider` answers connected apps in the background.
+- **Using it:** no Maven package yet. Add this repository as a git submodule and
+  `includeBuild("<submodule>/android")` in your `settings.gradle.kts`; Gradle then
+  resolves `implementation("cc.aaro.cosign:cosign")` from it. Marble does exactly this.
 
 ## Servers
 
-Every account starts with at least two servers; at launch the app picks three. **All of
+Every account starts with at least two servers; at launch an app picks three. **All of
 today's public servers are run by Cosign's author** (syb.lol and a Cloudflare Worker,
 with a third to come), and **they see everything you do through them**. More operators
 are wanted, and running your own server, public or private, is encouraged but not
@@ -60,44 +74,28 @@ required. The live list is at [cosign.aaro.cc/servers](https://cosign.aaro.cc/se
   and how to run one in Docker.
 - [How apps choose servers](docs/choosing-servers.md).
 
-## Getting Marble
-
-Releases are on GitHub (github.com/sybenx/cosign/releases), so Obtainium can follow
-them: add `https://github.com/sybenx/cosign` as an app. The newest build is also at
-https://cosign.aaro.cc/cosign.apk. `./release.sh` publishes both.
-
-For approvals while Android has put Marble to sleep, install **ntfy**. Without it,
-approvals arrive while Marble is running in the background.
-
 ## Privacy
 
 - **A server sees what you sign through it**, and nothing else: never your messages, and
   never enough of your account to act as you. Your servers are yours to choose, and one
   you run yourself is preferred over anyone else's.
-- **Searching for people** sends what you type to the servers Marble searches. When a
-  result shows an address like `name@example.com`, Marble asks that site whether the
-  address really belongs to the person shown. That site can see your IP address while it
-  answers.
-- **The feed loads pictures and videos from wherever they are kept**, which is usually
-  not the place the post came from. Those places can see your IP address, as they can in
-  any app that shows you a picture.
 
 ## What's not done yet
 
 - **Sites with their own older-style sign-in code** can act for you but can't read or
-  send your messages; use Marble or the browser extension for messages.
+  send your messages.
 - **Your devices working together with no server** is designed but not built.
 - **Getting your account onto your own devices when no server has answered for a week**
   is designed but not built.
 - **Your phone's lock is taken on trust**: servers can't check it yet. A way for them to
   check is planned.
-- **Replacing a dead server automatically**, a 24-word paper backup, and a library so
-  other apps can hold pieces are planned (see [ROADMAP.md](ROADMAP.md)).
+- **Replacing a dead server automatically**, periodic refresh and a 24-word paper backup
+  are planned (see [ROADMAP.md](ROADMAP.md)).
 - **ntfy push** is wired but hasn't been tested end to end.
 
 ## How it works
 
-For developers; from here on the usual Nostr terms apply. The spec is
+The spec is
 [docs/COSIGN.md](docs/COSIGN.md). Everything travels over public relays: servers need no
 public address, and a phone needs nothing but a connection.
 
@@ -126,7 +124,7 @@ public address, and a phone needs nothing but a connection.
 - **Decryption**: done in parts and finished on the device. A server answers only a
   device (or a server running the round) with enough shares taking part to sign —
   never a paper or a removed device — and never for sites connected by code.
-- **Android signer** (`Nip55Provider.kt`, `Nip55Activity.kt`): the app asks the phone,
+- **Android signer** (`Nip55Provider.kt`, `Nip55Request.kt`): the app asks the phone,
   which runs the round with a server. `android/nip55tester` exercises it on an
   emulator.
 - **History** (`server/history.ts`): everything signed, by which site or app, with the
@@ -154,11 +152,12 @@ public address, and a phone needs nothing but a connection.
 ## Tests
 
 End-to-end tests are in `site/test/` (each starts what it needs; see the comment at the
-top of each file), unit tests in `server/test/` and `android/app/src/test/`:
+top of each file), unit tests in `server/test/` and `android/cosign/src/test/`:
 
 ```sh
 cd server && node test/vectors.ts && node test/policy-vectors.ts
-cd android && ./gradlew :app:testDebugUnitTest
+cd frost && cargo build --release --features android   # the desktop FROST the Android tests load
+cd android && ./gradlew :cosign:testDebugUnitTest
 cd site && node test/guards.e2e.ts      # report lost, take out, forget; what a paper and a removed device get
 cd site && node test/paper.e2e.ts       # paper backup through a refresh; cancelled and finished recovery
 ```

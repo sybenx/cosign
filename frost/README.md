@@ -13,7 +13,7 @@ export RUSTFLAGS="--remap-path-prefix=$HOME=/build --remap-path-prefix=$PWD=/src
 
 - **Server (WebAssembly):** `cargo build --release --target wasm32-unknown-unknown --features wasm`,
   then `wasm-bindgen --target nodejs --out-dir ../server/frost-wasm --out-name cosign_frost target/wasm32-unknown-unknown/release/cosign_frost.wasm`.
-- **Phone (JNI):** `cargo ndk -t arm64-v8a -t x86_64 -o ../android/app/src/main/jniLibs build --release --features android`.
+- **Phone (JNI):** `cargo ndk -t arm64-v8a -t x86_64 -o ../android/cosign/src/main/jniLibs build --release --features android`.
   For the phone's unit tests on a computer: `cargo build --release --features android`.
 
 `cargo test` checks that shares from Cosign's earlier hand-rolled dealer sign with the

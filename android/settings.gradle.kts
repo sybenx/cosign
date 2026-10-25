@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "cosign"
-include(":app")
+include(":cosign")
 include(":nip55tester")

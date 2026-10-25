@@ -47,5 +47,5 @@ const cases: [string, Ev, Ev | undefined][] = [
 ];
 
 const out = cases.map(([label, e, prev]) => { const a = assess(e, prev, NOW); return { label, now: NOW, event: e, prev: prev ?? null, hold: a.hold ?? null, refuse: a.refuse ?? null }; });
-writeFileSync(new URL('../../android/app/src/test/resources/policy.json', import.meta.url), JSON.stringify(out, null, 2));
+writeFileSync(new URL('../../android/cosign/src/test/resources/policy.json', import.meta.url), JSON.stringify(out, null, 2));
 console.log(`wrote ${out.length} policy cases, ${out.filter(c => c.hold).length} held, ${out.filter(c => c.refuse).length} refused`);

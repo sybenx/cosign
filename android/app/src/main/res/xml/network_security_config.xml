@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- https only, everywhere (your own LibreTranslate too: serve it over https, e.g. tailscale serve). -->
-<network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-</network-security-config>

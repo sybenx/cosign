@@ -9,7 +9,7 @@ server/logs/
 node_modules/
 android/.gradle/
 android/build/
-android/app/build/
+android/cosign/build/
 android/local.properties
 android/keystore.properties
 .DS_Store

@@ -1,4 +1,4 @@
-// Fixed-input vectors for the phone's Kotlin FROST. Writes android/app/src/test/resources/frost.json.
+// Fixed-input vectors for the phone's Kotlin FROST. Writes android/cosign/src/test/resources/frost.json.
 // Every sign vector also aggregates with the coordinator's partial into a valid BIP-340 signature.
 import { writeFileSync } from 'node:fs';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -36,5 +36,5 @@ for (let t = 0; t < 3; t++) {
   out.ecdh.push({ peerX, participants, idx: 3, expect: F.ecdhPartial({ idx: 3, secret: F.toHex32(share(3)), participants, peerX }) });
 }
 out.lagrange = [[1, [1, 3]], [3, [1, 3]], [3, [2, 3]], [2, [2, 3]]].map(([i, p]: any) => ({ i, p, expect: F.toHex32(F.lagrange(i, p)) }));
-writeFileSync(new URL('../../android/app/src/test/resources/frost.json', import.meta.url), JSON.stringify(out, null, 2));
+writeFileSync(new URL('../../android/cosign/src/test/resources/frost.json', import.meta.url), JSON.stringify(out, null, 2));
 console.log(`wrote ${out.sign.length} sign vectors (${seen.flip} with R negated), ${out.ecdh.length} ecdh, ${out.lagrange.length} lagrange`);

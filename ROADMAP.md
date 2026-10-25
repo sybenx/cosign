@@ -40,8 +40,8 @@ a checked NIP-05 and the social graph — taking what works from the user's Wisp
 - **Removing a server from a key** (outside a periodic refresh). The account's own
   "Remove my servers' pieces" is built.
 - **A private Worker,** from the same code as the public one.
-- **Google Play,** and **publishing on Zapstore** (zapstore.yaml and zapstore.sh are
-  ready; publishing is a separate step).
+- **Google Play,** and **publishing on Zapstore** (zapstore.yaml and zapstore.sh, now in
+  the Marble repository, are ready; publishing is a separate step).
 - **Running the server beside popular relays** (strfry, nostr-rs-relay, haven, nostream,
   ditto) as ready-made `deploy/` setups, and an Umbrel app: built and tested, not
   published yet.
