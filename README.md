@@ -69,6 +69,19 @@ https://cosign.aaro.cc/cosign.apk. `./release.sh` publishes both.
 For approvals while Android has put Marble to sleep, install **ntfy**. Without it,
 approvals arrive while Marble is running in the background.
 
+## Privacy
+
+- **A server sees what you sign through it**, and nothing else: never your messages, and
+  never enough of your account to act as you. Your servers are yours to choose, and one
+  you run yourself is preferred over anyone else's.
+- **Searching for people** sends what you type to the servers Marble searches. When a
+  result shows an address like `name@example.com`, Marble asks that site whether the
+  address really belongs to the person shown. That site can see your IP address while it
+  answers.
+- **The feed loads pictures and videos from wherever they are kept**, which is usually
+  not the place the post came from. Those places can see your IP address, as they can in
+  any app that shows you a picture.
+
 ## What's not done yet
 
 - **Sites with their own older-style sign-in code** can act for you but can't read or
