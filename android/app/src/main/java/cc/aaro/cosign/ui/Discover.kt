@@ -69,7 +69,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -238,7 +237,7 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
         ) {
             Icon(Icons.Filled.Search, null, tint = Vault.Muted)
             Spacer(Modifier.width(12.dp))
-            Text("Search people, notes, #tags", color = Vault.Muted, style = MaterialTheme.typography.bodyLarge)
+            Text("Search people, posts, #tags", color = Vault.Muted, style = MaterialTheme.typography.bodyLarge)
         }
 
         PullToRefreshBox(feed.loading && feed.notes.isNotEmpty(), { social.loadFeed(force = true); social.loadNotices(force = true) }, Modifier.fillMaxSize()) {
@@ -477,7 +476,7 @@ private fun ReportDialog(name: String, onClose: () -> Unit, onReport: (String) -
             Text("It's hidden for you at once. What's wrong with it?", color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(8.dp))
             for ((reason, label) in listOf("spam" to "Spam", "nudity" to "Nudity or sexual content", "profanity" to "Hateful or abusive",
-                "illegal" to "Illegal", "impersonation" to "Pretending to be someone else ($name)", "other" to "Something else")) {
+                "illegal" to "Illegal", "impersonation" to "Pretending to be someone they're not", "other" to "Something else")) {
                 Text(label, color = Vault.Text, style = MaterialTheme.typography.bodyLarge,
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onReport(reason) }.padding(vertical = 10.dp, horizontal = 4.dp))
             }
@@ -595,7 +594,8 @@ private fun TopBar(title: String, nav: Nav) = Row(Modifier.fillMaxWidth().paddin
 // --- A thread ------------------------------------------------------------------------------
 
 @Composable
-private fun ThreadScreen(id: String, social: Social, nav: Nav, startReply: Boolean = false) = Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
+// safeDrawingPadding includes the keyboard: the reply box sits right on top of it.
+private fun ThreadScreen(id: String, social: Social, nav: Nav, startReply: Boolean = false) = Column(Modifier.fillMaxSize().safeDrawingPadding()) {
     TopBar("Thread", nav)
     val people by People.known.collectAsState()
     val liked by social.liked.collectAsState()
