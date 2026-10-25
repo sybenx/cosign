@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="cc.aaro.cosign.SocialTest" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-10-25T04:00:58" hostname="Aarons-MacBook-Pro.local" time="0.017">
+  <properties/>
+  <testcase name="approvalsAskAboutWhatHappens" classname="cc.aaro.cosign.SocialTest" time="0.005"/>
+  <testcase name="discoverKeepsPostsThatStandOnTheirOwn" classname="cc.aaro.cosign.SocialTest" time="0.001"/>
+  <testcase name="identifiersOpenWhatTheyName" classname="cc.aaro.cosign.SocialTest" time="0.002"/>
+  <testcase name="searchPutsTheRealPersonFirst" classname="cc.aaro.cosign.SocialTest" time="0.001"/>
+  <testcase name="aPageHasTwoPostsAPersonAndOneGreeting" classname="cc.aaro.cosign.SocialTest" time="0.001"/>
+  <testcase name="repliesFindTheirPlace" classname="cc.aaro.cosign.SocialTest" time="0.0"/>
+  <testcase name="languagesAreGuessedOnlyWhenClear" classname="cc.aaro.cosign.SocialTest" time="0.003"/>
+  <testcase name="lookAlikesFoldUnderTheBestOfThem" classname="cc.aaro.cosign.SocialTest" time="0.001"/>
+  <testcase name="linksThatCarryAnIdentifierOpenIt" classname="cc.aaro.cosign.SocialTest" time="0.001"/>
+  <testcase name="sensitiveNotesAreFlagged" classname="cc.aaro.cosign.SocialTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1575,6 +1575,22 @@ class Signer(private val context: Context, val slot: String = "0") {
         return signed
     }
 
+    /**
+     * The app's own data, encrypted to this account itself (NIP-44 to self): what Marble keeps
+     * in app data (NIP-78) and nobody else should read. The other side is this account's own
+     * key, always — there is no peer to pass in, so this is no way to read anyone else's
+     * messages, and the servers still hand out decryption partials to live devices only
+     * (COSIGN.md §5.6).
+     */
+    fun nip44Self(text: String, encrypt: Boolean): String {
+        val m = ui.value.member ?: error("$appName isn't set up yet")
+        val own = context.packageName
+        val g = appGrant(own) ?: connectApp(own, appName).also { Thread.sleep(2500) }
+        return try { nip44(g, m.group.groupX, text, encrypt) } catch (_: Revoked) {
+            val again = connectApp(own, appName); Thread.sleep(2500); nip44(again, m.group.groupX, text, encrypt)
+        }
+    }
+
     /** The shared x with [peerX], from this phone's half and a server's. Kept ten minutes, in memory. */
     private fun sharedX(g: AppGrant, peerX: String): ByteArray {
         sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) return x }

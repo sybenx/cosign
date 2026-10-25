@@ -34,6 +34,30 @@ class ProcessBoundaryTest {
         }
     }
 
+    /**
+     * What the UI may ask the signer to decrypt. Its own app data is encrypted to the account
+     * itself and nothing else: no call across the boundary names the other side, so neither the
+     * UI nor anything that reaches it can turn the signer into a way of reading other people's
+     * messages (COSIGN.md §5.6, §12). The peer-taking forms stay inside the signer, for the
+     * apps and sites that come through their own door with a grant.
+     */
+    @Test fun nothingTheUiCanAskForNamesWhoToDecryptFor() {
+        val aidl = File("src/main/aidl/cc/aaro/cosign/ISigner.aidl").readText()
+            .replace(Regex("""/\*[\s\S]*?\*/"""), "").replace(Regex("""//[^\n]*"""), "")
+        val calls = Regex("""(?:oneway\s+)?[\w\[\]<>]+\s+(\w+)\(([^)]*)\);""").findAll(aidl)
+            .associate { it.groupValues[1] to it.groupValues[2] }
+        assertTrue("ISigner has no nip44Own", "nip44Own" in calls)
+        // Its arguments are the account, the text and which way: there is no third party in it.
+        assertEquals("slot, text, encrypt", calls["nip44Own"]!!.split(",").joinToString(", ") { it.trim().substringAfterLast(' ') })
+        for ((name, args) in calls)
+            assertTrue("$name takes a key to work with", !Regex("""\b(peer|pubkey|npub|recipient)\b""", RegexOption.IGNORE_CASE).containsMatchIn(args))
+        // The signer pins the other side to this account's own key.
+        assertTrue("nip44Self doesn't pin the other side to this account",
+            Regex("""fun nip44Self\([^)]*\)[\s\S]{0,800}?nip44\(\w+, m\.group\.groupX,""").containsMatchIn(read("Phone.kt")))
+        // And the UI's side never reaches the forms that do take one.
+        for (f in mainSide) assertTrue("$f calls a nip44/nip04 that takes a peer", !Regex("""\bnip(44|04)\(""").containsMatchIn(read(f)))
+    }
+
     @Test fun libraryNeverNamesTheFeed() {
         assertTrue("Phone.kt" in all && "core/Frost.kt" in all)
         for (f in all) {

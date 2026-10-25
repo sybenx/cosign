@@ -1,0 +1,490 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="cc.aaro.cosign"
+4    android:versionCode="21"
+5    android:versionName="0.12.3" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="30"
+9        android:targetSdkVersion="35" />
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:4:5-67
+11-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:4:22-64
+12    <uses-permission android:name="android.permission.CAMERA" />
+12-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:5:5-65
+12-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:5:22-62
+13    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+13-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:6:5-77
+13-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:6:22-74
+14    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+14-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:7:5-77
+14-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:7:22-74
+15    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+15-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:8:5-89
+15-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:8:22-86
+16    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+16-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:9:5-81
+16-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:9:22-78
+17
+18    <uses-feature
+18-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:10:5-89
+19        android:name="android.hardware.camera.any"
+19-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:10:19-61
+20        android:required="false" />
+20-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:10:62-86
+21
+22    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+22-->[androidx.media3:media3-common:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/37c5c0aeb873c5acd3576ce6217553e2/transformed/media3-common-1.5.1/AndroidManifest.xml:22:5-79
+22-->[androidx.media3:media3-common:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/37c5c0aeb873c5acd3576ce6217553e2/transformed/media3-common-1.5.1/AndroidManifest.xml:22:22-76
+23
+24    <permission
+24-->[androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:22:5-24:47
+25        android:name="cc.aaro.cosign.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+25-->[androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:23:9-81
+26        android:protectionLevel="signature" />
+26-->[androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:24:9-44
+27
+28    <uses-permission android:name="cc.aaro.cosign.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+28-->[androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:26:5-97
+28-->[androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:26:22-94
+29    <uses-permission android:name="android.permission.WAKE_LOCK" />
+29-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:8:5-68
+29-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:8:22-65
+30
+31    <queries>
+31-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:10:5-20:15
+32        <intent>
+32-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:11:9-13:18
+33            <action android:name="org.unifiedpush.android.distributor.LINK" />
+33-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:12:13-79
+33-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:12:21-76
+34        </intent>
+35        <intent>
+35-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:14:9-16:18
+36            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+36-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:15:13-83
+36-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:15:21-80
+37        </intent>
+38        <intent>
+38-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:17:9-19:18
+39            <action android:name="org.unifiedpush.android.distributor.UNREGISTER" />
+39-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:18:13-85
+39-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:18:21-82
+40        </intent>
+41    </queries>
+42
+43    <application
+43-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:12:5-134:19
+44        android:name="cc.aaro.cosign.CosignApp"
+44-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:13:9-34
+45        android:allowBackup="false"
+45-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:14:9-36
+46        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+46-->[androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:28:18-86
+47        android:dataExtractionRules="@xml/data_extraction_rules"
+47-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:15:9-65
+48        android:debuggable="true"
+49        android:extractNativeLibs="false"
+50        android:fullBackupContent="false"
+50-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:17:9-42
+51        android:icon="@mipmap/ic_launcher"
+51-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:18:9-43
+52        android:label="@string/app_name"
+52-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:20:9-41
+53        android:networkSecurityConfig="@xml/network_security_config"
+53-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:16:9-69
+54        android:roundIcon="@mipmap/ic_launcher"
+54-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:19:9-48
+55        android:supportsRtl="true"
+55-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:21:9-35
+56        android:theme="@style/Theme.Cosign" >
+56-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:22:9-44
+57        <activity
+57-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:24:9-66:20
+58            android:name="cc.aaro.cosign.MainActivity"
+58-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:25:13-41
+59            android:exported="true"
+59-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:26:13-36
+60            android:launchMode="singleTask"
+60-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:27:13-44
+61            android:showWhenLocked="false"
+61-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:29:13-43
+62            android:windowSoftInputMode="adjustResize" >
+62-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:28:13-55
+63            <intent-filter>
+63-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:30:13-33:29
+64                <action android:name="android.intent.action.MAIN" />
+64-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:31:17-69
+64-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:31:25-66
+65
+66                <category android:name="android.intent.category.LAUNCHER" />
+66-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:32:17-77
+66-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:32:27-74
+67            </intent-filter>
+68            <!--
+69                 A site's Cosign sign-in code (a QRST link): the camera app opens Cosign directly
+70                 once cosign.aaro.cc/.well-known/assetlinks.json names this app (link/ in this repo).
+71            -->
+72            <intent-filter android:autoVerify="true" >
+72-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:36:13-41:29
+72-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:36:28-53
+73                <action android:name="android.intent.action.VIEW" />
+73-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:17-69
+73-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:25-66
+74
+75                <category android:name="android.intent.category.DEFAULT" />
+75-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:17-76
+75-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:27-73
+76                <category android:name="android.intent.category.BROWSABLE" />
+76-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:17-78
+76-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:27-75
+77
+78                <data
+78-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:17-78
+79                    android:host="cosign.aaro.cc"
+79-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:46-75
+80                    android:scheme="https" />
+80-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:23-45
+81            </intent-filter>
+82            <!--
+83                 Your server's "Add your phone" code, as a link on its page, for when the page is
+84                 open on this phone and there's nothing to scan. The app asks before joining.
+85            -->
+86            <intent-filter>
+86-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:44:13-49:29
+87                <action android:name="android.intent.action.VIEW" />
+87-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:17-69
+87-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:25-66
+88
+89                <category android:name="android.intent.category.DEFAULT" />
+89-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:17-76
+89-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:27-73
+90                <category android:name="android.intent.category.BROWSABLE" />
+90-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:17-78
+90-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:27-75
+91
+92                <data android:scheme="cosign" />
+92-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:17-78
+92-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:23-45
+93            </intent-filter>
+94            <!--
+95                 The same sign-in code in QRST's neutral form (qrst://npub…?…), which a page hands
+96                 to an app on this phone without any website in between.
+97            -->
+98            <intent-filter>
+98-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:52:13-57:29
+99                <action android:name="android.intent.action.VIEW" />
+99-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:17-69
+99-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:25-66
+100
+101                <category android:name="android.intent.category.DEFAULT" />
+101-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:17-76
+101-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:27-73
+102                <category android:name="android.intent.category.BROWSABLE" />
+102-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:17-78
+102-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:27-75
+103
+104                <data android:scheme="qrst" />
+104-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:17-78
+104-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:23-45
+105            </intent-filter>
+106            <!--
+107                 A site's nostrconnect:// code, from the camera app or a link on this phone.
+108                 Another signer app may claim it too; Android then asks which.
+109            -->
+110            <intent-filter>
+110-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:60:13-65:29
+111                <action android:name="android.intent.action.VIEW" />
+111-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:17-69
+111-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:25-66
+112
+113                <category android:name="android.intent.category.DEFAULT" />
+113-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:17-76
+113-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:27-73
+114                <category android:name="android.intent.category.BROWSABLE" />
+114-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:17-78
+114-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:27-75
+115
+116                <data android:scheme="nostrconnect" />
+116-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:17-78
+116-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:23-45
+117            </intent-filter>
+118        </activity>
+119
+120        <!--
+121             Everything below that holds or uses your key runs in its own process, ":signer"
+122             (Proc.kt): the shares, FROST, the relays your servers use, NIP-55 and site sign-in.
+123             It draws nothing from strangers (no feed, pictures, video or web views). The app
+124             above reaches it only through SignerService.
+125        -->
+126        <service
+126-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:72:9-75:40
+127            android:name="cc.aaro.cosign.SignerService"
+127-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:73:13-42
+128            android:exported="false"
+128-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:75:13-37
+129            android:process=":signer" />
+129-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:74:13-38
+130        <!-- The paper backup's code and a key taken out: shown by the signer, never by the app. -->
+131        <activity
+131-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:77:9-83:57
+132            android:name="cc.aaro.cosign.SignerActivity"
+132-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:78:13-43
+133            android:excludeFromRecents="true"
+133-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:82:13-46
+134            android:exported="false"
+134-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:80:13-37
+135            android:launchMode="singleTop"
+135-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:81:13-43
+136            android:process=":signer"
+136-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:79:13-38
+137            android:theme="@style/Theme.Cosign.Sheet" />
+137-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:83:13-54
+138
+139        <!--
+140             Android signer (NIP-55): apps on this phone sign through Cosign. The activity asks
+141             you when it must (connecting, something destructive, first use of messages);
+142             the provider answers everything else in the background.
+143        -->
+144        <activity
+144-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:88:9-101:20
+145            android:name="cc.aaro.cosign.Nip55Activity"
+145-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:89:13-42
+146            android:excludeFromRecents="true"
+146-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:93:13-46
+147            android:exported="true"
+147-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:91:13-36
+148            android:launchMode="singleTop"
+148-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:92:13-43
+149            android:process=":signer"
+149-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:90:13-38
+150            android:theme="@style/Theme.Cosign.Sheet" >
+150-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:94:13-54
+151            <intent-filter>
+151-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:95:13-100:29
+152                <action android:name="android.intent.action.VIEW" />
+152-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:17-69
+152-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:25-66
+153
+154                <category android:name="android.intent.category.DEFAULT" />
+154-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:17-76
+154-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:27-73
+155                <category android:name="android.intent.category.BROWSABLE" />
+155-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:17-78
+155-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:27-75
+156
+157                <data android:scheme="nostrsigner" />
+157-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:17-78
+157-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:23-45
+158            </intent-filter>
+159        </activity>
+160
+161        <provider
+161-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:102:9-106:242
+162            android:name="cc.aaro.cosign.Nip55Provider"
+162-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:103:13-42
+163            android:authorities="cc.aaro.cosign.GET_PUBLIC_KEY;cc.aaro.cosign.SIGN_EVENT;cc.aaro.cosign.NIP04_ENCRYPT;cc.aaro.cosign.NIP04_DECRYPT;cc.aaro.cosign.NIP44_ENCRYPT;cc.aaro.cosign.NIP44_DECRYPT;cc.aaro.cosign.DECRYPT_ZAP_EVENT"
+163-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:106:13-239
+164            android:exported="true"
+164-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:105:13-36
+165            android:process=":signer" />
+165-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:104:13-38
+166
+167        <!--
+168             Keeps the relay connection open so a request can reach the phone while the
+169             app isn't on screen. Only runs once the phone has joined a group.
+170        -->
+171        <service
+171-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:110:9-118:19
+172            android:name="cc.aaro.cosign.CosignService"
+172-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:111:13-42
+173            android:exported="false"
+173-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:113:13-37
+174            android:foregroundServiceType="specialUse"
+174-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:114:13-55
+175            android:process=":signer" >
+175-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:112:13-38
+176            <property
+176-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:115:13-117:139
+177                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+177-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:116:17-76
+178                android:value="Holds one share of a threshold signing key and answers co-signing requests from the user&apos;s own servers." />
+178-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:117:17-136
+179        </service>
+180
+181        <receiver
+181-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:120:9-105
+182            android:name="cc.aaro.cosign.DecisionReceiver"
+182-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:120:19-51
+183            android:exported="false"
+183-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:120:78-102
+184            android:process=":signer" />
+184-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:120:52-77
+185
+186        <!-- ntfy (or any UnifiedPush distributor) wakes the app when an approval is waiting. -->
+187        <service
+187-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:123:9-127:19
+188            android:name="cc.aaro.cosign.Push"
+188-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:123:18-38
+189            android:exported="false"
+189-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:123:65-89
+190            android:process=":signer" >
+190-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:123:39-64
+191            <intent-filter>
+191-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:124:13-126:29
+192                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+192-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:125:17-87
+192-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:125:25-84
+193            </intent-filter>
+194        </service>
+195
+196        <receiver
+196-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:129:9-133:20
+197            android:name="cc.aaro.cosign.BootReceiver"
+197-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:129:19-47
+198            android:exported="false"
+198-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:129:74-98
+199            android:process=":signer" >
+199-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:129:48-73
+200            <intent-filter>
+200-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:130:13-132:29
+201                <action android:name="android.intent.action.BOOT_COMPLETED" />
+201-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:131:17-79
+201-->/Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:131:25-76
+202            </intent-filter>
+203        </receiver>
+204        <!--
+205        Service for holding metadata. Cannot be instantiated.
+206        Metadata will be merged from other manifests.
+207        -->
+208        <service
+208-->[androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:29:9-33:78
+209            android:name="androidx.camera.core.impl.MetadataHolderService"
+209-->[androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:30:13-75
+210            android:enabled="false"
+210-->[androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:31:13-36
+211            android:exported="false" >
+211-->[androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:32:13-37
+212            <meta-data
+212-->[androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:30:13-32:89
+213                android:name="androidx.camera.core.impl.MetadataHolderService.DEFAULT_CONFIG_PROVIDER"
+213-->[androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:31:17-103
+214                android:value="androidx.camera.camera2.Camera2Config$DefaultProvider" />
+214-->[androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:32:17-86
+215        </service>
+216
+217        <provider
+217-->[androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:24:9-32:20
+218            android:name="androidx.startup.InitializationProvider"
+218-->[androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:25:13-67
+219            android:authorities="cc.aaro.cosign.androidx-startup"
+219-->[androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:26:13-68
+220            android:exported="false" >
+220-->[androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:27:13-37
+221            <meta-data
+221-->[androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:29:13-31:52
+222                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+222-->[androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:30:17-75
+223                android:value="androidx.startup" />
+223-->[androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:31:17-49
+224            <meta-data
+224-->[androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:29:13-31:52
+225                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+225-->[androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:30:17-78
+226                android:value="androidx.startup" />
+226-->[androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:31:17-49
+227            <meta-data
+227-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:29:13-31:52
+228                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+228-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:30:17-85
+229                android:value="androidx.startup" />
+229-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:31:17-49
+230        </provider>
+231
+232        <service
+232-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:23:9-30:19
+233            android:name="org.unifiedpush.android.connector.internal.RaiseToForegroundService"
+233-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:24:13-95
+234            android:exported="true" >
+234-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:25:13-36
+235            <intent-filter>
+235-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:27:13-29:29
+236                <action android:name="org.unifiedpush.android.connector.RAISE_TO_FOREGROUND" />
+236-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:28:17-96
+236-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:28:25-93
+237            </intent-filter>
+238        </service>
+239
+240        <activity
+240-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:32:9-34:86
+241            android:name="org.unifiedpush.android.connector.internal.LinkActivity"
+241-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:33:13-83
+242            android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen" />
+242-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:34:13-83
+243
+244        <receiver
+244-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:36:9-47:20
+245            android:name="org.unifiedpush.android.connector.internal.MessagingReceiverImpl"
+245-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:37:13-92
+246            android:enabled="true"
+246-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:38:13-35
+247            android:exported="true" >
+247-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:39:13-36
+248            <intent-filter android:priority="-500" >
+248-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:41:13-46:29
+248-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:41:28-51
+249                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+249-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:42:17-84
+249-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:42:25-81
+250                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+250-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:43:17-89
+250-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:43:25-86
+251                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+251-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:44:17-89
+251-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:44:25-86
+252                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+252-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:45:17-96
+252-->[org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:45:25-93
+253            </intent-filter>
+254        </receiver>
+255        <receiver
+255-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:34:9-52:20
+256            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+256-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:35:13-76
+257            android:directBootAware="false"
+257-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:36:13-44
+258            android:enabled="true"
+258-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:37:13-35
+259            android:exported="true"
+259-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:38:13-36
+260            android:permission="android.permission.DUMP" >
+260-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:39:13-57
+261            <intent-filter>
+261-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:40:13-42:29
+262                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+262-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:41:17-91
+262-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:41:25-88
+263            </intent-filter>
+264            <intent-filter>
+264-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:43:13-45:29
+265                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+265-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:44:17-85
+265-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:44:25-82
+266            </intent-filter>
+267            <intent-filter>
+267-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:46:13-48:29
+268                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+268-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:47:17-88
+268-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:47:25-85
+269            </intent-filter>
+270            <intent-filter>
+270-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:49:13-51:29
+271                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+271-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:50:17-95
+271-->[androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:50:25-92
+272            </intent-filter>
+273        </receiver>
+274    </application>
+275
+276</manifest>

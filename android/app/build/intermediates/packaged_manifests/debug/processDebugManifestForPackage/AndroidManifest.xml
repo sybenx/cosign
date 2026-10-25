@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="cc.aaro.cosign"
+    android:versionCode="21"
+    android:versionName="0.12.3" >
+
+    <uses-sdk
+        android:minSdkVersion="30"
+        android:targetSdkVersion="35" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <permission
+        android:name="cc.aaro.cosign.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        android:protectionLevel="signature" />
+
+    <uses-permission android:name="cc.aaro.cosign.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <queries>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.LINK" />
+        </intent>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+        </intent>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.UNREGISTER" />
+        </intent>
+    </queries>
+
+    <application
+        android:name="cc.aaro.cosign.CosignApp"
+        android:allowBackup="false"
+        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:debuggable="true"
+        android:extractNativeLibs="false"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Cosign" >
+        <activity
+            android:name="cc.aaro.cosign.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="false"
+            android:windowSoftInputMode="adjustResize" >
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!--
+                 A site's Cosign sign-in code (a QRST link): the camera app opens Cosign directly
+                 once cosign.aaro.cc/.well-known/assetlinks.json names this app (link/ in this repo).
+            -->
+            <intent-filter android:autoVerify="true" >
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="cosign.aaro.cc"
+                    android:scheme="https" />
+            </intent-filter>
+            <!--
+                 Your server's "Add your phone" code, as a link on its page, for when the page is
+                 open on this phone and there's nothing to scan. The app asks before joining.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="cosign" />
+            </intent-filter>
+            <!--
+                 The same sign-in code in QRST's neutral form (qrst://npub…?…), which a page hands
+                 to an app on this phone without any website in between.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="qrst" />
+            </intent-filter>
+            <!--
+                 A site's nostrconnect:// code, from the camera app or a link on this phone.
+                 Another signer app may claim it too; Android then asks which.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="nostrconnect" />
+            </intent-filter>
+        </activity>
+
+        <!--
+             Everything below that holds or uses your key runs in its own process, ":signer"
+             (Proc.kt): the shares, FROST, the relays your servers use, NIP-55 and site sign-in.
+             It draws nothing from strangers (no feed, pictures, video or web views). The app
+             above reaches it only through SignerService.
+        -->
+        <service
+            android:name="cc.aaro.cosign.SignerService"
+            android:exported="false"
+            android:process=":signer" />
+        <!-- The paper backup's code and a key taken out: shown by the signer, never by the app. -->
+        <activity
+            android:name="cc.aaro.cosign.SignerActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:process=":signer"
+            android:theme="@style/Theme.Cosign.Sheet" />
+
+        <!--
+             Android signer (NIP-55): apps on this phone sign through Cosign. The activity asks
+             you when it must (connecting, something destructive, first use of messages);
+             the provider answers everything else in the background.
+        -->
+        <activity
+            android:name="cc.aaro.cosign.Nip55Activity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:process=":signer"
+            android:theme="@style/Theme.Cosign.Sheet" >
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="nostrsigner" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name="cc.aaro.cosign.Nip55Provider"
+            android:authorities="cc.aaro.cosign.GET_PUBLIC_KEY;cc.aaro.cosign.SIGN_EVENT;cc.aaro.cosign.NIP04_ENCRYPT;cc.aaro.cosign.NIP04_DECRYPT;cc.aaro.cosign.NIP44_ENCRYPT;cc.aaro.cosign.NIP44_DECRYPT;cc.aaro.cosign.DECRYPT_ZAP_EVENT"
+            android:exported="true"
+            android:process=":signer" />
+
+        <!--
+             Keeps the relay connection open so a request can reach the phone while the
+             app isn't on screen. Only runs once the phone has joined a group.
+        -->
+        <service
+            android:name="cc.aaro.cosign.CosignService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":signer" >
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Holds one share of a threshold signing key and answers co-signing requests from the user&apos;s own servers." />
+        </service>
+
+        <receiver
+            android:name="cc.aaro.cosign.DecisionReceiver"
+            android:exported="false"
+            android:process=":signer" />
+
+        <!-- ntfy (or any UnifiedPush distributor) wakes the app when an approval is waiting. -->
+        <service
+            android:name="cc.aaro.cosign.Push"
+            android:exported="false"
+            android:process=":signer" >
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name="cc.aaro.cosign.BootReceiver"
+            android:exported="false"
+            android:process=":signer" >
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+        <!--
+        Service for holding metadata. Cannot be instantiated.
+        Metadata will be merged from other manifests.
+        -->
+        <service
+            android:name="androidx.camera.core.impl.MetadataHolderService"
+            android:enabled="false"
+            android:exported="false" >
+            <meta-data
+                android:name="androidx.camera.core.impl.MetadataHolderService.DEFAULT_CONFIG_PROVIDER"
+                android:value="androidx.camera.camera2.Camera2Config$DefaultProvider" />
+        </service>
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="cc.aaro.cosign.androidx-startup"
+            android:exported="false" >
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+                android:value="androidx.startup" />
+            <meta-data
+                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+                android:value="androidx.startup" />
+            <meta-data
+                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+                android:value="androidx.startup" />
+        </provider>
+
+        <service
+            android:name="org.unifiedpush.android.connector.internal.RaiseToForegroundService"
+            android:exported="true" >
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.RAISE_TO_FOREGROUND" />
+            </intent-filter>
+        </service>
+
+        <activity
+            android:name="org.unifiedpush.android.connector.internal.LinkActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen" />
+
+        <receiver
+            android:name="org.unifiedpush.android.connector.internal.MessagingReceiverImpl"
+            android:enabled="true"
+            android:exported="true" >
+            <intent-filter android:priority="-500" >
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            android:directBootAware="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP" >
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

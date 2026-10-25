@@ -1,0 +1,50 @@
+[
+    {
+        "merged": "cc.aaro.cosign.app-debug-53:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "cc.aaro.cosign.app-main-55:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-main-55:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "cc.aaro.cosign.app-debug-53:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "cc.aaro.cosign.app-main-55:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/xml_network_security_config.xml.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-54:/xml/network_security_config.xml"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/font_ibmplexmono_medium.ttf.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-main-55:/font/ibmplexmono_medium.ttf"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/drawable_ic_stat.xml.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-main-55:/drawable/ic_stat.xml"
+    },
+    {
+        "merged": "cc.aaro.cosign.app-debug-53:/drawable_ic_launcher_monochrome.xml.flat",
+        "source": "cc.aaro.cosign.app-main-55:/drawable/ic_launcher_monochrome.xml"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-main-55:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/font_ibmplexsans_variable.ttf.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-main-55:/font/ibmplexsans_variable.ttf"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/font_ibmplexmono_regular.ttf.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-main-55:/font/ibmplexmono_regular.ttf"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/drawable_ic_launcher_background.xml.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-main-55:/drawable/ic_launcher_background.xml"
+    },
+    {
+        "merged": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-debug-53:/xml_data_extraction_rules.xml.flat",
+        "source": "/Users/aaronherbst/.gradle/daemon/8.10.2/cc.aaro.cosign.app-main-55:/xml/data_extraction_rules.xml"
+    }
+]

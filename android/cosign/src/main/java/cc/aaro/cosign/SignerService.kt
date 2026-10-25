@@ -117,6 +117,11 @@ class SignerService : Service() {
             }
         }
 
+        // Blocks (a server takes part in the shared secret): the UI calls it off its main thread.
+        override fun nip44Own(slot: String, text: String, encrypt: Boolean): String? = try {
+            signers.signer(slot)?.nip44Self(text, encrypt)
+        } catch (e: Exception) { null }
+
         override fun latest(slot: String, key: String): String? = signers.signer(slot)?.latest(key)?.toJson()
 
         override fun add(): String = onMain { signers.add().slot }

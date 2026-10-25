@@ -1,0 +1,651 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:2:1-135:12
+INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:2:1-135:12
+INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:2:1-135:12
+INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:2:1-135:12
+MERGED from [androidx.compose.material3:material3-android:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ffa66e648223cee33be20a8976e308c2/transformed/material3-release/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.compose.material:material-ripple-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/31f496eb578c25cb5d0cdc44e870dc4f/transformed/material-ripple-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.foundation:foundation-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/01c2a208865446349f5aaa067d956f60/transformed/foundation-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.animation:animation-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f1e4e1aee70ca1ff75e087fbf3377341/transformed/animation-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.foundation:foundation-layout-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a27c27d5e5c97e628ead876ef33d9fca/transformed/foundation-layout-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.animation:animation-core-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2464ea5a1e6e13b9c291bcd7be1657a8/transformed/animation-core-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.material:material-icons-core-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/db934fbdbb3986ed96f6da8e9ae2e99d/transformed/material-icons-core-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.ui:ui-unit-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/03c0e7256b65c75e6c70419a195a88a3/transformed/ui-unit-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.ui:ui-graphics-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e6634b194ce279b9011a776924bc94f3/transformed/ui-graphics-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.ui:ui-geometry-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/52953cbd63914ee415a1f4eee310ff87/transformed/ui-geometry-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.ui:ui-util-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/08ff117795798ea6715231b276076b40/transformed/ui-util-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.ui:ui-text-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/185ee83bb36a235743a9ea2258ecce94/transformed/ui-text-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.ui:ui-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2a036e2226a3c4bc2ebac4e263be1c49/transformed/ui-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.camera:camera-video:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4ceb7f6a1ec3f148eca435edf8dc1fea/transformed/camera-video-1.4.1/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:17:1-36:12
+MERGED from [androidx.camera:camera-lifecycle:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/93f7445ee6dab63d148634988ef1dab5/transformed/camera-lifecycle-1.4.1/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:17:1-36:12
+MERGED from [androidx.camera:camera-view:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/03d93c80141bb8709ce1632cd1ba224b/transformed/camera-view-1.4.1/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.appcompat:appcompat:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1fffe99e031b38ef6c71b3168197284a/transformed/appcompat-1.1.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.fragment:fragment:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c4f52c6b7ab6f380fbced2f81c6aef9a/transformed/fragment-1.1.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.activity:activity:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/24e16c973e208c9c2094626b0c8fe10d/transformed/activity-1.9.3/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.activity:activity-ktx:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/740e5de92e1d777e9ae26b6cbb314aac/transformed/activity-ktx-1.9.3/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.activity:activity-compose:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e037763b6600a8ca52223ebc5db03f03/transformed/activity-compose-1.9.3/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.media3:media3-extractor:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/72b77bb000480de4b1a1677bb549b0db/transformed/media3-extractor-1.5.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.media3:media3-container:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/604f6667470ff519d578da109ca1c76f/transformed/media3-container-1.5.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.media3:media3-datasource:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9b42971e939bb6710fc09704f03fe06d/transformed/media3-datasource-1.5.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.media3:media3-decoder:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/b83e17f8e40e6cfaa00166149405d5a7/transformed/media3-decoder-1.5.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.media3:media3-database:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2cb7dd00be3fa467cc673e93b3880f0e/transformed/media3-database-1.5.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.media3:media3-common:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/37c5c0aeb873c5acd3576ce6217553e2/transformed/media3-common-1.5.1/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.media3:media3-exoplayer-hls:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ed14473eb4ccd4dc10e8815ab8b6bffd/transformed/media3-exoplayer-hls-1.5.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.media3:media3-exoplayer:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f07e913f434611e52de52d180ed7aeed/transformed/media3-exoplayer-1.5.1/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.appcompat:appcompat-resources:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f3d92e72e8dc709b33f8fdb2595e3306/transformed/appcompat-resources-1.1.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.drawerlayout:drawerlayout:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/02d46abd9efba750428bfa046acbc0d1/transformed/drawerlayout-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.autofill:autofill:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0c7ec71ab2641fac3ba8342d808973b1/transformed/autofill-1.0.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.viewpager:viewpager:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/97302a1d4bbdd99aaeda73697fa99beb/transformed/viewpager-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.loader:loader:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ffe1afb75d783254bcb6a33d591f9d5b/transformed/loader-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.vectordrawable:vectordrawable-animated:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/546ebcd78fd083b80ea88a58d3e3c39c/transformed/vectordrawable-animated-1.1.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.vectordrawable:vectordrawable:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4d4b8009bde6e78117bf3ea97d85dbf1/transformed/vectordrawable-1.1.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.customview:customview:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/6280d209cc3d4a8d8f7723206913f6c3/transformed/customview-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:17:1-35:12
+MERGED from [androidx.graphics:graphics-path:1.0.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/59859107dbe5e4153be56bf383ba8b55/transformed/graphics-path-1.0.1/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:17:1-30:12
+MERGED from [androidx.customview:customview-poolingcontainer:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/439297c9ebe58aeba273ef94a9695f7a/transformed/customview-poolingcontainer-1.0.0/AndroidManifest.xml:17:1-23:12
+MERGED from [androidx.savedstate:savedstate-ktx:1.2.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9132ca21ae02a0c5883146ef4a86f9c5/transformed/savedstate-ktx-1.2.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.savedstate:savedstate:1.2.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/b23ab69ecc14c8b4896ceebc4ef851ef/transformed/savedstate-1.2.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:17:1-35:12
+MERGED from [androidx.lifecycle:lifecycle-livedata-core-ktx:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/5999b2b354e6dd0a0242b2490299a09e/transformed/lifecycle-livedata-core-ktx-2.8.7/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.lifecycle:lifecycle-livedata-core:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/cb559a4aa96f5c5b264334b765da0197/transformed/lifecycle-livedata-core-2.8.7/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.lifecycle:lifecycle-viewmodel:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/022aa63fe905950fc825cab0d093c8c4/transformed/lifecycle-viewmodel-2.8.7/AndroidManifest.xml:2:1-5:12
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2c54baec61033524328c5a3368b15664/transformed/lifecycle-viewmodel-release/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.lifecycle:lifecycle-runtime-ktx-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/18bad28a78c0c9645e983a17e256f843/transformed/lifecycle-runtime-ktx-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.lifecycle:lifecycle-runtime-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4b0ec1f81fcb00f09cee42b9c0c14947/transformed/lifecycle-runtime-release/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.lifecycle:lifecycle-livedata:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c769691b59fd44389be1597dd045dde1/transformed/lifecycle-livedata-2.8.7/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4cfe54e173c85633478e0bd89ae51a6d/transformed/lifecycle-viewmodel-ktx-2.8.7/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.lifecycle:lifecycle-runtime-compose-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a02d518a1ff8d76f40814f4d917083c5/transformed/lifecycle-runtime-compose-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-savedstate:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ab9ffd58a9b44f2a59ae70abe614b885/transformed/lifecycle-viewmodel-savedstate-2.8.7/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.core:core-ktx:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/6018eaa552e8bdba6ce3a8165941215c/transformed/core-ktx-1.13.1/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.runtime:runtime-saveable-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9684f5cbf1af1356897d5d04e1f0e7ac/transformed/runtime-saveable-release/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.compose.runtime:runtime-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a64580a32d59d0ff53024ca8e1b74c49/transformed/runtime-release/AndroidManifest.xml:2:1-7:12
+MERGED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:2:1-50:12
+MERGED from [fr.acinq.secp256k1:secp256k1-kmp-jni-android:0.19.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e651a9ad009e61690c4d6b715ad76620/transformed/secp256k1-kmp-jni-android-0.19.0/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:17:1-55:12
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1bfa8212e1bd820434f4e6a84d6deb0b/transformed/startup-runtime-1.1.1/AndroidManifest.xml:17:1-33:12
+MERGED from [androidx.tracing:tracing:1.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f9b9a8d2ae2f49d2052d65b426935aee/transformed/tracing-1.2.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.tracing:tracing-ktx:1.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/fddba23a88eb4032a01d7aed037fd293/transformed/tracing-ktx-1.2.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.annotation:annotation-experimental:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/7fc416836493f0c4e1a3af49396ebc3f/transformed/annotation-experimental-1.4.1/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.print:print:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/26e045bf68de6274f49875431624db35/transformed/print-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.exifinterface:exifinterface:1.3.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/47d78869add731163cc8e988a071e8ea/transformed/exifinterface-1.3.6/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.interpolator:interpolator:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1a23e00ceba6454c0e0877fbc6a0d852/transformed/interpolator-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/5f92531b36578a9077d6aa1aa781fce4/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:17:1-27:12
+MERGED from [androidx.cursoradapter:cursoradapter:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2df8b8d10235ac8c7f194ac2199be79f/transformed/cursoradapter-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.arch.core:core-runtime:2.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/157b5579a617ead7c55da0f7fdd35abb/transformed/core-runtime-2.2.0/AndroidManifest.xml:17:1-22:12
+	package
+		INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml
+	android:versionName
+		INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml
+	android:versionCode
+		INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:2:11-69
+uses-permission#android.permission.INTERNET
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:4:5-67
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:4:22-64
+uses-permission#android.permission.CAMERA
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:5:5-65
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:5:22-62
+uses-permission#android.permission.POST_NOTIFICATIONS
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:6:5-77
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:6:22-74
+uses-permission#android.permission.FOREGROUND_SERVICE
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:7:5-77
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:7:22-74
+uses-permission#android.permission.FOREGROUND_SERVICE_SPECIAL_USE
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:8:5-89
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:8:22-86
+uses-permission#android.permission.RECEIVE_BOOT_COMPLETED
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:9:5-81
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:9:22-78
+uses-feature#android.hardware.camera.any
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:10:5-89
+	android:required
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:10:62-86
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:10:19-61
+application
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:12:5-134:19
+INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:12:5-134:19
+MERGED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:23:5-34:19
+MERGED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:23:5-34:19
+MERGED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:23:5-34:19
+MERGED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:23:5-34:19
+MERGED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:23:5-33:19
+MERGED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:23:5-33:19
+MERGED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:28:5-89
+MERGED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:28:5-89
+MERGED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:23:5-33:19
+MERGED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:23:5-33:19
+MERGED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:22:5-48:19
+MERGED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:22:5-48:19
+MERGED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:23:5-53:19
+MERGED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:23:5-53:19
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1bfa8212e1bd820434f4e6a84d6deb0b/transformed/startup-runtime-1.1.1/AndroidManifest.xml:25:5-31:19
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1bfa8212e1bd820434f4e6a84d6deb0b/transformed/startup-runtime-1.1.1/AndroidManifest.xml:25:5-31:19
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/5f92531b36578a9077d6aa1aa781fce4/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:24:5-25:19
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/5f92531b36578a9077d6aa1aa781fce4/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:24:5-25:19
+	android:extractNativeLibs
+		INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml
+	android:appComponentFactory
+		ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:28:18-86
+	android:supportsRtl
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:21:9-35
+	android:label
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:20:9-41
+	android:fullBackupContent
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:17:9-42
+	android:roundIcon
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:19:9-48
+	android:icon
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:18:9-43
+	android:allowBackup
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:14:9-36
+	android:theme
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:22:9-44
+	android:networkSecurityConfig
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:16:9-69
+	android:dataExtractionRules
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:15:9-65
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:13:9-34
+activity#cc.aaro.cosign.MainActivity
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:24:9-66:20
+	android:showWhenLocked
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:29:13-43
+	android:launchMode
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:27:13-44
+	android:windowSoftInputMode
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:28:13-55
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:26:13-36
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:25:13-41
+intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:30:13-33:29
+action#android.intent.action.MAIN
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:31:17-69
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:31:25-66
+category#android.intent.category.LAUNCHER
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:32:17-77
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:32:27-74
+intent-filter#action:name:android.intent.action.VIEW+category:name:android.intent.category.BROWSABLE+category:name:android.intent.category.DEFAULT+data:host:cosign.aaro.cc+data:scheme:https
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:36:13-41:29
+	android:autoVerify
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:36:28-53
+action#android.intent.action.VIEW
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:17-69
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:37:25-66
+category#android.intent.category.DEFAULT
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:17-76
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:38:27-73
+category#android.intent.category.BROWSABLE
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:17-78
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:39:27-75
+data
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:17-78
+	android:host
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:46-75
+	android:scheme
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:40:23-45
+intent-filter#action:name:android.intent.action.VIEW+category:name:android.intent.category.BROWSABLE+category:name:android.intent.category.DEFAULT+data:scheme:cosign
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:44:13-49:29
+intent-filter#action:name:android.intent.action.VIEW+category:name:android.intent.category.BROWSABLE+category:name:android.intent.category.DEFAULT+data:scheme:qrst
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:52:13-57:29
+intent-filter#action:name:android.intent.action.VIEW+category:name:android.intent.category.BROWSABLE+category:name:android.intent.category.DEFAULT+data:scheme:nostrconnect
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:60:13-65:29
+service#cc.aaro.cosign.SignerService
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:72:9-75:40
+	android:process
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:74:13-38
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:75:13-37
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:73:13-42
+activity#cc.aaro.cosign.SignerActivity
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:77:9-83:57
+	android:process
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:79:13-38
+	android:excludeFromRecents
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:82:13-46
+	android:launchMode
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:81:13-43
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:80:13-37
+	android:theme
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:83:13-54
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:78:13-43
+activity#cc.aaro.cosign.Nip55Activity
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:88:9-101:20
+	android:process
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:90:13-38
+	android:excludeFromRecents
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:93:13-46
+	android:launchMode
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:92:13-43
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:91:13-36
+	android:theme
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:94:13-54
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:89:13-42
+intent-filter#action:name:android.intent.action.VIEW+category:name:android.intent.category.BROWSABLE+category:name:android.intent.category.DEFAULT+data:scheme:nostrsigner
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:95:13-100:29
+provider#cc.aaro.cosign.Nip55Provider
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:102:9-106:242
+	android:process
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:104:13-38
+	android:authorities
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:106:13-239
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:105:13-36
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:103:13-42
+service#cc.aaro.cosign.CosignService
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:110:9-118:19
+	android:process
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:112:13-38
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:113:13-37
+	android:foregroundServiceType
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:114:13-55
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:111:13-42
+property#android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:115:13-117:139
+	android:value
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:117:17-136
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:116:17-76
+receiver#cc.aaro.cosign.DecisionReceiver
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:120:9-105
+	android:process
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:120:52-77
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:120:78-102
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:120:19-51
+service#cc.aaro.cosign.Push
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:123:9-127:19
+	android:process
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:123:39-64
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:123:65-89
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:123:18-38
+intent-filter#action:name:org.unifiedpush.android.connector.PUSH_EVENT
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:124:13-126:29
+action#org.unifiedpush.android.connector.PUSH_EVENT
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:125:17-87
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:125:25-84
+receiver#cc.aaro.cosign.BootReceiver
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:129:9-133:20
+	android:process
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:129:48-73
+	android:exported
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:129:74-98
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:129:19-47
+intent-filter#action:name:android.intent.action.BOOT_COMPLETED
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:130:13-132:29
+action#android.intent.action.BOOT_COMPLETED
+ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:131:17-79
+	android:name
+		ADDED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml:131:25-76
+uses-sdk
+INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml
+INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml
+MERGED from [androidx.compose.material3:material3-android:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ffa66e648223cee33be20a8976e308c2/transformed/material3-release/AndroidManifest.xml:20:5-44
+MERGED from [androidx.compose.material3:material3-android:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ffa66e648223cee33be20a8976e308c2/transformed/material3-release/AndroidManifest.xml:20:5-44
+MERGED from [androidx.compose.material:material-ripple-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/31f496eb578c25cb5d0cdc44e870dc4f/transformed/material-ripple-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.material:material-ripple-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/31f496eb578c25cb5d0cdc44e870dc4f/transformed/material-ripple-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.foundation:foundation-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/01c2a208865446349f5aaa067d956f60/transformed/foundation-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.foundation:foundation-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/01c2a208865446349f5aaa067d956f60/transformed/foundation-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.animation:animation-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f1e4e1aee70ca1ff75e087fbf3377341/transformed/animation-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.animation:animation-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f1e4e1aee70ca1ff75e087fbf3377341/transformed/animation-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.foundation:foundation-layout-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a27c27d5e5c97e628ead876ef33d9fca/transformed/foundation-layout-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.foundation:foundation-layout-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a27c27d5e5c97e628ead876ef33d9fca/transformed/foundation-layout-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.animation:animation-core-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2464ea5a1e6e13b9c291bcd7be1657a8/transformed/animation-core-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.animation:animation-core-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2464ea5a1e6e13b9c291bcd7be1657a8/transformed/animation-core-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.material:material-icons-core-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/db934fbdbb3986ed96f6da8e9ae2e99d/transformed/material-icons-core-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.material:material-icons-core-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/db934fbdbb3986ed96f6da8e9ae2e99d/transformed/material-icons-core-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-unit-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/03c0e7256b65c75e6c70419a195a88a3/transformed/ui-unit-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-unit-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/03c0e7256b65c75e6c70419a195a88a3/transformed/ui-unit-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-graphics-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e6634b194ce279b9011a776924bc94f3/transformed/ui-graphics-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-graphics-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e6634b194ce279b9011a776924bc94f3/transformed/ui-graphics-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-geometry-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/52953cbd63914ee415a1f4eee310ff87/transformed/ui-geometry-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-geometry-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/52953cbd63914ee415a1f4eee310ff87/transformed/ui-geometry-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-util-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/08ff117795798ea6715231b276076b40/transformed/ui-util-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-util-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/08ff117795798ea6715231b276076b40/transformed/ui-util-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-text-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/185ee83bb36a235743a9ea2258ecce94/transformed/ui-text-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-text-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/185ee83bb36a235743a9ea2258ecce94/transformed/ui-text-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2a036e2226a3c4bc2ebac4e263be1c49/transformed/ui-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.ui:ui-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2a036e2226a3c4bc2ebac4e263be1c49/transformed/ui-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.camera:camera-video:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4ceb7f6a1ec3f148eca435edf8dc1fea/transformed/camera-video-1.4.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.camera:camera-video:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4ceb7f6a1ec3f148eca435edf8dc1fea/transformed/camera-video-1.4.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:21:5-44
+MERGED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:21:5-44
+MERGED from [androidx.camera:camera-lifecycle:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/93f7445ee6dab63d148634988ef1dab5/transformed/camera-lifecycle-1.4.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.camera:camera-lifecycle:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/93f7445ee6dab63d148634988ef1dab5/transformed/camera-lifecycle-1.4.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:21:5-44
+MERGED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:21:5-44
+MERGED from [androidx.camera:camera-view:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/03d93c80141bb8709ce1632cd1ba224b/transformed/camera-view-1.4.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.camera:camera-view:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/03d93c80141bb8709ce1632cd1ba224b/transformed/camera-view-1.4.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.appcompat:appcompat:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1fffe99e031b38ef6c71b3168197284a/transformed/appcompat-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.appcompat:appcompat:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1fffe99e031b38ef6c71b3168197284a/transformed/appcompat-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.fragment:fragment:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c4f52c6b7ab6f380fbced2f81c6aef9a/transformed/fragment-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.fragment:fragment:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c4f52c6b7ab6f380fbced2f81c6aef9a/transformed/fragment-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.activity:activity:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/24e16c973e208c9c2094626b0c8fe10d/transformed/activity-1.9.3/AndroidManifest.xml:20:5-44
+MERGED from [androidx.activity:activity:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/24e16c973e208c9c2094626b0c8fe10d/transformed/activity-1.9.3/AndroidManifest.xml:20:5-44
+MERGED from [androidx.activity:activity-ktx:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/740e5de92e1d777e9ae26b6cbb314aac/transformed/activity-ktx-1.9.3/AndroidManifest.xml:5:5-44
+MERGED from [androidx.activity:activity-ktx:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/740e5de92e1d777e9ae26b6cbb314aac/transformed/activity-ktx-1.9.3/AndroidManifest.xml:5:5-44
+MERGED from [androidx.activity:activity-compose:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e037763b6600a8ca52223ebc5db03f03/transformed/activity-compose-1.9.3/AndroidManifest.xml:5:5-44
+MERGED from [androidx.activity:activity-compose:1.9.3] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e037763b6600a8ca52223ebc5db03f03/transformed/activity-compose-1.9.3/AndroidManifest.xml:5:5-44
+MERGED from [androidx.media3:media3-extractor:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/72b77bb000480de4b1a1677bb549b0db/transformed/media3-extractor-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-extractor:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/72b77bb000480de4b1a1677bb549b0db/transformed/media3-extractor-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-container:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/604f6667470ff519d578da109ca1c76f/transformed/media3-container-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-container:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/604f6667470ff519d578da109ca1c76f/transformed/media3-container-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-datasource:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9b42971e939bb6710fc09704f03fe06d/transformed/media3-datasource-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-datasource:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9b42971e939bb6710fc09704f03fe06d/transformed/media3-datasource-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-decoder:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/b83e17f8e40e6cfaa00166149405d5a7/transformed/media3-decoder-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-decoder:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/b83e17f8e40e6cfaa00166149405d5a7/transformed/media3-decoder-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-database:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2cb7dd00be3fa467cc673e93b3880f0e/transformed/media3-database-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-database:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2cb7dd00be3fa467cc673e93b3880f0e/transformed/media3-database-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-common:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/37c5c0aeb873c5acd3576ce6217553e2/transformed/media3-common-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-common:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/37c5c0aeb873c5acd3576ce6217553e2/transformed/media3-common-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-exoplayer-hls:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ed14473eb4ccd4dc10e8815ab8b6bffd/transformed/media3-exoplayer-hls-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-exoplayer-hls:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ed14473eb4ccd4dc10e8815ab8b6bffd/transformed/media3-exoplayer-hls-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-exoplayer:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f07e913f434611e52de52d180ed7aeed/transformed/media3-exoplayer-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.media3:media3-exoplayer:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f07e913f434611e52de52d180ed7aeed/transformed/media3-exoplayer-1.5.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.appcompat:appcompat-resources:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f3d92e72e8dc709b33f8fdb2595e3306/transformed/appcompat-resources-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.appcompat:appcompat-resources:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f3d92e72e8dc709b33f8fdb2595e3306/transformed/appcompat-resources-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.drawerlayout:drawerlayout:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/02d46abd9efba750428bfa046acbc0d1/transformed/drawerlayout-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.drawerlayout:drawerlayout:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/02d46abd9efba750428bfa046acbc0d1/transformed/drawerlayout-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.autofill:autofill:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0c7ec71ab2641fac3ba8342d808973b1/transformed/autofill-1.0.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.autofill:autofill:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0c7ec71ab2641fac3ba8342d808973b1/transformed/autofill-1.0.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.viewpager:viewpager:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/97302a1d4bbdd99aaeda73697fa99beb/transformed/viewpager-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.viewpager:viewpager:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/97302a1d4bbdd99aaeda73697fa99beb/transformed/viewpager-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.loader:loader:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ffe1afb75d783254bcb6a33d591f9d5b/transformed/loader-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.loader:loader:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ffe1afb75d783254bcb6a33d591f9d5b/transformed/loader-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.vectordrawable:vectordrawable-animated:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/546ebcd78fd083b80ea88a58d3e3c39c/transformed/vectordrawable-animated-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.vectordrawable:vectordrawable-animated:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/546ebcd78fd083b80ea88a58d3e3c39c/transformed/vectordrawable-animated-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.vectordrawable:vectordrawable:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4d4b8009bde6e78117bf3ea97d85dbf1/transformed/vectordrawable-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.vectordrawable:vectordrawable:1.1.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4d4b8009bde6e78117bf3ea97d85dbf1/transformed/vectordrawable-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.customview:customview:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/6280d209cc3d4a8d8f7723206913f6c3/transformed/customview-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.customview:customview:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/6280d209cc3d4a8d8f7723206913f6c3/transformed/customview-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:21:5-44
+MERGED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:21:5-44
+MERGED from [androidx.graphics:graphics-path:1.0.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/59859107dbe5e4153be56bf383ba8b55/transformed/graphics-path-1.0.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.graphics:graphics-path:1.0.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/59859107dbe5e4153be56bf383ba8b55/transformed/graphics-path-1.0.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.customview:customview-poolingcontainer:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/439297c9ebe58aeba273ef94a9695f7a/transformed/customview-poolingcontainer-1.0.0/AndroidManifest.xml:20:5-21:38
+MERGED from [androidx.customview:customview-poolingcontainer:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/439297c9ebe58aeba273ef94a9695f7a/transformed/customview-poolingcontainer-1.0.0/AndroidManifest.xml:20:5-21:38
+MERGED from [androidx.savedstate:savedstate-ktx:1.2.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9132ca21ae02a0c5883146ef4a86f9c5/transformed/savedstate-ktx-1.2.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.savedstate:savedstate-ktx:1.2.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9132ca21ae02a0c5883146ef4a86f9c5/transformed/savedstate-ktx-1.2.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.savedstate:savedstate:1.2.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/b23ab69ecc14c8b4896ceebc4ef851ef/transformed/savedstate-1.2.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.savedstate:savedstate:1.2.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/b23ab69ecc14c8b4896ceebc4ef851ef/transformed/savedstate-1.2.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:21:5-44
+MERGED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:21:5-44
+MERGED from [androidx.lifecycle:lifecycle-livedata-core-ktx:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/5999b2b354e6dd0a0242b2490299a09e/transformed/lifecycle-livedata-core-ktx-2.8.7/AndroidManifest.xml:5:5-44
+MERGED from [androidx.lifecycle:lifecycle-livedata-core-ktx:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/5999b2b354e6dd0a0242b2490299a09e/transformed/lifecycle-livedata-core-ktx-2.8.7/AndroidManifest.xml:5:5-44
+MERGED from [androidx.lifecycle:lifecycle-livedata-core:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/cb559a4aa96f5c5b264334b765da0197/transformed/lifecycle-livedata-core-2.8.7/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-livedata-core:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/cb559a4aa96f5c5b264334b765da0197/transformed/lifecycle-livedata-core-2.8.7/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-viewmodel:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/022aa63fe905950fc825cab0d093c8c4/transformed/lifecycle-viewmodel-2.8.7/AndroidManifest.xml:4:5-43
+MERGED from [androidx.lifecycle:lifecycle-viewmodel:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/022aa63fe905950fc825cab0d093c8c4/transformed/lifecycle-viewmodel-2.8.7/AndroidManifest.xml:4:5-43
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2c54baec61033524328c5a3368b15664/transformed/lifecycle-viewmodel-release/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2c54baec61033524328c5a3368b15664/transformed/lifecycle-viewmodel-release/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-runtime-ktx-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/18bad28a78c0c9645e983a17e256f843/transformed/lifecycle-runtime-ktx-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.lifecycle:lifecycle-runtime-ktx-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/18bad28a78c0c9645e983a17e256f843/transformed/lifecycle-runtime-ktx-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.lifecycle:lifecycle-runtime-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4b0ec1f81fcb00f09cee42b9c0c14947/transformed/lifecycle-runtime-release/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-runtime-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4b0ec1f81fcb00f09cee42b9c0c14947/transformed/lifecycle-runtime-release/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-livedata:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c769691b59fd44389be1597dd045dde1/transformed/lifecycle-livedata-2.8.7/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-livedata:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c769691b59fd44389be1597dd045dde1/transformed/lifecycle-livedata-2.8.7/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4cfe54e173c85633478e0bd89ae51a6d/transformed/lifecycle-viewmodel-ktx-2.8.7/AndroidManifest.xml:5:5-44
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4cfe54e173c85633478e0bd89ae51a6d/transformed/lifecycle-viewmodel-ktx-2.8.7/AndroidManifest.xml:5:5-44
+MERGED from [androidx.lifecycle:lifecycle-runtime-compose-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a02d518a1ff8d76f40814f4d917083c5/transformed/lifecycle-runtime-compose-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.lifecycle:lifecycle-runtime-compose-android:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a02d518a1ff8d76f40814f4d917083c5/transformed/lifecycle-runtime-compose-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-savedstate:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ab9ffd58a9b44f2a59ae70abe614b885/transformed/lifecycle-viewmodel-savedstate-2.8.7/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-savedstate:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/ab9ffd58a9b44f2a59ae70abe614b885/transformed/lifecycle-viewmodel-savedstate-2.8.7/AndroidManifest.xml:20:5-44
+MERGED from [androidx.core:core-ktx:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/6018eaa552e8bdba6ce3a8165941215c/transformed/core-ktx-1.13.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.core:core-ktx:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/6018eaa552e8bdba6ce3a8165941215c/transformed/core-ktx-1.13.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.runtime:runtime-saveable-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9684f5cbf1af1356897d5d04e1f0e7ac/transformed/runtime-saveable-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.runtime:runtime-saveable-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/9684f5cbf1af1356897d5d04e1f0e7ac/transformed/runtime-saveable-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.runtime:runtime-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a64580a32d59d0ff53024ca8e1b74c49/transformed/runtime-release/AndroidManifest.xml:5:5-44
+MERGED from [androidx.compose.runtime:runtime-android:1.7.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/a64580a32d59d0ff53024ca8e1b74c49/transformed/runtime-release/AndroidManifest.xml:5:5-44
+MERGED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:6:5-44
+MERGED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:6:5-44
+MERGED from [fr.acinq.secp256k1:secp256k1-kmp-jni-android:0.19.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e651a9ad009e61690c4d6b715ad76620/transformed/secp256k1-kmp-jni-android-0.19.0/AndroidManifest.xml:5:5-44
+MERGED from [fr.acinq.secp256k1:secp256k1-kmp-jni-android:0.19.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/e651a9ad009e61690c4d6b715ad76620/transformed/secp256k1-kmp-jni-android-0.19.0/AndroidManifest.xml:5:5-44
+MERGED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:21:5-44
+MERGED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:21:5-44
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1bfa8212e1bd820434f4e6a84d6deb0b/transformed/startup-runtime-1.1.1/AndroidManifest.xml:21:5-23:41
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1bfa8212e1bd820434f4e6a84d6deb0b/transformed/startup-runtime-1.1.1/AndroidManifest.xml:21:5-23:41
+MERGED from [androidx.tracing:tracing:1.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f9b9a8d2ae2f49d2052d65b426935aee/transformed/tracing-1.2.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.tracing:tracing:1.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f9b9a8d2ae2f49d2052d65b426935aee/transformed/tracing-1.2.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.tracing:tracing-ktx:1.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/fddba23a88eb4032a01d7aed037fd293/transformed/tracing-ktx-1.2.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.tracing:tracing-ktx:1.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/fddba23a88eb4032a01d7aed037fd293/transformed/tracing-ktx-1.2.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.annotation:annotation-experimental:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/7fc416836493f0c4e1a3af49396ebc3f/transformed/annotation-experimental-1.4.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.annotation:annotation-experimental:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/7fc416836493f0c4e1a3af49396ebc3f/transformed/annotation-experimental-1.4.1/AndroidManifest.xml:5:5-44
+MERGED from [androidx.print:print:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/26e045bf68de6274f49875431624db35/transformed/print-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.print:print:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/26e045bf68de6274f49875431624db35/transformed/print-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.exifinterface:exifinterface:1.3.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/47d78869add731163cc8e988a071e8ea/transformed/exifinterface-1.3.6/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.exifinterface:exifinterface:1.3.6] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/47d78869add731163cc8e988a071e8ea/transformed/exifinterface-1.3.6/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.interpolator:interpolator:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1a23e00ceba6454c0e0877fbc6a0d852/transformed/interpolator-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.interpolator:interpolator:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1a23e00ceba6454c0e0877fbc6a0d852/transformed/interpolator-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/5f92531b36578a9077d6aa1aa781fce4/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/5f92531b36578a9077d6aa1aa781fce4/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.cursoradapter:cursoradapter:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2df8b8d10235ac8c7f194ac2199be79f/transformed/cursoradapter-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.cursoradapter:cursoradapter:1.0.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/2df8b8d10235ac8c7f194ac2199be79f/transformed/cursoradapter-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.arch.core:core-runtime:2.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/157b5579a617ead7c55da0f7fdd35abb/transformed/core-runtime-2.2.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.arch.core:core-runtime:2.2.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/157b5579a617ead7c55da0f7fdd35abb/transformed/core-runtime-2.2.0/AndroidManifest.xml:20:5-44
+	android:targetSdkVersion
+		INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/aaronherbst/cosign/android/app/src/main/AndroidManifest.xml
+service#androidx.camera.core.impl.MetadataHolderService
+ADDED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:29:9-33:78
+MERGED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:24:9-33:19
+MERGED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:24:9-33:19
+	android:enabled
+		ADDED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:31:13-36
+	android:exported
+		ADDED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:32:13-37
+	tools:ignore
+		ADDED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:33:13-75
+	android:name
+		ADDED from [androidx.camera:camera-core:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/479333ba5879611b4cd2f167e836f1ce/transformed/camera-core-1.4.1/AndroidManifest.xml:30:13-75
+meta-data#androidx.camera.core.impl.MetadataHolderService.DEFAULT_CONFIG_PROVIDER
+ADDED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:30:13-32:89
+	android:value
+		ADDED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:32:17-86
+	android:name
+		ADDED from [androidx.camera:camera-camera2:1.4.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/4e150c0c3b41690ca8f207ce4c35f072/transformed/camera-camera2-1.4.1/AndroidManifest.xml:31:17-103
+uses-permission#android.permission.ACCESS_NETWORK_STATE
+ADDED from [androidx.media3:media3-common:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/37c5c0aeb873c5acd3576ce6217553e2/transformed/media3-common-1.5.1/AndroidManifest.xml:22:5-79
+MERGED from [androidx.media3:media3-exoplayer:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f07e913f434611e52de52d180ed7aeed/transformed/media3-exoplayer-1.5.1/AndroidManifest.xml:22:5-79
+MERGED from [androidx.media3:media3-exoplayer:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/f07e913f434611e52de52d180ed7aeed/transformed/media3-exoplayer-1.5.1/AndroidManifest.xml:22:5-79
+	android:name
+		ADDED from [androidx.media3:media3-common:1.5.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/37c5c0aeb873c5acd3576ce6217553e2/transformed/media3-common-1.5.1/AndroidManifest.xml:22:22-76
+provider#androidx.startup.InitializationProvider
+ADDED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:24:9-32:20
+MERGED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:24:9-32:20
+MERGED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:24:9-32:20
+MERGED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:24:9-32:20
+MERGED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:24:9-32:20
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1bfa8212e1bd820434f4e6a84d6deb0b/transformed/startup-runtime-1.1.1/AndroidManifest.xml:26:9-30:34
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/1bfa8212e1bd820434f4e6a84d6deb0b/transformed/startup-runtime-1.1.1/AndroidManifest.xml:26:9-30:34
+	tools:node
+		ADDED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:28:13-31
+	android:authorities
+		ADDED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:26:13-68
+	android:exported
+		ADDED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:27:13-37
+	android:name
+		ADDED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:25:13-67
+meta-data#androidx.emoji2.text.EmojiCompatInitializer
+ADDED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:29:13-31:52
+	android:value
+		ADDED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:31:17-49
+	android:name
+		ADDED from [androidx.emoji2:emoji2:1.3.0] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/0ce098773a6c334faa1cd065996c4d4e/transformed/emoji2-1.3.0/AndroidManifest.xml:30:17-75
+permission#${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:22:5-24:47
+	android:protectionLevel
+		ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:24:9-44
+	android:name
+		ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:23:9-81
+permission#cc.aaro.cosign.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:22:5-24:47
+	android:protectionLevel
+		ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:24:9-44
+	android:name
+		ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:23:9-81
+uses-permission#${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:26:5-97
+	android:name
+		ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:26:22-94
+uses-permission#cc.aaro.cosign.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:26:5-97
+	android:name
+		ADDED from [androidx.core:core:1.13.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/122a96bec58f7c33d6d3f0d2a8c0ef5c/transformed/core-1.13.1/AndroidManifest.xml:26:22-94
+meta-data#androidx.lifecycle.ProcessLifecycleInitializer
+ADDED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:29:13-31:52
+	android:value
+		ADDED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:31:17-49
+	android:name
+		ADDED from [androidx.lifecycle:lifecycle-process:2.8.7] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/795877f3cea01a2ec7c9276e5ae47418/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:30:17-78
+uses-permission#android.permission.WAKE_LOCK
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:8:5-68
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:8:22-65
+queries
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:10:5-20:15
+intent#action:name:org.unifiedpush.android.distributor.LINK
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:11:9-13:18
+action#org.unifiedpush.android.distributor.LINK
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:12:13-79
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:12:21-76
+intent#action:name:org.unifiedpush.android.distributor.REGISTER
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:14:9-16:18
+action#org.unifiedpush.android.distributor.REGISTER
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:15:13-83
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:15:21-80
+intent#action:name:org.unifiedpush.android.distributor.UNREGISTER
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:17:9-19:18
+action#org.unifiedpush.android.distributor.UNREGISTER
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:18:13-85
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:18:21-82
+service#org.unifiedpush.android.connector.internal.RaiseToForegroundService
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:23:9-30:19
+	android:exported
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:25:13-36
+	tools:ignore
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:26:13-43
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:24:13-95
+intent-filter#action:name:org.unifiedpush.android.connector.RAISE_TO_FOREGROUND
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:27:13-29:29
+action#org.unifiedpush.android.connector.RAISE_TO_FOREGROUND
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:28:17-96
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:28:25-93
+activity#org.unifiedpush.android.connector.internal.LinkActivity
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:32:9-34:86
+	android:theme
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:34:13-83
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:33:13-83
+receiver#org.unifiedpush.android.connector.internal.MessagingReceiverImpl
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:36:9-47:20
+	android:enabled
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:38:13-35
+	android:exported
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:39:13-36
+	tools:ignore
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:40:13-44
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:37:13-92
+intent-filter#action:name:org.unifiedpush.android.connector.MESSAGE+action:name:org.unifiedpush.android.connector.NEW_ENDPOINT+action:name:org.unifiedpush.android.connector.REGISTRATION_FAILED+action:name:org.unifiedpush.android.connector.UNREGISTERED
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:41:13-46:29
+	android:priority
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:41:28-51
+action#org.unifiedpush.android.connector.MESSAGE
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:42:17-84
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:42:25-81
+action#org.unifiedpush.android.connector.UNREGISTERED
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:43:17-89
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:43:25-86
+action#org.unifiedpush.android.connector.NEW_ENDPOINT
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:44:17-89
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:44:25-86
+action#org.unifiedpush.android.connector.REGISTRATION_FAILED
+ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:45:17-96
+	android:name
+		ADDED from [org.unifiedpush.android:connector:3.0.10] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/3550439c43a957846d408b82466268b1/transformed/connector-3.0.10/AndroidManifest.xml:45:25-93
+meta-data#androidx.profileinstaller.ProfileInstallerInitializer
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:29:13-31:52
+	android:value
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:31:17-49
+	android:name
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:30:17-85
+receiver#androidx.profileinstaller.ProfileInstallReceiver
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:34:9-52:20
+	android:enabled
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:37:13-35
+	android:exported
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:38:13-36
+	android:permission
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:39:13-57
+	android:directBootAware
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:36:13-44
+	android:name
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:35:13-76
+intent-filter#action:name:androidx.profileinstaller.action.INSTALL_PROFILE
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:40:13-42:29
+action#androidx.profileinstaller.action.INSTALL_PROFILE
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:41:17-91
+	android:name
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:41:25-88
+intent-filter#action:name:androidx.profileinstaller.action.SKIP_FILE
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:43:13-45:29
+action#androidx.profileinstaller.action.SKIP_FILE
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:44:17-85
+	android:name
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:44:25-82
+intent-filter#action:name:androidx.profileinstaller.action.SAVE_PROFILE
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:46:13-48:29
+action#androidx.profileinstaller.action.SAVE_PROFILE
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:47:17-88
+	android:name
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:47:25-85
+intent-filter#action:name:androidx.profileinstaller.action.BENCHMARK_OPERATION
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:49:13-51:29
+action#androidx.profileinstaller.action.BENCHMARK_OPERATION
+ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:50:17-95
+	android:name
+		ADDED from [androidx.profileinstaller:profileinstaller:1.3.1] /Users/aaronherbst/.gradle/caches/8.10.2/transforms/c61331b2987544f74e12651f5a3789c2/transformed/profileinstaller-1.3.1/AndroidManifest.xml:50:25-92

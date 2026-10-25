@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Marble</string>
+    <style name="Theme.Cosign" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF13110F</item>
+        <item name="android:windowSplashScreenBackground">#FF13110F</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+    <style name="Theme.Cosign.Sheet" parent="Theme.Cosign">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Translucent</item>
+    </style>
+</resources>

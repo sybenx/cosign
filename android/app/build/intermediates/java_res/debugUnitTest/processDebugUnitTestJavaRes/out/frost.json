@@ -1,0 +1,223 @@
+{
+  "groupX": "0bf3a7b0c4288e105494c36c18a99ace05afdb18d15502768d0200fea47f534e",
+  "shares": [
+    {
+      "idx": 1,
+      "secret": "a6deacd4cee2759d9753eed22bbbd956167e5d95289bb17536f6f55e276e49da",
+      "pub": "03f1382bac0ca20880a319523b69ac1ca5739cc40b408e033eb639d185c0feaa38"
+    },
+    {
+      "idx": 2,
+      "secret": "d6873ec876781694814c4fcf11758f88ba6c773cfc5daef880820665686a4661",
+      "pub": "025fe81ac4cacd30d6baa5f928ae5304cfdc7de55ec865966b21d176dbe35bae28"
+    },
+    {
+      "idx": 3,
+      "secret": "062fd0bc1e0db78b6b44b0cbf72f45bca3abb3fe20d70c400a3ab8dfd93001a7",
+      "pub": "0263967ad7a6695772164bc27283973c0a482da621999f05d66643b71d124d41c1"
+    }
+  ],
+  "sign": [
+    {
+      "msg": "bf40f3ea98f97bcfdc40cec1c291497e2dd089d05653bd389189c57b6ece0aed",
+      "flip": false,
+      "commits": [
+        {
+          "idx": 2,
+          "D": "035223a84383e28b18dac7f40e0ce7ebf8aece4264b36aabce0590e89c919370fd",
+          "E": "02df99c74addd51a293b79afd70fe3b27df0ed897ba4cbaeafae1f3f45caca6737"
+        },
+        {
+          "idx": 3,
+          "D": "02b9af1b6266591891588a8851a3c1e9cebcc9dbda8c0d64cefe56e718dd0ed892",
+          "E": "0226768f79e0e7d8db550ef51045d38562d86588f17011ef14539a637a72dbc5bd"
+        }
+      ],
+      "phone": {
+        "idx": 3,
+        "d": "05e6e1e2110184058e14b2ad0d084c46f4b15f89d9172d63bd957a58fbab0651",
+        "e": "09d5f21bad9461565e315785e344ffd3c0b7ddce33eeabe2d371da014b1e3f1b"
+      },
+      "expectZ": "601acddbcc9d42b70621b195d8d68b4cbdfb1a26bc682d09886835a4dbeb0285",
+      "sig": "3779a76816f36c930b4453d92a8c1332cd2305187b770a0b0a624a632fae52fde91c3aa87836ae1a07a559a93f57e1e8d8cc255fbe191150b5bad1a704eca652"
+    },
+    {
+      "msg": "41fc70fb6c958bce4865fadd178cb3bb0d82401a247beb8ae6dc9081990a313e",
+      "flip": true,
+      "commits": [
+        {
+          "idx": 1,
+          "D": "02f9ac1caa2fd3310b8f21f901845d89228290ffcbfdd31a1613f0b8a4175939ad",
+          "E": "030a034333956b3696ea5968b7b74ec45ca7a9d1ae9fe22b0ed1e8c4730a5871ad"
+        },
+        {
+          "idx": 3,
+          "D": "0283e83267cbc99e85f181f2186a3a17b080ba118e6861db6929fdee117ead1c7f",
+          "E": "02426d572777c3b665252d8123bc55985a886fef69343298833ffb57de2244163e"
+        }
+      ],
+      "phone": {
+        "idx": 3,
+        "d": "a7d6b48ee9e11a169ccb1490cfeb27db3d14eb6e97a10c91a47fbedd3f496607",
+        "e": "2eaa0b8eeb54c041268ac9afcccac95154d884c39c41fc63ab00c779135486de"
+      },
+      "expectZ": "79e82c2970307f8c16f619df3371d94b8646ba6c485b57e7c3978dddc9cfc5da",
+      "sig": "94d4ca39b4cbb2622360d85f14a952782ce88066a60edca96763759fff0cec715f35564aa02357629cf4e64b655ef99ca43e42c9e466c3c8218aeacf6a011d3d"
+    },
+    {
+      "msg": "4de0da51ade3b600bd18dad3e54c1e1e0471ca81e515691d18fb8141d1dc847c",
+      "flip": false,
+      "commits": [
+        {
+          "idx": 2,
+          "D": "029817a8418335a9817391d3fb8544c4e1c98bde5d38f7e1fab70bf441b5fbc532",
+          "E": "02f07a50bf22027f1bb9ecf8fb65cc317466fcbd6aa9c7918fd9880ab0b072f087"
+        },
+        {
+          "idx": 3,
+          "D": "03be859f2ca736f7e011af1982c29a63889e3d59c96037f8a7d254bd948e5dcacb",
+          "E": "03d8017f8fb9495006b133a4d4b89b738361c2deadf8865affd571591737ee63b9"
+        }
+      ],
+      "phone": {
+        "idx": 3,
+        "d": "cd97c67c73855e337421e93c96b36494e995b3ac949790dd4bb98f65636a4f9f",
+        "e": "518564cfa0d59c4b2bcdf2a47823a621c843c53964a90657097f9fd94be316a6"
+      },
+      "expectZ": "727c4594f62fe0a2de19ef3a63d46a87a1b5fe1544757b1b81018d347f55136b",
+      "sig": "5b00efb0f5a71eb28c82ed0d6b86f05e4ebb2651ca62dbfaf649e4225e846c30c864dfc7d9217880fb196a4ab36f7f621601f80f2c6f86668b912b2a886033b4"
+    },
+    {
+      "msg": "bd2a587e627bc02f89f54690848d9ab3c517a891b2052529976d6ff4371482d3",
+      "flip": true,
+      "commits": [
+        {
+          "idx": 1,
+          "D": "0311b6ecfcb4015723fbfad87a87d3b58719974160f36967ec447b89461264b331",
+          "E": "02596f3a0155ca94fea5b201172948b896f6b0a6fc69149a787dbe8b8afae1a5d5"
+        },
+        {
+          "idx": 3,
+          "D": "02837c53ae82e82e2725b96539b1a082da9ecef74ab0f95c91924a1b774a8272bd",
+          "E": "038b7a6eaaa1d9862eebcc76880aeb610d8bd5e45a707248337adeadd39d79c310"
+        }
+      ],
+      "phone": {
+        "idx": 3,
+        "d": "5f2e41966646d204f6e11d795423baf0b57c2727149a0359450664f9574b1aeb",
+        "e": "976bc5a597e656a3793e734d9988739fa83ae082324f5bdb0d359580e3fd4f59"
+      },
+      "expectZ": "01219e38a8a5b0e9692559edc8cbe8a0beec73b7156a318b8cd460721dc81c85",
+      "sig": "efe64e5f398edd6d6000c16c38c0d357b45feac5671424752fde99a08c57467e5dd195bd9ef7c8125519ccaa57f673aff6e29c26869bafd13e1553330346252d"
+    },
+    {
+      "msg": "022d7ebddcb11009f85920d884c2704445d41a25144bd16da4de8c4f8a5ded3f",
+      "flip": true,
+      "commits": [
+        {
+          "idx": 2,
+          "D": "0292904c73b93bdfc05133a64f0289174fa205d67e1f4ea7645a4d54658495f51e",
+          "E": "022ebeffd044b54e49140007ccd6f559835199c2e30f83d206fa016281faf6cd38"
+        },
+        {
+          "idx": 3,
+          "D": "02b09a28aec2e9058db74a5a73133c2486ff6a8db292554e21b8dc581a102547ef",
+          "E": "032cb0ddb15cb3693915ebed8506f9c12dfd8577179c76e509940a8a4de8af89b4"
+        }
+      ],
+      "phone": {
+        "idx": 3,
+        "d": "6b463410fdd37ed7dc26e8f203c4c2f34db180cf6beb699835479683e327bffd",
+        "e": "2cf3b26d244834fa343d084d8db96b9e662b866fd984f79c14e7b53c9434dd1e"
+      },
+      "expectZ": "fa4b341a765cb9c1ad312fb5f4552a54ab39613e668c42de3b6299591dd3762d",
+      "sig": "6068f90947998ef316d7b1dab251fcb5fd608eb216871e2963234dc07ae05da8fb8e9c72cefd092b5c46f180d664c3e5c37982e036f95362fc4df5c83a035a2b"
+    },
+    {
+      "msg": "523fe524baf89c8e26f079b0997d36904abfba057112a2516f6971fe5b6b7709",
+      "flip": false,
+      "commits": [
+        {
+          "idx": 1,
+          "D": "025e69ec5cb7c0bb8e259f1da8777974bfa6dbe8b8d7df481fc83bc8fa2add73cb",
+          "E": "03617cc98ccabe9d23a4f7e72017db005c983b19a9325c286f3bcde81ebecdb109"
+        },
+        {
+          "idx": 3,
+          "D": "0243e4f7502bc0bec2bb9dcd0e06ae59c53de70934b2796fae48d234363b9823e8",
+          "E": "032d1f4e8337829f9c7409c1db7ca19ef0a9a051bee6fd586259130df7b58b4b80"
+        }
+      ],
+      "phone": {
+        "idx": 3,
+        "d": "8c2c4acc26cb8e0a6d3c1eefed436023e50c55568e3e22ba0cdbcdbb34532669",
+        "e": "17abd021735f4bf98b87d990c0ada2248f79086f300ec6d177774fd1267d9c14"
+      },
+      "expectZ": "371a3a3ccc50c22f7a51dca36cb3bb0cbbfa4b4fb616738c3a28d55e0d2d21e3",
+      "sig": "8358cceb90f962e877d123b0fee51dc82e91c3ebe1dc81f94267299a13b72a6298198bf5fc4ec91e7de455fb654f8ae7d664da3a3b85eb02cea1574bb4562469"
+    }
+  ],
+  "ecdh": [
+    {
+      "peerX": "9266b41ac7e5e41ad79b44e43a33a642a4e834f11abfcb7511e8939e21ca8232",
+      "participants": [
+        2,
+        3
+      ],
+      "idx": 3,
+      "expect": "03f24a43f29194e0f36a31102468fcf3d7699722e613639b28d50f1d3b0bf2c108"
+    },
+    {
+      "peerX": "096b2daa33b9728958ade055a2469ecbf98c84f988ed18813995f7fc51e8bf49",
+      "participants": [
+        1,
+        3
+      ],
+      "idx": 3,
+      "expect": "031dd604db60b8b5ca63d9ca21b24d024151b2d6bdde4a716219ae75f6a3193178"
+    },
+    {
+      "peerX": "4e30331655507e5b5810165155d4ed23166c877b623fc76a1f4447e29f106236",
+      "participants": [
+        2,
+        3
+      ],
+      "idx": 3,
+      "expect": "035600f3615e8daa125ddb8dbb6007f19a80137f04b15faf01a47f2f25b2aebc56"
+    }
+  ],
+  "lagrange": [
+    {
+      "i": 1,
+      "p": [
+        1,
+        3
+      ],
+      "expect": "7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a2"
+    },
+    {
+      "i": 3,
+      "p": [
+        1,
+        3
+      ],
+      "expect": "7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0"
+    },
+    {
+      "i": 3,
+      "p": [
+        2,
+        3
+      ],
+      "expect": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd036413f"
+    },
+    {
+      "i": 2,
+      "p": [
+        2,
+        3
+      ],
+      "expect": "0000000000000000000000000000000000000000000000000000000000000003"
+    }
+  ]
+}

@@ -183,6 +183,13 @@ class Phone internal constructor(val slot: String, private val signer: () -> ISi
         throw IllegalStateException(r.getString("error") ?: "no answer")
     }
 
+    /**
+     * Encrypt or decrypt your own app data with your own account (NIP-44 to self). The other
+     * side is always your account, so this reads nothing but what it wrote. Blocks for a few
+     * seconds, as a server takes part: never call it on the main thread. Null if it failed.
+     */
+    fun nip44Self(text: String, encrypt: Boolean): String? = try { signer()?.nip44Own(slot, text, encrypt) } catch (e: Exception) { null }
+
     /** The latest version of one of your lists this phone has seen signed ("3": your follows). */
     fun latest(key: String): Event? = try { signer()?.latest(slot, key)?.let { Event.fromMap(Json.parse(it)) } } catch (e: Exception) { null }
 }

@@ -20,6 +20,13 @@ interface ISigner {
     /** Sign the app's own event (a like, a follow, a reply, a mute): "event", or "approval" (what needs you), or "error". */
     Bundle signOwn(String slot, String event, boolean approved);
 
+    /**
+     * Encrypt or decrypt the app's own data with the account itself (NIP-44 to self, for
+     * NIP-78 app data). The other side is always this account's own key: no peer goes in,
+     * so this can never read anyone else's messages. Null if it couldn't be done.
+     */
+    String nip44Own(String slot, String text, boolean encrypt);
+
     /** The newest signed version of one of your lists ("3": follows), as JSON, or null. */
     String latest(String slot, String key);
 
