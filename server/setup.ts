@@ -61,7 +61,7 @@ if (weighted) {
   const group = {
     groupX: null, npub: null, threshold: 4, relays,
     members: [
-      { idx: 1, name: 'Server A', role: 'server', pk: pubOf(skA), sharePub: '' },
+      { idx: 1, name: single ? 'Your server' : 'Server A', role: 'server', pk: pubOf(skA), sharePub: '' },
       ...(single ? [] : [{ idx: 2, name: 'Server B', role: 'server', pk: pubOf(skB), sharePub: '' }]),
       { idx: 3, name: 'Phone', role: 'phone', pk: null, sharePub: '', push: null, shares: [3, 4, 5].map(idx => ({ idx, sharePub: '' })) },
     ],
@@ -70,7 +70,7 @@ if (weighted) {
   write('a', { port, self: { idx: 1, sk: skA, shares: [] }, ...common, pairing: { token: bytesToHex(randomBytes(16)), weighted: true } });
   if (!single) write('b', { port: port + 1, self: { idx: 2, sk: skB, shares: [] }, ...common, pairing: null });
   console.log(`
-No key yet. It's made when your phone scans Server A's code: your phone 3 shares,
+No account yet. It's made when your phone scans this server's code: your phone 3 shares,
 ${single ? 'this server 1, and your phone and it sign together' : 'each server 1, any 4 sign'}.
 
 Start the server${single ? '' : 's'}:

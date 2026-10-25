@@ -92,6 +92,8 @@ What the user does:
   piece from an old epoch does not combine with one from a new epoch.
 - **Coordinator** — the member that runs a signing or decryption round and finishes
   it.
+- **Member app** — any app that implements a device member (§4.1). This document names
+  no particular one; Marble is the reference implementation (Status).
 - **Site** — any web page or app that asks for signatures. Holds a **grant**, never a
   piece.
 - **Grant** — a site's access: its own key, its origin or package name, an optional
@@ -431,6 +433,12 @@ The doors are a protocol, not a product. No app, website or host is required:
   `signer-ticket` parameters and MAY carry `nc`, a `nostrconnect:` fallback (the
   profile's "`nc` fallback"). A bounce host only explains itself to someone with no
   member app; `cosign.aaro.cc` is one such host and is never required.
+- **Suggesting an app.** A bounce host or a site MAY suggest member apps to someone
+  without one, from a list it keeps (for example `/apps.json`). It SHOULD list apps that
+  people already use for other things before a dedicated reference app.
+- **Words people see.** What a site or bounce host shows a person SHOULD say "sign-in
+  app" and "your phone", not "signer", "key", "relay" or "Nostr"; those terms are for
+  developers.
 - **Handing the code to an app.** On the same device the site hands the code over
   either by the neutral `qrst:` handoff (QRST §11.2c), which **any member app may
   claim**, or by a verified `https` App Link to one app it knows.
@@ -620,7 +628,7 @@ check against that epoch's commitments. The paper is now worth 2 points:
 
 A refresh follows every use of the backup.
 
-### 8.4 When no server answers: the escape hatch
+### 8.4 When no server answers: the escape hatch *(not built yet)*
 
 If **no server has answered for 7 days**, a device plus the paper backup (5 points), or
 two devices (6), MAY rebuild the key on one device, after the device's lock and a plain

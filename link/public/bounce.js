@@ -1,7 +1,8 @@
-// The page a sign-in code opens when Cosign isn't installed. It reads its own fragment
-// (which never reached the server): for any sign-in code it offers Cosign, and if the
-// code also carries a nostrconnect:// fallback (`nc`), it offers that to whatever signer
-// app is installed. It acts on nothing by itself.
+// The page a sign-in code opens when no sign-in app is installed. It reads its own
+// fragment (which never reached the server): for any sign-in code it offers a sign-in app
+// (the first in apps.json for this phone: featured first, Marble until another app
+// integrates), and if the code also carries a nostrconnect:// fallback (`nc`), it offers
+// that to whatever app is installed. It acts on nothing by itself.
 (function () {
   if (window.top !== window.self) return; // never inside another page's frame
   var params = new URLSearchParams(location.hash.slice(1));
@@ -22,12 +23,20 @@
     document.getElementById('site').textContent = site;
   }
 
-  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
-    document.getElementById('get').hidden = true;
-    document.getElementById('android').hidden = true;
-    document.getElementById('ios').hidden = false;
-    if (nc) document.getElementById('ios').textContent = 'Cosign is Android-only for now. If you have another signer app, use it below.';
-  }
+  // The app to suggest: the first in apps.json for this kind of phone.
+  var ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  fetch('/apps.json').then(function (r) { return r.json(); }).then(function (apps) {
+    var mine = apps.filter(function (a) { return (a.platforms || []).indexOf(ios ? 'ios' : 'android') >= 0; })[0];
+    if (mine) {
+      document.getElementById('get').textContent = 'Get ' + mine.name;
+      document.getElementById('get').href = mine.url;
+    } else {
+      document.getElementById('get').hidden = true;
+      document.getElementById('android').hidden = true;
+      document.getElementById('ios').hidden = false;
+      document.getElementById('ios').textContent = (apps[0] ? apps[0].name + ' is' : 'Sign-in apps are') + ' not on this phone yet.' + (nc ? ' If you have another sign-in app, use it below.' : '');
+    }
+  }).catch(function () {});
   if (nc) {
     document.getElementById('other').href = nc; // the nostrconnect: scheme opens Amber and the like
     document.getElementById('copy').onclick = function () {

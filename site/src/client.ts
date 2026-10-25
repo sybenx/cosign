@@ -129,3 +129,17 @@ export class SignerClient {
 
   close() { this.closed = true; for (const r of this.conns.values()) r?.close(); }
 }
+
+/**
+ * Apps a person can sign in with, featured first: a site that wants to suggest one to
+ * someone who has none can show `getAppText()` ("Don't have one? Get Marble"), or pass its
+ * own list. Marble is the reference app and a proof of concept; any app can implement
+ * Cosign, and one that does is listed above it. The library's own texts never name an app,
+ * and never say signer, Nostr, key or relay.
+ */
+export interface SignInApp { name: string; url: string; platforms: ('android' | 'ios' | 'desktop')[] }
+export const SIGN_IN_APPS: SignInApp[] = [
+  { name: 'Marble', url: 'https://cosign.aaro.cc', platforms: ['android'] },
+];
+/** "Don't have one? Get <the first app>", or '' when there is none. */
+export const getAppText = (apps: SignInApp[] = SIGN_IN_APPS) => apps[0] ? `Don't have one? Get ${apps[0].name}` : '';

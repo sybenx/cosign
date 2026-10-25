@@ -161,6 +161,8 @@ function handle(msg: any, from: string) {
   if (!st) return;
   // The test reports a device lost as this phone, by writing to it from its own key.
   // (A repeat, after the device is gone, is ignored, as the app has no button for it then.)
+  // A periodic refresh (COSIGN.md §7.7), as the app runs it about every 30 days: commit to 'all', 'first' or 'none' (tests).
+  if (msg.type === 'test_periodic' && from === pk) { rf.periodic(msg.commitTo ?? 'all'); return; }
   if (msg.type === 'test_report' && from === pk) { if (st.group.members.some((m: any) => m.idx === Number(msg.idx) && !m.removed)) rf.report(Number(msg.idx)); return; }
   // Adding a server to this key ("Add a server"): {host, relays, name} of a server taking new accounts.
   if (msg.type === 'test_add_server' && from === pk) { void addServer(msg); return; }

@@ -31,6 +31,10 @@ export interface RefreshPlan {
   holders: { idx: number; pk: string }[];
   /** Every share's point before the refresh. Everyone starts from these, whatever it has heard since. */
   points: [number, string][];
+  /** A silent periodic refresh (COSIGN.md §7.7): held as pending until a device checks it and commits. */
+  periodic?: boolean;
+  /** Which attempt (periodic): a dropped attempt and the next one have the same epoch. */
+  id?: string;
 }
 
 /** One dealer's part: a delta for each share, and the points of g's coefficients a1..a(t-1). */
@@ -105,7 +109,7 @@ export class RefreshRun {
       const pk = this.plan.holders.find(h => h.idx === j)!.pk;
       if (pk !== this.me) by.set(pk, [...by.get(pk) ?? [], [j, d]]);
     }
-    return [...by].map(([pk, deltas]) => [pk, { type: 'refresh_part', epoch: this.plan.epoch, commits: this.ours!.commits, deltas }]);
+    return [...by].map(([pk, deltas]) => [pk, { type: 'refresh_part', epoch: this.plan.epoch, ...(this.plan.id ? { id: this.plan.id } : {}), commits: this.ours!.commits, deltas }]);
   }
 
   /** Send our part now and again every 4 s until we're done (and a little after). */
@@ -118,7 +122,8 @@ export class RefreshRun {
 
   /** A dealer's part. Anything that doesn't check out is dropped, and the run waits for a good one. */
   take(msg: any, fromPk: string) {
-    if (msg.epoch !== this.plan.epoch || !this.plan.dealers.includes(fromPk) || this.got.has(fromPk) || this.done) return;
+    // The same attempt only: a dropped periodic attempt and the next one share an epoch.
+    if (msg.epoch !== this.plan.epoch || (msg.id ?? null) !== (this.plan.id ?? null) || !this.plan.dealers.includes(fromPk) || this.got.has(fromPk) || this.done) return;
     const commits: string[] = msg.commits;
     if (!Array.isArray(commits) || commits.length !== this.plan.threshold - 1) return;
     const deltas = new Map<number, string>();

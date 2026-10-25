@@ -210,7 +210,16 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'take_out': { if (fromPhone) onTakeOut(msg, from); return; }
       case 'forget': { if (fromPhone) onForget(msg, from); return; }
       case 'guard_cancel': { if (fromPhone) cancelGuard(msg, from); return; }
-      case 'refresh_request': { if (fromPhone && msg.lock === true && msg.plan) startRefresh(msg.plan as RefreshPlan, from); return; }
+      case 'refresh_request': {
+        if (!fromPhone || !msg.plan) return;
+        // A periodic one needs no lock: it takes nobody out, and only runs once the key has sat long enough.
+        if (msg.plan.periodic === true) { if (periodicDue()) startRefresh(msg.plan as RefreshPlan, from); else note(`refused a periodic refresh from ${from.name}: the last was too recent`); return; }
+        if (msg.lock === true) startRefresh(msg.plan as RefreshPlan, from);
+        return;
+      }
+      case 'sign_check': { if (fromPhone) send(from.pk, onSignCheck(msg)); return; }
+      case 'refresh_commit': { if (fromPhone) commitPending(Number(msg.epoch), from, msg.id); return; }
+      case 'refresh_committed': { if (from.role === 'server') commitPending(Number(msg.epoch), from, msg.id); return; }
       case 'refresh_part': { refresh?.take(msg, fromPk); return; }
       case 'backup_piece': { const a = adding.get(String(msg.id)); if (a?.backup && (a.by.idx === from.idx || a.extras.some(x => x.idx === from.idx))) backupPiece(a, String(msg.id), { from: from.pk!, content: String(msg.content), epoch: S.epoch ?? 0 }); return; }
       case 'repair_help': { if (from.role === 'server') onRepairHelp(msg, from); return; }
@@ -348,7 +357,7 @@ export function openGroup(loaded: Loaded, io: Io) {
         // so any of them could ask to read every message. Messages go through the Cosign
         // app or extension, which ask your device, until each site has a key of its own.
         case 'nip44_encrypt': case 'nip44_decrypt': case 'nip04_encrypt': case 'nip04_decrypt':
-          return answer({ error: 'unsupported: Use the Marble app or extension for messages.' });
+          return answer({ error: 'unsupported: Use your sign-in app for messages.' });
         default: return answer({ error: `unsupported method ${req.method}` });
       }
     } catch (err: any) {
@@ -510,7 +519,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     throw new Error(declined ? 'You declined this on your phone.'
       : hold ? `Waiting for your phone timed out: ${hold}.`
       : tried.length && tried.every(t => t.endsWith('no answer'))
-        ? (other()?.pk && enough(other()!) ? 'Neither your phone nor your backup server answered. Is Marble running on your phone?' : 'Your phone didn’t answer. Is Marble running on it?')
+        ? (other()?.pk && enough(other()!) ? 'Neither your phone nor your backup server answered. Is your sign-in app open?' : 'Your phone didn’t answer. Is your sign-in app open?')
       : `Couldn't sign: ${tried.join('; ') || 'nobody to ask'}`);
   }
 
@@ -1240,8 +1249,9 @@ export function openGroup(loaded: Loaded, io: Io) {
       && plan.holders.length === want.length && want.every(w => plan.holders.some(h => h.idx === w.idx && h.pk === w.pk))
       && Array.isArray(plan.points) && want.every(w => plan.points.some(([i, p]) => i === w.idx && p === pointOf(w.idx)));
     if (!ok) return note(`refused a refresh from ${by.name}: its plan doesn't match the members`);
+    if (plan.periodic === true && S.pending) return note('a periodic refresh is already waiting for its check');
     refresh?.stop();
-    refresh = new RefreshRun(plan, me.pk!, myShares, send, onRefreshed);
+    refresh = new RefreshRun(plan, me.pk!, myShares, send, plan.periodic === true ? onPending : onRefreshed);
     // Devices that aren't here now get the plan and our part when they're next seen; the
     // paper's part is kept, sealed to it, for whenever it's used (COSIGN.md §8.2).
     for (const [pk, part] of refresh.outgoing()) if (S.backup && pk === S.backup.pk) {
@@ -1255,7 +1265,69 @@ export function openGroup(loaded: Loaded, io: Io) {
     note(`refreshing your key (epoch ${plan.epoch})`);
   }
 
-  function onRefreshed(r: RefreshResult) {
+  // --- Silent periodic refresh (COSIGN.md §7.7) -------------------------------------------
+  //
+  // About every 30 days a device online asks for one (no lock: it takes nobody out). The
+  // new shares are held as pending: signing goes on with the current ones until a device
+  // has signed a check message with each server on the new ones and says commit. Each
+  // server then swaps, and tells the others, who commit too. Pending that nobody commits
+  // within 48 h is dropped, and the next attempt starts over. Nothing has a deadline on
+  // the user: a committed epoch is only ever replaced by the next commit.
+
+  const MIN_AGE = Number(process.env.COSIGN_REFRESH_MIN_AGE ?? 25 * 86400);
+  const PENDING_DROP = Number(process.env.COSIGN_PENDING_DROP ?? 48 * 3600);
+  S.epochAt ??= now();
+  const periodicDue = () => !S.pending && !(refresh && !refresh.done) && now() - S.epochAt >= MIN_AGE;
+  const checkMessage = (epoch: number) => F.bytesToHex(sha256(utf8ToBytes(`cosign-refresh:${groupX}:${epoch}`)));
+
+  function onPending(r: RefreshResult) {
+    S.pending = { epoch: r.epoch, id: refresh?.plan.id ?? null, shares: r.shares, points: r.points, dealers: refresh?.plan.dealers ?? [], at: now() };
+    save();
+    toDevices({ type: 'refresh_pending', epoch: r.epoch, id: S.pending.id });
+    note(`your key's next epoch (${r.epoch}) is ready, waiting for your device's check`);
+  }
+
+  /** The group with the pending epoch's points, for the check round. */
+  function pendingGroup(): Sig.Group {
+    const at = new Map<number, string>(S.pending.points);
+    return { groupX, threshold: S.group.threshold, members: members.filter(m => !m.removed).map(m => ({
+      idx: m.idx, sharePub: at.get(sharesOf(m)[0]) ?? m.sharePub,
+      ...(m.shares ? { shares: m.shares.map(x => ({ idx: x.idx, sharePub: at.get(x.idx) ?? x.sharePub })) } : {}),
+    })) };
+  }
+
+  /** A device's check on the pending epoch: only the check message is ever signed with pending shares. */
+  function onSignCheck(msg: any): object {
+    const respond = (r: object) => ({ type: 'sign_check_res', id: msg.id, ...r });
+    const p = S.pending;
+    if (!p || Number(msg.epoch) !== p.epoch) return respond({ ok: false, reason: 'nothing pending for that epoch' });
+    if (msg.msg !== checkMessage(p.epoch)) return respond({ ok: false, reason: 'only the check message' });
+    const g = pendingGroup();
+    const mine = Sig.commitAll(g, p.shares);
+    const zs = Sig.partialAll(2, g, p.shares, mine.nonces, msg.msg, [...(msg.commits ?? []), ...mine.commits]);
+    return respond({ ok: true, commits: mine.commits, zs });
+  }
+
+  /** Swap to the pending epoch (a device's commit, or another server's), once; tell the others. */
+  function commitPending(epoch: number, by: Member, id?: unknown) {
+    if (S.epoch === epoch && !S.pending) { if (isDevice(by)) send(by.pk, { type: 'refresh_committed', epoch, id: S.committedId ?? null }); return; }
+    const p = S.pending;
+    if (!p || p.epoch !== epoch || (id != null && p.id != null && id !== p.id)) return;
+    delete S.pending;
+    S.committedId = p.id;
+    onRefreshed({ epoch: p.epoch, shares: p.shares, points: p.points }, p.dealers);
+    const said = { type: 'refresh_committed', epoch, id: p.id };
+    toOther(said);
+    for (const d of devices()) { send(d.pk, said); holdMail(d.pk!, { from: me.pk!, msg: said, epoch }); }
+    note(`your key moved to epoch ${epoch} (periodic), committed by ${by.name}`);
+  }
+
+  /** Each tick: pending that nobody committed in time is dropped; everyone stays where they were. */
+  function dropStalePending() {
+    if (S.pending && now() - S.pending.at > PENDING_DROP) { note(`dropped the uncommitted epoch ${S.pending.epoch}`); delete S.pending; refresh = null; save(); }
+  }
+
+  function onRefreshed(r: RefreshResult, dealersOf?: string[]) {
     const at = new Map(r.points);
     for (const m of members) {
       if (m.removed || !sharesOf(m).every(i => at.has(i))) continue;
@@ -1267,9 +1339,10 @@ export function openGroup(loaded: Loaded, io: Io) {
     myIdxs = myShares.map(s => s.idx);
     delete S.self.share;
     S.epoch = r.epoch;
+    S.epochAt = now();
     // The paper's parts for this epoch are its dealers' only: drop any from a refresh that was started and never ran.
-    if (S.backup && refresh) {
-      const dealers = refresh.plan.dealers;
+    const dealers = dealersOf ?? refresh?.plan.dealers;
+    if (S.backup && dealers) {
       S.backup.dealers = { ...S.backup.dealers, [r.epoch]: dealers };
       S.backup.parts = S.backup.parts.filter((p: Piece) => p.epoch !== r.epoch || dealers.includes(p.from));
       toOther({ type: 'backup_sync', backup: S.backup });
@@ -1573,6 +1646,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   function tick() {
     pingAll();
     finishGuards();
+    dropStalePending();
     for (const [k, v] of given) if (io.now() - v.at > 120_000) given.delete(k);
     for (const [k, v] of answers) if (io.now() - v.at > 180_000) answers.delete(k);
     if (io.now() - archivedAt > 15 * 60_000) void fetchArchive();

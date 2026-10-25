@@ -29,8 +29,8 @@ export const groupPage = async (g: { name: string; npub: string | null; threshol
 <h1>${esc(g.name)}</h1><div class=muted>${esc(g.npub ?? 'No key yet: add your phone to make it')} · ${g.threshold === 4 ? 'your phone + a server' : '2 of 3'}</div>
 <div class=card><div id=members></div><div class=muted id=coord style="margin-top:6px"></div></div>
 ${pu ? `<div class=card id=pair><h2>Add your phone</h2><div class=grid><div class=qr>${pairQr}</div>
-<div style="flex:1;min-width:220px">Open <b>Cosign</b> on your phone and scan this. It becomes the third member and your remote control.<br><br>
-Already on your phone? <a class=open href="${esc(pu)}">Open in Marble</a><br><br>
+<div style="flex:1;min-width:220px">Scan this with your phone. It becomes your remote control: it approves anything destructive, and holds its own part of your account.<br><br>
+Already on your phone? <a class=open href="${esc(pu)}">Open your sign-in app</a><br><br>
 <span class=muted>Whoever scans it (or opens it) first becomes that member, so only show it to your phone.</span></div></div></div>` : ''}
 <div class=card><h2>Sites that can sign as you</h2><div id=sites></div></div>
 <div class=card><h2>Recent changes to your lists</h2><ul id=changes></ul></div>
@@ -56,6 +56,7 @@ export const hostPage = (h: { pk: string | null; enroll: string | null; relays: 
 <title>cosign server</title>
 <style>${STYLE}</style>
 <h1>Cosign server</h1><div class=muted id=sum></div>
+<div class=card id=one hidden><h2>Add your phone</h2><div>This server is waiting for your phone. <a class=open id=onelink href="#">Open its page and scan the code</a>.</div></div>
 ${h.pk ? `<div class=card><h2>Taking on new groups</h2>
 <div>${h.enroll === 'open' ? 'Anyone can enroll a new group here.' : 'Only devices on the invite list can enroll a new group here.'}</div>
 <div class=muted style="font-size:13px;word-break:break-all;margin-top:6px">Host key ${h.pk}<br>on ${h.relays.map(esc).join(', ')}</div></div>` : ''}
@@ -64,6 +65,8 @@ ${h.pk ? `<div class=card><h2>Taking on new groups</h2>
 const $=id=>document.getElementById(id);
 async function tick(){const s=await (await fetch('status')).json();
  $('sum').textContent=s.groups.length+' group'+(s.groups.length===1?'':'s')+' · '+s.relays.filter(r=>r.up).length+'/'+s.relays.length+' relays · Cosign '+s.version+' · running since '+new Date(s.started).toLocaleTimeString();
+ const own=s.groups.length===1&&s.groups[0].pairing?s.groups[0]:null;
+ $('one').hidden=!own; if(own)$('onelink').href='g/'+own.id+'/';
  $('groups').innerHTML=s.groups.map(g=>'<div class=site><div><a style="color:inherit" href="g/'+g.id+'/">'+g.me+'</a> <span class=muted style="font-size:13px">'+(g.npub?g.npub.slice(0,20)+'…':'no key yet')+'</span><div class=muted style="font-size:13px">'+g.online+'/'+g.members+' members online · '+g.sites+' site'+(g.sites===1?'':'s')+(g.coordinating?' · answering sites':'')+'</div></div></div>').join('')||'<div class=muted>None yet.</div>';}
 tick(); setInterval(tick,2000);
 </script>`;

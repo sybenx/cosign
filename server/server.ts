@@ -271,7 +271,7 @@ function hostStatus() {
     version: VERSION, started: startedAt, host: host?.pk ?? null, enroll: host?.enroll ?? null, relays: pool.status(),
     groups: [...groups.values()].map(x => {
       const s = x.g.status();
-      return { id: x.id, me: esc(s.me), npub: s.npub, coordinating: s.coordinating, members: s.members.length, online: s.members.filter(m => m.online).length, sites: s.sites.length };
+      return { id: x.id, me: esc(s.me), npub: s.npub, coordinating: s.coordinating, pairing: s.pairing, members: s.members.length, online: s.members.filter(m => m.online).length, sites: s.sites.length };
     }),
   };
 }

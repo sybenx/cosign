@@ -9,7 +9,9 @@
 # in /data/groups. An existing /data/a is served as it is: no new key.
 set -e
 MEMBER="${COSIGN_MEMBER:-/data/a}"
-if [ "${COSIGN_PERSONAL:-weighted}" != 0 ] && [ ! -f /data/a/state.json ] && [ ! -f /data/host.json ]; then
+# Not only on a fresh /data: a restored backup keeps host.json but never the shares (they
+# must not be restorable), so an empty /data/a means the owner needs a new account and code.
+if [ "${COSIGN_PERSONAL:-weighted}" != 0 ] && [ ! -f /data/a/state.json ]; then
   node setup.ts --dir /data --weighted --single --relays "${COSIGN_RELAYS:-wss://syb.lol,wss://nos.lol,wss://relay.primal.net}"
 fi
 if [ -f "$MEMBER/state.json" ]; then exec node server.ts --root /data "$MEMBER"; fi

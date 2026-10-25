@@ -139,7 +139,7 @@ export function importToPhone(o: ImportOptions): { done: Promise<Signer>; cancel
       let shown = '', asked = -1;
       t.onChange = () => {
         const v = t.view();
-        if (v.uri && v.uri !== shown) { shown = v.uri; o.ui.code(v.uri); o.ui.open?.(handoffLink(v.uri)); o.ui.status('Scan this with Marble on your phone.'); }
+        if (v.uri && v.uri !== shown) { shown = v.uri; o.ui.code(v.uri); o.ui.open?.(handoffLink(v.uri)); o.ui.status('Scan this with your phone.'); }
         if (v.session.phase === 'release' && v.session.attemptsLeft !== asked) {
           asked = v.session.attemptsLeft;
           o.ui.enterCode(v.session.attemptsLeft, d => t.enterCode(d));
