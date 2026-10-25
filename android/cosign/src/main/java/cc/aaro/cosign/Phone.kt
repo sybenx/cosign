@@ -25,6 +25,8 @@ import cc.aaro.cosign.core.Refresh
 import cc.aaro.cosign.core.Backup
 import cc.aaro.cosign.core.SystemEnv
 import cc.aaro.cosign.core.generateSecretKey
+import cc.aaro.cosign.core.Secp
+import cc.aaro.cosign.core.sha256
 import cc.aaro.cosign.core.hexToBytes
 import cc.aaro.cosign.core.isHex32
 import cc.aaro.cosign.core.publicKeyHex
@@ -59,7 +61,9 @@ data class Group(val groupX: String, val npub: String, val threshold: Int, val r
 /** One of this device's own shares. */
 data class Share(val idx: Int, val secret: String) : java.io.Serializable
 /** [mirrored]: the key brought in had an odd y, so FROST holds its twin (the same npub); null if not known here. */
-data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null) : java.io.Serializable {
+data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null,
+    /** When this epoch began here, in seconds; 0 until this phone has seen one begin (COSIGN.md §7.7). */
+    val epochAt: Long = 0) : java.io.Serializable {
     /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
     val share get() = shares.first().secret
     val idxs get() = shares.map { it.idx }
@@ -193,6 +197,7 @@ class Signer(private val context: Context, val slot: String = "0") {
     private val timer = Executors.newSingleThreadScheduledExecutor()
     private var pinger: ScheduledFuture<*>? = null
     private var clockCheck: ScheduledFuture<*>? = null
+    private var quietCheck: ScheduledFuture<*>? = null
     private var helloer: ScheduledFuture<*>? = null
     /** Answers already given, by request id: a repeat gets the same answer, never a second partial. */
     private val answered = ConcurrentHashMap<String, Map<String, Any?>>()
@@ -468,19 +473,112 @@ class Signer(private val context: Context, val slot: String = "0") {
         for (s in servers()) send(s.pk!!, if (d == null) mapOf("type" to "refresh_request", "lock" to true, "plan" to plan)
             else mapOf("type" to "remove_member", "id" to env.random(8).toHex(), "idx" to d.idx, "lock" to true, "plan" to plan))
         val run = startRefresh(plan, m) ?: return
-        // Your other devices: the plan and this phone's part, straight to them and kept on the servers for one that's away.
+        spreadParts(run, m, left, plan, m.epoch + 1)
+    }
+
+    /**
+     * This phone's parts for everyone who isn't a server: the paper's, sealed to it and kept
+     * by the servers (COSIGN.md §8.2), and each other device's, sent straight there and kept
+     * on the servers for one that's away.
+     */
+    private fun spreadParts(run: Refresh, m: Membership, left: List<Member>, plan: Map<*, *>, epoch: Int) {
         val parts = run.outgoing().toMap()
-        // The paper's part, sealed to it and kept by the servers (COSIGN.md §8.2).
         for (b in left.filter { it.role == "backup" && it.pk != null }) parts[b.pk]?.let { part ->
             val content = Nip44.encrypt(Json.stringify(part), Nip44.conversationKey(m.sk.hexToBytes(), b.pk!!), env.random(32))
-            for (s in servers()) send(s.pk!!, mapOf("type" to "backup_store", "epoch" to m.epoch + 1, "content" to content))
+            for (s in servers()) send(s.pk!!, mapOf("type" to "backup_store", "epoch" to epoch, "content" to content))
         }
         for (o in left.filter { it.role != "server" && it.role != "backup" && it.pk != null && it.idx != m.idx }) {
             send(o.pk!!, mapOf("type" to "refresh_plan", "plan" to plan))
             val key = Nip44.conversationKey(m.sk.hexToBytes(), o.pk)
             for (body in listOfNotNull(mapOf("type" to "refresh_plan", "plan" to plan), parts[o.pk]))
-                for (s in servers()) send(s.pk!!, mapOf("type" to "mail_for", "to" to o.pk, "epoch" to m.epoch + 1, "content" to Nip44.encrypt(Json.stringify(body), key, env.random(32))))
+                for (s in servers()) send(s.pk!!, mapOf("type" to "mail_for", "to" to o.pk, "epoch" to epoch, "content" to Nip44.encrypt(Json.stringify(body), key, env.random(32))))
         }
+    }
+
+    // --- The quiet refresh, about once a month (COSIGN.md §7.7) -----------------------------
+    //
+    // Nobody is taken out and nothing is shown: the shares simply move to a new epoch. The new
+    // ones wait as *pending* on each server while signing goes on with the old; this phone
+    // signs a check message with every server on the new shares, and only then commits. A
+    // server that has gone silent can be left out at the same time, and each server judges
+    // that silence for itself before it takes such a plan (server/core/group.ts).
+
+    /** A quiet refresh this phone is running: the shares waiting for its check and its commit. */
+    private class Quiet(val epoch: Int, val id: String, val drop: List<Int>, val result: Refresh.Result, val group: String, val msg: String)
+    private var quiet: Quiet? = null
+    /** How old an epoch has to be before this phone asks for the next one. */
+    private val quietAfter = (System.getenv("COSIGN_QUIET_AFTER")?.toLongOrNull() ?: (30L * 86400))
+
+    private fun checkMessage(groupX: String, epoch: Int) = sha256("cosign-refresh:$groupX:$epoch".toByteArray()).toHex()
+
+    /** Time for the next epoch: this one is old enough and nothing else is going on. */
+    private fun quietDue(m: Membership) = quiet == null && refresh == null && m.epochAt > 0 && Clock.now() - m.epochAt >= quietAfter
+
+    /** Ask for a quiet refresh. [drop]: servers the others agree have gone (swapped out above). */
+    private fun startQuiet(drop: List<Int> = emptyList()) {
+        val m = ui.value.member ?: return
+        if (quiet != null || refresh != null) return
+        val me = publicKeyHex(m.sk.hexToBytes())
+        val live = servers().filter { it.idx !in drop }
+        val dealer = live.sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        val left = m.group.members.filter { it.idx !in drop }
+        val id = env.random(8).toHex()
+        val plan = Json.parse(Json.stringify(mapOf(
+            "epoch" to m.epoch + 1, "threshold" to m.group.threshold, "dealers" to listOf(me, dealer.pk),
+            "periodic" to true, "id" to id,
+            "holders" to left.flatMap { mm -> mm.idxs.map { mapOf("idx" to it, "pk" to (if (mm.idx == m.idx) me else mm.pk)) } },
+            "points" to left.flatMap { it.points }.map { listOf(it.idx, it.sharePub) },
+        ) + if (drop.isEmpty()) emptyMap() else mapOf("drop" to drop))) as Map<*, *>
+        for (s in live) send(s.pk!!, mapOf("type" to "refresh_request", "plan" to plan))
+        val run = startRefresh(plan, m) { r -> onQuietReady(r, id, drop) } ?: return
+        spreadParts(run, m, left, plan, m.epoch + 1)
+    }
+
+    /** Our part of the new epoch is ready: check it with every server, then commit. */
+    private fun onQuietReady(r: Refresh.Result, id: String, drop: List<Int>) {
+        val m = ui.value.member ?: return
+        quiet = Quiet(r.epoch, id, drop, r, pendingGroupJson(m, r.points, drop), checkMessage(m.group.groupX, r.epoch))
+        timer.execute { checkAndCommit() }
+    }
+
+    /** The group as it will be, for the check round: the new points, without anyone left out. */
+    private fun pendingGroupJson(m: Membership, points: List<Pair<Int, String>>, drop: List<Int>): String {
+        val at = points.toMap()
+        val pts = m.group.members.filter { it.idx !in drop }.flatMap { it.points }.map { Point(it.idx, at[it.idx] ?: it.sharePub) }
+        return Json.stringify(mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold,
+            "members" to pts.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+    }
+
+    /**
+     * The check: this phone signs `cosign-refresh:<key>:<epoch>` with each server on the new
+     * shares, which is the only thing those shares ever sign before they are committed. Every
+     * server has to check out; if one doesn't answer, nothing is committed and the whole thing
+     * is let go — a quiet refresh is never urgent, and the servers forget a pending one in 48 h.
+     */
+    private fun checkAndCommit() {
+        val q = quiet ?: return
+        val m = ui.value.member ?: return
+        awake()
+        val live = servers().filter { it.idx !in q.drop }
+        val checked = mutableSetOf<String>()
+        for (srv in live) {
+            val cs = q.result.shares.map { it to (Json.parse(FrostNative.commit(q.group, it.first, it.second)) as Map<*, *>) }
+            val mine = cs.map { it.second["commit"] as Map<*, *> }
+            val res = askServer(srv, mapOf("type" to "sign_check", "id" to env.random(8).toHex(), "epoch" to q.epoch, "msg" to q.msg, "commits" to mine))
+            if (res == null || res["ok"] != true) break
+            val theirs = (res["commits"] as? List<*>)?.map { it as Map<*, *> } ?: break
+            val theirZs = (res["zs"] as? List<*>)?.map { val l = it as List<*>; (l[0] as Long).toInt() to l[1] as String } ?: break
+            val commits = Json.stringify(mine + theirs)
+            val zs = cs.map { (s, c) -> listOf(s.first, FrostNative.sign(q.group, s.first, s.second, c["nonces"] as String, q.msg, commits)) }
+            val sig = try { FrostNative.aggregate(q.group, q.msg, commits, Json.stringify(zs + theirZs.map { listOf(it.first, it.second) })) } catch (_: Exception) { break }
+            // It must be a real signature by your key, or these shares are not your key's.
+            if (!Secp.verify(sig.hexToBytes(), q.msg.hexToBytes(), m.group.groupX.hexToBytes())) break
+            checked += srv.pk!!
+        }
+        if (checked.size < live.size) { quiet = null; return }
+        for (s in live) send(s.pk!!, mapOf("type" to "refresh_commit", "epoch" to q.epoch, "id" to q.id))
+        apply(q.result, q.drop)
+        quiet = null
     }
 
     // Growing: restored from a 2-share paper (two servers or more), this phone can't sign
@@ -524,10 +622,10 @@ class Signer(private val context: Context, val slot: String = "0") {
         timer.schedule({ refreshWithout(null) }, 4, TimeUnit.SECONDS)
     }
 
-    private fun startRefresh(plan: Map<*, *>, m: Membership): Refresh? {
+    private fun startRefresh(plan: Map<*, *>, m: Membership, onDone: (Refresh.Result) -> Unit = { r -> refreshed(r) }): Refresh? {
         val epoch = (plan["epoch"] as? Long)?.toInt() ?: return null
         if (epoch <= m.epoch || refresh?.epoch == epoch) return null
-        val run = try { Refresh(plan, publicKeyHex(m.sk.hexToBytes()), m.shares.map { it.idx to it.secret }, ::send, { r -> timer.execute { refreshed(r) } }, env) } catch (e: Exception) {
+        val run = try { Refresh(plan, publicKeyHex(m.sk.hexToBytes()), m.shares.map { it.idx to it.secret }, ::send, { r -> timer.execute { onDone(r) } }, env) } catch (e: Exception) {
             note("Couldn't refresh: ${e.message}", "denied"); return null
         }
         refresh = run
@@ -541,18 +639,24 @@ class Signer(private val context: Context, val slot: String = "0") {
     }
 
     private fun refreshed(r: Refresh.Result) {
+        apply(r)
+        for (s in servers()) send(s.pk!!, mapOf("type" to "refreshed", "epoch" to r.epoch))
+        note("Your key moved to a new epoch: a lost device's pieces no longer combine with anything", "approved")
+    }
+
+    /** The new shares and points, kept. [drop]: servers this epoch left out, which are out of the key. */
+    private fun apply(r: Refresh.Result, drop: List<Int> = emptyList()) {
         val m = ui.value.member ?: return
         val at = r.points.toMap()
-        val members = m.group.members.map { mm ->
+        val members = m.group.members.filter { it.idx !in drop }.map { mm ->
             if (!mm.idxs.all { it in at }) return@map mm
             val pts = mm.idxs.map { Point(it, at[it]!!) }
             mm.copy(sharePub = pts[0].sharePub, shares = if (mm.shares != null) pts else null)
         }
-        val updated = m.copy(shares = r.shares.map { Share(it.first, it.second) }, group = m.group.copy(members = members), epoch = r.epoch)
+        val updated = m.copy(shares = r.shares.map { Share(it.first, it.second) }, group = m.group.copy(members = members),
+            epoch = r.epoch, epochAt = Clock.now())
         secrets.saveMembership(Json.stringify(membershipToMap(updated)))
         ui.update { it.copy(member = updated) }
-        for (s in servers()) send(s.pk!!, mapOf("type" to "refreshed", "epoch" to r.epoch))
-        note("Your key moved to a new epoch: a lost device's pieces no longer combine with anything", "approved")
     }
 
     /** Refresh messages from any member, mail the servers kept, and news of a removal. True if handled. */
@@ -1932,11 +2036,12 @@ class Signer(private val context: Context, val slot: String = "0") {
         val shares = (m["shares"] as? List<*>)?.map { val s = it as Map<*, *>; Share((s["idx"] as Long).toInt(), s["secret"] as String) }
             ?: listOf(Share(idx, m["share"] as? String ?: return null))
         return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null,
-            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean)
+            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean, (m["epochAt"] as? Long) ?: 0L)
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
         "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer, "epoch" to m.epoch, "mirrored" to m.mirrored,
+        "epochAt" to m.epochAt,
         "group" to mapOf(
             "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
             "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
