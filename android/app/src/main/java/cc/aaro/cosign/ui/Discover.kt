@@ -66,6 +66,9 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -200,7 +203,17 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(appName, style = MaterialTheme.typography.titleLarge, color = Vault.Text, modifier = Modifier.weight(1f))
+            // The name: back to the top of the feed; already there, refresh it (as pulling down does).
+            val scope = rememberCoroutineScope()
+            Text(appName, style = MaterialTheme.typography.titleLarge, color = Vault.Text, modifier = Modifier.weight(1f).wrapContentWidth(Alignment.Start)
+                .clip(RoundedCornerShape(8.dp)).clickable(onClickLabel = "Back to the top") {
+                    if (state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0) { social.loadFeed(force = true); social.loadNotices(force = true) }
+                    else scope.launch {
+                        // From far down, jump most of the way first, so the smooth part is short.
+                        if (state.firstVisibleItemIndex > 6) state.scrollToItem(6)
+                        state.animateScrollToItem(0)
+                    }
+                }.padding(horizontal = 4.dp, vertical = 2.dp))
             val waiting = ui.asks.size + ui.batchAsks.size
             val fresh = notices.list.count { it.event.createdAt > seen }
             IconButton({ nav.open(Route.Bell) }) {
