@@ -84,6 +84,9 @@ export function openGroup(loaded: Loaded, io: Io) {
   const online = (m: Member) => m.idx === me.idx || io.now() - seen(m.idx) < 30_000;
 
   const activity: { ts: number; text: string }[] = [];
+  // How often this server helped sign today: a count for its page, nothing about what.
+  let signed = { day: new Date().toDateString(), n: 0 };
+  const countSigned = () => { const d = new Date().toDateString(); if (signed.day !== d) signed = { day: d, n: 0 }; signed.n++; };
   const note = (text: string) => {
     activity.unshift({ ts: io.now(), text });
     activity.length = Math.min(activity.length, 40);
@@ -485,6 +488,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       if (Sig.schemeOfAll(S.group, id, commits, theirZs) !== 2) return { m, reason: 'bad partial' };
       const scheme = 2 as const;
       const zs = Sig.partialAll(scheme, S.group, myShares, mine.nonces, id, commits);
+      countSigned();
       return { m, signed: { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [...zs, ...theirZs]) } as Event };
     }
 
@@ -636,6 +640,7 @@ export function openGroup(loaded: Loaded, io: Io) {
 
   /** Our commitments and partials for a round someone else runs, over its commitments and ours. */
   function cosign(msg: any, scheme: Sig.Scheme) {
+    countSigned();
     const theirs: Sig.Commit[] = msg.commits ?? [msg.commit];
     const mine = Sig.commitAll(S.group, myShares);
     const zs = Sig.partialAll(scheme, S.group, myShares, mine.nonces, msg.msg, [...theirs, ...mine.commits]);
@@ -1658,7 +1663,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   const esc = (s: string) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
   function status() {
     return {
-      me: me.name, started: startedAt, npub: S.group.npub, coordinating: coordinating(),
+      me: me.name, started: startedAt, npub: S.group.npub, coordinating: coordinating(), signedToday: signed.day === new Date().toDateString() ? signed.n : 0,
       members: members.map(m => ({ name: esc(m.name), online: !!m.pk && online(m), paired: !!m.pk, self: m.idx === me.idx })),
       pairing: !!S.pairing,
       sites: (S.sites as Site[]).filter(s => !s.revoked).sort((a, b) => b.lastUsed - a.lastUsed)

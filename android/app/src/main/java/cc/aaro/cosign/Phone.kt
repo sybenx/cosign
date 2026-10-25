@@ -143,6 +143,8 @@ data class Ui(
     val askPaper: Boolean = false,
     /** Adding a server: the ones found that this key doesn't use yet (null while looking). */
     val serverChoice: List<cc.aaro.cosign.net.Servers.Server>? = null,
+    /** A one-time code from a server's own page, for the server in [serverChoice]. */
+    val addCode: String? = null,
     val takeOut: TakeOut? = null,
     /** Guarded actions on your account, newest first, as the servers announce them. */
     val guards: List<GuardNote> = emptyList(),
@@ -403,6 +405,8 @@ class Phone(private val context: Context, val slot: String = "0") {
             if (!isHex32(pk) || relays.isEmpty()) return ui.update { it.copy(error = "That code is damaged. Try again.") }
             return ui.update { it.copy(error = null, adding = AddingDevice(pk!!, u.getQueryParameter("name")?.take(40) ?: "A device", relays)) }
         }
+        // A server's own code, from its page: add it to this account (COSIGN.md §9.6).
+        if (t.startsWith("cosign:server")) return scannedServer(t)
         if (t.startsWith("cosign:backup") && isMember && ui.value.takeOutPaper) return takeOutWithPaper(t)
         if (t.startsWith("cosign:backup")) return if (isMember) ui.update { it.copy(error = "This phone already holds a key. Restore a paper backup on a phone that doesn't.") } else startRestore(t)
         val params = try { PairingUri.parse(t) } catch (_: Exception) { null }
@@ -705,10 +709,28 @@ class Phone(private val context: Context, val slot: String = "0") {
     }
     fun closeServerChoice() = ui.update { it.copy(serverChoice = null) }
 
-    /** After your lock: add [s] to this key. */
-    fun addServer(s: cc.aaro.cosign.net.Servers.Server) {
+    /**
+     * A server's own code (`cosign:server?pk=…&r=…&t=…`), shown on its page: a server
+     * nobody can look up, like one at home. It goes through the same Add a server as any
+     * other, with the code as its way in. The sheet asks for this device's lock first.
+     */
+    private fun scannedServer(t: String) {
+        val m = ui.value.member ?: return ui.update { it.copy(error = "Set up your account on this phone first, then add a server to it.") }
+        val u = Uri.parse(t.replace("cosign:server?", "cosign://server?"))
+        val pk = u.getQueryParameter("pk")
+        val token = u.getQueryParameter("t")
+        val relays = u.getQueryParameters("r").filter { it.startsWith("wss://") || it.startsWith("ws://") }
+        if (!isHex32(pk) || relays.isEmpty()) return ui.update { it.copy(error = "That server code is damaged. Open the server's page and try again.") }
+        val servers = m.group.members.count { it.role == "server" }
+        if (servers >= 4) return ui.update { it.copy(error = "This account already has as many servers as it needs.") }
+        val name = u.getQueryParameter("name")?.take(40) ?: "Your own server"
+        ui.update { it.copy(error = null, serverChoice = listOf(cc.aaro.cosign.net.Servers.Server(pk!!, relays, "open", "", pk, name)), addCode = token) }
+    }
+
+    /** After your lock: add [s] to this account; [code] is a one-time code from its own page (COSIGN.md §9.6). */
+    fun addServer(s: cc.aaro.cosign.net.Servers.Server, code: String? = null) {
         val m = ui.value.member ?: return
-        ui.update { it.copy(serverChoice = null) }
+        ui.update { it.copy(serverChoice = null, addCode = null) }
         note("Adding ${s.name}…")
         timer.execute {
             val relaysNow = (m.group.relays + s.relays).distinct()
@@ -723,13 +745,14 @@ class Phone(private val context: Context, val slot: String = "0") {
                 for (i in 0 until 6) { send(s.pk, msg); reply = try { f.get(4, TimeUnit.SECONDS) } catch (_: Exception) { null }; if (reply != null) break }
                 waiting.remove(id); reply
             }
-            val key = ask(mapOf("type" to "enroll_key"))
+            val tok = code?.let { mapOf("token" to it) } ?: emptyMap()
+            val key = ask(mapOf("type" to "enroll_key") + tok)
             if (key?.get("type") != "enroll_key") return@execute note("Couldn't add ${s.name}: ${key?.get("reason") ?: "it didn't answer"}", "denied")
             val k = m.group.members.flatMap { it.idxs }.max() + 1
             val record = mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold, "relays" to relaysNow,
                 "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
                     (it.shares?.let { sh -> mapOf("shares" to sh.map { p -> mapOf("idx" to p.idx, "sharePub" to p.sharePub) }) } ?: emptyMap()) })
-            val enrolled = ask(mapOf("type" to "enroll", "how" to "repair", "key" to key["key"], "group" to record, "k" to k, "name" to s.name))
+            val enrolled = ask(mapOf("type" to "enroll", "how" to "repair", "key" to key["key"], "group" to record, "k" to k, "name" to s.name) + tok)
             if (enrolled?.get("type") != "enrolled") return@execute note("Couldn't add ${s.name}: ${enrolled?.get("reason") ?: "it didn't answer"}", "denied")
             val via = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return@execute
             send(via.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to key["pk"], "name" to s.name, "relays" to s.relays, "lock" to true, "server" to true, "k" to k))

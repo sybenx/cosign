@@ -118,7 +118,7 @@ fun App(phone: Phone, ui: Ui) {
         ui.removedBy?.let { RemovedSheet(it, phone) }
         ui.paper?.let { PaperSheet(it, phone::closePaper) }
         if (ui.askPaper && ui.paper == null && ui.paperStatus == null) PaperPrompt(phone)
-        ui.serverChoice?.let { ServerChoiceSheet(it, ui.paperStatus, phone) }
+        ui.serverChoice?.let { ServerChoiceSheet(it, ui.paperStatus, ui.addCode, phone) }
         ui.takeOut?.let { TakeOutSheet(it, phone) }
         GuardNotices(ui, phone)
     }
@@ -880,11 +880,11 @@ private fun KeysSheet(current: Phone, onClose: () -> Unit) {
 
 /** Servers this key doesn't use yet: pick one to add (after this phone's lock). */
 @Composable
-private fun ServerChoiceSheet(choice: List<cc.aaro.cosign.net.Servers.Server>, status: String?, phone: Phone) {
+private fun ServerChoiceSheet(choice: List<cc.aaro.cosign.net.Servers.Server>, status: String?, code: String?, phone: Phone) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var picked by remember { mutableStateOf<cc.aaro.cosign.net.Servers.Server?>(null) }
     val lock = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == android.app.Activity.RESULT_OK) picked?.let(phone::addServer)
+        if (it.resultCode == android.app.Activity.RESULT_OK) picked?.let { s -> phone.addServer(s, code) }
     }
     BackHandler { phone.closeServerChoice() }
     Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
@@ -894,10 +894,11 @@ private fun ServerChoiceSheet(choice: List<cc.aaro.cosign.net.Servers.Server>, s
         ) {
             Text("Add a server", style = MaterialTheme.typography.titleLarge, color = Vault.Text)
             Spacer(Modifier.height(8.dp))
-            Text("It holds one share of your key, never enough to sign alone. Your key stays the same.", color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
+            Text(if (code != null) "This is a server's own code. It holds one part of your account, never enough to act on its own, and your account stays the same."
+                else "It holds one part of your account, never enough to act on its own. Your account stays the same.", color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(12.dp))
             if (status != null) Text(status, color = Vault.Muted)
-            else if (choice.isEmpty()) Text("No other public server found right now.", color = Vault.Muted)
+            else if (choice.isEmpty()) Text("No other public server found right now. A server of your own shows a code on its page: scan it with Add a device's scanner.", color = Vault.Muted)
             for (s in choice) TextButton({
                 picked = s
                 val ask = lockIntent(context, "Add ${s.name}", "Confirm it's you to add a server to your key")
@@ -905,7 +906,9 @@ private fun ServerChoiceSheet(choice: List<cc.aaro.cosign.net.Servers.Server>, s
             }, Modifier.fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
                 Column(Modifier.fillMaxWidth()) {
                     Text(s.name, color = Vault.Teal)
-                    Text("Run by ${cc.aaro.cosign.core.Nip19.npub(s.operator).take(12)}…${if (s.version.isNotEmpty()) " · Cosign ${s.version}" else ""}", color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
+                    Text(if (code != null) s.relays.firstOrNull()?.removePrefix("wss://")?.removePrefix("ws://") ?: "its own address"
+                        else "Run by ${cc.aaro.cosign.core.Nip19.npub(s.operator).take(12)}…${if (s.version.isNotEmpty()) " · Cosign ${s.version}" else ""}",
+                        color = Vault.Muted, style = MaterialTheme.typography.bodySmall)
                 }
             }
             Spacer(Modifier.height(12.dp))

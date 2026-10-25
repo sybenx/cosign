@@ -52,21 +52,48 @@ tick(); setInterval(tick,2000);
 };
 
 /** A shared server's own page: its host key, who may enroll, and every group it serves. */
-export const hostPage = (h: { pk: string | null; enroll: string | null; relays: string[]; version: string }) => `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>cosign server</title>
-<style>${STYLE}</style>
-<h1>Cosign server</h1><div class=muted id=sum></div>
-<div class=card id=one hidden><h2>Add your phone</h2><div>This server is waiting for your phone. <a class=open id=onelink href="#">Open its page and scan the code</a>.</div></div>
-${h.pk ? `<div class=card><h2>Taking on new groups</h2>
-<div>${h.enroll === 'open' ? 'Anyone can enroll a new group here.' : 'Only devices on the invite list can enroll a new group here.'}</div>
-<div class=muted style="font-size:13px;word-break:break-all;margin-top:6px">Host key ${h.pk}<br>on ${h.relays.map(esc).join(', ')}</div></div>` : ''}
-<div class=card><h2>Groups</h2><div id=groups></div></div>
+/**
+ * A shared server's own page: what the person running it opens (Umbrel, Docker). Plain
+ * words only, as a person reads it: no "signer", "Nostr", "key" or "relay" outside
+ * Advanced. The host serves it behind whatever login it has (Umbrel's, a tunnel).
+ */
+export const hostPage = async (h: { pk: string | null; enroll: string | null; relays: string[]; version: string; addUri: string | null }) => `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Your server</title>
+<style>${STYLE}
+ details{margin:14px 0} summary{cursor:pointer;color:#a69d90} .small{font-size:13px}
+</style>
+<h1>Your server is running</h1><div class=row><span class="dot on" id=dot></span><span class=muted id=sum>Starting…</span></div>
+
+${h.addUri ? `<div class=card><h2>Add this server to your account</h2><div class=grid><div class=qr>${await QRCode.toString(h.addUri, { type: 'svg', margin: 1 })}</div>
+<div style="flex:1;min-width:220px">Open your sign-in app, go to <b>Add a server</b>, and scan this. Your account then uses this server too: it signs with your phone, and never on its own.<br><br>
+<span class="muted small">This code works once, and only on this server. It stops working an hour after it appeared; reload for a new one.</span><br>
+<a class=open href="${esc(h.addUri)}">Open it on this device</a></div></div></div>` : ''}
+
+<div class=card><h2>Accounts using this server</h2><div id=groups></div>
+<div class="muted small" id=helped style="margin-top:8px"></div></div>
+
+<div class=card><h2>Who can join</h2><div id=who class=muted>${h.enroll === 'open' ? 'Anyone. This server is public, and listed for everyone to pick.' : 'Only people you give a code to, from this page.'}</div>
+<div class="muted small" style="margin-top:8px">Choosing (only me · people I follow · people I invite · anyone) is coming. You can see what people sign through this server, and nothing else: never their messages, and never enough of an account to act as them.</div></div>
+
+<details><summary>Advanced</summary><div class=card>
+<div class=row><span class=muted>Version</span><span style="margin-left:auto">Cosign ${esc(h.version)}</span></div>
+${h.pk ? `<div class="muted small" style="word-break:break-all;margin-top:8px">Server ID ${esc(h.pk)}<br>Relays: ${h.relays.map(esc).join(', ')}</div>` : ''}
+<div class="muted small" style="margin-top:8px">New accounts: ${h.enroll === 'open' ? 'open (announced with its operator)' : 'by invite or a code from this page'}.</div>
+</div></details>
+
+<details><summary>What is this?</summary><div class=card>
+<p style="margin-top:0">Your account is split between your phone and servers like this one. Your phone and any one server can act for you; the servers alone never can, and no one place ever holds your whole account.</p>
+<p>Running this server means your own account doesn't depend on anyone else's, and other people can use it too if you let them.</p>
+<a class=open href="https://cosign.aaro.cc">Get Marble</a></div></details>
+
 <script>
 const $=id=>document.getElementById(id);
 async function tick(){const s=await (await fetch('status')).json();
- $('sum').textContent=s.groups.length+' group'+(s.groups.length===1?'':'s')+' · '+s.relays.filter(r=>r.up).length+'/'+s.relays.length+' relays · Cosign '+s.version+' · running since '+new Date(s.started).toLocaleTimeString();
- const own=s.groups.length===1&&s.groups[0].pairing?s.groups[0]:null;
- $('one').hidden=!own; if(own)$('onelink').href='g/'+own.id+'/';
- $('groups').innerHTML=s.groups.map(g=>'<div class=site><div><a style="color:inherit" href="g/'+g.id+'/">'+g.me+'</a> <span class=muted style="font-size:13px">'+(g.npub?g.npub.slice(0,20)+'…':'no key yet')+'</span><div class=muted style="font-size:13px">'+g.online+'/'+g.members+' members online · '+g.sites+' site'+(g.sites===1?'':'s')+(g.coordinating?' · answering sites':'')+'</div></div></div>').join('')||'<div class=muted>None yet.</div>';}
+ const up=s.relays.filter(r=>r.up).length;
+ $('dot').className='dot'+(up?' on':'');
+ $('sum').textContent=(up?'Connected':'Reconnecting…')+' · '+s.groups.length+' account'+(s.groups.length===1?'':'s')+' · since '+new Date(s.started).toLocaleTimeString();
+ $('groups').innerHTML=s.groups.map(g=>'<div class=site><div><a style="color:inherit" href="g/'+g.id+'/">'+(g.npub?g.npub.slice(0,16)+'…':'not set up yet')+'</a><div class="muted small">'+(g.pairing?'waiting for its phone':g.online+' of '+g.members+' members here'+(g.sites?' · '+g.sites+' site'+(g.sites===1?'':'s'):''))+'</div></div></div>').join('')||'<div class=muted>None yet. Add yours with the code above.</div>';
+ const n=s.groups.reduce((a,g)=>a+(g.signedToday||0),0);
+ $('helped').textContent=n?('Helped sign '+n+' time'+(n===1?'':'s')+' today.'):'';}
 tick(); setInterval(tick,2000);
 </script>`;

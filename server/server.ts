@@ -55,7 +55,9 @@ const DEFAULT_RELAYS = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.ne
 // lists it back from their own key (kind 10243, site/src/servers.ts operatorServers).
 // `https`: its public page, if it has one. COSIGN_OPERATOR and COSIGN_HTTPS win here too.
 
-interface HostConfig { sk: string; pk: string; port: number; relays: string[]; enroll: 'open' | 'invite'; invites: string[]; operator?: string; https?: string }
+interface HostConfig { sk: string; pk: string; port: number; relays: string[]; enroll: 'open' | 'invite'; invites: string[]; operator?: string; https?: string;
+  /** One-time codes from this server's page ("Add this server to your account"): COSIGN.md §9.6. */
+  adds?: Record<string, { at: number; used?: number }> }
 const hostFile = root ? join(root, 'host.json') : null;
 let warnedOperator = false;
 function hostConfig(): HostConfig | null {
@@ -202,9 +204,10 @@ async function onHostMessage(e: Event) {
   // A device timing servers before it picks some (site/src/servers.ts pingHost).
   if (msg.type === 'ping') return reply({ type: 'pong', id: msg.id });
   if (!msg.type.startsWith('enroll')) return;
-  const cfg = hostConfig()!; // fresh: the invite list may have changed
-  if (cfg.enroll !== 'open' && !cfg.invites.includes(e.pubkey))
-    return reply({ type: 'enroll_failed', id: msg.id, reason: 'not-invited: This server only takes on groups for people it invited.' });
+  const cfg = hostConfig()!; // fresh: the invite list and the codes may have changed
+  const code = typeof msg.token === 'string' && liveAdd(cfg, msg.token) ? msg.token : null;
+  if (cfg.enroll !== 'open' && !cfg.invites.includes(e.pubkey) && !code)
+    return reply({ type: 'enroll_failed', id: msg.id, reason: 'not-invited: This server only takes on accounts for people it invited. Open its page for a code.' });
   if (msg.type === 'enroll_key') return reply({ type: 'enroll_key', id: msg.id, ...newMemberKey(cfg.sk) });
   if (msg.type !== 'enroll') return;
   // An open server is still one machine: so many groups, so many new ones an hour.
@@ -232,12 +235,51 @@ async function onHostMessage(e: Event) {
       await pool.add(relaysOf(x), 4000);
       pool.setFilters(filters());
       x.g.start();
-      console.log(`[host] took on ${state.group.npub ?? "a key still to be made"} as ${x.g.name} (${x.id}), for ${e.pubkey.slice(0, 8)}…`);
+      if (code) useAddCode(code);
+      console.log(`[host] took on ${state.group.npub ?? "a key still to be made"} as ${x.g.name} (${x.id}), for ${e.pubkey.slice(0, 8)}…${code ? ' (by a code from its page)' : ''}`);
       reply({ type: 'enrolled', id: msg.id, pk, group: x.id });
     } finally { enrolling.delete(pk); }
   } catch (err: any) {
     reply({ type: 'enroll_failed', id: msg.id, reason: err?.message ?? String(err) });
   }
+}
+
+// --- "Add this server to your account" (COSIGN.md §9.6) --------------------------------
+//
+// A server people can't find (a home server: unannounced, invite only) is added by its
+// own code, shown on its page: `cosign:server?pk=<host key>&r=<relay>…&t=<code>`. The
+// code is made here, so it only ever works on this server, and only once: a phone that
+// has it may enroll one account, by repair, as with any other server. It's forgotten an
+// hour later, used or not.
+
+const ADD_CODE_LIFE = Number(process.env.COSIGN_ADD_CODE_LIFE ?? 3600) * 1000;
+const liveAdd = (c: HostConfig, t: string) => { const a = c.adds?.[t]; return !!a && !a.used && Date.now() - a.at < ADD_CODE_LIFE; };
+
+/** The code to show on the page: the unused one if there is one, else a new one. */
+function addCode(): string | null {
+  const cfg = hostConfig();
+  if (!cfg || !hostFile) return null;
+  const adds = cfg.adds ?? {};
+  for (const [t, a] of Object.entries(adds)) if (!a.used && Date.now() - a.at < ADD_CODE_LIFE) return uriFor(cfg, t);
+  const t = bytesToHex(randomBytes(16));
+  const kept = Object.fromEntries(Object.entries(adds).filter(([, a]) => Date.now() - a.at < 24 * ADD_CODE_LIFE).slice(-50));
+  saveHost({ ...cfg, adds: { ...kept, [t]: { at: Date.now() } } });
+  return uriFor(cfg, t);
+}
+const uriFor = (cfg: HostConfig, t: string) =>
+  `cosign:server?pk=${cfg.pk}&t=${t}&` + cfg.relays.slice(0, 4).map(r => `r=${encodeURIComponent(r)}`).join('&');
+
+/** Mark a code used, so it adds one account and no more. */
+function useAddCode(t: string) {
+  const cfg = hostConfig();
+  if (!cfg?.adds?.[t]) return;
+  saveHost({ ...cfg, adds: { ...cfg.adds, [t]: { ...cfg.adds[t], used: Date.now() } } });
+}
+
+/** Keep the file's own fields (sk, port…) and write back what changed; env overrides are never written. */
+function saveHost(next: HostConfig) {
+  const onDisk = JSON.parse(readFileSync(hostFile!, 'utf8'));
+  writeJson(hostFile!, { ...onDisk, adds: next.adds }, true);
 }
 
 // --- Announcing itself (COSIGN.md §9.5) ------------------------------------------------
@@ -271,7 +313,7 @@ function hostStatus() {
     version: VERSION, started: startedAt, host: host?.pk ?? null, enroll: host?.enroll ?? null, relays: pool.status(),
     groups: [...groups.values()].map(x => {
       const s = x.g.status();
-      return { id: x.id, me: esc(s.me), npub: s.npub, coordinating: s.coordinating, pairing: s.pairing, members: s.members.length, online: s.members.filter(m => m.online).length, sites: s.sites.length };
+      return { id: x.id, me: esc(s.me), npub: s.npub, coordinating: s.coordinating, pairing: s.pairing, signedToday: s.signedToday, members: s.members.length, online: s.members.filter(m => m.online).length, sites: s.sites.length };
     }),
   };
 }
@@ -296,7 +338,8 @@ const listen = (port: number, handle: (req: import('node:http').IncomingMessage,
 if (host) listen(host.port, async (req, res) => {
   const path = (req.url ?? '/').split('?')[0];
   if (path === '/status') return json(res, hostStatus());
-  if (path === '/') return html(res, hostPage({ pk: host.pk, enroll: host.enroll, relays: host.relays, version: VERSION }));
+  if (path === '/add-code') return json(res, { uri: addCode() });
+  if (path === '/') return html(res, await hostPage({ pk: host.pk, enroll: host.enroll, relays: host.relays, version: VERSION, addUri: addCode() }));
   const m = /^\/g\/([0-9a-f]{16})(\/.*)?$/.exec(path);
   const x = m && groups.get(m[1]);
   if (!x) { res.statusCode = 404; return res.end(); }

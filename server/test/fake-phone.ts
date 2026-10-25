@@ -54,7 +54,7 @@ let making: { id: string; sk: string; pk: string } | null = null; // a paper bac
 let growing: { id: string; welcome?: any; server?: string; sigmas: [number, number, string][] } | null = null;
 const W = createRequire(import.meta.url)('../frost-wasm/cosign_frost.js');
 /** Ask a server's host key for a member key, enroll it to wait for its share, and vouch for it with a server in the key. */
-async function addServer(x: { host: string; relays: string[]; name?: string }) {
+async function addServer(x: { host: string; relays: string[]; name?: string; token?: string }) {
   await pool.add(x.relays);
   const ask = (m: any) => new Promise<any>(resolve => {
     m.id = F.bytesToHex(F.randomBytes(6));
@@ -63,11 +63,12 @@ async function addServer(x: { host: string; relays: string[]; name?: string }) {
     setTimeout(() => { clearInterval(again); resolve({ type: 'no answer' }); }, 30_000);
     hostWait.set(m.id, (r: any) => { clearInterval(again); resolve(r); });
   });
-  const key = await ask({ type: 'enroll_key' });
+  const tok = x.token ? { token: x.token } : {};
+  const key = await ask({ type: 'enroll_key', ...tok });
   if (key.type !== 'enroll_key') return say(`ADD SERVER FAILED: ${key.reason ?? key.type}`);
   const k = Math.max(...st.group.members.flatMap((m: any) => m.shares?.map((s: any) => s.idx) ?? [m.idx])) + 1;
   const record = { groupX: st.group.groupX, threshold: st.group.threshold, relays: [...new Set([...st.group.relays, ...x.relays])], members: st.group.members };
-  const enrolled = await ask({ type: 'enroll', how: 'repair', key: key.key, group: record, k, name: x.name ?? 'New server' });
+  const enrolled = await ask({ type: 'enroll', how: 'repair', key: key.key, group: record, k, name: x.name ?? 'New server', ...tok });
   if (enrolled.type !== 'enrolled') return say(`ADD SERVER FAILED: ${enrolled.reason ?? enrolled.type}`);
   send(servers()[0].pk, { type: 'add_device', id: F.bytesToHex(F.randomBytes(6)), pk: key.pk, name: x.name ?? 'New server', relays: x.relays, lock: true, server: true, k });
   st.group.relays = record.relays; writeFileSync(stateFile, JSON.stringify(st, null, 2));
