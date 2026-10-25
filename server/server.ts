@@ -13,6 +13,7 @@
 
 import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { SimplePool } from 'nostr-tools/pool';
 import { finalizeEvent, type Event } from 'nostr-tools/pure';
@@ -59,6 +60,8 @@ const DEFAULT_RELAYS = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.ne
 interface HostConfig { sk: string; pk: string; port: number; relays: string[]; enroll: Mode; invites: string[]; operator?: string;
   /** Whose server it is: the npub whose follows may join, in that mode (the operator's, by default). */
   owner?: string; https?: string;
+  /** What to call it on a phone that adds it, from its page or COSIGN_NAME (the machine's name by default). */
+  name?: string;
   /** One-time codes from this server's page ("Add this server to your account"): COSIGN.md §9.6. */
   adds?: Record<string, { at: number; used?: number }> }
 const hostFile = root ? join(root, 'host.json') : null;
@@ -79,6 +82,7 @@ function hostConfig(): HostConfig | null {
   c.invites = (c.invites ?? []).map(asKey).filter((k): k is string => !!k && k !== 'bad');
   if (process.env.COSIGN_OPERATOR) c.operator = process.env.COSIGN_OPERATOR;
   if (process.env.COSIGN_OWNER) c.owner = process.env.COSIGN_OWNER;
+  if (process.env.COSIGN_NAME) c.name = process.env.COSIGN_NAME;
   if (process.env.COSIGN_HTTPS) c.https = process.env.COSIGN_HTTPS;
   const relays = process.env.COSIGN_RELAYS?.split(',').map(r => r.trim()).filter(Boolean);
   if (relays?.length) c.relays = relays;
@@ -286,8 +290,19 @@ function addCode(): string | null {
   saveHost({ adds: { ...kept, [t]: { at: Date.now() } } });
   return uriFor(cfg, t);
 }
+/**
+ * What a phone calls this server once it's added. Whatever the page (or COSIGN_NAME) says,
+ * else the machine's own name, which is what the person running it already calls it.
+ */
+function hostName(cfg: HostConfig): string {
+  const said = String(cfg.name ?? '').replace(/[\u0000-\u001f]/g, '').trim();
+  if (said) return said.slice(0, 40);
+  const machine = hostname().replace(/\.(local|lan|home|internal)$/i, '').trim();
+  return machine ? `Server on ${machine}`.slice(0, 40) : 'Your own server';
+}
+
 const uriFor = (cfg: HostConfig, t: string) =>
-  `cosign:server?pk=${cfg.pk}&t=${t}&` + cfg.relays.slice(0, 4).map(r => `r=${encodeURIComponent(r)}`).join('&');
+  `cosign:server?pk=${cfg.pk}&t=${t}&name=${encodeURIComponent(hostName(cfg))}&` + cfg.relays.slice(0, 4).map(r => `r=${encodeURIComponent(r)}`).join('&');
 
 /** Mark a code used, so it adds one account and no more. */
 function useAddCode(t: string) {
@@ -308,6 +323,8 @@ const envPinned = () => ({ enroll: !!process.env.COSIGN_ENROLL, owner: !!process
 const npubOf = (k: string | null | undefined) => { try { return k ? nip19.npubEncode(k) : null; } catch { return null; } };
 const joinStatus = (c: HostConfig) => ({
   enroll: c.enroll, name: modeName(c.enroll), announced: announced(c.enroll),
+  /** What a phone will call this server, and whether the environment fixed it. */
+  serverName: hostName(c), serverNamePinned: !!process.env.COSIGN_NAME,
   owner: npubOf(c.owner ?? c.operator), ownerIsOperator: !c.owner && !!c.operator,
   invites: c.invites.map(npubOf).filter(n => !!n) as string[], pinned: envPinned(),
 });
@@ -326,6 +343,10 @@ function setJoin(body: any): object {
     const k = asKey(String(body.owner));
     if (k === 'bad') return { ok: false, reason: 'That is not an npub.' };
     patch.owner = k ?? '';
+  }
+  if (body?.name !== undefined && !process.env.COSIGN_NAME) {
+    const want = String(body.name).replace(/[\u0000-\u001f]/g, '').trim().slice(0, 40);
+    patch.name = want;
   }
   if (Array.isArray(body?.invites) && !pinned.invites) {
     const keys = [...new Set(body.invites.map((v: any) => asKey(String(v))))];

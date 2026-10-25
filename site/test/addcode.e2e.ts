@@ -68,6 +68,11 @@ const code = await codeOf(8796);
 check('its page shows a code for this server only', code.startsWith(`cosign:server?pk=${home.pk}&t=`), code.slice(0, 40) + '…');
 const token = new URL(code.replace('cosign:', 'cosign://')).searchParams.get('t')!;
 check('the same code while nobody has used it', (await codeOf(8796)) === code);
+// What the phone will call it: the machine's name until its page says otherwise.
+const named = (uri: string) => new URL(uri.replace('cosign:', 'cosign://')).searchParams.get('name') ?? '';
+check('the code says what the server is called', named(code).length > 0, named(code));
+await fetch('http://localhost:8796/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Home server' }) });
+check('its page can change that', named(await codeOf(8796)) === 'Home server');
 
 // Without it, a home server turns the phone away.
 asPhone(phonePk, { type: 'test_add_server', host: home.pk, relays: home.relays, name: 'Home server' });

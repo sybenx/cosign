@@ -80,7 +80,8 @@ export const hostPage = async (h: { pk: string | null; relays: string[]; version
 ${h.addUri ? `<div class=card><h2>Add this server to your account</h2><div class=grid><div class=qr>${await QRCode.toString(h.addUri, { type: 'svg', margin: 1 })}</div>
 <div style="flex:1;min-width:220px">Open your sign-in app, go to <b>Add a server</b>, and scan this. Your account then uses this server too: it signs with your phone, and never on its own.<br><br>
 <span class="muted small">This code works once, and only on this server. It stops working an hour after it appeared; reload for a new one.</span><br>
-<a class=open href="${esc(h.addUri)}">Open it on this device</a></div></div></div>` : ''}
+<a class=open href="${esc(h.addUri)}">Open it on this device</a>
+<div id=naming style="margin-top:14px"></div></div></div></div>` : ''}
 
 <div class=card><h2>Accounts using this server</h2><div id=groups></div>
 <div class="muted small" id=helped style="margin-top:8px"></div></div>
@@ -102,7 +103,8 @@ ${h.pk ? `<div class="muted small" style="word-break:break-all;margin-top:8px">S
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let confirming=null, shown='', said='', fade=0;
-const typing=()=>{const a=document.activeElement;return a&&$('who').contains(a)&&(a.tagName==='TEXTAREA'||(a.tagName==='INPUT'&&a.type==='text'));};
+// Nothing is redrawn under someone's fingers: the only text boxes here are this card's and the name.
+const typing=()=>{const a=document.activeElement;return !!a&&(a.tagName==='TEXTAREA'||(a.tagName==='INPUT'&&a.type==='text'));};
 
 const MODES=[
  ['owner','Only me','Nobody else can make an account here. Show someone the code above and they can.'],
@@ -144,6 +146,15 @@ function joinCard(j){
  html+='<div class="muted small" style="margin-top:10px">You can see what people sign through this server, and nothing else: never their messages, and never enough of an account to act as them.</div>';
  return html;
 }
+// What a phone will call this server once it has been added.
+function naming(j){
+ const el=$('naming'); if(!el) return;
+ const now=j.serverName||'';
+ if(j.serverNamePinned){ el.innerHTML='<div class="muted small">On a phone this server is called <b>'+esc(now)+'</b>, set where it was started.</div>'; return; }
+ el.innerHTML='<div class="muted small" style="margin-bottom:5px">What your phone will call it</div>'
+  +'<div class=row><input type=text id=sname maxlength=40 value="'+esc(now)+'"><button class=go id=savename>Save</button></div>';
+ $('savename').onclick=()=>save({name:$('sname').value.trim()},'Saved. Scan the code again for a new one with that name.');
+}
 function wireJoin(){
  for(const r of document.querySelectorAll('input[name=mode]')) r.onchange=()=>save({enroll:r.value});
  const o=$('saveowner'); if(o) o.onclick=()=>save({owner:$('owner').value.trim()},'Saved. This server now knows who you follow.');
@@ -178,7 +189,7 @@ async function tick(){const s=await (await fetch('status')).json();
  // Left alone while something in it is being typed, so no half-written list is lost.
  if(s.join){
   const j=JSON.stringify(s.join)+said;
-  if(j!==shown&&!typing()){ $('who').innerHTML=joinCard(s.join); wireJoin(); shown=j; }
+  if(j!==shown&&!typing()){ $('who').innerHTML=joinCard(s.join); wireJoin(); naming(s.join); shown=j; }
   $('adv').textContent='New accounts: '+s.join.name+' (announced as '+s.join.announced+'), plus a code from this page.';
  }}
 tick(); setInterval(tick,2000);
