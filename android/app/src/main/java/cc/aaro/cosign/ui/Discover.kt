@@ -72,6 +72,8 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CheckCircle
 import cc.aaro.cosign.Nip05
+import cc.aaro.cosign.LookAlikes
+import cc.aaro.cosign.Hit
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -801,25 +803,15 @@ private fun SearchScreen(social: Social, nav: Nav) = Column(Modifier.fillMaxSize
         }
         if (f.people.isNotEmpty()) {
             item(key = "ph") { Heading("People") }
-            items(f.people.take(10), key = { "p" + it }) { pk ->
-                val p = people[pk]
-                val h = f.hits[pk]
-                Row(Modifier.fillMaxWidth().clickable { nav.profile(pk) }.padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(p, pk, 40)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(p?.shown ?: h?.name ?: shortNpub(pk), color = Vault.Text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false))
-                            if (h?.nip05 == Nip05.Check.OK) Icon(Icons.Filled.CheckCircle, "Checked", tint = Vault.Teal, modifier = Modifier.padding(start = 5.dp).size(15.dp))
-                            if (h?.follow == true) Text("Following", color = Vault.Teal, style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.padding(start = 6.dp).border(1.dp, Vault.TealEdge, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
-                        }
-                        // Their address (unless it named someone else), and how many follow them.
-                        val line = listOfNotNull(p?.nip05?.removePrefix("_@")?.takeIf { h?.nip05 != Nip05.Check.WRONG && !it.startsWith("npub1") }, h?.followers?.takeIf { it > 0 }?.let { followers(it) })
-                            .joinToString(" · ").ifEmpty { p?.about?.lineSequence()?.firstOrNull() ?: "" }
-                        if (line.isNotEmpty()) Text(line, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
+            // Identical look-alikes (a bridge's copies, say) fold into one quiet row under the best of them.
+            val rows = LookAlikes.fold(f.people, people, f.hits).take(10)
+            items(rows, key = { "p" + it.pubkey }) { r ->
+                var open by remember(r.pubkey) { mutableStateOf(false) }
+                PersonRow(r.pubkey, people[r.pubkey], f.hits[r.pubkey], nav)
+                if (r.alike.isNotEmpty()) {
+                    Text(if (open) "Hide the ${r.alike.size} like this" else "${r.alike.size} more like this", color = Vault.Muted, style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(start = 72.dp).clip(RoundedCornerShape(10.dp)).clickable { open = !open }.padding(horizontal = 8.dp, vertical = 6.dp))
+                    if (open) r.alike.forEach { pk -> PersonRow(pk, people[pk], f.hits[pk], nav) }
                 }
             }
         }
@@ -833,6 +825,27 @@ private fun SearchScreen(social: Social, nav: Nav) = Column(Modifier.fillMaxSize
         if (!f.loading && f.people.isEmpty() && f.notes.isEmpty()) item(key = "none") { Text("Nothing found for “${f.query}”.", color = Vault.Muted, modifier = Modifier.padding(20.dp)) }
     }
 }
+
+/** Someone in search results: picture, name, a check when their address checks out, "Following", then their address and followers. */
+@Composable
+private fun PersonRow(pk: String, p: Person?, h: Hit?, nav: Nav) =
+    Row(Modifier.fillMaxWidth().clickable { nav.profile(pk) }.padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Avatar(p, pk, 40)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(p?.shown ?: h?.name ?: shortNpub(pk), color = Vault.Text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false))
+                if (h?.nip05 == Nip05.Check.OK) Icon(Icons.Filled.CheckCircle, "Checked", tint = Vault.Teal, modifier = Modifier.padding(start = 5.dp).size(15.dp))
+                if (h?.follow == true) Text("Following", color = Vault.Teal, style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(start = 6.dp).border(1.dp, Vault.TealEdge, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
+            }
+            // Their address (unless it named someone else), and how many follow them.
+            val line = listOfNotNull(p?.nip05?.removePrefix("_@")?.takeIf { h?.nip05 != Nip05.Check.WRONG && !it.startsWith("npub1") }, h?.followers?.takeIf { it > 0 }?.let { followers(it) })
+                .joinToString(" · ").ifEmpty { p?.about?.lineSequence()?.firstOrNull() ?: "" }
+            if (line.isNotEmpty()) Text(line, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
 
 private fun followers(n: Long) = when {
     n >= 1_000_000 -> "%.1fM followers".format(n / 1e6).replace(".0M", "M")

@@ -99,3 +99,35 @@ object Nip05 {
         } catch (_: Exception) { null }
     }
 }
+
+/** A row of people results: someone, and the identical look-alikes folded under them. */
+data class Folded(val pubkey: String, val alike: List<String> = emptyList())
+
+/**
+ * Look-alikes (bridge bots, copies): the same name, picture and about. The best-ranked one stays;
+ * the rest fold under it. Someone you follow, or whose address checks out, is never folded away;
+ * nor is a bare profile with no picture and no about (that's just a common name).
+ */
+object LookAlikes {
+    private fun key(p: Person?): String? {
+        p ?: return null
+        val name = SearchRank.norm(p.name ?: "").ifEmpty { return null }
+        val picture = p.picture?.trim().orEmpty(); val about = p.about?.trim().orEmpty()
+        if (picture.isEmpty() && about.isEmpty()) return null
+        return "$name\u0000$picture\u0000$about"
+    }
+
+    fun fold(order: List<String>, people: Map<String, Person>, hits: Map<String, Hit>): List<Folded> {
+        val out = ArrayList<Folded>()
+        val first = HashMap<String, Int>()   // look → its row
+        for (pk in order) {
+            val h = hits[pk]
+            val k = key(people[pk])
+            val keep = h?.follow == true || h?.nip05 == Nip05.Check.OK
+            val at = k?.let { first[it] }
+            if (at != null && !keep) out[at] = out[at].copy(alike = out[at].alike + pk)
+            else { if (k != null && k !in first) first[k] = out.size; out += Folded(pk) }
+        }
+        return out
+    }
+}

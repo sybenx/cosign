@@ -113,6 +113,20 @@ class SocialTest {
         assertEquals(true, Nip05.isAddress("alex@gleasonator.com")); assertEquals(true, Nip05.isAddress("_@fiatjaf.com")); assertEquals(false, Nip05.isAddress("alex gleason"))
     }
 
+    @Test fun lookAlikesFoldUnderTheBestOfThem() {
+        fun pk(c: Char) = c.toString().repeat(64)
+        fun person(c: Char, name: String, pic: String?, about: String?) = Person(pk(c), name, pic, about, null, 0)
+        val bot = "Bridged from Discord by armada-bridge."
+        val people = listOf(person('a', "Alex Gleason", "https://x/real.jpg", "Founder of Ditto"), person('b', "Alex Gleason", "https://x/d.jpg", bot),
+            person('c', "Alex Gleason", "https://x/d.jpg", bot), person('d', "Alex  Gleason", "https://x/d.jpg", bot), person('e', "Alex Gleason", "https://x/d.jpg", bot),
+            person('f', "Alex Gleason", null, null), person('g', "Alex Gleason", null, null)).associateBy { it.pubkey }
+        val hits = mapOf(pk('e') to Hit(pk('e'), "Alex Gleason", 5, nip05 = Nip05.Check.OK))   // a checked address is never folded away
+        val rows = LookAlikes.fold(listOf('a', 'b', 'c', 'd', 'e', 'f', 'g').map(::pk), people, hits)
+        assertEquals(listOf(pk('a'), pk('b'), pk('e'), pk('f'), pk('g')), rows.map { it.pubkey })
+        assertEquals(listOf(pk('c'), pk('d')), rows[1].alike)     // folded under the best-ranked copy
+        assertEquals(emptyList<String>(), rows[3].alike)        // bare profiles: just a common name, not folded
+    }
+
     private fun ev(vararg tags: List<String>) = Event(fiatjaf, 0, 1, tags.toList(), "")
 
     @Test fun repliesFindTheirPlace() {
