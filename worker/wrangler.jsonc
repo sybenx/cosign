@@ -20,5 +20,5 @@
   },
   "routes": [{ "pattern": "cosign-cf.aaro.cc", "custom_domain": true }],
   // Liveness, the clock and the announcement, on the Durable Object's alarm.
-  "observability": { "enabled": true }
+  "observability": { "enabled": true, "head_sampling_rate": 0.05 }
 }
