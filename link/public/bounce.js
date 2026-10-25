@@ -8,7 +8,27 @@
   var params = new URLSearchParams(location.hash.slice(1));
   var nc = params.get('nc');
   if (nc && nc.indexOf('nostrconnect://') !== 0) nc = null;
-  if (params.get('p') !== 'signer-ticket' && !nc) return; // not a sign-in code: the page about Cosign
+  // Not a sign-in code: the page about Cosign, which lists the apps that use it.
+  if (params.get('p') !== 'signer-ticket' && !nc) return getApps(function (list) {
+    var ul = document.getElementById('apps');
+    if (!ul) return;
+    ul.innerHTML = '';
+    list.forEach(function (a) {
+      var li = document.createElement('li');
+      var link = document.createElement('a');
+      link.href = a.url; link.className = 'name'; link.textContent = a.name;
+      li.appendChild(link);
+      if (a.note) { var n = document.createElement('span'); n.className = 'muted small'; n.textContent = ' · ' + a.note; li.appendChild(n); }
+      if (a.platforms && a.platforms.length) { var p = document.createElement('span'); p.className = 'muted small'; p.textContent = ' · ' + a.platforms.join(', '); li.appendChild(p); }
+      if (a.about) { var d = document.createElement('div'); d.className = 'muted small'; d.textContent = a.about; li.appendChild(d); }
+      if (a.source) {
+        var src = document.createElement('div');
+        var sl = document.createElement('a'); sl.href = a.source; sl.textContent = 'Source'; sl.className = 'small';
+        src.appendChild(sl); li.appendChild(src);
+      }
+      ul.appendChild(li);
+    });
+  });
 
   // Who's asking: the code's origin, or the fallback's url or name. A browser extension
   // can only claim https://<name>.extension; show it as "<Name> (browser extension)".
@@ -25,7 +45,7 @@
 
   // The app to suggest: the first in apps.json for this kind of phone.
   var ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-  fetch('/apps.json').then(function (r) { return r.json(); }).then(function (apps) {
+  getApps(function (apps) {
     var mine = apps.filter(function (a) { return (a.platforms || []).indexOf(ios ? 'ios' : 'android') >= 0; })[0];
     if (mine) {
       document.getElementById('get').textContent = 'Get ' + mine.name;
@@ -36,7 +56,7 @@
       document.getElementById('ios').hidden = false;
       document.getElementById('ios').textContent = (apps[0] ? apps[0].name + ' is' : 'Sign-in apps are') + ' not on this phone yet.' + (nc ? ' If you have another sign-in app, use it below.' : '');
     }
-  }).catch(function () {});
+  });
   if (nc) {
     document.getElementById('other').href = nc; // the nostrconnect: scheme opens Amber and the like
     document.getElementById('copy').onclick = function () {
@@ -47,4 +67,7 @@
   document.title = 'Sign in with your phone';
   document.getElementById('about').hidden = true;
   document.getElementById('signin').hidden = false;
+  document.getElementById('fragment').hidden = false;
+
+  function getApps(then) { fetch('/apps.json').then(function (r) { return r.json(); }).then(then).catch(function () {}); }
 })();

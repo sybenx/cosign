@@ -1,3 +1,3 @@
 [
-  { "name": "Marble", "url": "https://cosign.aaro.cc/cosign.apk", "platforms": ["android"], "note": "beta" }
+  { "name": "Marble", "url": "https://github.com/sybenx/marble/releases/latest/download/Marble.apk", "source": "https://github.com/sybenx/marble", "platforms": ["android"], "note": "beta", "about": "A home screen for Nostr: search, a Discover feed, and sign-in for sites and apps." }
 ]

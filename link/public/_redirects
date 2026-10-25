@@ -1,0 +1,5 @@
+# The app left this site: Marble is its own repository now, and publishes Marble.apk with
+# every release. Old links — the button on this page before 0.12.5, and every
+# Cosign-<version>.apk a release ever named — go to its newest build.
+/cosign.apk  https://github.com/sybenx/marble/releases/latest/download/Marble.apk  302
+/Cosign-*    https://github.com/sybenx/marble/releases/latest/download/Marble.apk  302

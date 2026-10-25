@@ -7,11 +7,15 @@
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<title>Marble</title>
+<title>Cosign</title>
 <style>
   :root { color-scheme: dark; }
   body { font: 16px/1.5 system-ui, sans-serif; background: #13110f; color: #ede6da; max-width: 520px; margin: 0 auto; padding: 32px 20px; }
-  h1 { font-size: 26px; margin: 0 0 12px; } .muted { color: #a69d90; } .small { font-size: 14px; }
+  h1 { font-size: 26px; margin: 0 0 12px; } h2 { font-size: 17px; margin: 28px 0 8px; } .muted { color: #a69d90; } .small { font-size: 14px; }
+  a { color: #7fc8c0; }
+  ul.apps { list-style: none; padding: 0; margin: 0; }
+  ul.apps li { border: 1px solid #34302b; border-radius: 12px; padding: 12px 14px; margin: 10px 0; }
+  ul.apps .name { font-weight: 600; }
   a.button, button { display: block; box-sizing: border-box; width: 100%; text-align: center; font: inherit; border-radius: 12px; padding: 14px; margin: 10px 0; text-decoration: none; cursor: pointer; }
   .primary { background: #7fc8c0; color: #13110f; border: 0; font-weight: 600; }
   .secondary { background: none; color: #ede6da; border: 1px solid #34302b; padding: 11px; }
@@ -23,7 +27,7 @@
   <section id="signin" hidden>
     <h1>Sign in with your phone</h1>
     <p>This code signs you in to <b id="site">a site</b>. Your phone does it for you, so you don't type anything there.</p>
-    <a class="button primary" id="get" href="/cosign.apk">Get Marble</a>
+    <a class="button primary" id="get" href="https://github.com/sybenx/marble/releases/latest/download/Marble.apk">Get Marble</a>
     <p class="muted small" id="android">Android. Once it's installed, scan the code again with your camera.</p>
     <p class="muted small" id="ios" hidden>Marble is Android-only for now.</p>
     <div class="row" id="others" hidden>
@@ -34,18 +38,22 @@
   </section>
 
   <section id="about">
-    <h1>Sign in with your phone</h1>
-    <p>This is a site's sign-in code. Open it with your sign-in app: <b>Marble</b> (beta), or another one you use. Your account stays safe on your phone: no one place holds it.</p>
-    <p>If you're seeing this page, no sign-in app is installed on this phone, or the camera opened the browser instead. Open your sign-in app, tap <b>Sign in to a site</b>, and scan the code again. Don't have one? <a href="/cosign.apk">Get Marble</a>.</p>
-  </section>
+    <h1>Cosign</h1>
+    <p>Cosign keeps a Nostr account in pieces. Your phone holds some, each of your servers holds one, and it takes your phone and any one server to sign. The servers alone never can, and no one place ever holds your whole account.</p>
 
-  <p class="muted small">Nothing after the <code>#</code> in this link ever reached this server.</p>
-  <p class="muted small"><a href="/servers" style="color:#7fc8c0">Cosign servers</a>: public servers today, and how to run one.</p>
-  <!-- The newest build, by version, for Obtainium (release.sh keeps it current). -->
-  <p class="muted small">Latest Android build: <a id="latest" href="/Cosign-0.12.4.apk">Cosign-0.12.4.apk</a></p>
-  <!-- Obtainium's own redirect page opens its "Add app" pre-filled (a plain obtainium:// link is blocked by some browsers). -->
-  <p class="muted small"><a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/sybenx/cosign" style="color:#7fc8c0">Add to Obtainium</a>, so updates come by themselves. Don't have Obtainium? <a href="https://github.com/ImranR98/Obtainium/releases" style="color:#7fc8c0">Get it</a>.</p>
-  <p class="muted small">Updating from 0.11.0 or older with Obtainium? The app moved to a new signing key in 0.11.1 (Android's key rotation, so your keys stay). If Obtainium warns that the certificate changed, choose Install anyway, or install once from the button above. Don't uninstall.</p>
+    <h2>Apps that use Cosign</h2>
+    <ul class="apps" id="apps"></ul>
+    <p class="muted small">Writing one? The protocol, the server and the libraries are on <a href="https://github.com/sybenx/cosign">GitHub</a>, MIT.</p>
+
+    <h2>Servers</h2>
+    <p><a href="/servers">The public servers today</a>, and how to run your own: one you run yourself counts as one of your own devices.</p>
+
+    <h2>How it works</h2>
+    <p><a href="https://github.com/sybenx/cosign/blob/main/docs/COSIGN.md">The specification</a> (threshold signing with FROST, the doors, backup and recovery), <a href="https://github.com/sybenx/cosign/blob/main/docs/servers.md">running a server</a>, and <a href="https://github.com/sybenx/cosign/blob/main/docs/choosing-servers.md">how an app picks servers</a>.</p>
+
+    <p class="muted small">This page is also where a site's sign-in code lands when no sign-in app is installed on the phone that scanned it. Nothing after the <code>#</code> in such a link ever reaches this server.</p>
+  </section>
+  <p class="muted small" id="fragment" hidden>Nothing after the <code>#</code> in this link ever reached this server.</p>
   <script src="bounce.js"></script>
 </body>
 </html>
