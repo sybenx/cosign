@@ -54,7 +54,7 @@ class Nip55Activity : ComponentActivity() {
     }
 
     /** The key this app connected to, or (to connect one) the key on screen. */
-    private val phone get() = CosignApp.instance.accounts.let { a -> a.forApp(pkg) ?: a.active }
+    private val phone get() = CosignApp.instance.signers.let { a -> a.forApp(pkg) ?: a.active }
     private val work = Executors.newSingleThreadExecutor()
     private val stage = mutableStateOf<Stage>(Stage.Working("…"))
     private lateinit var type: String
@@ -191,7 +191,7 @@ class Nip55Activity : ComponentActivity() {
     private fun fail(text: String) { stage.value = Stage.Failed(text) }
 
     /** With several keys on this phone: which one this is about. */
-    private fun whichKey() = if (CosignApp.instance.accounts.all.count { it.isMember } > 1) ", as ${phone.label}" else ""
+    private fun whichKey() = if (CosignApp.instance.signers.all.count { it.isMember } > 1) ", as ${phone.label}" else ""
 
     @Composable
     private fun Sheet(s: Stage) {
@@ -203,7 +203,7 @@ class Nip55Activity : ComponentActivity() {
             ) {
                 when (s) {
                     Stage.Connect -> Ask(
-                        "Let $label use your account?" + (if (CosignApp.instance.accounts.all.count { it.isMember } > 1) " (${phone.label})" else ""),
+                        "Let $label use your account?" + (if (CosignApp.instance.signers.all.count { it.isMember } > 1) " (${phone.label})" else ""),
                         "It can post, like and follow as you. Anything destructive, like unfollowing everyone or deleting posts, comes to this phone first.",
                         "Remove it under Your account in $appName any time.",
                         no = "Don't connect", yes = "Use it with $label",

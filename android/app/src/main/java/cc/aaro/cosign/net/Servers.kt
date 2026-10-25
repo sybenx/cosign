@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
  * a few relays, plus a seed list the app vouches for. Blocking; never on the main thread.
  */
 object Servers {
-    data class Server(val pk: String, val relays: List<String>, val enroll: String, val version: String, val operator: String, val name: String)
+    data class Server(val pk: String, val relays: List<String>, val enroll: String, val version: String, val operator: String, val name: String) : java.io.Serializable
 
     /** Servers known to be run by the people named: the same list as servers.ts's SEEDS. */
     private val SEEDS = listOf(

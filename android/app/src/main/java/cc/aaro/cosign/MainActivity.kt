@@ -25,6 +25,10 @@ import org.unifiedpush.android.connector.UnifiedPush
 class MainActivity : ComponentActivity() {
     /** A sign-in that came by a link from another app (a browser, the extension): when it's over, go back there. */
     private var backToCaller = false
+    /** When a link last brought a code: the sign-in it starts shows up a moment later, from the signer. */
+    private var linkAt = 0L
+    /** A link that came before the signer said which account is on screen. */
+    private var waiting: Intent? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,6 +39,10 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) opened(intent)
         setContent {
             CosignTheme {
+                // Nothing to draw until the signer process has said how each account is.
+                val ready by accounts.ready.collectAsState()
+                if (!ready) return@CosignTheme
+                LaunchedEffect(Unit) { waiting?.let { waiting = null; opened(it) } }
                 // The key on screen; switching keys swaps everything below.
                 val slot by accounts.activeSlot.collectAsState()
                 val phone = accounts.phone(slot) ?: accounts.active
@@ -61,6 +69,7 @@ class MainActivity : ComponentActivity() {
                 var hadConnect by remember { mutableStateOf(false) }
                 LaunchedEffect(ui.connect?.stage) {
                     val stage = ui.connect?.stage
+                    if (stage != null && !hadConnect && android.os.SystemClock.uptimeMillis() - linkAt < 10_000) backToCaller = true
                     if (stage != null) hadConnect = true
                     if (backToCaller && (stage == Connect.Stage.WORKING || (stage == null && hadConnect))) {
                         backToCaller = false
@@ -85,10 +94,10 @@ class MainActivity : ComponentActivity() {
         // Reopened from Recents, Android hands back the link that first opened Cosign, maybe
         // hours old: that's not something you just scanned.
         if (intent == null || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        if (!CosignApp.instance.accounts.ready.value) { waiting = intent; return }
         if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let {
-            val phone = CosignApp.instance.phone
-            phone.scanned(it)
-            backToCaller = phone.ui.value.connect != null
+            CosignApp.instance.phone.scanned(it)
+            linkAt = android.os.SystemClock.uptimeMillis()
         }
         testHook(intent)
     }

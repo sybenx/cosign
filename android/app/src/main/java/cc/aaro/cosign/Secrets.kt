@@ -21,6 +21,8 @@ class Secrets(context: Context, private val slot: String = "0") {
     /** Each key on this phone keeps its own entries; the first one keeps the names it always had. */
     private fun n(name: String) = if (slot == "0") name else "$name.$slot"
 
+    init { Proc.signerOnly("Secrets") }
+
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }

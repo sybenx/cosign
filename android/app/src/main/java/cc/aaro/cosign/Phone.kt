@@ -49,55 +49,55 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /** One share point of the key. */
-data class Point(val idx: Int, val sharePub: String)
+data class Point(val idx: Int, val sharePub: String) : java.io.Serializable
 /** A member holds one share (a server) or, in a weighted key, several (a device holds 3). [idx]/[sharePub] are its first. */
-data class Member(val idx: Int, val name: String, val role: String, val pk: String?, val sharePub: String, val shares: List<Point>? = null) {
+data class Member(val idx: Int, val name: String, val role: String, val pk: String?, val sharePub: String, val shares: List<Point>? = null) : java.io.Serializable {
     val points get() = shares ?: listOf(Point(idx, sharePub))
     val idxs get() = points.map { it.idx }
 }
-data class Group(val groupX: String, val npub: String, val threshold: Int, val relays: List<String>, val members: List<Member>)
+data class Group(val groupX: String, val npub: String, val threshold: Int, val relays: List<String>, val members: List<Member>) : java.io.Serializable
 /** One of this device's own shares. */
-data class Share(val idx: Int, val secret: String)
+data class Share(val idx: Int, val secret: String) : java.io.Serializable
 /** [mirrored]: the key brought in had an odd y, so FROST holds its twin (the same npub); null if not known here. */
-data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null) {
+data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null) : java.io.Serializable {
     /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
     val share get() = shares.first().secret
     val idxs get() = shares.map { it.idx }
 }
 /** A server's offer to join. [plan]: a weighted key not made yet, which this phone and the servers make together; then there's no [share]. */
-data class Offer(val fromPk: String, val token: String, val idx: Int, val share: String?, val signer: String, val group: Group, val plan: Map<*, *>? = null)
+data class Offer(val fromPk: String, val token: String, val idx: Int, val share: String?, val signer: String, val group: Group, val plan: Map<*, *>? = null) : java.io.Serializable
 /** Something destructive, waiting for you. */
 /** [frost]: which signing math the server asked for (2 = the library, 1 = the earlier one). */
 data class Ask(val id: String, val fromPk: String, val via: String, val app: String, val event: Event, val msg: String, val commit: Frost.Commit, val hold: String, val expiresAt: Long, val frost: Int = 1,
     /** The server's commitments, one per share it holds (one, for a server). */
-    val commits: List<Frost.Commit> = listOf(commit))
+    val commits: List<Frost.Commit> = listOf(commit)) : java.io.Serializable
 /** A grant. [parent]: the connected site (the extension) that added it; [via]: what connected it. */
-data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long, val parent: String? = null, val via: String? = null)
-data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean)
+data class Site(val pk: String, val origin: String, val added: Long, val lastUsed: Long, val parent: String? = null, val via: String? = null) : java.io.Serializable
+data class Change(val id: String, val text: String, val by: String, val at: Long, val held: Boolean, val undone: Boolean) : java.io.Serializable
 /** Deletions held for a few seconds, with Undo. */
-data class Deleting(val batch: String, val by: String, val count: Int, val until: Long)
+data class Deleting(val batch: String, val by: String, val count: Int, val until: Long) : java.io.Serializable
 /** One approval for a batch of deletions. */
-data class BatchAsk(val batch: String, val text: String, val by: String, val expiresAt: Long)
+data class BatchAsk(val batch: String, val text: String, val by: String, val expiresAt: Long) : java.io.Serializable
 /** A deleted event a server kept a copy of: it can be posted again. */
-data class Deleted(val id: String, val kind: String, val at: Long, val text: String)
+data class Deleted(val id: String, val kind: String, val at: Long, val text: String) : java.io.Serializable
 /** What undoing a site would do, for you to confirm. */
-data class SiteSummary(val pk: String, val origin: String, val total: Int, val counts: Map<String, Int>, val lists: List<String>, val deletable: Int)
+data class SiteSummary(val pk: String, val origin: String, val total: Int, val counts: Map<String, Int>, val lists: List<String>, val deletable: Int) : java.io.Serializable
 /** A new device asking to join your key. */
-data class AddingDevice(val pk: String, val name: String, val relays: List<String>)
+data class AddingDevice(val pk: String, val name: String, val relays: List<String>) : java.io.Serializable
 /** A version of one of your lists dated in the future, found on relays: it blocks every change. */
-data class Future(val id: String, val text: String)
-data class Connect(val origin: String, val stage: Stage, val message: String? = null) { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
+data class Future(val id: String, val text: String) : java.io.Serializable
+data class Connect(val origin: String, val stage: Stage, val message: String? = null) : java.io.Serializable { enum class Stage { CONFIRM, WORKING, DONE, FAILED } }
 /** This phone being restored from a paper backup. [until]: when the wait ends, once it's started. */
-data class Restoring(val text: String, val until: Long? = null, val failed: Boolean = false)
+data class Restoring(val text: String, val until: Long? = null, val failed: Boolean = false) : java.io.Serializable
 /** A key moving in from a web page (QRST `cosign-member`): its code, then whether to keep it. */
-data class MoveIn(val stage: Stage, val code: String? = null, val text: String? = null) { enum class Stage { WAITING, CODE, ACCEPT, DONE, FAILED } }
-data class Line(val ts: Long, val text: String, val kind: String = "info")
+data class MoveIn(val stage: Stage, val code: String? = null, val text: String? = null) : java.io.Serializable { enum class Stage { WAITING, CODE, ACCEPT, DONE, FAILED } }
+data class Line(val ts: Long, val text: String, val kind: String = "info") : java.io.Serializable
 /** Taking the account out of Cosign: waiting (until), the key shown, or why not. */
-data class TakeOut(val stage: Stage, val text: String = "", val until: Long? = null, val nsec: String? = null, val npub: String? = null, val twinUnknown: Boolean = false) {
+data class TakeOut(val stage: Stage, val text: String = "", val until: Long? = null, val nsec: String? = null, val npub: String? = null, val twinUnknown: Boolean = false) : java.io.Serializable {
     enum class Stage { WAITING, SHOWING, FAILED }
 }
 /** A guarded action a server told every device about (COSIGN.md §7.6): report lost, take out, removing the servers' pieces. */
-data class GuardNote(val id: String, val kind: String, val by: String, val state: String, val until: Long, val paper: Boolean)
+data class GuardNote(val id: String, val kind: String, val by: String, val state: String, val until: Long, val paper: Boolean) : java.io.Serializable
 /** An app on this phone that may sign as you (Android signer, NIP-55). [pk] names its grant on your servers. */
 data class AppGrant(val pkg: String, val pk: String, val label: String, val dm: Boolean)
 /** Destructive: the app has to open Cosign so you can approve it. */
@@ -151,7 +151,7 @@ data class Ui(
     /** Asking for the paper code, to take the account out with it. */
     val takeOutPaper: Boolean = false,
     val push: String? = null,
-)
+) : java.io.Serializable
 
 /**
  * The phone's part: your remote control, and one share of your key.
@@ -159,8 +159,10 @@ data class Ui(
  * It connects sites (scan a site's code; your servers give it access of its own), shows
  * and removes what's connected, approves anything destructive, and undoes changes. It
  * co-signs routine things itself only while one of your servers is down.
+ *
+ * It lives in the signer process only (Proc); the UI has a stand-in, [Phone], that asks it over [ISigner].
  */
-class Phone(private val context: Context, val slot: String = "0") {
+class Signer(private val context: Context, val slot: String = "0") {
     /** This key's own storage names; the first key keeps the ones it always had. */
     private fun named(base: String) = if (slot == "0") base else "$base.$slot"
     interface Listener {
@@ -178,8 +180,8 @@ class Phone(private val context: Context, val slot: String = "0") {
     private val env = SystemEnv
     val ui = MutableStateFlow(Ui())
     @Volatile var listener: Listener? = null
-    /** Called when this key is left, so the app can forget it (Accounts). */
-    @Volatile var onLeft: ((Phone) -> Unit)? = null
+    /** Called when this key is left, so the app can forget it (Signers). */
+    @Volatile var onLeft: ((Signer) -> Unit)? = null
 
     /** Which key this is, for a notification or a list: its npub, shortened. */
     val label get() = ui.value.member?.group?.npub?.let { if (it.length > 20) it.take(12) + "…" + it.takeLast(6) else it } ?: "New key"
