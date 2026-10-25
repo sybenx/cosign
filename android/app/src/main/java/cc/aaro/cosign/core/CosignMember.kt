@@ -41,6 +41,6 @@ object CosignMemberProfile : Profile<MemberMove> {
 
     override fun render(value: MemberMove): String {
         val servers = (value.group["members"] as? List<*>)?.mapNotNull { it as? Map<*, *> }?.filter { it["role"] == "server" }?.map { it["name"] } ?: emptyList()
-        return "Keep ${Nip19.npub(value.group["groupX"] as String).take(14)}… in Cosign: this phone holds ${value.shares.size} of its shares, with ${servers.joinToString(", ").ifEmpty { "no server" }}"
+        return "Keep ${Nip19.npub(value.group["groupX"] as String).take(14)}… in Marble: this phone holds ${value.shares.size} of its shares, with ${servers.joinToString(", ").ifEmpty { "no server" }}"
     }
 }

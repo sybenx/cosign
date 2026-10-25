@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Cosign</title>
+<title>Marble</title>
 <style>
   :root { color-scheme: dark; }
   body { font: 16px/1.5 system-ui, sans-serif; background: #13110f; color: #ede6da; max-width: 520px; margin: 0 auto; padding: 32px 20px; }
@@ -20,9 +20,9 @@
   <section id="signin" hidden>
     <h1>Sign in with your phone</h1>
     <p>This code signs you in to <b id="site">a site</b>. Your phone does it for you, so you don't type anything there.</p>
-    <a class="button primary" id="get" href="/cosign.apk">Get Cosign</a>
+    <a class="button primary" id="get" href="/cosign.apk">Get Marble</a>
     <p class="muted small" id="android">Android. Once it's installed, scan the code again with your camera.</p>
-    <p class="muted small" id="ios" hidden>Cosign is Android-only for now.</p>
+    <p class="muted small" id="ios" hidden>Marble is Android-only for now.</p>
     <div class="row" id="others" hidden>
       <a class="button secondary" id="other" href="#">Use another signer app</a>
       <button class="secondary" id="copy" type="button">Copy link</button>
@@ -31,9 +31,9 @@
   </section>
 
   <section id="about">
-    <h1>Cosign</h1>
-    <p>This is a site's sign-in code for <b>Cosign</b> (beta), the Android app that holds one share of your Nostr key and lets sites sign through your own servers.</p>
-    <p>If you're seeing this page, Cosign isn't installed on this phone, or the camera opened the browser instead. Open Cosign, tap <b>Connect a site</b>, and scan the code again.</p>
+    <h1>Marble</h1>
+    <p>This is a site's sign-in code for <b>Marble</b> (beta), the Android app for Nostr that keeps your account safe with Cosign: your key split between your phone and your servers, so no one place holds it.</p>
+    <p>If you're seeing this page, Marble isn't installed on this phone, or the camera opened the browser instead. Open Marble, tap <b>Sign in to a site</b>, and scan the code again.</p>
   </section>
 
   <p class="muted small">Nothing after the <code>#</code> in this link ever reached this server.</p>
@@ -42,7 +42,7 @@
   <p class="muted small">Latest Android build: <a id="latest" href="/Cosign-0.12.1.apk">Cosign-0.12.1.apk</a></p>
   <!-- Obtainium's own redirect page opens its "Add app" pre-filled (a plain obtainium:// link is blocked by some browsers). -->
   <p class="muted small"><a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/sybenx/cosign" style="color:#7fc8c0">Add to Obtainium</a>, so updates come by themselves. Don't have Obtainium? <a href="https://github.com/ImranR98/Obtainium/releases" style="color:#7fc8c0">Get it</a>.</p>
-  <p class="muted small">Updating from 0.11.0 or older with Obtainium? Cosign moved to a new signing key in 0.11.1 (Android's key rotation, so your keys stay). If Obtainium warns that the certificate changed, choose Install anyway, or install once from the button above. Don't uninstall.</p>
+  <p class="muted small">Updating from 0.11.0 or older with Obtainium? The app moved to a new signing key in 0.11.1 (Android's key rotation, so your keys stay). If Obtainium warns that the certificate changed, choose Install anyway, or install once from the button above. Don't uninstall.</p>
   <script src="bounce.js"></script>
 </body>
 </html>

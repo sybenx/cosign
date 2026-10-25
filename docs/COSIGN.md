@@ -392,8 +392,14 @@ and an optional expiry. Members refuse every request from a key without a live g
 - **Remove**: from the phone, any member device, or any server's web page. Immediate.
 - **Expiry**: by default a grant **never expires while it is used, and expires after 90
   days unused** — the pattern of OAuth refresh tokens with an inactivity limit. The user
-  MAY instead pick a fixed 30, 60 or 90 days, or never. When a grant expires the site is
-  asked to reconnect.
+  MAY instead pick a fixed 30, 60 or 90 days, or never. When a grant expires, the site
+  gets the usual not-connected error and shows its own sign-in; nothing else is shown
+  anywhere.
+  - An expired grant **stays listed**, below the active ones, marked "Expired · last
+    used *date*", and still offers Remove and Undo all. Signing in again from that site
+    reactivates the same entry rather than adding a second.
+  - Entries expired for more than a year fold under "Show older": hidden, never deleted.
+  - *(Not built yet.)*
 - **One entry per site, each connection inside it.** Grants with the same origin are
   grouped under one site, whichever door they came through (§6.3). Inside, each grant is
   listed by where it lives — "Chrome on *Work PC*", "*Laptop* extension", "*Phone*" —
@@ -473,8 +479,9 @@ passcode) at that moment (or from a server's web page with a passkey, *not built
 
 1. **Instant block.** Every member MUST refuse rounds with the removed `E.pub` from
    that moment, so a stolen device (3) can no longer find its fourth point.
-   Reporting a device removes every member on it (every app, §4.1). This is the whole
-   of removal for a device that was merely retired.
+   Reporting a device removes every member on it (every app, §4.1), and also every
+   server that device added in the last 30 days (§7.7; not built yet). This is the whole of removal for
+   a device that was merely retired.
 2. **Refresh** (§7.3), so the removed device's piece no longer combines with anything.
 3. **Notice to every member, the removed one included** — "*Phone* was removed from
    *Laptop*."
@@ -500,7 +507,7 @@ A refresh moves every remaining member to a new epoch with the same group key:
   that history could bring back.
 - The backup piece is renewed as part of every refresh (§8.2).
 
-Refresh runs after every removal, after the backup is used, and MAY run on a schedule.
+Refresh runs after every removal, after the backup is used, and periodically (§7.7).
 
 ### 7.4 Waits
 
@@ -544,6 +551,36 @@ device with its lock (§7.4).
 - **Remove the servers' pieces** ("forget"): a server stops signing and decrypting for
   the account at once, and deletes its pieces for real after the wait — the files on a
   Node server, the KV entry and every row on the Worker.
+
+### 7.7 Periodic refresh *(approved; not built yet)*
+
+Pieces are refreshed quietly about once a month, and a server that has gone silent is
+replaced at the same time. Nothing about it is visible to the user.
+
+- **Trigger.** An online device sends `refresh_request {reason: "periodic"}`, with no
+  lock, once the epoch is 30 or more days old. A server accepts only if its epoch is at
+  least 25 days old and no refresh is pending.
+- **Replacing a dead server.** A server counts as dead only when **at least two live
+  servers** have seen it silent for 7 or more days (servers record when they last heard
+  from each other), not on the device's word alone. A dead server is left out of the new
+  epoch's holders, and a fresh server is added by repair (§9.5, "Adding a server": the
+  device's 3 and one live server's 1). The fresh server MUST come from the seed list or
+  the announced servers with a verified operator (§9.5), picked as there.
+- **Two phases.** Servers keep the new shares as *pending* and go on signing in the
+  current epoch. The device signs a check message, `cosign-refresh:<epoch>`, in the new
+  epoch with each live server, confirms the paper's parts for the new epoch are stored
+  (§8.2), and then sends `refresh_commit {epoch}`. On commit a server switches to the new
+  epoch and destroys its old shares (§7.3); the paper's new parts become usable.
+- **Commit spreads.** The device retries `refresh_commit` until every live server
+  acknowledges it; servers tell each other when they commit, and a server that learns a
+  peer committed the next epoch commits too. A server drops its pending shares only if
+  no peer committed within 48 hours.
+- **A server that refuses the commit**, or never answers, is treated as dead at the
+  next periodic refresh.
+- **No deadline.** With no device online there is no refresh and nothing is deleted. A
+  committed epoch is only ever replaced by the next commit.
+- **Nothing visible.** No notice is shown. A site whose grant expired meanwhile gets
+  the usual not-connected error and shows its own sign-in.
 
 ## 8. Backup and recovery
 
@@ -790,7 +827,7 @@ is final (no contest), the paper is always weight 2 with at least two servers, d
 partials go only to active devices, and the 7-day escape hatch (§8.4) is added.
 
 The reference implementation is [sybenx/cosign](https://github.com/sybenx/cosign): a
-server, an Android app and a browser extension, with FROST from ZF
+server, Marble (the reference app, for Android) and a browser extension, with FROST from ZF
 `frost-secp256k1-tr` 2.2. As of Cosign 0.11 (2026-10-24) it has:
 - weighted groups, and Create account by distributed key generation;
 - refresh after a device is reported lost;

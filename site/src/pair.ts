@@ -56,7 +56,7 @@ export function signInLink(cosignUri: string, nostrconnectUri: string): string {
 export interface PairUi {
   /** Draw this as a QR code. Called again if it changes. */
   code(uri: string): void;
-  /** For an "Open Cosign" button on this same device: the code as a `qrst:` link. */
+  /** For an "Open Marble" button on this same device: the code as a `qrst:` link. */
   open?(link: string): void;
   /** Your phone sent a ticket: say whose it is and ask before using it (QRST §9.4). */
   confirm(rendering: string, yes: () => void, no: () => void): void;
@@ -106,7 +106,7 @@ function pairCosign(o: PairOptions): { done: Promise<SignerClient>; cancel(): vo
     t.onChange = () => {
       const v = t.view();
       if (v.stage === 'relays' && !shown) o.ui.status('Finding relays that work from here…');
-      if (v.uri && v.uri !== shown) { shown = v.uri; o.ui.code(v.uri); o.ui.open?.(handoffLink(v.uri)); o.ui.status('Scan this with Cosign on your phone.'); }
+      if (v.uri && v.uri !== shown) { shown = v.uri; o.ui.code(v.uri); o.ui.open?.(handoffLink(v.uri)); o.ui.status('Scan this with Marble on your phone.'); }
       if (v.session.phase === 'accept' && v.session.rendering && !asked) {
         asked = true;
         o.ui.confirm(v.session.rendering, () => t.accept(), () => t.decline());

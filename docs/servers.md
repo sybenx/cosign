@@ -33,8 +33,8 @@ What that means for you:
 - **All launch servers are run by one person, and they see everything you sign through
   them** (see "What a server can see" below).
 - **One operator, for now.** The design wants three servers from three different
-  people. Until other operators exist, the app fills your three places from one
-  operator's servers and **says so** in setup and settings. When other operators
+  people. Until other operators exist, the Marble app and extension fill your three
+  places from one operator's servers and **say so** in setup and settings. When other operators
   appear, you can add their servers from Home → **Add a server**. Swapping them in
   automatically is planned.
 - **What one operator can and can't do.** All of one operator's servers together are

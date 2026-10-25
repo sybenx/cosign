@@ -30,7 +30,7 @@ export const groupPage = async (g: { name: string; npub: string | null; threshol
 <div class=card><div id=members></div><div class=muted id=coord style="margin-top:6px"></div></div>
 ${pu ? `<div class=card id=pair><h2>Add your phone</h2><div class=grid><div class=qr>${pairQr}</div>
 <div style="flex:1;min-width:220px">Open <b>Cosign</b> on your phone and scan this. It becomes the third member and your remote control.<br><br>
-Already on your phone? <a class=open href="${esc(pu)}">Open in Cosign</a><br><br>
+Already on your phone? <a class=open href="${esc(pu)}">Open in Marble</a><br><br>
 <span class=muted>Whoever scans it (or opens it) first becomes that member, so only show it to your phone.</span></div></div></div>` : ''}
 <div class=card><h2>Sites that can sign as you</h2><div id=sites></div></div>
 <div class=card><h2>Recent changes to your lists</h2><ul id=changes></ul></div>

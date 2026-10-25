@@ -348,7 +348,7 @@ export function openGroup(loaded: Loaded, io: Io) {
         // so any of them could ask to read every message. Messages go through the Cosign
         // app or extension, which ask your device, until each site has a key of its own.
         case 'nip44_encrypt': case 'nip44_decrypt': case 'nip04_encrypt': case 'nip04_decrypt':
-          return answer({ error: 'unsupported: Use the Cosign app or extension for messages.' });
+          return answer({ error: 'unsupported: Use the Marble app or extension for messages.' });
         default: return answer({ error: `unsupported method ${req.method}` });
       }
     } catch (err: any) {
@@ -510,7 +510,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     throw new Error(declined ? 'You declined this on your phone.'
       : hold ? `Waiting for your phone timed out: ${hold}.`
       : tried.length && tried.every(t => t.endsWith('no answer'))
-        ? (other()?.pk && enough(other()!) ? 'Neither your phone nor your backup server answered. Is Cosign running on your phone?' : 'Your phone didn’t answer. Is Cosign running on it?')
+        ? (other()?.pk && enough(other()!) ? 'Neither your phone nor your backup server answered. Is Marble running on your phone?' : 'Your phone didn’t answer. Is Marble running on it?')
       : `Couldn't sign: ${tried.join('; ') || 'nobody to ask'}`);
   }
 

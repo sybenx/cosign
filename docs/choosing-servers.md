@@ -2,7 +2,8 @@
 
 Each Cosign account uses several servers, ideally three, each run by a different person.
 Your device plus any one of them signs, so one server being down, slow or gone changes
-nothing you can see. This page explains how an app finds and picks them. The precise
+nothing you can see. This page explains how the Marble app and extension find and pick
+them. The precise
 rules are in [COSIGN.md](COSIGN.md) §9.5 and [NIP-XX.md](NIP-XX.md).
 
 ## Finding servers

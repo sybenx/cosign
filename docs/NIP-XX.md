@@ -101,6 +101,7 @@ request `id`. A message larger than 24 KB of plaintext is split into parts
 | `finalized` | initiator → members | the epoch is complete; old pieces may be destroyed |
 | `take_out` / `released` / `noted` | device → co-signers / co-signer → device | take the account out: after the wait, the co-signer's shares sealed to the device; with the paper, `noted` before the device shows the key |
 | `forget` | device → co-signers | stop at once; delete this co-signer's pieces after the wait |
+| `refresh_request` / `refresh_commit` | device → co-signers | *(not built)* periodic refresh (COSIGN.md §7.7): co-signers keep new shares pending until `refresh_commit {epoch}`, then switch and destroy the old; a co-signer that learns a peer committed commits too |
 
 A signing round MAY be collapsed into one request and one answer: the coordinator sends
 its commitment in `sign`, and the co-signer generates a fresh nonce and returns its

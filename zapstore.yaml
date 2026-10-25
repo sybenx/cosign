@@ -1,26 +1,29 @@
 # Zapstore listing (zsp publish, github.com/zapstore/zsp). The APK comes from this
-# repository's GitHub releases, signed with Cosign's release key.
+# repository's GitHub releases, signed with the app's release key (the app is Marble; the
+# protocol and repository are Cosign).
 repository: https://github.com/sybenx/cosign
-name: Cosign
-summary: "Beta: your Nostr key, split between your phone and your servers. No one place holds it."
+name: Marble
+summary: "Beta: search and discover what people are posting on Nostr, with an account no one place holds."
 description: |
-  Beta. The signing library is the Zcash Foundation's audited FROST; Cosign's protocol
-  around it hasn't had an outside review yet.
+  Beta. Marble is a home screen for Nostr: search people, notes and hashtags, a Discover
+  feed with pictures and videos, likes and follows, and sign-in to sites and apps.
 
-  Cosign keeps your Nostr key split: your phone holds three shares, each of your servers
-  one, and it takes four to sign. Your phone and any one server sign; the servers alone
-  can't, and nobody ever holds the whole key.
+  Your account is kept safe by Cosign: your phone holds three shares of your key, each
+  of your servers one, and it takes four to sign. Your phone and any one server sign; the
+  servers alone can't, and nobody ever holds the whole key. The signing library is the
+  Zcash Foundation's audited FROST; Cosign's protocol around it hasn't had an outside
+  review yet.
 
-  - Sign in to sites by scanning their code, or with nostrconnect. Apps on your phone sign
-    through Cosign as an Android signer (NIP-55).
+  - Sign in to sites by scanning or pasting their code, or with nostrconnect. Apps on your
+    phone sign through Marble as an Android signer (NIP-55).
   - Everyday things sign at once. Anything destructive (most of your follows gone, your
     profile wiped, a pile of deletions) waits for your OK on the phone.
   - Every change to your lists is kept, with Undo. Deletions are held for a few seconds,
     with copies kept.
   - Add your other devices, report one lost, and keep a paper backup that gets your key
     back on a new phone after a wait your other devices can stop.
-  - Create a new key with nobody ever holding it, or move the one you have out of a web
-    app in one scan.
+  - Create an account with nobody ever holding its key, or bring the one you have. Take it
+    back out whenever you like.
 
   Public servers today: syb.lol, which I run and will keep running. More operators
   wanted: running your own (public or private) is encouraged, not required.
@@ -28,7 +31,7 @@ description: |
 
   - Running a server: https://github.com/sybenx/cosign/blob/main/docs/servers.md
   - How servers work: https://github.com/sybenx/cosign/blob/main/docs/COSIGN.md#9-servers
-  - How Cosign picks servers: https://github.com/sybenx/cosign/blob/main/docs/choosing-servers.md
+  - How Marble picks servers: https://github.com/sybenx/cosign/blob/main/docs/choosing-servers.md
 license: MIT
 website: https://cosign.aaro.cc
 tags:

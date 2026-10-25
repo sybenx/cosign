@@ -140,7 +140,7 @@ private fun TakeOutEntry(phone: Phone, onScan: () -> Unit) {
         if (ask == null) phone.showError("Set a screen lock on this phone first.") else { then = action; lock.launch(ask) }
     }
     Column(Modifier.padding(top = 10.dp)) {
-        TextButton({ open = !open }, contentPadding = PaddingValues(0.dp)) { Text("Take my account out of Cosign", color = Vault.Teal) }
+        TextButton({ open = !open }, contentPadding = PaddingValues(0.dp)) { Text("Take my account out of $appName", color = Vault.Teal) }
         if (open) {
             Muted("This puts your secret key (nsec) back together on this phone and shows it, so you can use it elsewhere. Every one of your devices is told.")
             Spacer(Modifier.height(8.dp))
@@ -181,7 +181,7 @@ private fun TakeOutSheet(t: cc.aaro.cosign.TakeOut, phone: Phone) {
                     Text(t.text, style = MaterialTheme.typography.bodyMedium, color = Vault.Muted)
                     t.until?.takeIf { it > 0 }?.let {
                         Spacer(Modifier.height(6.dp))
-                        Text("Ready after ${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(it * 1000))}. Keep Cosign installed.",
+                        Text("Ready after ${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(it * 1000))}. Keep $appName installed.",
                             style = MaterialTheme.typography.bodySmall, color = Vault.Muted)
                     }
                 }
@@ -238,8 +238,8 @@ private fun GuardNotices(ui: cc.aaro.cosign.Ui, phone: Phone) {
                 .background(Vault.Surface, RoundedCornerShape(20.dp)).border(1.dp, Vault.Edge, RoundedCornerShape(20.dp)).padding(22.dp),
         ) {
             val title = when {
-                g.kind == "take_out" && g.state == "done" -> "Your account was taken out of Cosign"
-                g.kind == "take_out" -> "Your account is being taken out of Cosign"
+                g.kind == "take_out" && g.state == "done" -> "Your account was taken out of $appName"
+                g.kind == "take_out" -> "Your account is being taken out of $appName"
                 else -> "Your servers' pieces are being removed"
             }
             Text(title, style = MaterialTheme.typography.titleLarge, color = Vault.Amber)
@@ -279,7 +279,7 @@ private fun Welcome(error: String?, onCreate: () -> Unit, onJoin: () -> Unit, on
         Text("Create your account", style = MaterialTheme.typography.labelLarge)
     }
     Spacer(Modifier.height(8.dp))
-    Text("Made with Cosign's servers; no one, this phone included, ever holds all of it.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted,
+    Text("Made with Cosign servers; no one, this phone included, ever holds all of it.", style = MaterialTheme.typography.bodySmall, color = Vault.Muted,
         modifier = Modifier.align(Alignment.CenterHorizontally))
     Spacer(Modifier.height(8.dp))
     TextButton(onJoin, Modifier.align(Alignment.CenterHorizontally)) { Text("Sign in with another device", color = Vault.Teal) }
@@ -334,7 +334,7 @@ private fun ImportSheet(onClose: () -> Unit, onKey: (CharArray) -> Unit) {
                 }
             }, Modifier.fillMaxWidth())
             Spacer(Modifier.height(20.dp))
-            Button({ take() }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Bring it into Cosign") }
+            Button({ take() }, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) { Text("Bring it into $appName") }
             TextButton(onClose, Modifier.align(Alignment.CenterHorizontally)) { Text("Cancel", color = Vault.Muted) }
         }
     }

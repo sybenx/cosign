@@ -44,7 +44,7 @@ function signIn() {
     baseUrl: 'https://cosign.aaro.cc/',
     storage,
     // One code for everyone: Cosign uses the ticket, any other signer app the nostrconnect half.
-    nostrconnect: { name: 'Cosign demo' },
+    nostrconnect: { name: 'Marble demo' },
     ui: {
       code: uri => { $('qr').innerHTML = qrSvg(uri); $('qr').dataset.uri = uri; },
       confirm: (rendering, yes, no) => {
@@ -66,10 +66,10 @@ function signInNostrConnect() {
   $('mode').textContent = 'Show the QRST code';
   $('modeText').textContent = 'This is the code an ordinary NIP-46 site shows.';
   show('out');
-  $('status').textContent = 'Scan this with Cosign on your phone.';
+  $('status').textContent = 'Scan this with Marble on your phone.';
   $('confirm').hidden = true;
   const sk = generateSecretKey();
-  const uri = createNostrConnectURI({ clientPubkey: getPublicKey(sk), relays: DEFAULT_RELAYS, secret: bytesToHex(randomBytes(8)), name: 'Cosign demo', url: location.origin });
+  const uri = createNostrConnectURI({ clientPubkey: getPublicKey(sk), relays: DEFAULT_RELAYS, secret: bytesToHex(randomBytes(8)), name: 'Marble demo', url: location.origin });
   $('qr').innerHTML = qrSvg(uri); $('qr').dataset.uri = uri;
   const abort = new AbortController();
   cancelPairing = () => abort.abort();

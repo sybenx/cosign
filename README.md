@@ -6,8 +6,10 @@ using plus any one server signs; all the servers together never can. Lose a devi
 you report it; lose every device and a paper backup gets you back in, after a wait your
 other devices can stop.
 
-Cosign is also a home screen for Nostr on your phone: search, a Discover feed, and a
-bell for replies, mentions and anything that needs you. Your account, devices, sites and
+This repository holds the Cosign protocol's reference server, its Cloudflare Worker,
+and **Marble (the reference app)** for Android, which is also a home screen for Nostr on
+your phone: search, a Discover feed, and a bell for replies, mentions and anything that
+needs you. Your account, devices, sites and
 backups are behind your picture.
 
 **Beta.** Signing uses the Zcash Foundation's audited FROST library
@@ -21,13 +23,13 @@ refresh, recovery, the sign-in codes — hasn't had an outside review yet.
 - **Sign in to sites** by scanning their code and tapping *Connect*. Sites that only
   know remote signers (`nostrconnect://`) work the same way. Each site gets access of its
   own, which you remove with one tap.
-- **Apps on your phone sign through Cosign** (Android signer, NIP-55), the way they use
+- **Apps on your phone sign through Marble** (Android signer, NIP-55), the way they use
   Amber.
 - **Everyday things sign at once.** Destructive ones — most of your follows gone, your
   profile wiped, your relay list emptied, a pile of deletions, a request to vanish —
   ask you first, judged by what the event does compared with the version it replaces.
 - **Undo.** Every change to your lists is archived, with Undo. You can undo everything
-  one site did in one go. Deletions are held for 10 seconds, and Cosign keeps a copy
+  one site did in one go. Deletions are held for 10 seconds, and Marble keeps a copy
   with *Post again*.
 - **Nothing dated in the future** gets signed if it's a list or profile, so one bad clock
   can't block every later change.
@@ -65,8 +67,8 @@ Releases are on GitHub (github.com/sybenx/cosign/releases), so Obtainium can fol
 them: add `https://github.com/sybenx/cosign` as an app. The newest build is also at
 https://cosign.aaro.cc/cosign.apk. `./release.sh` publishes both.
 
-For approvals while Android has put Cosign to sleep, install **ntfy** (it becomes the
-UnifiedPush distributor). Without it, approvals arrive while Cosign's background service
+For approvals while Android has put Marble to sleep, install **ntfy** (it becomes the
+UnifiedPush distributor). Without it, approvals arrive while Marble's background service
 is running.
 
 ## What's not done yet

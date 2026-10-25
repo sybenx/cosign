@@ -58,12 +58,12 @@ export const cosignMember: Profile<MemberMove> = {
 
   render(v) {
     const servers = v.group.members.filter(m => m.role === 'server').map(m => m.name);
-    return `Keep ${short(v.group.groupX)} in Cosign: this phone holds ${v.shares.length} of its shares, with ${servers.join(', ') || 'no server'}`;
+    return `Keep ${short(v.group.groupX)} in Marble: this phone holds ${v.shares.length} of its shares, with ${servers.join(', ') || 'no server'}`;
   },
 
   direction: {
     offer: 'Scan this with the phone that will hold your key.',
-    request: 'Scan this with Cosign on your phone to move your key there.',
+    request: 'Scan this with Marble on your phone to move your account there.',
   },
   release: {
     heading: 'Move your key to your phone?',

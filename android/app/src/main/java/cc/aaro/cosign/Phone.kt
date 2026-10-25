@@ -240,7 +240,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         if (!nudges.contains("since")) nudges.edit().putLong("since", System.currentTimeMillis()).apply()
         if (needsPaper && !nudges.getBoolean("told", false) && System.currentTimeMillis() - nudges.getLong("since", 0) > 86_400_000) {
             nudges.edit().putBoolean("told", true).apply()
-            listener?.onNotice("Make your paper backup", "If you lose this phone, your key can't be recovered without it. Open Cosign to make one.")
+            listener?.onNotice("Make your paper backup", "If you lose this phone, you can't get your account back without it. Open $appName to make one.")
         }
         if (relays == null || sk != m.sk) connect(m.group.relays, m.sk)
         relays?.watch(mapOf("kinds" to Policy.ARCHIVED.toList(), "authors" to listOf(m.group.groupX)))
@@ -381,7 +381,7 @@ class Phone(private val context: Context, val slot: String = "0") {
     /** A paper backup's code, pasted from a password manager. */
     fun pastedBackup(text: String) {
         val t = text.trim()
-        if (!t.startsWith("cosign:backup")) return ui.update { it.copy(error = "Copy your Cosign backup code first (it starts with cosign:backup), then paste it here.") }
+        if (!t.startsWith("cosign:backup")) return ui.update { it.copy(error = "Copy your backup code first (it starts with cosign:backup), then paste it here.") }
         scanned(t)
     }
 
@@ -414,7 +414,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         if (nc != null && nc.startsWith("nostrconnect:") && (params == null || params.profile != SignerTicketProfile.id || params.mode != Mode.OFFER))
             return scannedNostrConnect(nc)
         when {
-            params == null -> ui.update { it.copy(error = "That isn't a code Cosign understands.") }
+            params == null -> ui.update { it.copy(error = "That isn't a code $appName understands.") }
             !isMember -> ui.update { it.copy(error = "Add this phone to your servers first: scan the code on your server's page.") }
             params.profile != SignerTicketProfile.id -> ui.update { it.copy(error = "That code is for something else (${params.profile}).") }
             params.mode != Mode.OFFER -> ui.update { it.copy(error = "That code isn't asking to sign in.") }
@@ -833,7 +833,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         val m = Membership(mySk, 1, mine.map { Share(it.first, it.second) }, publicKeyHex(signerSk.hexToBytes()), group, mirrored = mirrored)
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         connect(relays, mySk)
-        ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your account is in Cosign now.")) }
+        ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your account is in $appName now.")) }
         note("Moved ${group.npub.take(16)}… in", "approved")
         offerPaper()
         start()
@@ -858,7 +858,7 @@ class Phone(private val context: Context, val slot: String = "0") {
         val id = env.random(8).toHex().also { takeOutId = it }
         for (s in servers()) send(s.pk!!, mapOf("type" to "take_out", "id" to id, "lock" to true))
         ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.WAITING, "Asked your servers. Any of your other devices can stop this during the wait.")) }
-        note("You asked to take your account out of Cosign", "denied")
+        note("You asked to take your account out of $appName", "denied")
     }
 
     /** After the lock, with the paper code: read its shares from the servers' sealed pieces, then announce it. */
@@ -937,7 +937,7 @@ class Phone(private val context: Context, val slot: String = "0") {
             "waiting" -> ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.WAITING, "Your servers release their part after the wait. Any of your other devices can stop it.", g.until)) }
             "cancelled" -> { takeOutId = null; ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "Stopped from one of your devices.")) } }
         }
-        val what = when (g.kind) { "take_out" -> "taking your account out of Cosign"; "forget" -> "removing your servers' pieces"; else -> "reporting a device lost" }
+        val what = when (g.kind) { "take_out" -> "taking your account out of $appName"; "forget" -> "removing your servers' pieces"; else -> "reporting a device lost" }
         if (g.state == "waiting" && g.id != takeOutId) note("${g.by} started $what", "denied")
     }
 
@@ -1057,7 +1057,7 @@ class Phone(private val context: Context, val slot: String = "0") {
             group.copy(npub = Nip19.npub(group.groupX), members = group.members.map { if (it.idx == mv.idx) it.copy(pk = me) else it }))
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         connect(group.relays, mySk)
-        ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your key is in Cosign now. This phone holds ${m.shares.size} of its shares.")) }
+        ui.update { it.copy(member = m, moveIn = MoveIn(MoveIn.Stage.DONE, text = "Your account is in $appName now. This phone holds ${m.shares.size} of its shares.")) }
         offerPaper()
         note("Moved ${group.npub.take(16)}… in from a web page", "approved")
         // Claim this member's place with each server, again in case a relay drops it.
@@ -1469,7 +1469,7 @@ class Phone(private val context: Context, val slot: String = "0") {
 
     /** The event an app sent, as it will be signed: under your key, with its id. */
     fun appEvent(json: String): Event {
-        val m = ui.value.member ?: error("Cosign isn't set up yet")
+        val m = ui.value.member ?: error("$appName isn't set up yet")
         val raw = Json.parse(json) as? Map<*, *> ?: throw IllegalArgumentException("not an event")
         val tags = (raw["tags"] as? List<*>)?.map { t -> (t as List<*>).map { it.toString() } } ?: emptyList()
         return Event(m.group.groupX, raw["created_at"] as? Long ?: env.now(), (raw["kind"] as Long).toInt(), tags, raw["content"] as? String ?: "").withId()
@@ -1477,7 +1477,7 @@ class Phone(private val context: Context, val slot: String = "0") {
 
     /** Sign for an app, with one of your servers. Blocks for up to a few seconds; never call on the main thread. */
     fun signForApp(g: AppGrant, ev: Event, approved: Boolean): Event {
-        val m = ui.value.member ?: error("Cosign isn't set up yet")
+        val m = ui.value.member ?: error("$appName isn't set up yet")
         Policy.refuse(ev)?.let { throw IllegalStateException(it) }
         if (!approved) holdFor(ev)?.let { throw NeedsApproval(it) }
         awake()
@@ -1521,7 +1521,7 @@ class Phone(private val context: Context, val slot: String = "0") {
 
     /** Sign something you did in Cosign itself. Blocks for a few seconds; never call on the main thread. */
     fun signOwn(ev: Event, approved: Boolean = false): Event {
-        val m = ui.value.member ?: error("Cosign isn't set up yet")
+        val m = ui.value.member ?: error("$appName isn't set up yet")
         val own = context.packageName
         // A new grant has to reach your servers before the first request that uses it.
         val g = appGrant(own) ?: connectApp(own, appName).also { Thread.sleep(2500) }
@@ -1535,7 +1535,7 @@ class Phone(private val context: Context, val slot: String = "0") {
     /** The shared x with [peerX], from this phone's half and a server's. Kept ten minutes, in memory. */
     private fun sharedX(g: AppGrant, peerX: String): ByteArray {
         sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) return x }
-        val m = ui.value.member ?: error("Cosign isn't set up yet")
+        val m = ui.value.member ?: error("$appName isn't set up yet")
         awake()
         for (srv in partners(m)) {
             val participants = (m.idxs + srv.idxs).sorted()
