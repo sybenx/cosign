@@ -89,6 +89,8 @@ export function openGroup(loaded: Loaded, io: Io) {
   // this server's own start as well, so one that was away calls nobody dead until it has
   // been back that long.
   const DEAD_AFTER = Number(process.env.COSIGN_DEAD_AFTER ?? 7 * 86400);
+  /** How long after starting here before this server will say anything about silence at all. */
+  const SETTLE = Math.min(120, DEAD_AFTER);
   S.heard ??= {};
   const heardOf = (idx: number) => Number(S.heard[idx] ?? 0);
   const silentFor = (m: Member) => now() - Math.max(heardOf(m.idx), Math.floor(startedAt / 1000));
@@ -1079,7 +1081,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (a.backup) return backupPiece(a, String(msg.id), { from: me.pk!, content: sealTo(a.pk, { sigmas }), epoch: S.epoch ?? 0 });
     const one = sigmas.length === 1 ? { k: a.ks[0], sigma: sigmas[0][2] } : {};
     send(a.pk, {
-      type: 'welcome', id: msg.id, ks: a.ks, helpers: a.helpers, sigmas, name: a.name, signer: S.signer?.pk ?? null, epoch: S.epoch ?? 0, ...one,
+      type: 'welcome', id: msg.id, ks: a.ks, helpers: a.helpers, sigmas, name: a.name, signer: S.signer?.pk ?? null, epoch: S.epoch ?? 0, epochAt: S.epochAt, ...one,
       group: { groupX, npub: S.group.npub, threshold: S.group.threshold, relays: S.group.relays, members: publicMembers() },
     });
   }
@@ -1277,10 +1279,20 @@ export function openGroup(loaded: Loaded, io: Io) {
    * Whether this server agrees that [idx] has gone: a server of this key, not itself, that
    * it has heard nothing from for DEAD_AFTER. Never a device, and never the paper — those
    * are taken out by their own door (§7.2), with a lock and a wait.
+   *
+   * A server that came into the key after the silence began — the fresh one added in the
+   * gone one's place, above all — has nothing of its own to go on. It doesn't stand in the
+   * way, but it agrees only if it has never heard a word from that member, and not in its
+   * own first minutes, when anyone alive has simply not pinged it yet.
    */
   function agreesIsDead(idx: number): boolean {
     const m = members.find(x => x.idx === idx);
-    return !!m && m.role === 'server' && m.idx !== me.idx && !m.removed && silentFor(m) >= DEAD_AFTER;
+    if (!m || m.role !== 'server' || m.idx === me.idx || m.removed) return false;
+    const up = now() - Math.floor(startedAt / 1000);
+    if (up < SETTLE) return false;
+    // Anything heard from it lately says it is still there, whoever claims otherwise.
+    if (heardOf(m.idx) && now() - heardOf(m.idx) < DEAD_AFTER) return false;
+    return up >= DEAD_AFTER || heardOf(m.idx) === 0;
   }
 
   /** The plan must be the next epoch, dealt by the device that sent it and a server, over every remaining share. */
@@ -1305,6 +1317,11 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (!ok) return note(`refused a refresh from ${by.name}: its plan doesn't match the members`);
     if (drop.length) note(`this refresh leaves out ${drop.map(i => members.find(m => m.idx === i)?.name ?? i).join(', ')}: silent here for ${Math.floor(DEAD_AFTER / 86400)} days or more`);
     if (plan.periodic === true && S.pending) return note('a periodic refresh is already waiting for its check');
+    // Not while a share is being made here: a newcomer's share is built against the points
+    // of this epoch, and a refresh running across that leaves it with a share that fits
+    // nothing. A periodic refresh is never urgent — the device asks again later.
+    if (plan.periodic === true && [...adding.values()].some(a => io.now() - a.at < 120_000))
+      return note('refused a periodic refresh: a server or device is being added here right now');
     refresh?.stop();
     refresh = new RefreshRun(plan, me.pk!, myShares, send, plan.periodic === true ? onPending : onRefreshed);
     // Devices that aren't here now get the plan and our part when they're next seen; the
@@ -1558,6 +1575,14 @@ export function openGroup(loaded: Loaded, io: Io) {
     me.sharePub = pub;
     S.self.shares = myShares = [{ idx: k, secret }];
     myIdxs = [k];
+    // The epoch is the key's, not this server's: it joined into whichever one the key is
+    // in, and that epoch began when it began. Otherwise a server added today would call
+    // every refresh "too soon" for the next 25 days (§7.7), which is exactly when a key
+    // that just swapped a dead server out wants one.
+    const joinedEpoch = Number(w.epoch);
+    if (Number.isInteger(joinedEpoch) && joinedEpoch > (S.epoch ?? 0)) S.epoch = joinedEpoch;
+    const began = Number(w.epochAt);
+    if (Number.isFinite(began) && began > 0 && began <= now()) S.epochAt = began;
     delete S.joining;
     save();
     send(w.from, { type: 'joined', id: w.id, sharePubs: [[k, pub]], sharePub: pub });

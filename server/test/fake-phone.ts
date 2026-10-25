@@ -85,23 +85,29 @@ const hostWait = new Map<string, (r: any) => void>();
 const silenceWait = new Map<string, (r: any) => void>();
 
 /**
- * Which servers have gone (COSIGN.md §7.7): each live server says how long each other one
- * has been silent there, and only one that two of them call dead counts. One server's word,
- * or a device's own, is never enough.
+ * Which servers have gone (COSIGN.md §7.7): each server says how long every other one has
+ * been silent there. A server counts as gone when at least two say so and *every* server
+ * that answers agrees — a device's own word is never enough, and one holdout means the
+ * refresh that left it out would be refused anyway.
  */
 async function whoIsGone(): Promise<number[]> {
-  const says = new Map<number, number>();
+  const says = new Map<number, number>(), against = new Map<number, number>();
+  const answered: number[] = [];
   await Promise.all(servers().map((s: any) => new Promise<void>(resolve => {
     const id = `sil:${F.bytesToHex(F.randomBytes(4))}`;
     const t = setTimeout(() => { silenceWait.delete(id); resolve(); }, 12_000);
     silenceWait.set(id, (r: any) => {
       clearTimeout(t); silenceWait.delete(id);
-      for (const [idx, age] of (r.of ?? []) as [number, number][]) if (age >= Number(r.dead)) says.set(idx, (says.get(idx) ?? 0) + 1);
+      answered.push(s.idx);
+      for (const [idx, age] of (r.of ?? []) as [number, number][]) {
+        if (idx === s.idx) continue; // nobody speaks about themselves
+        if (age >= Number(r.dead)) says.set(idx, (says.get(idx) ?? 0) + 1); else against.set(idx, (against.get(idx) ?? 0) + 1);
+      }
       resolve();
     });
     send(s.pk, { type: 'silence', id });
   })));
-  return [...says].filter(([, n]) => n >= 2).map(([idx]) => idx);
+  return [...says].filter(([idx, n]) => n >= 2 && !against.get(idx) && n >= answered.filter(i => i !== idx).length).map(([idx]) => idx);
 }
 
 /** Swap a dead server out: find it, add a fresh one in its place, then refresh without it. */
@@ -109,8 +115,24 @@ async function swap(x: { host?: string; relays?: string[]; name?: string; token?
   const gone = await whoIsGone();
   if (!gone.length) return say('SWAP: none of your servers is gone');
   say(`SWAP: gone ${gone.join(', ')}`);
-  // The replacement first, so the key never has fewer pieces than it needs.
-  if (x.host) { await addServer({ ...x, host: x.host, relays: x.relays ?? [] }); await new Promise(r => setTimeout(r, 4000)); }
+  // The replacement first, and all the way in: its share is made by repair against the
+  // points of this epoch, so a refresh must not start until it is a member of the key.
+  if (x.host) {
+    await addServer({ ...x, host: x.host, relays: x.relays ?? [] });
+    const joined = () => st.group.members.some((m: any) => m.name === (x.name ?? 'New server') && !m.removed);
+    const until = Date.now() + 90_000;
+    while (Date.now() < until && !joined()) await new Promise(r => setTimeout(r, 1000));
+    if (!joined()) return say('SWAP: the fresh server never joined; not refreshing');
+    // The fresh one has no view of the silence yet, and would refuse a refresh that left
+    // the gone one out. Ask again until every server agrees, then refresh.
+    const till = Date.now() + 120_000;
+    while (Date.now() < till) {
+      await new Promise(r => setTimeout(r, 8000));
+      const again = await whoIsGone();
+      if (gone.every(idx => again.includes(idx))) { say(`SWAP: all of your servers agree ${gone.join(', ')} is gone`); break; }
+      say('SWAP: waiting for the fresh server to catch up');
+    }
+  }
   rf.periodic('all', gone);
 }
 

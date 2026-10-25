@@ -108,13 +108,16 @@ const d = host('d');
 asPhone(phonePk, { type: 'test_swap', host: d.pk, relays: d.relays, name: 'Server D', token: tokenOf(await codeOf(8754)) });
 check('the one that went is found gone', await waitFor(() => phone.out().includes(`SWAP: gone ${cIdx}`), 40_000), phone.out().split('\n').filter(l => l.includes('SWAP:')).pop() ?? '');
 check('a fresh server comes in its place', await waitFor(() => members().some((m: any) => m.name === 'Server D' && !m.removed), 90_000));
+check('every server agrees before the key moves', await waitFor(() => phone.out().includes('SWAP: all of your servers agree'), 150_000), phone.out().split('\n').filter(l => l.includes('SWAP:')).pop() ?? '');
 check('the key moves to the next epoch without the one that went', await waitFor(() => state('own/a').epoch === 1 && state('own/b').epoch === 1, 90_000),
   `a: ${state('own/a').epoch}, b: ${state('own/b').epoch}`);
 check('the servers mark it out of the key', await waitFor(() => {
   const m = state('own/a').group.members.find((x: any) => x.idx === cIdx);
   return !!m?.removed;
 }, 20_000));
-check('the phone has it out too', members().find((m: any) => m.idx === cIdx)?.removed > 0);
+// What the devices are told leaves out whoever is gone, so it simply isn't in the list.
+check('the phone has it out too', await waitFor(() => !members().some((m: any) => m.idx === cIdx && !m.removed), 30_000),
+  members().map((m: any) => `${m.idx} ${m.name}`).join(', '));
 const dDir = spawnSync('ls', [`${serverDir}test-swap/d/groups`]).stdout.toString().trim();
 check('the fresh server holds a share of the new epoch', !!dDir && state(`d/groups/${dDir}`).epoch === 1, `epoch ${dDir ? state(`d/groups/${dDir}`).epoch : '—'}`);
 await signs('and the key signs on, with the servers it has now');
