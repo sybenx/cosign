@@ -1,0 +1,16 @@
+# A stand-in for an operator's existing strfry stack (project "strfry", so its network is
+# strfry_default, as the sidecar expects). Its own network is internal: the sidecar that
+# joins it has no way out to the internet, so a test can never post to a public relay.
+# The relay alone is also on a second network, to publish its port to this machine.
+name: strfry
+services:
+  strfry:
+    image: ghcr.io/hoytech/strfry:latest
+    entrypoint: ["sh", "-c", "sed -e 's/bind = \"127.0.0.1\"/bind = \"0.0.0.0\"/' -e 's/nofiles = 524288/nofiles = 0/' /app/strfry.conf > /tmp/strfry.conf && exec /app/strfry --config /tmp/strfry.conf relay"]
+    ports:
+      - 127.0.0.1:17777:7777
+    networks: [default, outside]
+networks:
+  default:
+    internal: true
+  outside: {}

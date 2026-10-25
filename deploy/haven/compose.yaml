@@ -1,0 +1,29 @@
+# A Cosign server beside a relay that only takes its owner's, members' or web of trust's
+# events (Haven, Pyramid, WoT relay), or beside no relay at all. Cosign's messages come
+# from keys such a relay has never seen, so they can't go through it: the server uses
+# public relays instead (COSIGN_RELAYS). It only dials out, so it needs no open port.
+# Settings are in .env (copy .env.example). Start it with `docker compose up -d`.
+name: cosign
+services:
+  cosign:
+    image: ghcr.io/sybenx/cosign-server:${COSIGN_VERSION:-0.12}
+    restart: unless-stopped
+    # It needs nothing more than its volume: no writes elsewhere, no Linux capabilities.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      COSIGN_OPERATOR: ${COSIGN_OPERATOR:?put your npub in .env}
+      COSIGN_ENROLL: ${COSIGN_ENROLL:-open}
+      COSIGN_INVITES: ${COSIGN_INVITES:-}
+      COSIGN_HTTPS: ${COSIGN_HTTPS:-}
+      COSIGN_PERSONAL: "0"
+      COSIGN_RELAYS: ${COSIGN_RELAYS:-wss://syb.lol,wss://nos.lol,wss://relay.primal.net}
+    volumes:
+      - data:/data
+    ports:
+      # Its status page has no login: keep it on this machine.
+      - 127.0.0.1:${COSIGN_PORT:-8711}:8711
+
+volumes:
+  data:

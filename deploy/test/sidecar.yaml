@@ -1,0 +1,30 @@
+# Added to a sidecar's compose.yaml for the test (test/e2e.ts): no published port (the
+# relay's network is internal, so there's nothing to publish to), and a second server,
+# run by nobody (it doesn't announce), so a 2-of-3 key has two servers and a phone.
+#
+# With no way out, lookups of public names (its clock check, the discovery relays) hang
+# until they time out, and four of them fill Node's DNS threads, so the one for the relay
+# waits behind them and the announcement's connection times out. More threads: only here.
+services:
+  cosign:
+    ports: !reset []
+    environment:
+      UV_THREADPOOL_SIZE: 32
+  cosign-b:
+    image: ghcr.io/sybenx/cosign-server:${COSIGN_VERSION:-0.12}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      UV_THREADPOOL_SIZE: 32
+      COSIGN_ENROLL: open
+      COSIGN_PERSONAL: "0"
+      COSIGN_RELAYS: ${RELAY_URL}
+      COSIGN_RELAY_MAP: ${RELAY_URL}=${RELAY_INTERNAL}
+    volumes:
+      - data-b:/data
+    networks:
+      - relay
+
+volumes:
+  data-b:

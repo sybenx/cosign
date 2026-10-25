@@ -1,0 +1,31 @@
+# A Cosign server beside a relay that isn't in Docker (strfry, nostr-rs-relay or any other
+# run by systemd, say), on Linux: it shares this machine's network and reaches the relay
+# at RELAY_INTERNAL, e.g. ws://127.0.0.1:7777, but tells phones and sites your relay's
+# public address (RELAY_URL). Settings are in .env (copy .env.example; RELAY_NETWORK
+# isn't used here). Start it with `docker compose -f compose.host.yaml up -d`.
+name: cosign
+services:
+  cosign:
+    image: ghcr.io/sybenx/cosign-server:${COSIGN_VERSION:-0.12}
+    restart: unless-stopped
+    # It needs nothing more than its volume: no writes elsewhere, no Linux capabilities.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    network_mode: host
+    environment:
+      COSIGN_OPERATOR: ${COSIGN_OPERATOR:?put your npub in .env}
+      COSIGN_ENROLL: ${COSIGN_ENROLL:-invite}
+      COSIGN_INVITES: ${COSIGN_INVITES:-}
+      COSIGN_HTTPS: ${COSIGN_HTTPS:-}
+      COSIGN_PERSONAL: "0"
+      COSIGN_RELAYS: ${RELAY_URL:?put your relay's public wss:// address in .env},${EXTRA_RELAYS-wss://nos.lol,wss://relay.primal.net}
+      COSIGN_RELAY_MAP: ${RELAY_URL}=${RELAY_INTERNAL:?put where this machine reaches the relay in .env, e.g. ws://127.0.0.1:7777}
+      # Its status page has no login: only on this machine.
+      HOST: 127.0.0.1
+      COSIGN_PORT: ${COSIGN_PORT:-8711}
+    volumes:
+      - data:/data
+
+volumes:
+  data:

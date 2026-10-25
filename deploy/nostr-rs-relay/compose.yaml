@@ -1,0 +1,38 @@
+# A Cosign server beside nostr-rs-relay, in a compose project of its own: nothing you do
+# here can stop or recreate the relay, and nothing you do to the relay touches this.
+#
+# It joins the relay's Docker network and reaches nostr-rs-relay there (RELAY_INTERNAL),
+# but tells phones and sites your relay's public address (RELAY_URL). Settings are in .env
+# (copy .env.example). Start it with `docker compose up -d`.
+name: cosign
+services:
+  cosign:
+    image: ghcr.io/sybenx/cosign-server:${COSIGN_VERSION:-0.12}
+    restart: unless-stopped
+    # It needs nothing more than its volume: no writes elsewhere, no Linux capabilities.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      COSIGN_OPERATOR: ${COSIGN_OPERATOR:?put your npub in .env}
+      COSIGN_ENROLL: ${COSIGN_ENROLL:-open}
+      COSIGN_INVITES: ${COSIGN_INVITES:-}
+      COSIGN_HTTPS: ${COSIGN_HTTPS:-}
+      COSIGN_PERSONAL: "0"
+      COSIGN_RELAYS: ${RELAY_URL:?put your relay's public wss:// address in .env},${EXTRA_RELAYS-wss://nos.lol,wss://relay.primal.net}
+      COSIGN_RELAY_MAP: ${RELAY_URL}=${RELAY_INTERNAL:-ws://nostr-rs-relay:8080}
+    volumes:
+      - data:/data
+    ports:
+      # Its status page has no login: keep it on this machine.
+      - 127.0.0.1:${COSIGN_PORT:-8711}:8711
+    networks:
+      - relay
+
+networks:
+  relay:
+    name: ${RELAY_NETWORK:-nostr-rs-relay_default}
+    external: true
+
+volumes:
+  data:

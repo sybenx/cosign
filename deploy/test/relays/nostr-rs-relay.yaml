@@ -1,0 +1,14 @@
+# A stand-in for an operator's existing nostr-rs-relay stack (project "nostr-rs-relay",
+# network nostr-rs-relay_default). Internal, like strfry.yaml: no way out from the sidecar.
+name: nostr-rs-relay
+services:
+  nostr-rs-relay:
+    image: scsibug/nostr-rs-relay:latest
+    platform: linux/amd64
+    ports:
+      - 127.0.0.1:18080:8080
+    networks: [default, outside]
+networks:
+  default:
+    internal: true
+  outside: {}
