@@ -37,9 +37,13 @@ export function refreshing(o: { st: () => DeviceState; pk: string; send: (to: st
   // The device that asked for it checks it with each server first, then commits.
   let checking: { epoch: number; msg: string; g: Sig.Group; nonces: Record<number, string>; commits: Sig.Commit[]; ok: Set<string>; commitTo: 'all' | 'first' | 'none' } | null = null;
   const checkMessage = (epoch: number) => F.bytesToHex(sha256(utf8ToBytes(`cosign-refresh:${o.st().group.groupX}:${epoch}`)));
+  /** Servers this run leaves out (§7.7): they hold nothing of the new epoch. */
+  let dropped: number[] = [];
+  /** The servers this refresh is with: everyone it isn't leaving out. */
+  const live = () => servers().filter((s: any) => !dropped.includes(s.idx));
   function pendingGroup(r: RefreshResult): Sig.Group {
     const at = new Map(r.points);
-    return { groupX: o.st().group.groupX!, threshold: o.st().group.threshold, members: o.st().group.members.filter((m: any) => !m.removed).map((m: any) => ({
+    return { groupX: o.st().group.groupX!, threshold: o.st().group.threshold, members: o.st().group.members.filter((m: any) => !m.removed && !dropped.includes(m.idx)).map((m: any) => ({
       idx: m.idx, sharePub: at.get(idxsOf(m)[0]) ?? m.sharePub,
       ...(m.shares ? { shares: m.shares.map((x: any) => ({ idx: x.idx, sharePub: at.get(x.idx) ?? x.sharePub })) } : {}),
     })) };
@@ -54,7 +58,7 @@ export function refreshing(o: { st: () => DeviceState; pk: string; send: (to: st
     const g = pendingGroup(r), msg = checkMessage(r.epoch);
     const mine = Sig.commitAll(g, r.shares);
     checking = { epoch: r.epoch, msg, g, nonces: mine.nonces, commits: mine.commits, ok: new Set(), commitTo: check };
-    for (const s of servers()) o.send(s.pk, { type: 'sign_check', id: `${r.epoch}:${s.pk.slice(0, 8)}`, epoch: r.epoch, msg, commits: mine.commits });
+    for (const s of live()) o.send(s.pk, { type: 'sign_check', id: `${r.epoch}:${s.pk.slice(0, 8)}`, epoch: r.epoch, msg, commits: mine.commits });
   }
   function onCheck(msg: any, from: string) {
     const c = checking, r = o.st().pending;
@@ -64,13 +68,13 @@ export function refreshing(o: { st: () => DeviceState; pk: string; send: (to: st
     const sig = Sig.combine(2, c.g, c.msg, commits, [...zs, ...msg.zs]);
     if (!schnorr.verify(F.hexToBytes(sig), F.hexToBytes(c.msg), F.hexToBytes(c.g.groupX))) return o.say(`CHECK FAILED with ${from.slice(0, 8)}`);
     c.ok.add(from);
-    o.say(`checked epoch ${c.epoch} with ${c.ok.size} of ${servers().length} servers`);
+    o.say(`checked epoch ${c.epoch} with ${c.ok.size} of ${live().length} servers`);
     // A check round uses its nonces once: the next server gets fresh ones.
     const fresh = Sig.commitAll(c.g, r.shares); c.nonces = fresh.nonces; c.commits = fresh.commits;
-    const rest = servers().filter((s: any) => !c.ok.has(s.pk));
+    const rest = live().filter((s: any) => !c.ok.has(s.pk));
     if (rest.length) { o.send(rest[0].pk, { type: 'sign_check', id: `${c.epoch}:${rest[0].pk.slice(0, 8)}`, epoch: c.epoch, msg: c.msg, commits: c.commits }); return; }
     if (c.commitTo === 'none') return o.say('not committing (test)');
-    for (const s of c.commitTo === 'first' ? servers().slice(0, 1) : servers()) o.send(s.pk, { type: 'refresh_commit', epoch: c.epoch, id: r.id });
+    for (const s of c.commitTo === 'first' ? live().slice(0, 1) : live()) o.send(s.pk, { type: 'refresh_commit', epoch: c.epoch, id: r.id });
     o.say(`committed epoch ${c.epoch}`);
   }
   function committed(epoch: number, id?: string) {
@@ -90,12 +94,18 @@ export function refreshing(o: { st: () => DeviceState; pk: string; send: (to: st
   }
 
   return {
-    /** A silent periodic refresh: no lock, nobody removed; checked with each server, then committed (`commitTo` 'first' or 'none' for tests). */
-    periodic(commitTo: 'all' | 'first' | 'none' = 'all') {
+    /**
+     * A silent periodic refresh: no lock, nobody removed; checked with each server, then
+     * committed (`commitTo` 'first' or 'none' for tests). `drop` leaves dead servers out
+     * (§7.7); each server checks that silence for itself before it takes the plan.
+     */
+    periodic(commitTo: 'all' | 'first' | 'none' = 'all', drop: number[] = []) {
       const st = o.st();
-      const left = st.group.members.filter((m: any) => !m.removed);
+      dropped = drop;
+      const left = st.group.members.filter((m: any) => !m.removed && !drop.includes(m.idx));
       const plan: RefreshPlan = {
-        epoch: (st.epoch ?? 0) + 1, threshold: st.group.threshold, dealers: [o.pk, servers()[0].pk], periodic: true, id: F.bytesToHex(F.randomBytes(8)),
+        epoch: (st.epoch ?? 0) + 1, threshold: st.group.threshold, dealers: [o.pk, servers().find((s: any) => !drop.includes(s.idx))!.pk], periodic: true, id: F.bytesToHex(F.randomBytes(8)),
+        ...(drop.length ? { drop } : {}),
         holders: left.flatMap((m: any) => idxsOf(m).map(i => ({ idx: i, pk: m.idx === st.idx ? o.pk : m.pk }))),
         points: left.flatMap((m: any) => idxsOf(m).map(i => [i, points().get(i)!] as [number, string])),
       };

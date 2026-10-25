@@ -82,6 +82,37 @@ async function addServer(x: { host: string; relays: string[]; name?: string; tok
   say(`adding a server as member ${k}`);
 }
 const hostWait = new Map<string, (r: any) => void>();
+const silenceWait = new Map<string, (r: any) => void>();
+
+/**
+ * Which servers have gone (COSIGN.md §7.7): each live server says how long each other one
+ * has been silent there, and only one that two of them call dead counts. One server's word,
+ * or a device's own, is never enough.
+ */
+async function whoIsGone(): Promise<number[]> {
+  const says = new Map<number, number>();
+  await Promise.all(servers().map((s: any) => new Promise<void>(resolve => {
+    const id = `sil:${F.bytesToHex(F.randomBytes(4))}`;
+    const t = setTimeout(() => { silenceWait.delete(id); resolve(); }, 12_000);
+    silenceWait.set(id, (r: any) => {
+      clearTimeout(t); silenceWait.delete(id);
+      for (const [idx, age] of (r.of ?? []) as [number, number][]) if (age >= Number(r.dead)) says.set(idx, (says.get(idx) ?? 0) + 1);
+      resolve();
+    });
+    send(s.pk, { type: 'silence', id });
+  })));
+  return [...says].filter(([, n]) => n >= 2).map(([idx]) => idx);
+}
+
+/** Swap a dead server out: find it, add a fresh one in its place, then refresh without it. */
+async function swap(x: { host?: string; relays?: string[]; name?: string; token?: string; proveWith?: string }) {
+  const gone = await whoIsGone();
+  if (!gone.length) return say('SWAP: none of your servers is gone');
+  say(`SWAP: gone ${gone.join(', ')}`);
+  // The replacement first, so the key never has fewer pieces than it needs.
+  if (x.host) { await addServer({ ...x, host: x.host, relays: x.relays ?? [] }); await new Promise(r => setTimeout(r, 4000)); }
+  rf.periodic('all', gone);
+}
 
 function growShares() {
   growing = { id: F.bytesToHex(F.randomBytes(6)), sigmas: [] };
@@ -170,10 +201,13 @@ function handle(msg: any, from: string) {
   // The test reports a device lost as this phone, by writing to it from its own key.
   // (A repeat, after the device is gone, is ignored, as the app has no button for it then.)
   // A periodic refresh (COSIGN.md §7.7), as the app runs it about every 30 days: commit to 'all', 'first' or 'none' (tests).
-  if (msg.type === 'test_periodic' && from === pk) { rf.periodic(msg.commitTo ?? 'all'); return; }
+  if (msg.type === 'test_periodic' && from === pk) { rf.periodic(msg.commitTo ?? 'all', (msg.drop ?? []).map(Number)); return; }
   if (msg.type === 'test_report' && from === pk) { if (st.group.members.some((m: any) => m.idx === Number(msg.idx) && !m.removed)) rf.report(Number(msg.idx)); return; }
   // Adding a server to this key ("Add a server"): {host, relays, name} of a server taking new accounts.
   if (msg.type === 'test_add_server' && from === pk) { void addServer(msg); return; }
+  // The whole of a dead server's swap (COSIGN.md §7.7), as the app will do it.
+  if (msg.type === 'test_swap' && from === pk) { void swap(msg); return; }
+  if (msg.type === 'silence_res') { silenceWait.get(String(msg.id))?.(msg); return; }
   // Whoever runs a server stopped serving this account (its page): say so, as the app would.
   if (msg.type === 'server_left') { say(`SERVER LEFT: ${msg.name}`); return; }
   // Likewise for making a paper backup: written to PAPER_FILE.

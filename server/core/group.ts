@@ -83,6 +83,20 @@ export function openGroup(loaded: Loaded, io: Io) {
   // Pings go out every 10 s; three missed means gone.
   const online = (m: Member) => m.idx === me.idx || io.now() - seen(m.idx) < 30_000;
 
+  // When each member was last heard from, kept across restarts (COSIGN.md §7.7): a server
+  // that has gone silent for a week can be left out of a periodic refresh, and no server
+  // agrees to that on a device's word — it must have seen the silence itself. Counted from
+  // this server's own start as well, so one that was away calls nobody dead until it has
+  // been back that long.
+  const DEAD_AFTER = Number(process.env.COSIGN_DEAD_AFTER ?? 7 * 86400);
+  S.heard ??= {};
+  const heardOf = (idx: number) => Number(S.heard[idx] ?? 0);
+  const silentFor = (m: Member) => now() - Math.max(heardOf(m.idx), Math.floor(startedAt / 1000));
+  // Stamped on every message, not now and then: a stamp a minute old would make a server
+  // that is plainly there look silent for a minute, and silence is what this decides.
+  const heard = (idx: number) => { S.heard[idx] = now(); };
+  let heardSaved = io.now();
+
   const activity: { ts: number; text: string }[] = [];
   // How often this server helped sign today: a count for its page, nothing about what.
   let signed = { day: new Date().toDateString(), n: 0 };
@@ -174,6 +188,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (from) {
       const wasOnline = online(from);
       lastSeen.set(from.idx, io.now());
+      heard(from.idx);
       // The other server just came back: bring it up to date.
       if (!wasOnline && from.role === 'server') syncTo();
     }
@@ -200,6 +215,13 @@ export function openGroup(loaded: Loaded, io: Io) {
     const fromPhone = isDevice(from); // any of your devices
     switch (msg.type) {
       case 'ping': return;
+      // Before a periodic refresh: how long each server has been silent, as this one saw it
+      // (§7.7). A device takes a server as dead only when two servers say so.
+      case 'silence': {
+        if (!fromPhone) return;
+        return send(from.pk, { type: 'silence_res', id: msg.id, dead: DEAD_AFTER,
+          of: members.filter(m => m.role === 'server' && !m.removed).map(m => [m.idx, m.idx === me.idx ? 0 : silentFor(m)]) });
+      }
       case 'asking': { if (fromPhone) waitLonger(String(msg.id)); return; }
       case 'sign_req': return answerOnce(from, msg.id, () => onSignReq(msg, from));
       // An app on your phone asked it to sign (Android signer): the phone runs the round.
@@ -1251,15 +1273,34 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (msg.plan) startRefresh(msg.plan as RefreshPlan, by);
   }
 
+  /**
+   * Whether this server agrees that [idx] has gone: a server of this key, not itself, that
+   * it has heard nothing from for DEAD_AFTER. Never a device, and never the paper — those
+   * are taken out by their own door (§7.2), with a lock and a wait.
+   */
+  function agreesIsDead(idx: number): boolean {
+    const m = members.find(x => x.idx === idx);
+    return !!m && m.role === 'server' && m.idx !== me.idx && !m.removed && silentFor(m) >= DEAD_AFTER;
+  }
+
   /** The plan must be the next epoch, dealt by the device that sent it and a server, over every remaining share. */
   function startRefresh(plan: RefreshPlan, by: Member) {
     if (refresh?.plan.epoch === plan?.epoch || Number(plan?.epoch) <= (S.epoch ?? 0)) return; // a repeat, or done already
-    const want = members.filter(m => !m.removed).flatMap(m => sharesOf(m).map(idx => ({ idx, pk: m.pk })));
+    // A periodic refresh may swap out a dead server (§7.7). This server checks each one
+    // against what it has heard itself: a device saying so is not enough, or a stolen
+    // phone could thin out the servers that would block it.
+    const drop = (plan?.periodic === true && Array.isArray(plan.drop) ? plan.drop.map(Number) : []).filter(n => Number.isInteger(n));
+    const refused = drop.find(idx => !agreesIsDead(idx));
+    if (refused !== undefined) return note(`refused a refresh from ${by.name}: it leaves out ${members.find(m => m.idx === refused)?.name ?? refused}, which hasn't been silent here`);
+    if (drop.length && members.filter(m => m.role === 'server' && !m.removed && !drop.includes(m.idx)).length < 1)
+      return note(`refused a refresh from ${by.name}: it would leave your key with no server`);
+    const want = members.filter(m => !m.removed && !drop.includes(m.idx)).flatMap(m => sharesOf(m).map(idx => ({ idx, pk: m.pk })));
     const ok = plan && plan.epoch === (S.epoch ?? 0) + 1 && plan.threshold === S.group.threshold && Array.isArray(plan.dealers) && Array.isArray(plan.holders)
       && plan.dealers.includes(by.pk!) && plan.dealers.some(d => members.some(m => m.pk === d && m.role === 'server' && !m.removed))
       && plan.holders.length === want.length && want.every(w => plan.holders.some(h => h.idx === w.idx && h.pk === w.pk))
       && Array.isArray(plan.points) && want.every(w => plan.points.some(([i, p]) => i === w.idx && p === pointOf(w.idx)));
     if (!ok) return note(`refused a refresh from ${by.name}: its plan doesn't match the members`);
+    if (drop.length) note(`this refresh leaves out ${drop.map(i => members.find(m => m.idx === i)?.name ?? i).join(', ')}: silent here for ${Math.floor(DEAD_AFTER / 86400)} days or more`);
     if (plan.periodic === true && S.pending) return note('a periodic refresh is already waiting for its check');
     refresh?.stop();
     refresh = new RefreshRun(plan, me.pk!, myShares, send, plan.periodic === true ? onPending : onRefreshed);
@@ -1292,7 +1333,8 @@ export function openGroup(loaded: Loaded, io: Io) {
   const checkMessage = (epoch: number) => F.bytesToHex(sha256(utf8ToBytes(`cosign-refresh:${groupX}:${epoch}`)));
 
   function onPending(r: RefreshResult) {
-    S.pending = { epoch: r.epoch, id: refresh?.plan.id ?? null, shares: r.shares, points: r.points, dealers: refresh?.plan.dealers ?? [], at: now() };
+    S.pending = { epoch: r.epoch, id: refresh?.plan.id ?? null, shares: r.shares, points: r.points, dealers: refresh?.plan.dealers ?? [], at: now(),
+      drop: (refresh?.plan.drop ?? []).filter(idx => agreesIsDead(idx)) };
     save();
     toDevices({ type: 'refresh_pending', epoch: r.epoch, id: S.pending.id });
     note(`your key's next epoch (${r.epoch}) is ready, waiting for your device's check`);
@@ -1301,7 +1343,8 @@ export function openGroup(loaded: Loaded, io: Io) {
   /** The group with the pending epoch's points, for the check round. */
   function pendingGroup(): Sig.Group {
     const at = new Map<number, string>(S.pending.points);
-    return { groupX, threshold: S.group.threshold, members: members.filter(m => !m.removed).map(m => ({
+    const gone = (S.pending.drop ?? []) as number[];
+    return { groupX, threshold: S.group.threshold, members: members.filter(m => !m.removed && !gone.includes(m.idx)).map(m => ({
       idx: m.idx, sharePub: at.get(sharesOf(m)[0]) ?? m.sharePub,
       ...(m.shares ? { shares: m.shares.map(x => ({ idx: x.idx, sharePub: at.get(x.idx) ?? x.sharePub })) } : {}),
     })) };
@@ -1326,7 +1369,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (!p || p.epoch !== epoch || (id != null && p.id != null && id !== p.id)) return;
     delete S.pending;
     S.committedId = p.id;
-    onRefreshed({ epoch: p.epoch, shares: p.shares, points: p.points }, p.dealers);
+    onRefreshed({ epoch: p.epoch, shares: p.shares, points: p.points }, p.dealers, p.drop);
     const said = { type: 'refresh_committed', epoch, id: p.id };
     toOther(said);
     for (const d of devices()) { send(d.pk, said); holdMail(d.pk!, { from: me.pk!, msg: said, epoch }); }
@@ -1338,8 +1381,16 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (S.pending && now() - S.pending.at > PENDING_DROP) { note(`dropped the uncommitted epoch ${S.pending.epoch}`); delete S.pending; refresh = null; save(); }
   }
 
-  function onRefreshed(r: RefreshResult, dealersOf?: string[]) {
+  function onRefreshed(r: RefreshResult, dealersOf?: string[], drop?: number[]) {
     const at = new Map(r.points);
+    // A server left out of this epoch is gone from the key: its pieces are of the old one
+    // and combine with nothing now. Marked before the rest, so nothing goes to it again.
+    for (const idx of drop ?? []) {
+      const m = members.find(x => x.idx === idx && !x.removed);
+      if (!m) continue;
+      m.removed = now();
+      note(`${m.name} is out of your key: it answered nothing for ${Math.floor(DEAD_AFTER / 86400)} days`);
+    }
     for (const m of members) {
       if (m.removed || !sharesOf(m).every(i => at.has(i))) continue;
       const pts = sharesOf(m).map(idx => ({ idx, sharePub: at.get(idx)! }));
@@ -1657,6 +1708,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   function tick() {
     pingAll();
     finishGuards();
+    if (io.now() - heardSaved > 3600_000) { heardSaved = io.now(); save(); }
     dropStalePending();
     for (const [k, v] of given) if (io.now() - v.at > 120_000) given.delete(k);
     for (const [k, v] of answers) if (io.now() - v.at > 180_000) answers.delete(k);

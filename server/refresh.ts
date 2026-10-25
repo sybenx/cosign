@@ -35,6 +35,12 @@ export interface RefreshPlan {
   periodic?: boolean;
   /** Which attempt (periodic): a dropped attempt and the next one have the same epoch. */
   id?: string;
+  /**
+   * Servers left out of this epoch (periodic, COSIGN.md §7.7): ones that have gone silent.
+   * Their shares get no deltas, so they stop combining with anything. Each server checks
+   * for itself that it has seen that silence before it takes a plan that drops one.
+   */
+  drop?: number[];
 }
 
 /** One dealer's part: a delta for each share, and the points of g's coefficients a1..a(t-1). */
