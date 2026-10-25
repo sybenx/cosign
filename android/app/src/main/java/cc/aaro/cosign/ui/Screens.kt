@@ -100,7 +100,7 @@ fun App(phone: Phone, ui: Ui) {
             ui.member == null -> Column(Modifier.fillMaxSize()) {
                 var importing by remember { mutableStateOf(false) }
                 Box(Modifier.weight(1f)) { Welcome(ui.error, onCreate = phone::createAccount, onJoin = phone::startJoin, onScan = { phone.clearError(); scanning = true }, onPaste = phone::pastedBackup, onHave = { phone.clearError(); importing = true }) }
-                if (importing) ImportSheet({ importing = false }) { chars -> importing = false; phone.secretFrom(chars)?.let(phone::importKey) ?: phone.showError("That isn't an nsec (or a 64-character hex key). Nothing was kept.") }
+                if (importing) ImportSheet({ importing = false }) { chars -> importing = false; phone.importKey(chars) }
                 // A place for another key: the ones you have are a tap away.
                 val others = CosignApp.instance.accounts.all.filter { it !== phone && it.isMember }
                 if (others.isNotEmpty()) TextButton({ CosignApp.instance.accounts.forget(phone.slot); CosignApp.instance.accounts.show(others.first().slot) },
@@ -116,10 +116,11 @@ fun App(phone: Phone, ui: Ui) {
         ui.adding?.let { AddDeviceSheet(it, phone) }
         ui.reporting?.let { ReportLostSheet(it, phone) }
         ui.removedBy?.let { RemovedSheet(it, phone) }
-        ui.paper?.let { PaperSheet(it, phone::closePaper) }
+        // The paper's code and a key taken out never come to this process: the signer shows them (SignerActivity).
+        ui.paper?.let { androidx.compose.runtime.LaunchedEffect(Unit) { phone.reveal() } }
         if (ui.askPaper && ui.paper == null && ui.paperStatus == null) PaperPrompt(phone)
         ui.serverChoice?.let { ServerChoiceSheet(it, ui.paperStatus, ui.addCode, phone) }
-        ui.takeOut?.let { TakeOutSheet(it, phone) }
+        ui.takeOut?.let { if (it.stage == cc.aaro.cosign.TakeOut.Stage.SHOWING) androidx.compose.runtime.LaunchedEffect(Unit) { phone.reveal() } else TakeOutSheet(it, phone::closeTakeOut) }
         GuardNotices(ui, phone)
     }
 }
@@ -161,14 +162,14 @@ private fun TakeOutEntry(phone: Phone, onScan: () -> Unit) {
 
 /** Waiting, the key itself (once, no screenshots), or why not. */
 @Composable
-private fun TakeOutSheet(t: cc.aaro.cosign.TakeOut, phone: Phone) {
+internal fun TakeOutSheet(t: cc.aaro.cosign.TakeOut, onClose: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = context as? android.app.Activity
     if (t.stage == cc.aaro.cosign.TakeOut.Stage.SHOWING) androidx.compose.runtime.DisposableEffect(Unit) {
         activity?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         onDispose { activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) }
     }
-    BackHandler { phone.closeTakeOut() }
+    BackHandler { onClose() }
     Box(Modifier.fillMaxSize().background(Color(0xCC0B0A09)), contentAlignment = Alignment.BottomCenter) {
         Column(
             Modifier.fillMaxWidth().safeDrawingPadding().padding(12.dp)
@@ -209,7 +210,7 @@ private fun TakeOutSheet(t: cc.aaro.cosign.TakeOut, phone: Phone) {
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Button(phone::closeTakeOut, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
+            Button(onClose, Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(Vault.Teal, Vault.Ground)) {
                 Text(if (t.stage == cc.aaro.cosign.TakeOut.Stage.WAITING) "Close (it keeps going)" else "Done")
             }
         }
@@ -981,7 +982,7 @@ private fun PaperRow(made: Boolean, status: String?, phone: Phone) {
 
 /** The paper backup's code, shown once: print it, or write it down, and keep it somewhere safe. */
 @Composable
-private fun PaperSheet(code: String, onClose: () -> Unit) {
+internal fun PaperSheet(code: String, onClose: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     Box(Modifier.fillMaxSize().background(Vault.Ground)) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp)) {

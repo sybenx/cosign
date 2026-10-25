@@ -35,7 +35,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; aidl = true }
     testOptions { unitTests.isReturnDefaultValues = true }
     // Unit tests run the native FROST too, from a desktop build of the same library:
     // (cd ../frost && cargo build --release --features android)

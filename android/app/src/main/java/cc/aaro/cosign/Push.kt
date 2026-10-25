@@ -12,7 +12,7 @@ import org.unifiedpush.android.connector.data.PushMessage
  */
 class Push : PushService() {
     /** Every key's servers wake the phone through the same endpoint. */
-    private val phones get() = CosignApp.instance.accounts.all
+    private val phones get() = CosignApp.instance.signers.all
 
     override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) { for (p in phones) p.setPushEndpoint(endpoint.url) }
 

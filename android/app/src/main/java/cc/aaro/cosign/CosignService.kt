@@ -19,11 +19,11 @@ import androidx.core.content.ContextCompat
  * (Android requires one) and a heads-up notification for each request.
  */
 class CosignService : Service() {
-    private val accounts get() = CosignApp.instance.accounts
+    private val accounts get() = CosignApp.instance.signers
     private var lastStatus = ""
 
     /** One key's side: its notifications say which key they're for when there's more than one, and act on that key. */
-    private inner class For(val p: Phone) : Phone.Listener {
+    private inner class For(val p: Signer) : Signer.Listener {
         override fun onAsk(ask: Ask) = ask(p, ask)
         override fun onAskGone(id: String) = NotificationManagerCompat.from(this@CosignService).cancel(id.hashCode())
         override fun onStatus() = status()
@@ -35,7 +35,7 @@ class CosignService : Service() {
     }
 
     /** "for npub1…" when there's more than one key here; nothing when there's one. */
-    private fun forKey(p: Phone) = if (accounts.all.count { it.isMember } > 1) " · ${p.label}" else ""
+    private fun forKey(p: Signer) = if (accounts.all.count { it.isMember } > 1) " · ${p.label}" else ""
 
     private fun listenAll() { for (p in accounts.all) if (p.listener !is For) p.listener = For(p) }
 
@@ -93,7 +93,7 @@ class CosignService : Service() {
         if (canNotify()) NotificationManagerCompat.from(this).notify(STATUS_ID, statusNote())
     }
 
-    private fun ask(p: Phone, ask: Ask) {
+    private fun ask(p: Signer, ask: Ask) {
         if (!canNotify()) return
         fun decision(approve: Boolean) = PendingIntent.getBroadcast(
             this, (ask.id + approve).hashCode(),
@@ -119,14 +119,14 @@ class CosignService : Service() {
     }
 
 
-    private fun action(p: Phone, key: String, value: String, approve: Boolean = false) = PendingIntent.getBroadcast(
+    private fun action(p: Signer, key: String, value: String, approve: Boolean = false) = PendingIntent.getBroadcast(
         this, (key + value + approve).hashCode(),
         Intent(this, DecisionReceiver::class.java).putExtra(key, value).putExtra("approve", approve).putExtra("slot", p.slot),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
     /** A deletion in its few seconds: Undo stops it. */
-    private fun deleting(p: Phone, d: Deleting) {
+    private fun deleting(p: Signer, d: Deleting) {
         if (!canNotify()) return
         val what = "Deleting ${d.count} post${if (d.count == 1) "" else "s"} for ${d.by}" + forKey(p)
         val n = NotificationCompat.Builder(this, ASKS)
@@ -143,7 +143,7 @@ class CosignService : Service() {
     }
 
     /** One approval for a batch of deletions. */
-    private fun batch(p: Phone, b: BatchAsk) {
+    private fun batch(p: Signer, b: BatchAsk) {
         if (!canNotify()) return
         val n = NotificationCompat.Builder(this, ASKS)
             .setSmallIcon(R.drawable.ic_stat)
@@ -160,7 +160,7 @@ class CosignService : Service() {
         NotificationManagerCompat.from(this).notify(("batch" + b.batch).hashCode(), n)
     }
 
-    private fun notice(p: Phone, title: String, text: String) {
+    private fun notice(p: Signer, title: String, text: String) {
         if (!canNotify()) return
         NotificationManagerCompat.from(this).notify((title + text).hashCode(), NotificationCompat.Builder(this, ASKS)
             .setSmallIcon(R.drawable.ic_stat).setContentTitle(title + forKey(p)).setContentText(text)

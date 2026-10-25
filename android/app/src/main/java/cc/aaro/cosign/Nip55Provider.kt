@@ -21,7 +21,7 @@ class Nip55Provider : ContentProvider() {
         val args = projection?.takeIf { it.isNotEmpty() } ?: selectionArgs ?: return null
         val current = args.getOrNull(2)
         // The key this app connected to: the one it names, if it does, else the one holding its grant.
-        val accounts = CosignApp.instance.accounts
+        val accounts = CosignApp.instance.signers
         val pkg = callingPackage ?: return null
         val phone = accounts.all.firstOrNull { it.ui.value.member?.group?.groupX == current && it.appGrant(pkg) != null } ?: accounts.forApp(pkg) ?: return null
         val member = phone.ui.value.member ?: return null

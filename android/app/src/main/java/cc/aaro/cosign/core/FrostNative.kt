@@ -9,7 +9,7 @@ package cc.aaro.cosign.core
  * Frost.kt is the earlier hand-rolled math, kept only for servers not updated yet.
  */
 object FrostNative {
-    init { System.loadLibrary("cosign_frost") }
+    init { cc.aaro.cosign.Proc.signerOnly("FROST"); System.loadLibrary("cosign_frost") }
 
     /** `{"nonces": hex, "commit": {"idx", "D", "E"}}`. */
     @JvmStatic external fun commit(group: String, idx: Int, secret: String): String

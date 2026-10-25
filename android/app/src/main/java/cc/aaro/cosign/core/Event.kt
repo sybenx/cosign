@@ -10,7 +10,7 @@ data class Event(
     val content: String,
     val id: String = "",
     val sig: String = "",
-) {
+) : java.io.Serializable {
     fun serializeForId(): String = Json.stringify(listOf(0, pubkey, createdAt, kind, tags, content))
 
     fun computeId(): String = sha256(serializeForId().toByteArray(Charsets.UTF_8)).toHex()

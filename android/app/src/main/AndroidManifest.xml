@@ -65,11 +65,29 @@
             </intent-filter>
         </activity>
 
+        <!-- Everything below that holds or uses your key runs in its own process, ":signer"
+             (Proc.kt): the shares, FROST, the relays your servers use, NIP-55 and site sign-in.
+             It draws nothing from strangers (no feed, pictures, video or web views). The app
+             above reaches it only through SignerService. -->
+        <service
+            android:name=".SignerService"
+            android:process=":signer"
+            android:exported="false" />
+        <!-- The paper backup's code and a key taken out: shown by the signer, never by the app. -->
+        <activity
+            android:name=".SignerActivity"
+            android:process=":signer"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Cosign.Sheet" />
+
         <!-- Android signer (NIP-55): apps on this phone sign through Cosign. The activity asks
              you when it must (connecting, something destructive, first use of messages);
              the provider answers everything else in the background. -->
         <activity
             android:name=".Nip55Activity"
+            android:process=":signer"
             android:exported="true"
             android:launchMode="singleTop"
             android:excludeFromRecents="true"
@@ -83,6 +101,7 @@
         </activity>
         <provider
             android:name=".Nip55Provider"
+            android:process=":signer"
             android:exported="true"
             android:authorities="cc.aaro.cosign.GET_PUBLIC_KEY;cc.aaro.cosign.SIGN_EVENT;cc.aaro.cosign.NIP04_ENCRYPT;cc.aaro.cosign.NIP04_DECRYPT;cc.aaro.cosign.NIP44_ENCRYPT;cc.aaro.cosign.NIP44_DECRYPT;cc.aaro.cosign.DECRYPT_ZAP_EVENT" />
 
@@ -90,6 +109,7 @@
              app isn't on screen. Only runs once the phone has joined a group. -->
         <service
             android:name=".CosignService"
+            android:process=":signer"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property
@@ -97,16 +117,16 @@
                 android:value="Holds one share of a threshold signing key and answers co-signing requests from the user's own servers." />
         </service>
 
-        <receiver android:name=".DecisionReceiver" android:exported="false" />
+        <receiver android:name=".DecisionReceiver" android:process=":signer" android:exported="false" />
 
         <!-- ntfy (or any UnifiedPush distributor) wakes the app when an approval is waiting. -->
-        <service android:name=".Push" android:exported="false">
+        <service android:name=".Push" android:process=":signer" android:exported="false">
             <intent-filter>
                 <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
             </intent-filter>
         </service>
 
-        <receiver android:name=".BootReceiver" android:exported="false">
+        <receiver android:name=".BootReceiver" android:process=":signer" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>

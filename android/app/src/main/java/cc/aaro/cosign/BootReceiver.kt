@@ -6,6 +6,6 @@ import android.content.Intent
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED && CosignApp.instance.accounts.all.any { it.isMember }) CosignService.start(context)
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED && CosignApp.instance.signers.all.any { it.isMember }) CosignService.start(context)
     }
 }

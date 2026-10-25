@@ -18,7 +18,7 @@ object Frost {
     val N: BigInteger = BigInteger("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16)
 
     data class Nonces(val d: BigInteger, val e: BigInteger)
-    data class Commit(val idx: Int, val D: String, val E: String)
+    data class Commit(val idx: Int, val D: String, val E: String) : java.io.Serializable
 
     fun scalar(b: ByteArray): BigInteger = BigInteger(1, b).mod(N)
 
