@@ -1292,8 +1292,11 @@ export function openGroup(loaded: Loaded, io: Io) {
     const drop = (plan?.periodic === true && Array.isArray(plan.drop) ? plan.drop.map(Number) : []).filter(n => Number.isInteger(n));
     const refused = drop.find(idx => !agreesIsDead(idx));
     if (refused !== undefined) return note(`refused a refresh from ${by.name}: it leaves out ${members.find(m => m.idx === refused)?.name ?? refused}, which hasn't been silent here`);
-    if (drop.length && members.filter(m => m.role === 'server' && !m.removed && !drop.includes(m.idx)).length < 1)
-      return note(`refused a refresh from ${by.name}: it would leave your key with no server`);
+    // A quiet swap never thins a key down to one server: that is a decision for the person,
+    // who is asked instead (a server of their own, or an account with only two, is never
+    // dropped silently at all — the app decides that, and this is the backstop here).
+    if (drop.length && members.filter(m => m.role === 'server' && !m.removed && !drop.includes(m.idx)).length < 2)
+      return note(`refused a refresh from ${by.name}: it would leave your key with fewer than two servers`);
     const want = members.filter(m => !m.removed && !drop.includes(m.idx)).flatMap(m => sharesOf(m).map(idx => ({ idx, pk: m.pk })));
     const ok = plan && plan.epoch === (S.epoch ?? 0) + 1 && plan.threshold === S.group.threshold && Array.isArray(plan.dealers) && Array.isArray(plan.holders)
       && plan.dealers.includes(by.pk!) && plan.dealers.some(d => members.some(m => m.pk === d && m.role === 'server' && !m.removed))
