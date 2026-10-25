@@ -65,7 +65,8 @@ data class Person(val pubkey: String, val name: String?, val picture: String?, v
     }
 }
 
-fun shortNpub(pk: String) = try { Nip19.npub(pk).let { it.take(10) + "…" + it.takeLast(4) } } catch (_: Exception) { pk.take(8) }
+/** Someone with no name yet, shown by a piece of their account ID (without the "npub1" in front). */
+fun shortNpub(pk: String) = try { Nip19.npub(pk).let { it.drop(5).take(6) + "…" + it.takeLast(4) } } catch (_: Exception) { pk.take(8) }
 
 /**
  * Profiles, for every key on this phone: in memory, and the most recent few hundred on disk
@@ -246,12 +247,15 @@ class Social private constructor(private val phone: Phone, context: Context) {
                 Startup.mark("feed asked")
                 val got = Fetch.query(listOf(src), mapOf("kinds" to FEED_KINDS, "limit" to 60), 8000)
                 Startup.mark("feed fetched ${got.size}")
-                val notes = got.filter { it.kind in FEED_KINDS && forDiscover(it) && fresh.none { f -> f.id == it.id } }
+                // Roots with something in them, nothing heavy; then two per person and one "GM" a page.
+                // The curated source keeps its own order (its ranking); the others go newest first.
+                val ok = got.filter { it.kind in FEED_KINDS && Curate.keep(it) && forDiscover(it) && fresh.none { f -> f.id == it.id } }
+                val notes = Curate.page(if (src == Sources.FEEDS[0]) ok else ok.sortedByDescending { it.createdAt }, already = fresh)
                 Startup.mark("feed filtered ${notes.size}")
-                foreign += got.filter { it.kind in FEED_KINDS && foreignOk(it) && foreign.none { f -> f.id == it.id } }
+                foreign += got.filter { it.kind in FEED_KINDS && Curate.keep(it) && foreignOk(it) && foreign.none { f -> f.id == it.id } }
                 if (notes.isEmpty()) continue
                 if (used == null) used = src
-                fresh += rank(notes)
+                fresh += notes
                 if (fresh.size >= 20) break
             }
             if (fresh.size < 3) return@launch feed.update { it.copy(loading = false, failed = it.notes.isEmpty()) }
@@ -275,7 +279,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
         scope.launch {
             loadTranslations()
             val m = try { Json.parse(feedFile.readText()) as? Map<*, *> } catch (_: Exception) { null } ?: return@launch
-            val notes = (m["notes"] as? List<*>)?.mapNotNull { Event.fromMap(it) }?.filter { forDiscover(it) } ?: return@launch
+            val notes = (m["notes"] as? List<*>)?.mapNotNull { Event.fromMap(it) }?.filter { Curate.keep(it) && forDiscover(it) }?.let { Curate.page(it) } ?: return@launch
             if (notes.isEmpty()) return@launch
             remember(notes)
             feed.update { if (it.notes.isNotEmpty()) it else it.copy(notes = notes, source = m["source"] as? String, at = m["at"] as? Long ?: 0) }
@@ -299,18 +303,13 @@ class Social private constructor(private val phone: Phone, context: Context) {
         scope.launch {
             val until = f.notes.minOf { it.createdAt } - 1
             val got = Fetch.query(listOf(src), mapOf("kinds" to FEED_KINDS, "limit" to 60, "until" to until), 8000)
-            val more = got.filter { it.kind in FEED_KINDS && forDiscover(it) && f.notes.none { n -> n.id == it.id } }
+            val ok = got.filter { it.kind in FEED_KINDS && Curate.keep(it) && forDiscover(it) && f.notes.none { n -> n.id == it.id } }
+            val more = Curate.page(if (src == Sources.FEEDS[0]) ok else ok.sortedByDescending { it.createdAt }, already = f.notes)
             remember(more)
             People.want(more.map { it.pubkey })
-            feed.update { it.copy(notes = it.notes + more.sortedByDescending { n -> n.createdAt }, loading = false, more = got.isNotEmpty()) }
-            translateIn(got.filter { it.kind in FEED_KINDS && foreignOk(it) })
+            feed.update { it.copy(notes = it.notes + more, loading = false, more = got.isNotEmpty()) }
+            translateIn(got.filter { it.kind in FEED_KINDS && Curate.keep(it) && foreignOk(it) })
         }
-    }
-
-    /** Newest first; replies only when the feed has little else. */
-    private fun rank(notes: List<Event>): List<Event> {
-        val (top, replies) = notes.sortedByDescending { it.createdAt }.partition { parentOf(it) == null }
-        return if (top.size >= 15) top else top + replies
     }
 
     // --- Places: a few videos from sites you're signed in to, mixed into Discover ---------
@@ -455,11 +454,80 @@ class Social private constructor(private val phone: Phone, context: Context) {
         return out
     }
 
-    suspend fun notesBy(pk: String): List<Event> {
+    /**
+     * What someone posted, newest first: their posts, reposts and videos, read from the relays
+     * they say they write to (their outbox) as well as the usual ones. [until]: older than this, for the next page.
+     */
+    suspend fun notesBy(pk: String, until: Long? = null): List<Event> {
         People.want(listOf(pk))
-        val ns = Fetch.query(readRelays() + Sources.PROFILES.take(2), mapOf("kinds" to listOf(1), "authors" to listOf(pk), "limit" to 30), 7000)
-        remember(ns)
+        val outbox = outboxOf(pk)
+        val filter = buildMap<String, Any> { put("kinds", listOf(1, 6, 21, 22)); put("authors", listOf(pk)); put("limit", 30); until?.let { put("until", it - 1) } }
+        val ns = Fetch.query((outbox + readRelays().take(3) + Sources.PROFILES.take(2)).distinct(), filter, 7000).filter { it.pubkey == pk }
+        // Reposts carry what they repost; anything they only point at is fetched.
+        val inner = ns.filter { it.kind == 6 }.mapNotNull { r -> reposted(r) }
+        val missing = ns.filter { it.kind == 6 && reposted(it) == null }.mapNotNull { it.firstTag("e") }.filter { note(it) == null }
+        if (missing.isNotEmpty()) remember(Fetch.query(readRelays() + outbox, mapOf("ids" to missing.take(30)), 5000))
+        remember(ns.filter { it.kind != 6 } + inner)
+        People.want(inner.map { it.pubkey })
         return ns.sortedByDescending { it.createdAt }
+    }
+
+    /** The post a repost (kind 6) carries in its content, if it's there and genuine; else the one it points at, if it's been seen. */
+    fun reposted(r: Event): Event? = (try { Event.fromMap(Json.parse(r.content))?.takeIf { it.kind == 1 && it.verify() } } catch (_: Exception) { null })
+        ?: r.firstTag("e")?.let { note(it) }
+
+    /** The relays someone says they write to (their NIP-65 list): up to four. */
+    private val outboxes = ConcurrentHashMap<String, List<String>>()
+    private suspend fun outboxOf(pk: String): List<String> = outboxes[pk] ?: run {
+        val l = Fetch.query(Sources.PROFILES.take(3), mapOf("kinds" to listOf(10002), "authors" to listOf(pk), "limit" to 1), 4000).maxByOrNull { it.createdAt }
+        (l?.tags?.filter { it.size > 1 && it[0] == "r" && it.getOrNull(2) != "read" && it[1].startsWith("wss://") }?.map { it[1] }?.take(4) ?: emptyList()).also { outboxes[pk] = it }
+    }
+
+    /** The relays someone reads from (their inbox): where a reply or a reaction to them should go. */
+    private suspend fun inboxOf(pk: String): List<String> {
+        val l = Fetch.query(Sources.PROFILES.take(3), mapOf("kinds" to listOf(10002), "authors" to listOf(pk), "limit" to 1), 4000).maxByOrNull { it.createdAt }
+        return l?.tags?.filter { it.size > 1 && it[0] == "r" && it.getOrNull(2) != "write" && it[1].startsWith("wss://") }?.map { it[1] }?.take(3) ?: emptyList()
+    }
+
+    // --- Replying and reporting ----------------------------------------------------------
+
+    /**
+     * Reply to [parent] (NIP-10: the thread's first post as root, the post you answer as reply,
+     * everyone in the conversation tagged), sent to your relays and the author's. The reply, once sent; null if it wasn't.
+     */
+    suspend fun reply(parent: Event, text: String): Event? {
+        val me = me ?: return null
+        val body = text.trim().ifEmpty { return null }
+        val root = rootOf(parent) ?: parent.id
+        val tags = buildList {
+            add(listOf("e", root, "", "root"))
+            if (root != parent.id) add(listOf("e", parent.id, "", "reply"))
+            (listOf(parent.pubkey) + parent.tags.filter { it.size > 1 && it[0] == "p" }.map { it[1] }).distinct().filter { it != me && cc.aaro.cosign.core.isHex32(it) }
+                .forEach { add(listOf("p", it)) }
+        }
+        val signed = actEvent(Event(me, Clock.now(), 1, tags, body).withId(), relays = writeRelays() + inboxOf(parent.pubkey)) ?: return null
+        remember(listOf(signed))
+        // In the thread it was written in, under the post it answers, at once.
+        synchronized(threads) {
+            for ((k, list) in threads.entries.toList()) {
+                val i = list.indexOfFirst { it.first.id == parent.id }.takeIf { it >= 0 } ?: continue
+                val depth = list[i].second
+                var end = i + 1
+                while (end < list.size && list[end].second > depth) end++
+                threads[k] = list.take(end) + (signed to depth + 1) + list.drop(end)
+            }
+        }
+        return signed
+    }
+
+    /** NIP-56: report a post and its author (spam, nudity, illegal, impersonation, other), and stop showing it. */
+    fun report(n: Event, reason: String) {
+        val me = me ?: return
+        notInterested(n)
+        scope.launch {
+            val tags = listOf(listOf("e", n.id, reason), listOf("p", n.pubkey, reason))
+            if (act(Event(me, Clock.now(), 1984, tags, "").withId())) message.value = "Reported. Thanks for telling us."
+        }
     }
 
     // --- Notifications ---------------------------------------------------------------
@@ -597,7 +665,7 @@ class Social private constructor(private val phone: Phone, context: Context) {
             val got = todo.zip(out).associate { (e, r) -> e.id to Translated(r.first, r.second?.takeIf { it != target }) }
             translations.update { (it + got).entries.toList().takeLast(600).associate { (k, v) -> k to v } }
             try { translationsFile.writeText(Json.stringify(translations.value.mapValues { (_, t) -> mapOf("text" to t.text, "from" to t.from) })) } catch (_: Exception) {}
-            val add = todo.filter { e -> got[e.id]?.let { okText(it.text) } == true }
+            val add = todo.filter { e -> got[e.id]?.let { okText(it.text) && !Curate.heavy(it.text) } == true }
             if (add.isEmpty()) return@launch
             remember(add)
             People.want(add.map { it.pubkey })
@@ -663,17 +731,20 @@ class Social private constructor(private val phone: Phone, context: Context) {
     }
 
     /** Your servers sign it (or hand it to you to approve), then it goes to your relays. */
-    private suspend fun act(ev: Event, approved: Boolean = false): Boolean {
+    private suspend fun act(ev: Event, approved: Boolean = false): Boolean = actEvent(ev, approved) != null
+
+    /** Your servers sign it (or hand it to you to approve), then it goes to [relays] (yours by default). What was sent, or null. */
+    private suspend fun actEvent(ev: Event, approved: Boolean = false, relays: List<String>? = null): Event? {
         val signed = try { phone.signOwn(ev, approved) } catch (e: NeedsApproval) {
-            held.value = Held(e.what, ev); return false
+            held.value = Held(e.what, ev); return null
         } catch (e: Exception) {
-            message.value = "Couldn't do that right now: ${e.message ?: "no answer"}"; return false
+            message.value = "Couldn't do that right now: ${e.message ?: "no answer"}"; return null
         }
         if (signed.kind == 3) { contacts = signed; follows.value = followsIn(signed) }
         if (signed.kind == 10000) mutes = signed
-        val n = Fetch.publish(if (Sources.localOnly) Sources.extra.value else writeRelays(), signed)
-        if (n == 0) message.value = "Signed, but no relay took it. Try again later."
-        return n > 0
+        val n = Fetch.publish(if (Sources.localOnly) Sources.extra.value else (relays ?: writeRelays()).distinct().take(10), signed)
+        if (n == 0) message.value = "Couldn't send that right now. Try again later."
+        return signed.takeIf { n > 0 }
     }
 
     /** You approved (or not) one of your own actions your servers held. */

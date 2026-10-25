@@ -33,7 +33,8 @@ object Fetch {
 
     private fun queryBlocking(relays: List<String>, filters: List<Map<String, Any>>, timeoutMs: Long, graceMs: Long): List<Event> {
         if (relays.isEmpty()) return emptyList()
-        val got = ConcurrentHashMap<String, Event>()
+        // In the order they arrive: a curated feed's order is its ranking.
+        val got = java.util.Collections.synchronizedMap(LinkedHashMap<String, Event>())
         val done = CountDownLatch(relays.size)
         val firstDone = java.util.concurrent.atomic.AtomicLong()
         val sub = "c" + java.lang.Long.toString((Math.random() * 1e12).toLong(), 36)
@@ -64,7 +65,7 @@ object Fetch {
                 if (now >= end || (firstDone.get() != 0L && now - firstDone.get() >= graceMs)) break
             }
         } finally { sockets.forEach { it.cancel() } }
-        return got.values.toList()
+        return synchronized(got) { got.values.toList() }
     }
 
     /** Send [event] to [relays]; how many took it. */

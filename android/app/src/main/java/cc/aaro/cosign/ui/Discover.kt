@@ -66,6 +66,10 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -111,7 +115,7 @@ private sealed class Route {
     data object Account : Route()
     data object Bell : Route()
     data object Search : Route()
-    data class Thread(val id: String) : Route()
+    data class Thread(val id: String, val reply: Boolean = false) : Route()
     data class Profile(val pubkey: String) : Route()
 }
 
@@ -134,7 +138,7 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
         Route.Account -> AccountScreen(phone, ui, onScan, onProfile = { ui.member?.group?.groupX?.let { nav.profile(it) } }, onBack = back)
         Route.Bell -> BellScreen(phone, ui, social, nav)
         Route.Search -> SearchScreen(social, nav)
-        is Route.Thread -> ThreadScreen(top.id, social, nav)
+        is Route.Thread -> ThreadScreen(top.id, social, nav, top.reply)
         is Route.Profile -> ProfileScreen(top.pubkey, social, nav)
     }
 
@@ -163,6 +167,8 @@ fun Discover(phone: Phone, ui: Ui, onScan: () -> Unit) {
 
 private class Nav(val open: (Route) -> Unit, val back: () -> Unit, val social: Social, val pictures: (List<String>, Int) -> Unit = { _, _ -> }) {
     fun thread(id: String) = open(Route.Thread(id))
+    /** Open the post with the reply box ready. */
+    fun reply(id: String) = open(Route.Thread(id, reply = true))
     fun profile(pk: String) = open(Route.Profile(pk))
     fun search(q: String) { social.search(q); open(Route.Search) }
 }
@@ -200,7 +206,17 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(appName, style = MaterialTheme.typography.titleLarge, color = Vault.Text, modifier = Modifier.weight(1f))
+            // The name: back to the top of the feed; already there, refresh it (as pulling down does).
+            val scope = rememberCoroutineScope()
+            Text(appName, style = MaterialTheme.typography.titleLarge, color = Vault.Text, modifier = Modifier.weight(1f).wrapContentWidth(Alignment.Start)
+                .clip(RoundedCornerShape(8.dp)).clickable(onClickLabel = "Back to the top") {
+                    if (state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0) { social.loadFeed(force = true); social.loadNotices(force = true) }
+                    else scope.launch {
+                        // From far down, jump most of the way first, so the smooth part is short.
+                        if (state.firstVisibleItemIndex > 6) state.scrollToItem(6)
+                        state.animateScrollToItem(0)
+                    }
+                }.padding(horizontal = 4.dp, vertical = 2.dp))
             val waiting = ui.asks.size + ui.batchAsks.size
             val fresh = notices.list.count { it.event.createdAt > seen }
             IconButton({ nav.open(Route.Bell) }) {
@@ -221,7 +237,7 @@ private fun Home(phone: Phone, ui: Ui, social: Social, state: LazyListState, nav
         ) {
             Icon(Icons.Filled.Search, null, tint = Vault.Muted)
             Spacer(Modifier.width(12.dp))
-            Text("Search people, notes, #tags", color = Vault.Muted, style = MaterialTheme.typography.bodyLarge)
+            Text("Search people, posts, #tags", color = Vault.Muted, style = MaterialTheme.typography.bodyLarge)
         }
 
         PullToRefreshBox(feed.loading && feed.notes.isNotEmpty(), { social.loadFeed(force = true); social.loadNotices(force = true) }, Modifier.fillMaxSize()) {
@@ -358,7 +374,21 @@ private fun NeedCard(n: Need, phone: Phone, now: Long) = when (n) {
 // --- Notes -------------------------------------------------------------------------------
 
 @Composable
-private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav: Nav, onLike: () -> Unit, maxLines: Int = Int.MAX_VALUE, indent: Int = 0, lit: Boolean = false) {
+private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav: Nav, onLike: () -> Unit, maxLines: Int = Int.MAX_VALUE, indent: Int = 0, lit: Boolean = false,
+                     onReply: (() -> Unit)? = null) {
+    // A repost: the post it shares, under a line saying who shared it.
+    if (n.kind == 6) {
+        val inner = remember(n.id) { nav.social.reposted(n) } ?: return
+        val liked2 by nav.social.liked.collectAsState()
+        Column {
+            Row(Modifier.padding(start = 68.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Glyphs.repost, null, tint = Vault.Muted, modifier = Modifier.size(14.dp))
+                Text("  ${people[n.pubkey]?.shown ?: shortNpub(n.pubkey)} reposted", color = Vault.Muted, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            NoteCard(inner, people, inner.id in liked2, nav, onLike = { nav.social.like(inner) }, maxLines = maxLines)
+        }
+        return
+    }
     val author = people[n.pubkey]
     // Translated by your LibreTranslate, if it was in another language; the original a tap away.
     val translations by nav.social.translations.collectAsState()
@@ -408,10 +438,12 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
             }
             if (!full && body.media.size > 1) Text("+${body.media.size - 1} more", color = Vault.Muted, style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(top = 4.dp).clickable { if (body.media.drop(1).all { it is Body.Img }) nav.pictures(urls, 1) else nav.thread(n.id) })
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onLike, Modifier.offset(x = (-12).dp)) {
-                    Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, if (liked) "Liked" else "Like", tint = if (liked) Vault.Amber else Vault.Muted, modifier = Modifier.size(20.dp))
-                }
+            // Like and reply, as plain icons (an IconButton each costs a visible frame on a slow phone).
+            Row(Modifier.offset(x = (-9).dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (liked) Glyphs.heartOn else Glyphs.heart, if (liked) "Liked" else "Like", tint = if (liked) Vault.Amber else Vault.Muted,
+                    modifier = Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onLike).padding(10.dp))
+                Icon(Glyphs.reply, "Reply", tint = Vault.Muted,
+                    modifier = Modifier.size(40.dp).clip(CircleShape).clickable { onReply?.invoke() ?: nav.reply(n.id) }.padding(10.dp))
             }
         }
     }
@@ -421,6 +453,7 @@ private fun NoteCard(n: Event, people: Map<String, Person>, liked: Boolean, nav:
 @Composable
 private fun NoteMenu(n: Event, name: String, social: Social) = Box {
     var open by remember { mutableStateOf(false) }
+    var reporting by remember { mutableStateOf(false) }
     // A plain icon on every card (an IconButton each costs a visible frame on a slow phone); the menu only once it's open.
     Icon(Icons.Filled.MoreVert, "More", tint = Vault.Muted, modifier = Modifier.size(28.dp).clip(CircleShape).clickable { open = true }.padding(5.dp))
     if (open) DropdownMenu(true, { open = false }, containerColor = Vault.Surface) {
@@ -428,8 +461,31 @@ private fun NoteMenu(n: Event, name: String, social: Social) = Box {
         DropdownMenuItem({ Text("Mute $name", color = Vault.Text, maxLines = 1, overflow = TextOverflow.Ellipsis) }, {
             open = false; social.mute(n.pubkey); social.message.value = "You won't see $name any more."
         })
+        DropdownMenuItem({ Text("Report…", color = Vault.Danger) }, { open = false; reporting = true })
     }
+    if (reporting) ReportDialog(name, onClose = { reporting = false }) { reason -> reporting = false; social.report(n, reason) }
 }
+
+/** Why you're reporting it: one tap sends it, and the post goes away. */
+@Composable
+private fun ReportDialog(name: String, onClose: () -> Unit, onReport: (String) -> Unit) = AlertDialog(
+    onDismissRequest = onClose,
+    title = { Text("Report this post?") },
+    text = {
+        Column {
+            Text("It's hidden for you at once. What's wrong with it?", color = Vault.Muted, style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(8.dp))
+            for ((reason, label) in listOf("spam" to "Spam", "nudity" to "Nudity or sexual content", "profanity" to "Hateful or abusive",
+                "illegal" to "Illegal", "impersonation" to "Pretending to be someone they're not", "other" to "Something else")) {
+                Text(label, color = Vault.Text, style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onReport(reason) }.padding(vertical = 10.dp, horizontal = 4.dp))
+            }
+        }
+    },
+    confirmButton = {},
+    dismissButton = { TextButton(onClose) { Text("Cancel") } },
+    containerColor = Vault.Surface,
+)
 
 /** A note's text, cut up: pictures apart, mentions and #tags made tappable. */
 private class Body(val parts: List<Part>, val media: List<Media>, val mentions: List<String>) {
@@ -538,7 +594,8 @@ private fun TopBar(title: String, nav: Nav) = Row(Modifier.fillMaxWidth().paddin
 // --- A thread ------------------------------------------------------------------------------
 
 @Composable
-private fun ThreadScreen(id: String, social: Social, nav: Nav) = Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+// safeDrawingPadding includes the keyboard: the reply box sits right on top of it.
+private fun ThreadScreen(id: String, social: Social, nav: Nav, startReply: Boolean = false) = Column(Modifier.fillMaxSize().safeDrawingPadding()) {
     TopBar("Thread", nav)
     val people by People.known.collectAsState()
     val liked by social.liked.collectAsState()
@@ -551,17 +608,65 @@ private fun ThreadScreen(id: String, social: Social, nav: Nav) = Column(Modifier
         if (full.isNotEmpty() || thread == null) thread = full
         loading = false
     }
+    // Who you're answering: the post you opened, or any other you tap Reply on.
+    var target by remember(id) { mutableStateOf(id) }
+    val focus = remember { FocusRequester() }
+    var focusNow by remember(id) { mutableStateOf(startReply) }
     val shown = thread
-    when {
-        shown == null -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
-        shown.isEmpty() -> Text("Couldn't find this note.", color = Vault.Muted, modifier = Modifier.padding(20.dp))
-        else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-            items(shown, key = { it.first.id }) { (e, depth) ->
-                NoteCard(e, people, e.id in liked, nav, onLike = { social.like(e) }, indent = minOf(depth, 4), lit = e.id == id && shown.size > 1 && depth > 0)
-                if (depth == 0) HorizontalDivider(color = Vault.Edge)
+    Box(Modifier.weight(1f)) {
+        when {
+            shown == null -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
+            shown.isEmpty() -> Text("Couldn't find this post.", color = Vault.Muted, modifier = Modifier.padding(20.dp))
+            else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                items(shown, key = { it.first.id }) { (e, depth) ->
+                    NoteCard(e, people, e.id in liked, nav, onLike = { social.like(e) }, indent = minOf(depth, 4), lit = e.id == id && shown.size > 1 && depth > 0,
+                        onReply = { target = e.id; focusNow = true })
+                    if (depth == 0) HorizontalDivider(color = Vault.Edge)
+                }
+                if (loading) item(key = "loading") {
+                    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(20.dp), color = Vault.Teal, strokeWidth = 2.dp) }
+                }
             }
-            if (loading) item(key = "loading") {
-                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(20.dp), color = Vault.Teal, strokeWidth = 2.dp) }
+        }
+    }
+    val parent = shown?.firstOrNull { it.first.id == target }?.first ?: social.note(target)
+    if (parent != null && social.me != null) {
+        ReplyBox(parent, people, social, focus, onSent = { thread = social.threadNow(id) ?: thread }, onClear = if (target != id) ({ target = id }) else null)
+        LaunchedEffect(focusNow, target) { if (focusNow) { focus.requestFocus(); focusNow = false } }
+    }
+}
+
+/** Write a reply: to the post you opened, or the one you tapped Reply on. */
+@Composable
+private fun ReplyBox(parent: Event, people: Map<String, Person>, social: Social, focus: FocusRequester, onSent: () -> Unit, onClear: (() -> Unit)?) {
+    var text by remember(parent.id) { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val name = people[parent.pubkey]?.shown ?: shortNpub(parent.pubkey)
+    HorizontalDivider(color = Vault.Edge)
+    Column(Modifier.fillMaxWidth().background(Vault.Ground).padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Replying to $name", color = Vault.Muted, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).padding(start = 4.dp))
+            onClear?.let { Icon(Icons.Filled.Close, "Reply to the first post instead", tint = Vault.Muted, modifier = Modifier.padding(start = 4.dp).size(24.dp).clip(CircleShape).clickable(onClick = it).padding(4.dp)) }
+        }
+        Row(verticalAlignment = Alignment.Bottom) {
+            TextField(text, { text = it }, Modifier.weight(1f).focusRequester(focus).heightIn(max = 160.dp), enabled = !sending,
+                placeholder = { Text("Write a reply", color = Vault.Muted) },
+                shape = RoundedCornerShape(20.dp),
+                colors = TextFieldDefaults.colors(focusedContainerColor = Vault.Surface, unfocusedContainerColor = Vault.Surface, disabledContainerColor = Vault.Surface,
+                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, disabledIndicatorColor = Color.Transparent,
+                    focusedTextColor = Vault.Text, unfocusedTextColor = Vault.Text, disabledTextColor = Vault.Muted, cursorColor = Vault.Teal))
+            Spacer(Modifier.width(6.dp))
+            val ready = text.isNotBlank() && !sending
+            Box(Modifier.padding(bottom = 4.dp).size(48.dp).clip(CircleShape).background(if (ready) Vault.Teal else Vault.Surface).clickable(enabled = ready) {
+                sending = true
+                scope.launch {
+                    if (social.reply(parent, text) != null) { text = ""; onSent() }
+                    sending = false
+                }
+            }, contentAlignment = Alignment.Center) {
+                if (sending) CircularProgressIndicator(Modifier.size(20.dp), color = Vault.Text, strokeWidth = 2.dp)
+                else Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = if (ready) Vault.Ground else Vault.Muted, modifier = Modifier.size(22.dp))
             }
         }
     }
@@ -578,7 +683,23 @@ private fun ProfileScreen(pk: String, social: Social, nav: Nav) = Column(Modifie
     val p = people[pk]
     LaunchedEffect(pk) { People.want(listOf(pk)) }
     TopBar(p?.shown ?: "Profile", nav)
-    val notes by produceState<List<Event>?>(null, pk) { value = social.notesBy(pk) }
+    // Their posts, a page at a time: more as you reach the end.
+    var notes by remember(pk) { mutableStateOf<List<Event>?>(null) }
+    var more by remember(pk) { mutableStateOf(true) }
+    var paging by remember(pk) { mutableStateOf(false) }
+    LaunchedEffect(pk) { notes = social.notesBy(pk) }
+    val scope = rememberCoroutineScope()
+    val nextPage = {
+        val have = notes
+        if (have != null && have.isNotEmpty() && more && !paging) {
+            paging = true
+            scope.launch {
+                val next = social.notesBy(pk, until = have.minOf { it.createdAt }).filter { n -> have.none { it.id == n.id } }
+                if (next.isEmpty()) more = false else notes = have + next
+                paging = false
+            }
+        }
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item(key = "head") {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
@@ -593,8 +714,8 @@ private fun ProfileScreen(pk: String, social: Social, nav: Nav) = Column(Modifie
                 Spacer(Modifier.height(10.dp))
                 val context = LocalContext.current
                 Text(shortNpub(pk), fontFamily = PlexMono, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.clickable {
-                    context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("npub", cc.aaro.cosign.core.Nip19.npub(pk)))
-                    social.message.value = "Copied the npub"
+                    context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("Account ID", cc.aaro.cosign.core.Nip19.npub(pk)))
+                    social.message.value = "Copied their account ID"
                 })
                 p?.about?.let { Spacer(Modifier.height(10.dp)); Text(it, color = Vault.Text, style = MaterialTheme.typography.bodyMedium) }
                 Spacer(Modifier.height(14.dp))
@@ -612,10 +733,16 @@ private fun ProfileScreen(pk: String, social: Social, nav: Nav) = Column(Modifie
         }
         when {
             notes == null -> item(key = "loading") { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) } }
-            notes!!.isEmpty() -> item(key = "none") { Text("No notes found.", color = Vault.Muted, modifier = Modifier.padding(20.dp)) }
-            else -> items(notes!!, key = { it.id }) { n ->
-                NoteCard(n, people, n.id in liked, nav, onLike = { social.like(n) }, maxLines = 12)
-                HorizontalDivider(color = Vault.Edge)
+            notes!!.isEmpty() -> item(key = "none") { Text("No posts yet.", color = Vault.Muted, modifier = Modifier.padding(20.dp)) }
+            else -> {
+                items(notes!!, key = { it.id }) { n ->
+                    NoteCard(n, people, n.id in liked, nav, onLike = { social.like(n) }, maxLines = 12)
+                    HorizontalDivider(color = Vault.Edge)
+                }
+                item(key = "more") {
+                    LaunchedEffect(notes!!.size) { nextPage() }
+                    if (paging) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(20.dp), color = Vault.Teal, strokeWidth = 2.dp) }
+                }
             }
         }
     }
@@ -642,7 +769,7 @@ private fun SearchScreen(social: Social, nav: Nav) = Column(Modifier.fillMaxSize
         IconButton(nav.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Vault.Text) }
         TextField(
             q, { q = it }, Modifier.weight(1f).focusRequester(focus), singleLine = true,
-            placeholder = { Text("People, notes, #tags, npub…", color = Vault.Muted) },
+            placeholder = { Text("People, posts, #tags…", color = Vault.Muted) },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { go() }),
             trailingIcon = { if (q.isNotEmpty()) IconButton({ q = ""; social.clearSearch(); focus.requestFocus() }) { Icon(Icons.Filled.Close, "Clear", tint = Vault.Muted) } },
             shape = RoundedCornerShape(26.dp),
@@ -650,7 +777,7 @@ private fun SearchScreen(social: Social, nav: Nav) = Column(Modifier.fillMaxSize
                 unfocusedIndicatorColor = Color.Transparent, focusedTextColor = Vault.Text, unfocusedTextColor = Vault.Text, cursorColor = Vault.Teal),
         )
     }
-    val f = found ?: return@Column Text("Search names, words or #hashtags. Paste an npub or a note link to open it.",
+    val f = found ?: return@Column Text("Search names, words or #hashtags. Paste a link to someone or a post to open it.",
         color = Vault.Muted, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(20.dp))
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         if (f.loading) item(key = "loading") { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) } }
