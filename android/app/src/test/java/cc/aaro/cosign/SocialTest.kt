@@ -88,6 +88,31 @@ class SocialTest {
         assertEquals(emptyList<String>(), Curate.page(listOf(by('a', "four from a, still a")), already = page).map { it.content })
     }
 
+    @Test fun searchPutsTheRealPersonFirst() {
+        fun hit(pk: Char, name: String, order: Int, followers: Long? = null, nip05: Nip05.Check = Nip05.Check.NONE, fof: Int = 0, follow: Boolean = false) =
+            Hit(pk.toString().repeat(64), name, order, follow, fof, followers, nip05)
+        // "jack": many people named Jack come back first; the one with a checked address and 174k followers is the one meant.
+        val jack = listOf(hit('a', "Jack", 0, 12), hit('b', "jack⚡️", 1, 40), hit('c', "Jacket", 2, 900), hit('d', "Jack K", 3, 300, Nip05.Check.OK),
+            hit('e', "jack", 9, 174_538, Nip05.Check.OK), hit('f', "Jack", 4, 0, Nip05.Check.WRONG))
+        assertEquals(listOf('e', 'b', 'a'), SearchRank.sort(jack, "jack").take(3).map { it.pubkey[0] })
+        // "alex gleason": impersonators share the exact name; his own address can't be reached today (UNKNOWN),
+        // his bridged account checks out but few follow it: 19,803 followers still put him first.
+        val alex = listOf(hit('1', "Alex Gleason", 0, 0), hit('2', "Alex Gleason", 1, 2), hit('3', "Alex Gleason", 2, 120, Nip05.Check.OK),
+            hit('4', "Alex Gleason", 5, 19_803, Nip05.Check.UNKNOWN), hit('5', "Alex Gleason", 3, 0, Nip05.Check.WRONG))
+        assertEquals('4', SearchRank.sort(alex, "alex gleason").first().pubkey[0])
+        // Someone you follow comes before anyone, and people your follows follow before strangers.
+        assertEquals('x', SearchRank.sort(jack + hit('x', "Jackie", 20, 3, follow = true), "jack").first().pubkey[0])
+        assertEquals('y', SearchRank.sort(jack.filter { it.pubkey[0] != 'e' } + hit('y', "Jack", 21, 50, fof = 4), "jack").first().pubkey[0])
+        assertEquals(true, SearchRank.exact("Alex  Gleason 🦊", "alex gleason"))
+    }
+
+    @Test fun linksThatCarryAnIdentifierOpenIt() {
+        assertEquals(Ref.Profile(fiatjaf), Ref.parse("https://njump.me/npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6"))
+        assertEquals(Ref.Note(note), Ref.parse("https://primal.net/e/nevent1qqsfwwdfzmpmdt9jj533a5tx2n73ucmelcs5ah0vxcxy2995jhe9njgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduy3kz48"))
+        assertNull(Ref.parse("alex@gleasonator.com"))
+        assertEquals(true, Nip05.isAddress("alex@gleasonator.com")); assertEquals(true, Nip05.isAddress("_@fiatjaf.com")); assertEquals(false, Nip05.isAddress("alex gleason"))
+    }
+
     private fun ev(vararg tags: List<String>) = Event(fiatjaf, 0, 1, tags.toList(), "")
 
     @Test fun repliesFindTheirPlace() {

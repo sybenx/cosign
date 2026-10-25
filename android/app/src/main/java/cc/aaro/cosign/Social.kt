@@ -19,6 +19,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.joinAll
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -139,7 +141,9 @@ sealed class Ref {
         fun parse(input: String): Ref? {
             val s = input.trim().removePrefix("nostr:").removePrefix("@")
             if (isHex32(s.lowercase())) return Profile(s.lowercase())
-            val (hrp, data) = try { Bech32.decode(s, 2000) } catch (_: Exception) { return null }
+            // A web link that carries one (njump.me/npub1…, primal.net/e/nevent1…): the identifier inside it.
+            val id = if (s.contains('/') || s.contains('?')) ENTITY.find(s.lowercase())?.value ?: return null else s
+            val (hrp, data) = try { Bech32.decode(id, 2000) } catch (_: Exception) { return null }
             return when (hrp) {
                 "npub" -> if (data.size == 32) Profile(data.toHex()) else null
                 "note" -> if (data.size == 32) Note(data.toHex()) else null
@@ -148,6 +152,8 @@ sealed class Ref {
                 else -> null
             }
         }
+
+        private val ENTITY = Regex("(npub1|nprofile1|note1|nevent1)[02-9ac-hj-np-z]+")
 
         /** The 32 bytes under type 0 of a NIP-19 TLV. */
         private fun tlv(b: ByteArray): String? {
@@ -182,7 +188,7 @@ data class Notice(val event: Event, val type: Type, val about: String?) {
 
 data class Notices(val list: List<Notice> = emptyList(), val loading: Boolean = false, val at: Long = 0)
 
-data class Found(val query: String, val people: List<String> = emptyList(), val notes: List<Event> = emptyList(), val loading: Boolean = true)
+data class Found(val query: String, val people: List<String> = emptyList(), val notes: List<Event> = emptyList(), val loading: Boolean = true, val hits: Map<String, Hit> = emptyMap())
 
 /** One of your actions in Cosign that your servers want you to approve first. */
 data class Held(val what: String, val event: Event)
@@ -362,57 +368,123 @@ class Social private constructor(private val phone: Phone, context: Context) {
     val found = MutableStateFlow<Found?>(null)
     private var searching: Job? = null
 
+    /**
+     * Search: people and posts. Your follows whose names match come first, at once; then what the
+     * search relays find, each as it answers (none is dropped for being slow); then the order settles
+     * as names, NIP-05s and trust come in. A #tag searches posts only.
+     */
     fun search(q: String) {
         val text = q.trim()
         if (text.isEmpty()) return
+        if (found.value?.query == text && found.value?.loading == true) return
         searching?.cancel()
+        val gen = searchGen.incrementAndGet()
         found.value = Found(text)
+        val t0 = android.os.SystemClock.uptimeMillis()
+        fun mark(what: String) = if (searchGen.get() != gen) Unit else android.util.Log.i("CosignSearch", "\"$text\" $what at ${android.os.SystemClock.uptimeMillis() - t0} ms; top: " +
+            found.value?.people?.take(3)?.joinToString { pk -> (People.known.value[pk]?.shown ?: pk.take(8)) + " " + pk.take(8) })
         searching = scope.launch {
             val tag = text.removePrefix("#").takeIf { text.startsWith("#") && it.isNotBlank() && !it.contains(' ') }?.lowercase()
-            val search = Sources.SEARCH + Sources.extra.value
-            val people = async {
-                if (tag != null) emptyList() else {
-                    val byNip05 = nip05(text)
-                    val events = Fetch.query(search, mapOf("kinds" to listOf(0), "search" to text, "limit" to 20), 7000)
-                    People.add(events)
-                    (listOfNotNull(byNip05) + events.sortedByDescending { matchScore(it, text) }.map { it.pubkey }).distinct().take(20)
+            val hits = ConcurrentHashMap<String, Hit>()
+            val notes = java.util.Collections.synchronizedList(ArrayList<Event>())
+            val order = java.util.concurrent.atomic.AtomicInteger()
+            val mine = follows.value ?: emptySet()
+            var first: String? = null
+            fun show(loading: Boolean) {
+                if (searchGen.get() != gen) return
+                val people = SearchRank.sort(hits.values.filter { it.pubkey !in muted.value }, text).take(30)
+                people.firstOrNull()?.pubkey?.takeIf { it != first }?.let { pk -> first = pk; mark("first is now ${People.known.value[pk]?.shown ?: ""} ${pk.take(8)}") }
+                val posts = synchronized(notes) { notes.distinctBy { it.id }.sortedByDescending { it.createdAt }.take(60) }
+                found.value = Found(text, people.map { it.pubkey }, posts, loading, people.associateBy { it.pubkey })
+            }
+            // Until trust is known, the order the relays give, syb.lol's before relay.ditto.pub's before the slower ones'.
+            fun add(pk: String, name: String?, rank: Int = 9) { hits.putIfAbsent(pk, Hit(pk, name, rank * 1000 + order.getAndIncrement(), follow = pk in mine)) }
+
+            val relayJobs = ArrayList<kotlinx.coroutines.Job>()
+            // What arrives (a count, a checked address) only marks the list changed; it's redrawn at most five times a second.
+            val dirty = java.util.concurrent.atomic.AtomicBoolean(false)
+            val redraw = launch { while (true) { delay(200); if (dirty.getAndSet(false)) show(true) } }
+            // Trust is looked up one batch after another, so each relay sees one counting connection at a time.
+            val toEnrich = kotlinx.coroutines.channels.Channel<List<Person>>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+            val enricher = launch { for (batch in toEnrich) enrich(batch, text, hits) { dirty.set(true) } }
+            if (tag == null) {
+                // Your follows, from what this phone knows: no waiting.
+                People.known.value.values.filter { it.pubkey in mine && SearchRank.matches(it.name, text) }.forEach { add(it.pubkey, it.name) }
+                show(true); mark("follows: ${hits.size}")
+                // name@domain: whoever it names, at the top.
+                if (Nip05.isAddress(text)) relayJobs += launch {
+                    val pk = Nip05.lookup(text)?.takeIf { isHex32(it) } ?: return@launch
+                    People.want(listOf(pk))
+                    hits[pk] = Hit(pk, People.known.value[pk]?.name, -1, follow = pk in mine, nip05 = Nip05.Check.OK)
+                    show(true); mark("address found")
+                }
+                val relays = SearchRelays.FAST.map { it to 8000L } + SearchRelays.SLOW.map { it to 3500L } + Sources.extra.value.map { it to 3000L }
+                for ((i, rw) in relays.withIndex()) relayJobs += launch {
+                    val (url, wait) = rw
+                    val evs = Fetch.query(listOf(url), mapOf("kinds" to listOf(0), "search" to text, "limit" to 50), wait).filter { it.kind == 0 }
+                    People.add(evs)
+                    val fresh = evs.mapNotNull { e -> Person.of(e)?.takeIf { !hits.containsKey(it.pubkey) } }
+                    fresh.forEach { add(it.pubkey, it.name, i) }
+                    show(true); mark("${url.removePrefix("wss://")}: ${evs.size} people")
+                    // Trust for the ones whose names match: those are the ones whose order matters.
+                    val named = fresh.filter { SearchRank.matches(it.name, text) }
+                    if (named.isNotEmpty()) toEnrich.send(named.take(30))
                 }
             }
-            val notes = async {
-                val filter: Map<String, Any> = if (tag != null) mapOf("kinds" to listOf(1), "#t" to listOf(tag), "limit" to 40)
-                    else mapOf("kinds" to listOf(1), "search" to text, "limit" to 40)
-                val relays = if (tag != null) search + Sources.GENERAL else search
-                Fetch.query(relays, filter, 8000).filter { it.kind == 1 && safe(it) }.sortedByDescending { it.createdAt }.take(60)
+            // Posts: the fast relays together, the slow ones on their own.
+            val noteFilter: Map<String, Any> = if (tag != null) mapOf("kinds" to listOf(1), "#t" to listOf(tag), "limit" to 40) else mapOf("kinds" to listOf(1), "search" to text, "limit" to 40)
+            for ((relays, wait) in listOf((SearchRelays.FAST + if (tag != null) Sources.GENERAL else emptyList()) to 8000L, SearchRelays.SLOW to 3500L)) relayJobs += launch {
+                val got = Fetch.query(relays + Sources.extra.value, noteFilter, wait).filter { it.kind == 1 }
+                remember(got)
+                notes += got.filter { safe(it) }
+                People.want(got.map { it.pubkey })
+                show(true); mark("posts from ${relays.size} relays: ${got.size}")
             }
-            val p = people.await()
-            val n = notes.await()
-            remember(n)
-            People.want(p + n.map { it.pubkey })
-            found.value = Found(text, p, n, loading = false)
+            // The people your follows follow, once per run: the strongest sign of who's real to you.
+            if (tag == null) relayJobs += launch {
+                val f = friendsOfFriends()
+                if (f.isEmpty()) return@launch
+                hits.replaceAll { _, h -> h.copy(fof = f[h.pubkey] ?: 0) }
+                show(true); mark("friends of friends")
+            }
+            relayJobs.joinAll()
+            toEnrich.close(); enricher.join(); redraw.cancel()
+            People.want(hits.keys.toList())
+            show(false); mark("done")
         }
     }
 
-    fun clearSearch() { searching?.cancel(); found.value = null }
-
-    private fun matchScore(e: Event, q: String): Int {
-        val p = Person.of(e) ?: return 0
-        val name = p.name?.lowercase() ?: return 0
-        val ql = q.lowercase()
-        return when { name == ql -> 3; name.startsWith(ql) -> 2; ql in name -> 1; else -> 0 }
+    /** Follower counts and NIP-05 checks for people a search just found, filled into [hits] as they come. */
+    private suspend fun enrich(people: List<Person>, query: String, hits: ConcurrentHashMap<String, Hit>, changed: () -> Unit) = kotlinx.coroutines.withTimeoutOrNull(6500) { kotlinx.coroutines.coroutineScope {
+        // Each count and each check counts as soon as it's in: no waiting for the slowest.
+        for (url in SearchRelays.COUNTS) launch {
+            Fetch.counts(url, people.associate { it.pubkey to mapOf("kinds" to listOf(3), "#p" to listOf(it.pubkey)) }, 6000, inFlight = 15) { pk, c ->
+                hits.computeIfPresent(pk) { _, h -> if ((h.followers ?: -1) >= c) h else h.copy(followers = c) }; changed()
+            }
+        }
+        // Addresses checked for the exact names only (the order among those is what they decide), within a few seconds.
+        val gate = kotlinx.coroutines.sync.Semaphore(8)
+        people.filter { it.nip05 != null && SearchRank.exact(it.name, query) }.take(12).map { p ->
+            async { gate.withPermit { Nip05.check(p.pubkey, p.nip05) }.also { c -> hits.computeIfPresent(p.pubkey) { _, h -> h.copy(nip05 = c) }; changed() } }
+        }.awaitAll()
+    }
     }
 
-    /** name@domain (or just a domain): its NIP-05 key, if it has one. */
-    private fun nip05(q: String): String? {
-        val m = Regex("^(?:([a-zA-Z0-9._-]+)@)?([a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)+)$").matchEntire(q) ?: return null
-        val name = m.groupValues[1].ifEmpty { "_" }.lowercase()
-        val url = "https://${m.groupValues[2].lowercase()}/.well-known/nostr.json?name=$name"
-        return try {
-            val call = Fetch.http.newBuilder().callTimeout(5, java.util.concurrent.TimeUnit.SECONDS).followRedirects(false).build()
-                .newCall(okhttp3.Request.Builder().url(url).build())
-            call.execute().use { r -> if (!r.isSuccessful) null else ((Json.parse(r.body!!.string()) as? Map<*, *>)?.get("names") as? Map<*, *>)?.get(name) as? String }
-                ?.takeIf { isHex32(it) }
-        } catch (_: Exception) { null }
+    private val searchGen = java.util.concurrent.atomic.AtomicInteger()
+    @Volatile private var fofCache: Map<String, Int>? = null
+    /** For each person, how many of the people you follow follow them (from up to 300 follow lists). */
+    private suspend fun friendsOfFriends(): Map<String, Int> {
+        fofCache?.let { return it }
+        val mine = follows.value?.toList()?.take(300) ?: return emptyMap()
+        if (mine.isEmpty()) return emptyMap()
+        val lists = mine.chunked(100).map { part -> scope.async { Fetch.query(Sources.PROFILES.take(3), mapOf("kinds" to listOf(3), "authors" to part), 6000) } }.awaitAll().flatten()
+        val count = HashMap<String, Int>()
+        lists.filter { it.kind == 3 }.groupBy { it.pubkey }.values.map { l -> l.maxBy { it.createdAt } }
+            .forEach { l -> l.tags.filter { it.size > 1 && it[0] == "p" }.map { it[1] }.distinct().forEach { count[it] = (count[it] ?: 0) + 1 } }
+        return count.also { fofCache = it }
     }
+
+    fun clearSearch() { searching?.cancel(); searchGen.incrementAndGet(); found.value = null }
 
     // --- Threads and profiles --------------------------------------------------------
 

@@ -70,6 +70,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.CheckCircle
+import cc.aaro.cosign.Nip05
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -758,12 +760,24 @@ private fun SearchScreen(social: Social, nav: Nav) = Column(Modifier.fillMaxSize
     var q by remember { mutableStateOf(found?.query ?: "") }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { if (found == null) focus.requestFocus() }
+    val scope = rememberCoroutineScope()
+    // A pasted link to someone or a post opens it; name@domain opens whoever it names.
+    val open: (Ref) -> Unit = { r -> when (r) { is Ref.Profile -> nav.profile(r.pubkey); is Ref.Note -> nav.thread(r.id) } }
     val go = {
-        when (val r = Ref.parse(q)) {
-            is Ref.Profile -> nav.profile(r.pubkey)
-            is Ref.Note -> nav.thread(r.id)
-            null -> social.search(q)
+        val t = q.trim()
+        Ref.parse(t)?.let(open) ?: run {
+            social.search(t)
+            if (Nip05.isAddress(t)) scope.launch { Nip05.lookup(t)?.takeIf { it.length == 64 }?.let { nav.profile(it) } }
         }
+    }
+    // As you type: a pasted link at once, words once you pause.
+    LaunchedEffect(q) {
+        val t = q.trim()
+        if (t.isEmpty()) { social.clearSearch(); return@LaunchedEffect }
+        Ref.parse(t)?.let { open(it); return@LaunchedEffect }
+        if (t.length < 2) return@LaunchedEffect
+        delay(350)
+        social.search(t)
     }
     Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(nav.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Vault.Text) }
@@ -780,23 +794,37 @@ private fun SearchScreen(social: Social, nav: Nav) = Column(Modifier.fillMaxSize
     val f = found ?: return@Column Text("Search names, words or #hashtags. Paste a link to someone or a post to open it.",
         color = Vault.Muted, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(20.dp))
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        if (f.loading) item(key = "loading") { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) } }
+        // Still looking: a spinner while there's nothing yet, a thin bar once results are showing.
+        if (f.loading) item(key = "loading") {
+            if (f.people.isEmpty() && f.notes.isEmpty()) Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Vault.Teal) }
+            else androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp), color = Vault.Teal, trackColor = Color.Transparent)
+        }
         if (f.people.isNotEmpty()) {
             item(key = "ph") { Heading("People") }
-            items(f.people.take(8), key = { "p" + it }) { pk ->
+            items(f.people.take(10), key = { "p" + it }) { pk ->
                 val p = people[pk]
+                val h = f.hits[pk]
                 Row(Modifier.fillMaxWidth().clickable { nav.profile(pk) }.padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Avatar(p, pk, 40)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(p?.shown ?: shortNpub(pk), color = Vault.Text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(p?.nip05?.removePrefix("_@") ?: p?.about ?: shortNpub(pk), color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(p?.shown ?: h?.name ?: shortNpub(pk), color = Vault.Text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false))
+                            if (h?.nip05 == Nip05.Check.OK) Icon(Icons.Filled.CheckCircle, "Checked", tint = Vault.Teal, modifier = Modifier.padding(start = 5.dp).size(15.dp))
+                            if (h?.follow == true) Text("Following", color = Vault.Teal, style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(start = 6.dp).border(1.dp, Vault.TealEdge, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
+                        }
+                        // Their address (unless it named someone else), and how many follow them.
+                        val line = listOfNotNull(p?.nip05?.removePrefix("_@")?.takeIf { h?.nip05 != Nip05.Check.WRONG && !it.startsWith("npub1") }, h?.followers?.takeIf { it > 0 }?.let { followers(it) })
+                            .joinToString(" · ").ifEmpty { p?.about?.lineSequence()?.firstOrNull() ?: "" }
+                        if (line.isNotEmpty()) Text(line, color = Vault.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
         if (f.notes.isNotEmpty()) {
-            item(key = "nh") { Heading("Notes") }
+            item(key = "nh") { Heading("Posts") }
             items(f.notes, key = { it.id }) { n ->
                 NoteCard(n, people, n.id in liked, nav, onLike = { social.like(n) }, maxLines = 12)
                 HorizontalDivider(color = Vault.Edge)
@@ -804,6 +832,14 @@ private fun SearchScreen(social: Social, nav: Nav) = Column(Modifier.fillMaxSize
         }
         if (!f.loading && f.people.isEmpty() && f.notes.isEmpty()) item(key = "none") { Text("Nothing found for “${f.query}”.", color = Vault.Muted, modifier = Modifier.padding(20.dp)) }
     }
+}
+
+private fun followers(n: Long) = when {
+    n >= 1_000_000 -> "%.1fM followers".format(n / 1e6).replace(".0M", "M")
+    n >= 10_000 -> "${n / 1000}K followers"
+    n >= 1_000 -> "%.1fK followers".format(n / 1e3).replace(".0K", "K")
+    n == 1L -> "1 follower"
+    else -> "$n followers"
 }
 
 @Composable private fun Heading(text: String) = Text(text, style = MaterialTheme.typography.titleSmall, color = Vault.Muted, modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp))

@@ -68,6 +68,37 @@ object Fetch {
         return synchronized(got) { got.values.toList() }
     }
 
+    /**
+     * NIP-45: how many events match each filter, on one relay over one connection, at most [inFlight]
+     * asked at a time (relays limit subscriptions per connection). Keys the relay won't count are missing.
+     */
+    suspend fun counts(url: String, filters: Map<String, Map<String, Any>>, timeoutMs: Long = 5000, inFlight: Int = 10, onCount: (String, Long) -> Unit = { _, _ -> }): Map<String, Long> = runInterruptible(Dispatchers.IO) {
+        if (filters.isEmpty()) return@runInterruptible emptyMap()
+        val out = ConcurrentHashMap<String, Long>()
+        // Short subscription ids ("n0", "n1"…): relays refuse long ones.
+        val keys = filters.keys.toList()
+        val queue = java.util.concurrent.ConcurrentLinkedQueue(keys.indices.toList())
+        val done = CountDownLatch(filters.size)
+        lateinit var socket: WebSocket
+        fun next(ws: WebSocket) { queue.poll()?.let { i -> ws.send(Json.stringify(listOf("COUNT", "n$i", filters[keys[i]]!!))) } }
+        socket = http.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { repeat(inFlight) { next(webSocket) } }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val msg = Json.parse(text) as? List<*> ?: return
+                val k = (msg.getOrNull(1) as? String)?.takeIf { it.startsWith("n") }?.drop(1)?.toIntOrNull()?.let { keys.getOrNull(it) } ?: return
+                when (msg.getOrNull(0)) {
+                    "COUNT" -> { ((msg.getOrNull(2) as? Map<*, *>)?.get("count") as? Long)?.let { out[k] = it; onCount(k, it) }; done.countDown(); next(webSocket) }
+                    "CLOSED" -> { done.countDown(); next(webSocket) }
+                }
+            }
+            // Closed or failed: nothing more is coming.
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { while (done.count > 0) done.countDown() }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { while (done.count > 0) done.countDown() }
+        })
+        try { done.await(timeoutMs, TimeUnit.MILLISECONDS) } finally { socket.cancel() }
+        out.toMap()
+    }
+
     /** Send [event] to [relays]; how many took it. */
     suspend fun publish(relays: Collection<String>, event: Event, timeoutMs: Long = 6000): Int = runInterruptible(Dispatchers.IO) {
         val urls = relays.distinct()
