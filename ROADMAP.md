@@ -4,6 +4,25 @@ Cosign is in a feature freeze from 2026-10-24 (0.11.2): only fixes for what peop
 real use, until what's here has been lived with. The spec (docs/COSIGN.md) marks the
 items below "Planned, not yet specified".
 
+## Next, in this order
+
+1. **Silent periodic refresh** (COSIGN.md §7.7): about every 30 days while a device is
+   online, the shares move to a new epoch with the servers that answer; a server silent
+   for 7+ days (seen by two others) is swapped for a fresh pick. Two-phase, with commit
+   spread between servers; nothing visible. Needs server removal (below).
+2. **The member library split**: the signing member as a library, the prerequisite for
+   an iOS Marble app (the first iOS step is a small TestFlight app around the Safari
+   extension).
+3. **Per-site activity and grant expiry**: tap a site for what it did, with Undo per item
+   (from this phone's history for now); expired sign-ins stay listed, greyed.
+4. **A hardware-bound lock**: a Keystore (StrongBox) key that servers verify on guarded
+   requests; WebAuthn in the extension. A plan goes to the user first.
+5. **The escape hatch** (COSIGN.md §8.4): after 7 days with no server answering, device +
+   paper or two devices rebuild the key locally, after the lock and a warning.
+
+Smaller, any 0.12.x: **Report** in Discover's ⋯ menu (hide at once, report to the feed's
+curation).
+
 ## Paused
 
 - **The paper backup as 24 words.** BIP-39 English of the backup secret, labelled as a
@@ -16,8 +35,8 @@ items below "Planned, not yet specified".
   new one by repair and refresh the old one out, staggered across accounts; never swap a
   server the user runs themselves; cap accounts per operator. Today a person adds a
   server themselves (Home → Add a server).
-- **Removing a server from a key,** with its share really deleted.
-- **A member library** for other apps to hold a share (the Android library split).
+- **Removing a server from a key** (outside a periodic refresh). The account's own
+  "Remove my servers' pieces" is built.
 - **A private Worker,** from the same code as the public one.
 - **Google Play,** and **publishing on Zapstore** (zapstore.yaml and zapstore.sh are
   ready; publishing is a separate step).
@@ -27,9 +46,9 @@ items below "Planned, not yet specified".
 - **Listing a server as yours from cosign.aaro.cc/servers** (kind 10243, with NIP-07),
   so running one beside a relay takes no extra tool.
 
-## Required before Zapstore: Cosign as a home screen
+## Built in 0.12: Marble as a home screen
 
-Agreed with the user, not built. Cosign is one app, and its reason to be on an ordinary
+Agreed with the user, and built (0.12.0 on). Cosign is one app, and its reason to be on an ordinary
 phone is a home screen like a search app's. One screen, no tabs:
 
 - **Top:** a big search box for people, notes and hashtags (NIP-50 search relays). Top
