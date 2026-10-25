@@ -23,6 +23,55 @@ object Safety {
     fun flaggedText(text: String) = NSFW_TEXT.containsMatchIn(text)
 }
 
+/**
+ * What makes Discover worth reading for someone new (from the review of discover.syb.lol): posts
+ * that stand on their own, have something in them, aren't all from one person, and aren't the
+ * heaviest things people share. Those posts are fine where they are; they just aren't a front page.
+ */
+object Curate {
+    /** Grief, self-harm, death and serious illness. */
+    private val HEAVY = Regex(
+        "(?i)\\b(suicid(e|al)|kill(ing)? (myself|herself|himself)|want(ed)? to die|self[- ]?harm|hang(ed)? (himself|herself|myself)|overdos(e|ed)|" +
+            "funeral|passed away|rest in peace|died|dead body|lost my (son|daughter|child|baby|mom|mum|mother|dad|father|wife|husband|brother|sister)|" +
+            "buried my|miscarriage|terminal(ly)? ill|cancer|chemo(therapy)?|grief|grieving|massacre|murder(ed)?|beheaded)\\b")
+    private val NOISE = Regex("https?://\\S+|nostr:\\S+|#[\\p{L}\\p{N}_]+|@\\S+|:[a-z0-9_]+:")
+    private val GM = Regex("(?i)^\\W*(gm|good morning|gn|good night|pv|gfy)\\b.{0,30}$")
+    private val TEST = Regex("(?i)^\\W*test( post)?\\W*$")
+    private val MEDIA = Regex("(?i)https?://\\S+\\.(jpe?g|png|gif|webp|avif|mp4|webm|mov|m4v|m3u8)(\\?\\S*)?")
+
+    fun heavy(text: String) = HEAVY.containsMatchIn(text)
+
+    /** The text a person would read, without links, tags and mentions. */
+    fun substance(text: String) = NOISE.replace(text, " ").filter { it.isLetterOrDigit() || it.isWhitespace() }.replace(Regex("\\s+"), " ").trim()
+    private fun media(e: Event) = MEDIA.containsMatchIn(e.content) || e.tags.any { it.size > 1 && it[0] == "imeta" }
+
+    /** "GM ☀️", a few words greeting the day. */
+    fun greeting(e: Event) = GM.matches(substance(e.content).ifEmpty { e.content.trim() })
+
+    /** One post on its own: a root (not a reply), something in it, not a test, not heavy. */
+    fun keep(e: Event): Boolean {
+        if (parentOf(e) != null) return false
+        val words = substance(e.content)
+        if (TEST.matches(words) || TEST.matches(e.content.trim())) return false
+        if (words.length < 15 && !media(e)) return false
+        return !heavy(e.content)
+    }
+
+    /** A page of them: at most [perAuthor] posts from anyone, and one greeting. Order kept. */
+    fun page(notes: List<Event>, perAuthor: Int = 2, already: List<Event> = emptyList()): List<Event> {
+        val count = HashMap<String, Int>()
+        already.forEach { count[it.pubkey] = (count[it.pubkey] ?: 0) + 1 }
+        var greetings = already.count { greeting(it) }
+        return notes.filter { e ->
+            val n = count[e.pubkey] ?: 0
+            if (n >= perAuthor) return@filter false
+            if (greeting(e)) { if (greetings >= 1) return@filter false; greetings++ }
+            count[e.pubkey] = n + 1
+            true
+        }
+    }
+}
+
 object Lang {
     /** The languages this phone is set to, as two-letter codes (with Java's old names for Hebrew and Indonesian). */
     fun phone(): Set<String> {

@@ -64,6 +64,30 @@ class SocialTest {
         assertEquals(false, Safety.flagged(note("a calm note", listOf("t", "nature"))))
     }
 
+    private fun by(pk: Char, text: String, vararg tags: List<String>) = Event(pk.toString().repeat(64), 0, 1, tags.toList(), text)
+
+    @Test fun discoverKeepsPostsThatStandOnTheirOwn() {
+        assertEquals(true, Curate.keep(note("Baked my first sourdough loaf today and it actually rose")))
+        assertEquals(false, Curate.keep(note("Hard agree, this is the way to do it", listOf("e", "a".repeat(64), "", "root"))))   // a reply
+        assertEquals(true, Curate.keep(note("Quoting a friend here, worth a read", listOf("e", "a".repeat(64), "", "mention"))))  // a quote is not a reply
+        assertEquals(false, Curate.keep(note("Soap dispenser?")))                     // nothing in it
+        assertEquals(false, Curate.keep(note("https://example.com/a #nostr @someone")))   // only links and tags
+        assertEquals(true, Curate.keep(note("Swim time https://example.com/pool.jpg")))     // short, but a picture
+        assertEquals(false, Curate.keep(note("test post")))
+        assertEquals(false, Curate.keep(note("Day 1 and I can't sleep. I lost my son yesterday. I just want to die")))
+        assertEquals(false, Curate.keep(note("Buried my mum today. Thank you all for the kind words")))
+        assertEquals(true, Curate.keep(note("The cancellation fee for this flight is absurd, honestly")))   // "cancer" is a word, not a substring
+    }
+
+    @Test fun aPageHasTwoPostsAPersonAndOneGreeting() {
+        val posts = listOf(by('a', "one from a, with plenty of words"), by('a', "two from a, with plenty of words"), by('a', "three from a, too many"),
+            by('b', "GM ☀️ https://x.com/sun.jpg"), by('c', "Good morning everyone https://x.com/c.jpg"), by('d', "a post from d with words"))
+        val page = Curate.page(posts)
+        assertEquals(listOf("one from a, with plenty of words", "two from a, with plenty of words", "GM ☀️ https://x.com/sun.jpg", "a post from d with words"), page.map { it.content })
+        // The next page counts what's already shown.
+        assertEquals(emptyList<String>(), Curate.page(listOf(by('a', "four from a, still a")), already = page).map { it.content })
+    }
+
     private fun ev(vararg tags: List<String>) = Event(fiatjaf, 0, 1, tags.toList(), "")
 
     @Test fun repliesFindTheirPlace() {
