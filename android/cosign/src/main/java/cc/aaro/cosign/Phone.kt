@@ -63,7 +63,9 @@ data class Share(val idx: Int, val secret: String) : java.io.Serializable
 /** [mirrored]: the key brought in had an odd y, so FROST holds its twin (the same npub); null if not known here. */
 data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null,
     /** When this epoch began here, in seconds; 0 until this phone has seen one begin (COSIGN.md §7.7). */
-    val epochAt: Long = 0) : java.io.Serializable {
+    val epochAt: Long = 0,
+    /** Servers you added yourself, by a code from their own page: never swapped out behind your back. */
+    val ownServers: List<String> = emptyList()) : java.io.Serializable {
     /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
     val share get() = shares.first().secret
     val idxs get() = shares.map { it.idx }
@@ -251,6 +253,13 @@ class Signer(private val context: Context, val slot: String = "0") {
             nudges.edit().putBoolean("told", true).apply()
             listener?.onNotice("Make your paper backup", "If you lose this phone, you can't get your account back without it. Open $appName to make one.")
         }
+        // When this epoch began: not known for a key made before this phone kept it, so the
+        // clock starts the first time this runs and the first quiet refresh is a month after.
+        if (m.epochAt == 0L) {
+            val started = m.copy(epochAt = Clock.now())
+            secrets.saveMembership(Json.stringify(membershipToMap(started)))
+            ui.update { it.copy(member = started) }
+        }
         if (relays == null || sk != m.sk) connect(m.group.relays, m.sk)
         relays?.watch(mapOf("kinds" to Policy.ARCHIVED.toList(), "authors" to listOf(m.group.groupX)))
         if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status() }, 0, 10, TimeUnit.SECONDS)
@@ -259,6 +268,9 @@ class Signer(private val context: Context, val slot: String = "0") {
         if (clockCheck?.isCancelled != false) clockCheck = timer.scheduleWithFixedDelay({
             Clock.check()?.let { off -> if (kotlin.math.abs(off) > 60) note("This phone's clock is ${kotlin.math.abs(off)} s ${if (off < 0) "ahead" else "behind"}: using the network's time") }
         }, 0, 30, TimeUnit.MINUTES)
+        // Looking after your servers (COSIGN.md §7.7): one that has gone swapped out, or the
+        // next epoch when this one is old enough. Nothing is shown and nothing is asked.
+        if (quietCheck?.isCancelled != false) quietCheck = timer.scheduleWithFixedDelay({ tend() }, 2, 6 * 60, TimeUnit.MINUTES)
     }
 
     fun stop() { pinger?.cancel(false); pinger = null; relays?.stop(); relays = null; sk = null }
@@ -509,7 +521,29 @@ class Signer(private val context: Context, val slot: String = "0") {
     /** How old an epoch has to be before this phone asks for the next one. */
     private val quietAfter = (System.getenv("COSIGN_QUIET_AFTER")?.toLongOrNull() ?: (30L * 86400))
 
-    private fun checkMessage(groupX: String, epoch: Int) = sha256("cosign-refresh:$groupX:$epoch".toByteArray()).toHex()
+    private fun checkMessage(groupX: String, epoch: Int) = Quietly.checkMessage(groupX, epoch)
+
+    /**
+     * The two things a quiet refresh has to get exactly right before anything is committed: the
+     * one message the pending shares ever sign, and the group they sign it as. Here, and not
+     * inside the run of it, so both can be checked against a real key (QuietRefreshTest).
+     */
+    internal object Quietly {
+        /** The only thing a pending epoch's shares ever sign, before it is committed (COSIGN.md §7.7). */
+        fun checkMessage(groupX: String, epoch: Int) = sha256("cosign-refresh:$groupX:$epoch".toByteArray()).toHex()
+
+        /**
+         * The group as it will be once that epoch is committed: every share point at its new
+         * place, without the members this refresh leaves out. A point missing from [points]
+         * keeps the one it has, so a member that isn't part of this refresh is unchanged.
+         */
+        fun pendingGroup(groupX: String, threshold: Int, members: List<Member>, points: List<Pair<Int, String>>, drop: List<Int>): String {
+            val at = points.toMap()
+            val pts = members.filter { it.idx !in drop }.flatMap { it.points }.map { Point(it.idx, at[it.idx] ?: it.sharePub) }
+            return Json.stringify(mapOf("groupX" to groupX, "threshold" to threshold,
+                "members" to pts.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+        }
+    }
 
     /** Time for the next epoch: this one is old enough and nothing else is going on. */
     private fun quietDue(m: Membership) = quiet == null && refresh == null && m.epochAt > 0 && Clock.now() - m.epochAt >= quietAfter
@@ -542,12 +576,8 @@ class Signer(private val context: Context, val slot: String = "0") {
     }
 
     /** The group as it will be, for the check round: the new points, without anyone left out. */
-    private fun pendingGroupJson(m: Membership, points: List<Pair<Int, String>>, drop: List<Int>): String {
-        val at = points.toMap()
-        val pts = m.group.members.filter { it.idx !in drop }.flatMap { it.points }.map { Point(it.idx, at[it.idx] ?: it.sharePub) }
-        return Json.stringify(mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold,
-            "members" to pts.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
-    }
+    private fun pendingGroupJson(m: Membership, points: List<Pair<Int, String>>, drop: List<Int>): String =
+        Quietly.pendingGroup(m.group.groupX, m.group.threshold, m.group.members, points, drop)
 
     /**
      * The check: this phone signs `cosign-refresh:<key>:<epoch>` with each server on the new
@@ -579,6 +609,137 @@ class Signer(private val context: Context, val slot: String = "0") {
         for (s in live) send(s.pk!!, mapOf("type" to "refresh_commit", "epoch" to q.epoch, "id" to q.id))
         apply(q.result, q.drop)
         quiet = null
+    }
+
+    // --- Swapping out a server that has gone (COSIGN.md §7.7) -----------------------------
+    //
+    // A server that stopped answering is left out of the next epoch and a fresh one takes its
+    // place, with nothing shown. That happens only where it is plainly safe: your servers
+    // themselves must agree it is gone (two or more saying so and none saying otherwise), the
+    // account must have three or more of them, and the one going must not be a server you run.
+    // Otherwise you are told, once and calmly, that it has been quiet — a server of your own,
+    // unplugged for a week, is not something to decide for you.
+
+    @Volatile private var swapping = false
+
+    /**
+     * How long each server has been silent, as every other server saw it: each answers only for
+     * what it heard itself, so this is their word and never this phone's (COSIGN.md §7.7). Gone
+     * means two or more say so, none says otherwise, and nobody that could judge is holding out
+     * — one of those would refuse the plan anyway.
+     */
+    private fun whoIsGone(): List<Int> {
+        val saysGone = HashMap<Int, Int>(); val saysThere = HashSet<Int>()
+        var answered = 0
+        for (srv in servers()) {
+            val res = askServer(srv, mapOf("type" to "silence", "id" to env.random(8).toHex())) ?: continue
+            val dead = (res["dead"] as? Long) ?: continue
+            answered++
+            for (row in (res["of"] as? List<*>).orEmpty()) {
+                val l = row as? List<*> ?: continue
+                val idx = (l[0] as? Long)?.toInt() ?: continue
+                val age = (l[1] as? Long) ?: continue
+                if (idx == srv.idx) continue // nobody speaks about themselves
+                if (age >= dead) saysGone[idx] = (saysGone[idx] ?: 0) + 1 else saysThere += idx
+            }
+        }
+        return saysGone.filter { (idx, n) -> n >= 2 && idx !in saysThere && n >= answered - 1 }.keys.sorted()
+    }
+
+    /** A fresh server for a gone one's place: announced or seeded, by an operator this account isn't using (§9.5). */
+    private fun pickReplacement(): cc.aaro.cosign.net.Servers.Server? {
+        val have = servers().mapNotNull { it.pk }.toSet()
+        val known = try { cc.aaro.cosign.net.Servers.find() } catch (_: Exception) { return null }
+        val used = known.filter { it.pk in have }.map { it.operator }.toSet()
+        val free = known.filter { it.pk !in have }
+        return free.firstOrNull { it.operator !in used } ?: free.firstOrNull()
+    }
+
+    /** Said once, plainly, about a server that has gone quiet but isn't this phone's to take out. */
+    private fun tellQuiet(s: Member) {
+        val key = "quiet." + (s.pk ?: s.idx.toString())
+        if (System.currentTimeMillis() - nudges.getLong(key, 0) < 30L * 86400_000) return
+        nudges.edit().putLong(key, System.currentTimeMillis()).apply()
+        note("${s.name} hasn't answered for a week. Your account still signs with your other servers.", "denied")
+        listener?.onNotice("${s.name} has been quiet", "It hasn't answered for a week. Your account still signs without it, and you can add another server in $appName whenever you like.")
+    }
+
+    /**
+     * What may be done about a server the others say has gone. Quietly swapping one out is for
+     * public servers on an account with servers to spare: a server you run yourself is never
+     * taken out from under you (it is far more likely unplugged than gone), an account with two
+     * is never thinned, and the key never goes below two servers. Everything else is told to
+     * you instead. Public, with its own rules on each server, so it can be tested.
+     */
+    internal object Swap {
+        /** [Swap]: take this one out quietly, or tell the person about it. */
+        sealed class Choice {
+            data class TakeOut(val idx: Int) : Choice()
+            data class Tell(val idx: Int) : Choice()
+            object Nothing : Choice()
+        }
+
+        /**
+         * [gone]: the indexes the servers agree about. [servers]: the key's *servers* and nothing
+         * else — its devices and its paper don't count towards having any to spare. [own]: the
+         * public keys of the servers this person runs themselves.
+         */
+        fun choose(gone: List<Int>, servers: List<Member>, own: List<String>): List<Choice> {
+            if (gone.isEmpty()) return listOf(Choice.Nothing)
+            val left = servers.count { it.idx !in gone }
+            return gone.sorted().map { idx ->
+                val s = servers.firstOrNull { it.idx == idx }
+                when {
+                    s == null -> Choice.Nothing
+                    s.pk != null && s.pk in own -> Choice.Tell(idx)   // yours: unplugged, not gone
+                    servers.size < 3 -> Choice.Tell(idx)              // two servers: nothing to spare
+                    left < 2 -> Choice.Tell(idx)                      // never below two
+                    else -> Choice.TakeOut(idx)
+                }
+            }
+        }
+    }
+
+    /** Every so often: a server that has gone, else the next epoch if this one is old enough. */
+    private fun tend() {
+        val m = ui.value.member ?: return
+        if (quiet != null || refresh != null || swapping) return
+        swapping = true
+        Thread {
+            try { tendNow(m) } catch (e: Exception) { note("Couldn't look after your servers: ${e.message ?: "something went wrong"}") } finally { swapping = false }
+        }.start()
+    }
+
+    private fun tendNow(m: Membership) {
+        awake()
+        val gone = whoIsGone()
+        if (gone.isEmpty()) { if (quietDue(m)) startQuiet(); return }
+        val all = servers()
+        for (choice in Swap.choose(gone, all, m.ownServers)) {
+            val idx = when (choice) {
+                is Swap.Choice.TakeOut -> choice.idx
+                is Swap.Choice.Tell -> { m.group.members.firstOrNull { it.idx == choice.idx }?.let { tellQuiet(it) }; continue }
+                Swap.Choice.Nothing -> continue
+            }
+            val s = m.group.members.firstOrNull { it.idx == idx } ?: continue
+            val fresh = pickReplacement()
+            if (fresh == null) { tellQuiet(s); continue }
+            note("${s.name} hasn't answered in a week; putting ${fresh.name} in its place")
+            addServer(fresh)
+            // Its share is made against this epoch's points, so nothing may refresh until it is
+            // in the key; and it has no view of the silence yet, so the others are asked again
+            // until they all agree. If either takes too long, this is left for another day.
+            val until = System.currentTimeMillis() + 120_000
+            while (System.currentTimeMillis() < until && servers().none { it.pk == fresh.pk }) Thread.sleep(1000)
+            if (servers().none { it.pk == fresh.pk }) { note("${fresh.name} didn't join; leaving your servers as they are"); return }
+            val agreed = System.currentTimeMillis() + 120_000
+            while (System.currentTimeMillis() < agreed) {
+                Thread.sleep(8000)
+                if (whoIsGone().contains(idx)) { startQuiet(listOf(idx)); return }
+            }
+            note("Your servers don't agree yet about ${s.name}; leaving it for now")
+            return
+        }
     }
 
     // Growing: restored from a 2-share paper (two servers or more), this phone can't sign
@@ -878,7 +1039,12 @@ class Signer(private val context: Context, val slot: String = "0") {
             if (enrolled?.get("type") != "enrolled") return@execute note("Couldn't add ${s.name}: ${enrolled?.get("reason") ?: "it didn't answer"}", "denied")
             val via = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return@execute
             send(via.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to key["pk"], "name" to s.name, "relays" to s.relays, "lock" to true, "server" to true, "k" to k))
-            val updated = (ui.value.member ?: return@execute).let { it.copy(group = it.group.copy(relays = relaysNow)) }
+            val updated = (ui.value.member ?: return@execute).let {
+                // A code from a server's own page means you are holding that server: it is
+                // yours, and nothing here ever swaps it out without asking you (§7.7).
+                val own = if (code != null && key["pk"] is String) (it.ownServers + (key["pk"] as String)).distinct() else it.ownServers
+                it.copy(group = it.group.copy(relays = relaysNow), ownServers = own)
+            }
             secrets.saveMembership(Json.stringify(membershipToMap(updated)))
             ui.update { it.copy(member = updated) }
         }
@@ -1818,7 +1984,7 @@ class Signer(private val context: Context, val slot: String = "0") {
                 note("${from.name} stopped serving this account. Add another server, so you always have one to sign with.", "denied")
                 ui.update { it.copy(error = "${from.name} stopped serving this account. Open Servers and add another one.") }
             }
-            "cosign_res", "ecdh_res" -> (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }
+            "cosign_res", "ecdh_res", "sign_check_res", "silence_res" -> (msg["id"] as? String)?.let { waiting.remove(it)?.complete(msg) }
             "logged" -> (msg["entry"] as? Map<*, *>)?.let { signedLog.appendText(Json.stringify(it) + "\n") }
             "deleting" -> {
                 val d = Deleting(msg["batch"] as? String ?: return, msg["by"] as? String ?: "a site", (msg["count"] as? Long)?.toInt() ?: 1, msg["until"] as? Long ?: 0)
@@ -2036,12 +2202,13 @@ class Signer(private val context: Context, val slot: String = "0") {
         val shares = (m["shares"] as? List<*>)?.map { val s = it as Map<*, *>; Share((s["idx"] as Long).toInt(), s["secret"] as String) }
             ?: listOf(Share(idx, m["share"] as? String ?: return null))
         return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null,
-            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean, (m["epochAt"] as? Long) ?: 0L)
+            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean, (m["epochAt"] as? Long) ?: 0L,
+            (m["ownServers"] as? List<*>)?.filterIsInstance<String>() ?: emptyList())
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
         "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer, "epoch" to m.epoch, "mirrored" to m.mirrored,
-        "epochAt" to m.epochAt,
+        "epochAt" to m.epochAt, "ownServers" to m.ownServers,
         "group" to mapOf(
             "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
             "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
