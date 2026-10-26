@@ -87,6 +87,15 @@ plumbing, and all of it is in the repository rather than in the spec:
   and a relay is not obliged to keep anything. The dealers must therefore keep their
   deltas and re-send until the holder acknowledges — the acknowledgement already exists
   (`refreshed`).
+- **Nothing extra for devices that are away.** A refresh does not need everyone awake, and
+  it never did: the two dealers must be online, and every other holder gets its own deltas
+  sealed to it and applies them whenever it next connects. Today those wait in the servers'
+  mail (50 items, kept 30 days, handed over when a member next says anything) and the
+  dealers also re-send their parts for about twenty seconds. The members that are awake move
+  to the new epoch at once; one that was away is simply on the old epoch until it catches
+  up, and while it is, it cannot co-sign with the ones that moved — the account goes on
+  signing with whoever did. With no server there is no mailbox, which is the gap above:
+  the dealers have to keep their deltas and re-send until each holder acknowledges.
 - **Waking the phone.** Push today is a server POSTing "wake up" to the user's push
   endpoint (§10). Nothing about that needs a server: it is an HTTPS POST that any device
   can make, as long as it holds the endpoint. A device that is awake can wake the other
@@ -123,6 +132,60 @@ plainly at setup: *no server means a lost device means the paper.*
 
 Three devices avoids it (phone, laptop, tablet — or the Mac app, the extension and the
 phone, which is a shape plenty of people already have). So does keeping the paper.
+
+## 3a. Yours, or not yours
+
+A steer from the user, and the best shape in this document: *if you're on the internet
+using Nostr, you're on a device. The only time I can imagine you don't have enough of
+your key on that device is a library computer or a work computer or a friend's computer…
+so maybe there's a decision you make about whether the device you're signing into is
+yours or not. And that decides how many pieces it gets. How much authority.*
+
+**Yours: a full device, 3 points.** The existing add-a-device flow (§7.1) — show a code,
+scan it with a device you already have, confirm with its lock — and from then on nothing
+is asked again. It signs with any other awake device of yours and no server sees the
+event; it follows refreshes; it can report another device lost. This is built.
+
+**Not yours: a guest, 0 points.** It holds nothing, stores nothing, and signs by asking
+one of your own devices, which is where the prompt appears and where the destructive check
+happens (§5.2). This is also already built — it is precisely what a browser with no
+extension does today through QRST sign-in or nostrconnect (§6.1). What is missing is only
+that it behaves like a guest: a grant that ends with the session rather than the 90-day
+default (§6.2), nothing written to disk, and a line in the device's own list saying where
+it is, so signing it out is one tap. On a machine that isn't yours this is the whole of the
+defence, and it is a good one: a keylogger cannot take a piece that was never there, and
+the worst case is a session that signs while you are sitting in front of it.
+
+**Why this question is allowed, when §0a says not to ask.** Because the software cannot
+know the answer, the user always can, and the answer changes what happens immediately. That
+is the test for any question in this design, and almost nothing passes it: not how many
+servers to have, not when to refresh, not which member signs. "Is this your own computer?"
+passes, it is the same question every site already asks as *stay signed in?*, it is asked
+once at the only moment it matters, and it is never asked again.
+
+**What that leaves for servers.** If your own devices are full members and guest sessions
+hold nothing, the only person who needs an always-on 1-point member is someone with a
+single device of their own — and they need one absolutely, not as a convenience: one device
+is 3 points, and 3 points sign nothing (§3). So:
+
+| Devices of your own | What an always-on member is for |
+|---|---|
+| One | **Required.** It is the fourth point for everything, including every guest session, since the phone alone cannot sign |
+| Two or more | Nothing, in the everyday case. The devices sign each other's rounds and the server sits unused — and is still what makes a lost device a tap rather than a trip to the paper |
+
+Which answers the user's *first we make sure we have to do that*: you have to, for one-device
+accounts, which is every account on its first day. The resolution is that nobody ever
+decides anything — an account is created with servers as §3 says, and as the user adds their
+own devices the servers quietly stop being used. The server is scaffolding that stays up as
+insurance, not a dependency anyone has to think about.
+
+**And it can be small.** §9.1 already says a server belongs beside a relay or inside one,
+and §9.4 measures it: about 5 ms per co-signature, a few KB of state per user. The only part
+that grows is the archive, and a server that is only ever somebody's fourth point does not
+need one: the destructive check is the device's gate anyway (§5.2), and history and Undo can
+come from the user's own device. **One share, the grants, the member list, no archive** — a
+relay-shaped member that an operator can run for people they invite, which is how relays
+already work and what the user described.
 
 ## 4. Sites and apps as co-signers
 
@@ -410,7 +473,7 @@ place a waiting delta sits, so dealers must re-send.
 ## 9. Recommendation, and the smallest first step
 
 1. **Build §5.1 point 1 — device-to-device rounds — inside accounts that already have
-   servers.** Presence, a device answering another device, the epoch guard, and an archive
+   servers.** *(The member library's half is done; the Android library's is not.)* Presence, a device answering another device, the epoch guard, and an archive
    on the Mac. Nothing in the spec changes, no account changes, and the everyday round
    stops going through anyone else's machine whenever two of the user's devices are both
    awake. This is the same code a serverless account needs.
@@ -421,15 +484,22 @@ place a waiting delta sits, so dealers must re-send.
    both directions and nobody has to choose it. A group with no servers follows for anyone
    who wants it, under the points rule of §3 — but as a consequence, not a setting, and
    never a prompt (§0a).
-3. **Do not give web pages shares**, per-site or one identical piece for all of them,
-   with or without cycling (§4, §4.1, §4.2). If a browser should carry part of the key, it carries it as a member of its
-   own — extension or installed PWA, added by a scan, removable on its own.
-4. **Offer the 1-point member inside a relay** for people who want always-on without
-   running anything: it is already blessed by §9.1 and it keeps the lost-device tap.
-5. **Merge the phone's side of §7.7**, so keys cycle every 30 days as the specification
-   says and as the user already believes. The server half is on main waiting for it, a
-   quiet refresh takes about a second and a half, and it is what makes a leaked anything
-   age out (§4.2).
+3. **Do not give web pages shares**, per-site or one identical piece for all of them, with
+   or without cycling (§4, §4.1, §4.2). A browser that should carry part of the key carries
+   it as a member of its own — extension or installed PWA, added by a scan, removable on its
+   own — and that is the "yours" case of §3a. A browser that shouldn't is a guest, and holds
+   nothing.
+4. **Make the always-on member small and relay-shaped** (§3a): one share, the grants, the
+   member list, no archive, beside or inside a relay, runnable for invitees. It is already
+   blessed by §9.1, it is what a one-device account cannot do without, and it keeps the
+   lost-device tap for everyone else.
+5. **Make "not yours" behave like a guest** (§3a): a grant that ends with the session,
+   nothing written to disk, and a line in the device's list saying where it is. The signing
+   path already exists; only the defaults are wrong.
+6. **Merge the phone's side of §7.7**, so keys cycle every 30 days as the specification
+   says and as the user already believes. Done, on a branch: the server half was already on
+   main, a quiet refresh takes about a second and a half, and it is what makes a leaked
+   anything age out (§4.2).
 
 Step 1 is worth doing whether or not the rest is ever agreed: it is a privacy improvement
 for every existing account, it is already in the specification, and it is the only part
