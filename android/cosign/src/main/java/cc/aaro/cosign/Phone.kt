@@ -59,7 +59,12 @@ data class Group(val groupX: String, val npub: String, val threshold: Int, val r
 /** One of this device's own shares. */
 data class Share(val idx: Int, val secret: String) : java.io.Serializable
 /** [mirrored]: the key brought in had an odd y, so FROST holds its twin (the same npub); null if not known here. */
-data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null) : java.io.Serializable {
+/** Something this device vouched for, with the person's lock, and when (COSIGN.md §7.1). */
+data class Vouch(val pk: String, val at: Long) : java.io.Serializable
+
+data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null,
+    /** What this device asked to have added lately: a repair for anything else is refused. */
+    val vouching: List<Vouch> = emptyList()) : java.io.Serializable {
     /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
     val share get() = shares.first().secret
     val idxs get() = shares.map { it.idx }
@@ -496,7 +501,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         val srv = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
         val id = env.random(8).toHex()
         growing = id to java.util.Collections.synchronizedList(mutableListOf()); growWelcome = null
-        vouched[publicKeyHex(m.sk.hexToBytes())] = System.currentTimeMillis()
+        vouch(publicKeyHex(m.sk.hexToBytes()))
         send(srv.pk!!, mapOf("type" to "add_device", "id" to id, "pk" to publicKeyHex(m.sk.hexToBytes()), "name" to android.os.Build.MODEL.ifBlank { "This phone" }, "lock" to true, "grow" to true))
         note("Getting this phone a device's full share of your key…")
     }
@@ -774,7 +779,7 @@ class Signer(private val context: Context, val slot: String = "0") {
             val enrolled = ask(mapOf("type" to "enroll", "how" to "repair", "key" to key["key"], "group" to record, "k" to k, "name" to s.name) + tok + proof)
             if (enrolled?.get("type") != "enrolled") return@execute note("Couldn't add ${s.name}: ${enrolled?.get("reason") ?: "it didn't answer"}", "denied")
             val via = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return@execute
-            vouched[key["pk"] as String] = System.currentTimeMillis()
+            vouch(key["pk"] as String)
             send(via.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to key["pk"], "name" to s.name, "relays" to s.relays, "lock" to true, "server" to true, "k" to k))
             val updated = (ui.value.member ?: return@execute).let { it.copy(group = it.group.copy(relays = relaysNow)) }
             secrets.saveMembership(Json.stringify(membershipToMap(updated)))
@@ -1271,7 +1276,7 @@ class Signer(private val context: Context, val slot: String = "0") {
     fun confirmAddDevice() {
         val a = ui.value.adding ?: return
         val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
-        vouched[a.pk] = System.currentTimeMillis()
+        vouch(a.pk)
         send(target.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to a.pk, "name" to a.name, "relays" to a.relays, "lock" to true))
         ui.update { it.copy(adding = null) }
         note("Adding ${a.name}…")
@@ -1287,8 +1292,25 @@ class Signer(private val context: Context, val slot: String = "0") {
      * into a delta per helper share: the server's go back to it, and ours, with the
      * server's deltas for them, sum to sigmas sealed to the new device.
      */
-    /** Keys this phone has vouched for, just now, with your lock: pk → when. */
-    private val vouched = ConcurrentHashMap<String, Long>()
+    /**
+     * Keys this phone has vouched for, with your lock, and when. Kept with the account rather
+     * than in memory: the signer process can be killed between you approving a device and the
+     * server asking for this phone's part of it, and a device that forgot would refuse to
+     * finish adding the one you just approved.
+     */
+    private fun vouch(pk: String) {
+        val m = ui.value.member ?: return
+        val now = System.currentTimeMillis()
+        val kept = m.vouching.filter { now - it.at < VOUCH_LIFE && it.pk != pk } + Vouch(pk, now)
+        val updated = m.copy(vouching = kept)
+        secrets.saveMembership(Json.stringify(membershipToMap(updated)))
+        ui.update { it.copy(member = updated) }
+    }
+
+    private fun vouchedFor(pk: String): Boolean {
+        val m = ui.value.member ?: return false
+        return m.vouching.any { it.pk == pk && System.currentTimeMillis() - it.at < VOUCH_LIFE }
+    }
 
     private fun onRepair(msg: Map<*, *>, from: Member, m: Membership) {
         val id = msg["id"] as? String ?: return
@@ -1298,7 +1320,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         // could mint itself a device — three points, which with its own makes four, and your
         // account would sign without you ever again. The server checks for your lock, but the
         // server is exactly who this is protecting you from.
-        val ours = making?.second == newPk || System.currentTimeMillis() - (vouched[newPk] ?: 0) < 120_000
+        val ours = making?.second == newPk || vouchedFor(newPk)
         if (!ours) {
             note("${from.name} asked this phone to make shares for something you didn't add. Refused.", "denied")
             return
@@ -1948,11 +1970,13 @@ class Signer(private val context: Context, val slot: String = "0") {
         val shares = (m["shares"] as? List<*>)?.map { val s = it as Map<*, *>; Share((s["idx"] as Long).toInt(), s["secret"] as String) }
             ?: listOf(Share(idx, m["share"] as? String ?: return null))
         return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null,
-            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean)
+            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean,
+            (m["vouching"] as? List<*>)?.mapNotNull { v -> (v as? Map<*, *>)?.let { Vouch(it["pk"] as? String ?: return@mapNotNull null, (it["at"] as? Long) ?: 0L) } } ?: emptyList())
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
         "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer, "epoch" to m.epoch, "mirrored" to m.mirrored,
+        "vouching" to m.vouching.map { mapOf("pk" to it.pk, "at" to it.at) },
         "group" to mapOf(
             "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
             "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
@@ -1960,7 +1984,12 @@ class Signer(private val context: Context, val slot: String = "0") {
         ),
     )
 
-    companion object { const val KIND_MEMBER = 28001; private const val PART = 24_000 }
+    companion object {
+        const val KIND_MEMBER = 28001
+        private const val PART = 24_000
+        /** How long after you approve something this phone will make parts for it. */
+        private const val VOUCH_LIFE = 10 * 60_000L
+    }
 }
 
 object Describe {

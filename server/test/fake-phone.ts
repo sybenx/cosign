@@ -83,8 +83,21 @@ async function addServer(x: { host: string; relays: string[]; name?: string; tok
   say(`adding a server as member ${k}`);
 }
 const hostWait = new Map<string, (r: any) => void>();
-/** What this phone asked to have added: a repair for anything else is refused. */
-const vouched = new Set<string>();
+/**
+ * What this phone asked to have added, kept in its state rather than in memory: a phone can
+ * be stopped between asking and the server coming back, and one that forgot would refuse to
+ * finish adding the device you just approved.
+ */
+const VOUCH_LIFE = 10 * 60_000;
+const vouched = {
+  add(pk: string) {
+    if (!st) return;
+    const now = Date.now();
+    st.vouching = [...(st.vouching ?? []).filter((v: any) => now - v.at < VOUCH_LIFE && v.pk !== pk), { pk, at: now }];
+    writeFileSync(stateFile, JSON.stringify(st, null, 2));
+  },
+  has(pk: string) { return (st?.vouching ?? []).some((v: any) => v.pk === pk && Date.now() - v.at < VOUCH_LIFE); },
+};
 
 function growShares() {
   growing = { id: F.bytesToHex(F.randomBytes(6)), sigmas: [] };
