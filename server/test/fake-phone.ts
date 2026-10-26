@@ -77,14 +77,31 @@ async function addServer(x: { host: string; relays: string[]; name?: string; tok
   const record = { groupX: st.group.groupX, threshold: st.group.threshold, relays: [...new Set([...st.group.relays, ...x.relays])], members: st.group.members };
   const enrolled = await ask({ type: 'enroll', how: 'repair', key: key.key, group: record, k, name: x.name ?? 'New server', ...tok, ...proof() });
   if (enrolled.type !== 'enrolled') return say(`ADD SERVER FAILED: ${enrolled.reason ?? enrolled.type}`);
+  vouched.add(key.pk);
   send(servers()[0].pk, { type: 'add_device', id: F.bytesToHex(F.randomBytes(6)), pk: key.pk, name: x.name ?? 'New server', relays: x.relays, lock: true, server: true, k });
   st.group.relays = record.relays; writeFileSync(stateFile, JSON.stringify(st, null, 2));
   say(`adding a server as member ${k}`);
 }
 const hostWait = new Map<string, (r: any) => void>();
+/**
+ * What this phone asked to have added, kept in its state rather than in memory: a phone can
+ * be stopped between asking and the server coming back, and one that forgot would refuse to
+ * finish adding the device you just approved.
+ */
+const VOUCH_LIFE = 10 * 60_000;
+const vouched = {
+  add(pk: string) {
+    if (!st) return;
+    const now = Date.now();
+    st.vouching = [...(st.vouching ?? []).filter((v: any) => now - v.at < VOUCH_LIFE && v.pk !== pk), { pk, at: now }];
+    writeFileSync(stateFile, JSON.stringify(st, null, 2));
+  },
+  has(pk: string) { return (st?.vouching ?? []).some((v: any) => v.pk === pk && Date.now() - v.at < VOUCH_LIFE); },
+};
 
 function growShares() {
   growing = { id: F.bytesToHex(F.randomBytes(6)), sigmas: [] };
+  vouched.add(pk);
   send(servers()[0].pk, { type: 'add_device', id: growing.id, pk, name: 'Restored phone', lock: true, grow: true });
   say('growing a device’s shares');
 }
@@ -174,12 +191,15 @@ function handle(msg: any, from: string) {
   if (msg.type === 'test_report' && from === pk) { if (st.group.members.some((m: any) => m.idx === Number(msg.idx) && !m.removed)) rf.report(Number(msg.idx)); return; }
   // Adding a server to this key ("Add a server"): {host, relays, name} of a server taking new accounts.
   if (msg.type === 'test_add_server' && from === pk) { void addServer(msg); return; }
+  // A test standing in for the tap and the lock: this phone vouches for that key.
+  if (msg.type === 'test_vouch' && from === pk) { vouched.add(String(msg.pk)); return say(`vouching for ${String(msg.pk).slice(0, 8)}…`); }
   // Whoever runs a server stopped serving this account (its page): say so, as the app would.
   if (msg.type === 'server_left') { say(`SERVER LEFT: ${msg.name}`); return; }
   // Likewise for making a paper backup: written to PAPER_FILE.
   if (msg.type === 'test_backup' && from === pk) {
     const bsk = F.bytesToHex(F.randomBytes(32));
     making = { id: F.bytesToHex(F.randomBytes(6)), sk: bsk, pk: pubOf(bsk) };
+    vouched.add(making.pk);
     send(servers()[0].pk, { type: 'add_device', id: making.id, pk: making.pk, name: 'Paper backup', lock: true, backup: true });
     return say('making a paper backup');
   }
@@ -203,6 +223,10 @@ function handle(msg: any, from: string) {
     const points = myShares().map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
     send(from, { type: 'ecdh_res', id: msg.id, ok: true, points, point: points[0] });
   } else if (msg.type === 'repair') {
+    // Only for something this phone asked to add (the app keeps your lock behind this). A
+    // repair makes a share out of this phone's shares, so a server that could ask for one
+    // unasked could mint itself a device and sign as you ever after.
+    if (!vouched.has(String(msg.pk))) { say(`REFUSED a repair for ${String(msg.pk).slice(0, 8)}…: nothing here asked for it`); return; }
     // Vouching for a new device: each of our shares splits its part of each new share
     // into deltas; the server's go to it, ours are summed here into sigmas for the device.
     const mine = myShares(), idxs = mine.map(x => x.idx);

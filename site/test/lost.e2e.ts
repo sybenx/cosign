@@ -56,6 +56,8 @@ async function addDevice(name: string, file: string) {
   await waitFor(() => d.out().includes('JOIN '), 10_000);
   const j = new URL(d.out().split('JOIN ')[1].split('\n')[0].replace('cosign:', 'cosign://'));
   await sleep(2500);
+  asPhone(ph.group.members.find((m: any) => m.idx === ph.idx).pk, { type: 'test_vouch', pk: j.searchParams.get('pk') });
+  await sleep(1500);
   asPhone(servers[0].pk, { type: 'add_device', id: bytesToHex(randomBytes(6)), pk: j.searchParams.get('pk'), name, relays: j.searchParams.getAll('r'), lock: true });
   await waitFor(() => d.out().includes('JOINED'), 40_000);
   return d;

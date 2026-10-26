@@ -64,6 +64,8 @@ const tablet = run(['test/fake-device.ts', 'Test tablet'], { DEVICE_STATE: table
 await waitFor(() => tablet.out().includes('JOIN '), 10_000);
 const j = new URL(tablet.out().split('JOIN ')[1].split('\n')[0].replace('cosign:', 'cosign://'));
 await sleep(2500);
+asPhone(phonePk, { type: 'test_vouch', pk: j.searchParams.get('pk') });
+await sleep(1500);
 asPhone(servers[0].pk, { type: 'add_device', id: hex(6), pk: j.searchParams.get('pk'), name: 'Test tablet', relays: j.searchParams.getAll('r'), lock: true });
 check('a tablet joins', await waitFor(() => tablet.out().includes('JOINED'), 40_000));
 

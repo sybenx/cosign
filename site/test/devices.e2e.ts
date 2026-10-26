@@ -38,6 +38,9 @@ await sleep(4000);
 check('without the phone’s lock, nothing is added', stateA().group.members.length === before);
 
 const t0 = Date.now();
+// In the app your tap and your lock are what vouch for a new device; a test says so instead.
+ctl.publish(sealTo(phone.sk, phone.group.members.find((m: any) => m.idx === phone.idx).pk, { type: 'test_vouch', pk: uri.searchParams.get('pk') }));
+await sleep(1500);
 toA({ type: 'add_device', id: `${Date.now()}b`, pk: uri.searchParams.get('pk'), name: 'Test tablet', relays: uri.searchParams.getAll('r'), lock: true });
 while (!out.includes('JOINED') && Date.now() - t0 < 30000) await sleep(250);
 check('with it, the tablet gets its share and joins', out.includes('JOINED'), `${Date.now() - t0} ms`);

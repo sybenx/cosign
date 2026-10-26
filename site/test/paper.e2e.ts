@@ -62,6 +62,8 @@ const tablet = run(['test/fake-device.ts', 'Test tablet'], { DEVICE_STATE: table
 await waitFor(() => tablet.out().includes('JOIN '), 10_000);
 const j = new URL(tablet.out().split('JOIN ')[1].split('\n')[0].replace('cosign:', 'cosign://'));
 await sleep(2500);
+asPhone(phonePk, { type: 'test_vouch', pk: j.searchParams.get('pk') });
+await sleep(1500);
 asPhone(server.pk, { type: 'add_device', id: bytesToHex(randomBytes(6)), pk: j.searchParams.get('pk'), name: 'Test tablet', relays: j.searchParams.getAll('r'), lock: true });
 await waitFor(() => tablet.out().includes('JOINED'), 40_000);
 await sleep(3000);
@@ -99,7 +101,8 @@ await sleep(1500);
 const site = new SignerClient(newSession(np.signer, np.group.relays));
 await site.connect(t);
 const ev = await site.signEvent({ kind: 1, content: 'restored from paper', tags: [] }).catch(e => e);
-check('the restored phone (3) and the server (1) sign as the same key', verifyEvent(ev) && ev.pubkey === ph.group.groupX, String(ev?.message ?? ''));
+check('the restored phone (3) and the server (1) sign as the same key', verifyEvent(ev) && ev.pubkey === ph.group.groupX,
+  String(ev?.message ?? '') + ' | phone: ' + fresh.out().split('\n').filter(Boolean).slice(-4).join(' / '));
 
 site.close();
 console.log(failures ? `${failures} failed` : 'all passed');
