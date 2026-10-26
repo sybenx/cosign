@@ -96,6 +96,14 @@ const signs = async (label: string) => {
 };
 await signs('the library signs with one server');
 
+// A host rejects with whatever it likes — a Tauri call rejects with a plain string, not an
+// Error — and its words have to reach whoever reads the failure.
+const realCommit = ops.commit;
+ops.commit = async () => { throw 'the lock was not given'; };
+const refused = await device.sign({ kind: 1, content: 'not signed', tags: [] }).then(() => null, (e: Error) => e);
+check('a host’s own words come back, whatever it threw', /the lock was not given/.test(String(refused?.message)), String(refused?.message));
+ops.commit = realCommit;
+
 const sealed = await device.encryptToSelf('a note only this account reads').catch(e => e);
 check('it works out its own key with a server', typeof sealed === 'string', String(sealed?.message ?? ''));
 check('and reads back what it sealed', typeof sealed === 'string' && await device.decryptFromSelf(sealed) === 'a note only this account reads');

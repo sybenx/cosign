@@ -63,6 +63,17 @@ const rid = () => bytesToHex(randomBytes(8));
 const isHex32 = (s: unknown) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 /** An answer that ends a round: the person must decide, or the server refuses outright. */
 const FINAL = /^(needs-approval|refused|revoked|not-allowed):/;
+/**
+ * Why something failed, in words. A host can reject with anything it likes — a Tauri call
+ * rejects with a plain string, not an Error — and a server can refuse with no reason at all,
+ * so this never comes out as "undefined" and leaves whoever reads it nothing to go on.
+ */
+const whyOf = (e: unknown): string => {
+  if (e instanceof Error && e.message) return e.message;
+  if (typeof e === 'string' && e.trim()) return e.trim();
+  if (e !== null && e !== undefined) { try { const s = JSON.stringify(e); if (s && s !== '{}' && s !== 'null') return s; } catch { /* circular */ } }
+  return 'no reason given';
+};
 const partsOf = (m: Member) => (m.shares ?? [{ idx: m.idx, sharePub: m.sharePub }]).map(p => p.idx);
 /** The key as the maths wants it: every part, whoever holds it. */
 const flat = (a: Account): Group => ({
@@ -181,7 +192,7 @@ export class Device {
       this.say('This device is part of your account now.');
       j.done(account);
     } catch (e) {
-      j.fail(new Error(`Couldn’t make this device’s part: ${(e as Error).message}`));
+      j.fail(new Error(`Couldn’t make this device’s part: ${whyOf(e)}`));
     }
   }
 
@@ -210,15 +221,15 @@ export class Device {
     if (!order.length) throw new Error(`${what}: this device has no servers`);
     for (const s of order) {
       let body: object, finish: (res: any) => Promise<T>;
-      try { ({ body, finish } = await round(s)); } catch (e) { tried.push(`${s.name}: ${(e as Error).message}`); continue; }
+      try { ({ body, finish } = await round(s)); } catch (e) { tried.push(`${s.name}: ${whyOf(e)}`); continue; }
       const res = await this.ask(s.pk!, body);
       if (!res) { tried.push(`${s.name}: no answer`); continue; }
       if (res.ok === false || res.error) {
-        const why = String(res.reason ?? res.error);
+        const why = whyOf(res.reason ?? res.error);
         if (FINAL.test(why)) throw new Error(why);
         tried.push(`${s.name}: ${why}`); continue;
       }
-      try { return await finish(res); } catch (e) { tried.push(`${s.name}: ${(e as Error).message}`); }
+      try { return await finish(res); } catch (e) { tried.push(`${s.name}: ${whyOf(e)}`); }
     }
     throw new Error(`${what} (${tried.join('; ')})`);
   }
