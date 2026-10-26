@@ -1602,20 +1602,73 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     /** The shared x with [peerX], from this phone's half and a server's. Kept ten minutes, in memory. */
     private fun sharedX(g: AppGrant, peerX: String): ByteArray {
-        sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) return x }
+        cached(peerX)?.let { return it }
+        warm(g, listOf(peerX))
+        return cached(peerX) ?: throw IllegalStateException("Couldn't reach your servers")
+    }
+
+    private fun cached(peerX: String): ByteArray? =
+        sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) x else null }
+
+    /**
+     * What a server's answer to an `ecdh_req` gives: a partial for each counterparty it
+     * answered for. A server that knows `peers` (COSIGN.md §5.6) answers for each in `many`;
+     * one that doesn't answers the first on its own, in `points`, as servers always have — and
+     * an older one still in a single `point`. Here, so every shape can be checked (EcdhTest).
+     */
+    internal object Ecdh {
+        fun rows(res: Map<*, *>, asked: List<String>): List<Pair<String, List<String>>> {
+            val many = (res["many"] as? List<*>)?.mapNotNull { it as? Map<*, *> }?.mapNotNull { row ->
+                val p = (row["peerX"] as? String)?.takeIf { it in asked } ?: return@mapNotNull null
+                val pts = (row["points"] as? List<*>)?.mapNotNull { it as? String }?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                p to pts
+            }
+            if (many != null && many.isNotEmpty()) return many.distinctBy { it.first }
+            val first = asked.firstOrNull() ?: return emptyList()
+            val pts = (res["points"] as? List<*>)?.mapNotNull { it as? String } ?: listOfNotNull(res["point"] as? String)
+            return if (pts.isEmpty()) emptyList() else listOf(first to pts)
+        }
+    }
+
+    /** This phone's half and a server's, added: the shared x with [peerX]. */
+    private fun combine(m: Membership, participants: List<Int>, peerX: String, theirs: List<String>): ByteArray {
+        val mine = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX).hexToBytes() }
+        return Secp256k1.pubKeyCombine((mine + theirs.map { it.hexToBytes() }).toTypedArray()).copyOfRange(1, 33)
+    }
+
+    /**
+     * The shared secrets with several people, in one round trip where the server knows how
+     * (COSIGN.md §5.6): what a messaging app needs to open all its conversations, instead of a
+     * round trip each. They are kept ten minutes, in memory, as a single one is.
+     *
+     * A server that doesn't know `peers` answers the first and ignores the rest, so whatever is
+     * still missing is asked for again — the same server, one at a time, which is what this did
+     * before. Nothing is asked for that is already in hand.
+     */
+    fun warm(g: AppGrant, peers: List<String>) {
         val m = ui.value.member ?: error("$appName isn't set up yet")
+        var want = peers.distinct().filter { isHex32(it) && cached(it) == null }
+        if (want.isEmpty()) return
         awake()
         for (srv in partners(m)) {
             val participants = (m.idxs + srv.idxs).sorted()
-            val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk)) ?: continue
-            if (res["ok"] != true) { if ((res["reason"] as? String)?.startsWith("revoked") == true) throw Revoked(); continue }
-            val mine = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX).hexToBytes() }
-            val theirs = ((res["points"] as? List<*>) ?: listOf(res["point"])).map { (it as String).hexToBytes() }
-            val x = Secp256k1.pubKeyCombine((mine + theirs).toTypedArray()).copyOfRange(1, 33)
-            sharedXs[peerX] = System.currentTimeMillis() to x
-            return x
+            while (want.isNotEmpty()) {
+                val ask = want.take(50)
+                val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(),
+                    "peerX" to ask[0], "peers" to ask, "participants" to participants, "grant" to g.pk)) ?: break
+                if (res["ok"] != true) { if ((res["reason"] as? String)?.startsWith("revoked") == true) throw Revoked(); break }
+                val rows = Ecdh.rows(res, ask)
+                for ((p, theirs) in rows) {
+                    if (p !in want || theirs.isEmpty()) continue
+                    val x = try { combine(m, participants, p, theirs) } catch (_: Exception) { continue }
+                    sharedXs[p] = System.currentTimeMillis() to x
+                }
+                val left = want.filter { cached(it) == null }
+                if (left.size == want.size) break // this one gave nothing: try the next server
+                want = left
+            }
+            if (want.isEmpty()) return
         }
-        throw IllegalStateException("Couldn't reach your servers")
     }
 
     fun nip44(g: AppGrant, peer: String, text: String, encrypt: Boolean): String {

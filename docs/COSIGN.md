@@ -348,6 +348,22 @@ secret; the others learn only `P`.
 **Who gets a partial.** Servers give decryption partials only to active member
 devices — never to the backup key, and never to a removed member.
 
+**Several at once.** A device opening a messaging app needs a conversation key for every
+correspondent it has, and one round trip each is slow where a whole-key signer computes
+them locally. A request MAY therefore carry `peers`, a list of counterparty keys, as well
+as `peerX`; a server that understands it answers with a partial for each, in `many`. The
+gate above is unchanged and applies to the request as a whole.
+
+- `peerX` remains, and is the first of `peers`, so **a server that doesn't know `peers`
+  answers that one and ignores the rest**: the device asks again for the others, as it
+  does today. Mixed versions need no negotiation.
+- A server answers for at most **50** keys, dropping duplicates and anything malformed,
+  and leaves the rest out of `many` rather than refusing the request; the device asks for
+  what is missing. One answer that doesn't check out spoils only its own key.
+- A server learns the same as it would from the requests one at a time: the
+  counterparties, never the plaintext (§12.3). Asking for several at once does not make
+  that worse, and the device SHOULD still ask only for what it needs.
+
 **A server operated by anyone but the user MUST NOT coordinate a decryption.** It gives
 its partial and never finishes one. With a device coordinating (§5.1) this is the
 normal case. For NIP-46 sites this follows from §6.1: such a
@@ -783,7 +799,7 @@ will be assigned before 1.0:
 | Name | Direction |
 |---|---|
 | SIGN_REQUEST / SIGN_PARTIAL | coordinator ↔ co-signer |
-| ECDH_REQUEST / ECDH_PARTIAL | coordinator ↔ member |
+| ECDH_REQUEST / ECDH_PARTIAL | coordinator ↔ member (one counterparty, or several: §5.6) |
 | HOLD / APPROVAL | server → device; device → members |
 | REPAIR_CONTRIBUTION | member → new device or backup key |
 | REFRESH_DELTA / SHARE_ACK | dealer → member; member → dealer |

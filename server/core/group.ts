@@ -659,8 +659,17 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (msg.participants.length < S.group.threshold) return respond({ ok: false, reason: 'bad request' });
     // The phone asks on behalf of an app it has let read your messages; that app must still have access.
     if (isDevice(from) && !liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
-    const points = myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
-    return respond({ ok: true, points, point: points[0] });
+    const partials = (peerX: string) => myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX }));
+    const points = partials(msg.peerX);
+    // Several counterparties in one round trip (§5.6): everything a messaging app needs to
+    // open its conversations, instead of one round trip each. `peerX` is the first of them,
+    // so a server that doesn't know `peers` still answers that one and the device asks on
+    // for the rest. At most 50, the malformed and the repeated dropped rather than refused.
+    const many = Array.isArray(msg.peers)
+      ? [...new Set(msg.peers.filter((p: unknown) => typeof p === 'string' && /^[0-9a-f]{64}$/.test(p)))].slice(0, 50)
+        .map(p => ({ peerX: p, points: partials(p as string) }))
+      : undefined;
+    return respond({ ok: true, points, point: points[0], ...(many ? { many } : {}) });
   }
 
   // --- Apps on your phone (Android signer, NIP-55) ------------------------------------
