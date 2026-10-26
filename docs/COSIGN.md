@@ -560,7 +560,7 @@ device with its lock (§7.4).
   the account at once, and deletes its pieces for real after the wait — the files on a
   Node server, the KV entry and every row on the Worker.
 
-### 7.7 Periodic refresh *(approved; not built yet)*
+### 7.7 Periodic refresh
 
 Pieces are refreshed quietly about once a month, and a server that has gone silent is
 replaced at the same time. Nothing about it is visible to the user.
@@ -568,7 +568,11 @@ replaced at the same time. Nothing about it is visible to the user.
 - **Trigger.** An online device sends `refresh_request {reason: "periodic"}`, with no
   lock, once the epoch is 30 or more days old. A server accepts only if its epoch is at
   least 25 days old and no refresh is pending.
-- **Replacing a dead server.** A server counts as dead only when **at least two live
+Built: the servers hold a pending epoch and commit it, and the phone asks for one when
+its epoch is 30 days old, checks it with every server and commits. Replacing a dead
+server at the same time is not built.
+
+- **Replacing a dead server.** *(not built yet)* A server counts as dead only when **at least two live
   servers** have seen it silent for 7 or more days (servers record when they last heard
   from each other), not on the device's word alone. A dead server is left out of the new
   epoch's holders, and a fresh server is added by repair (§9.5, "Adding a server": the
