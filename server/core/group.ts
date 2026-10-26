@@ -1120,7 +1120,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
       return note(`${a.by.name} has a device's full shares now`);
     }
-    members.push({ idx: a.ks[0], name: a.name, role: a.asServer ? 'server' : 'device', pk: a.pk, sharePub: shares[0].sharePub, push: null, ...(shares.length > 1 ? { shares } : {}) });
+    members.push({ idx: a.ks[0], name: a.name, role: a.asServer ? 'server' : 'device', pk: a.pk, sharePub: shares[0].sharePub, push: null, since: now(), ...(shares.length > 1 ? { shares } : {}) });
     // A new server may be reachable only where it listens (a Worker is its own relay): keep listening there.
     if (a.asServer && a.relays?.length) { S.group.relays = [...new Set([...S.group.relays, ...a.relays])].slice(0, 8); void io.listen(a.relays); }
     // A paper made when there was one server holds 3: with this one it would reach 4 on its
@@ -1136,6 +1136,12 @@ export function openGroup(loaded: Loaded, io: Io) {
     save();
     toOther({ type: 'members', members });
     toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
+    // Every other device is told in so many words, and woken for it. Adding a device is
+    // instant on one device's lock (§7.1), so the one thing the user's other devices can do
+    // is hear about it while it still matters: a device they didn't add is the start of
+    // everything else, and reporting it lost is one tap.
+    toDevices({ type: 'added', name: a.name, by: a.by.name, role: a.asServer ? 'server' : 'device', idx: a.ks[0] });
+    for (const d of devices()) if (d.push && d.idx !== a.by.idx && d.idx !== a.ks[0]) void io.push(d.push);
     note(`${a.name} joined, vouched for by ${a.by.name}`);
   }
 
