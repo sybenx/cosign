@@ -56,9 +56,24 @@ export interface Host {
   onStatus?: (text: string) => void;
   onRemoved?: (by: string) => void;
   onMembers?: (members: Member[]) => void;
+  /**
+   * Another of the user's devices has asked this one to co-sign (§5.1, §5.5). Return false to
+   * refuse. A host with the user's archive does its own destructive check here (§5.3); a host
+   * without one leaves it, and the asking device's check stands — which §5.5 accepts, since
+   * two of the user's own devices are not bound by any server's policy.
+   */
+  mayCoSign?: (event: { kind: number; content: string; tags: string[][]; created_at: number }, from: Member) => Promise<boolean> | boolean;
 }
 
 const JOIN_RELAYS = ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'];
+/** How often a device says it is awake to the user's other devices, and how long that lasts. */
+const SAY_AWAKE_EVERY = 60_000, AWAKE_LIFE = 150_000;
+/**
+ * How long another device has to answer a whole round before the servers are asked instead,
+ * and how often the question is re-sent inside that. §5.1's 1 s is for a device believed awake
+ * that says nothing at all; a round it does answer has to cross two relays and do its maths.
+ */
+const DEVICE_MS = 4000, DEVICE_AGAIN = 1200;
 const rid = () => bytesToHex(randomBytes(8));
 const isHex32 = (s: unknown) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 /** An answer that ends a round: the person must decide, or the server refuses outright. */
@@ -97,6 +112,11 @@ export class Device {
   /** Pieces of a join, while it is going on. */
   private joining: { welcome?: any; from?: string; sigmas: [number, number, string][]; done: (a: Account) => void; fail: (e: Error) => void } | null = null;
   private selfKey: { at: number; key: Uint8Array } | null = null;
+  /** When each of the user's other devices last said it was awake. */
+  private heard = new Map<string, number>();
+  private saidAwake = 0;
+  /** What this device has answered, by request id: the same answer again, never a second partial. */
+  private answered = new Map<string, any>();
 
   private host: Host;
   private sk: string;
@@ -115,11 +135,22 @@ export class Device {
     this.unreadable = unreadable;
     this.box = new Mailbox(sk, account?.relays ?? host.relays ?? JOIN_RELAYS, (m, from) => void this.handle(m, from));
     this.ticker = setInterval(() => void this.tend(), 10_000);
+    setTimeout(() => void this.tend(), 1500); // say "awake" as soon as a relay is up, not in ten seconds
   }
 
   private get ops() { return this.host.ops; }
   private say(text: string) { this.host.onStatus?.(text); }
   private servers() { return (this.account?.members ?? []).filter(m => m.role === 'server' && m.pk); }
+  /** The user's other devices. A piece of theirs is 3 points, so two of them need no server. */
+  private others() { return (this.account?.members ?? []).filter(m => m.role === 'device' && m.pk && m.pk !== this.box.pk); }
+  /** Those that have said they are awake lately, freshest first (§5.1 presence). */
+  private awake() {
+    const now = Date.now();
+    return this.others().filter(m => now - (this.heard.get(m.pk!) ?? 0) < AWAKE_LIFE)
+      .sort((a, b) => (this.heard.get(b.pk!) ?? 0) - (this.heard.get(a.pk!) ?? 0));
+  }
+  /** Who to ask for the rest of a signature: another device first, no server seeing it at all. */
+  private helpers() { return [...this.awake(), ...this.servers()]; }
 
   get pubkey() { return this.account?.groupX ?? null; }
 
@@ -132,11 +163,18 @@ export class Device {
       relays: this.account?.relays ?? this.host.relays ?? JOIN_RELAYS,
       epoch: this.epoch,
       removed: this.account?.removed ?? null,
+      /** The user's other devices that have said they are awake: these sign without a server. */
+      awake: this.awake().map(m => ({ idx: m.idx, name: m.name })),
       members: (this.account?.members ?? []).map(m => ({ idx: m.idx, name: m.name, role: m.role })),
     };
   }
 
-  close() { this.closed = true; clearInterval(this.ticker); this.box.close(); }
+  close() {
+    for (const d of this.others()) this.box.send(d.pk!, { type: 'asleep' });
+    this.closed = true;
+    clearInterval(this.ticker);
+    this.box.close();
+  }
 
   // --- Joining a key that already exists ----------------------------------------------------
 
@@ -196,34 +234,39 @@ export class Device {
     }
   }
 
-  // --- Asking a server ------------------------------------------------------------------------
+  // --- Asking another member --------------------------------------------------------------------
 
   /** One question to a member, asked again if a relay dropped it; its answer, or null. */
-  private ask(toPk: string, body: object, ms = 8000): Promise<any | null> {
+  private ask(toPk: string, body: object, ms = 8000, every = 3000): Promise<any | null> {
     const id = rid();
     const msg = { ...body, id };
     return new Promise(resolve => {
       const done = (r: any) => { clearTimeout(timer); clearInterval(again); this.waiting.delete(id); resolve(r); };
       this.waiting.set(id, done);
       this.box.send(toPk, msg);
-      const again = setInterval(() => this.box.send(toPk, msg), 3000);
+      const again = setInterval(() => this.box.send(toPk, msg), every);
       const timer = setTimeout(() => done(null), ms);
     });
   }
 
   /**
-   * Each server in turn until one does it. One that refuses outright — your access is gone, or
-   * you must approve it first — ends it there; one that is quiet or broken means the next is asked.
+   * Each member in turn until one does it: **another of the user's devices first** when one has
+   * said it is awake, so no server sees the event at all (§5.1), and otherwise a server. One that
+   * refuses outright — your access is gone, or you must approve it first — ends it there; one
+   * that is quiet or broken means the next is asked. Nothing here asks the user anything: the
+   * arrangement is whatever is best at that moment, and it changes as devices come and go.
    */
-  private async withAServer<T>(what: string, round: (s: Member) => Promise<{ body: object; finish: (res: any) => Promise<T> }>): Promise<T> {
+  private async withAMember<T>(what: string, round: (m: Member) => Promise<{ body: object; finish: (res: any) => Promise<T> }>): Promise<T> {
     const tried: string[] = [];
-    const order = this.servers();
-    if (!order.length) throw new Error(`${what}: this device has no servers`);
+    const order = this.helpers();
+    if (!order.length) throw new Error(`${what}: this device has nobody to sign with`);
     for (const s of order) {
       let body: object, finish: (res: any) => Promise<T>;
       try { ({ body, finish } = await round(s)); } catch (e) { tried.push(`${s.name}: ${whyOf(e)}`); continue; }
-      const res = await this.ask(s.pk!, body);
-      if (!res) { tried.push(`${s.name}: no answer`); continue; }
+      // A device that said it was awake and isn't gets a short wait, not the full one: the
+      // servers are there and the user is waiting.
+      const res = s.role === 'server' ? await this.ask(s.pk!, body) : await this.ask(s.pk!, body, DEVICE_MS, DEVICE_AGAIN);
+      if (!res) { tried.push(`${s.name}: no answer`); this.heard.delete(s.pk!); continue; }
       if (res.ok === false || res.error) {
         const why = whyOf(res.reason ?? res.error);
         if (FINAL.test(why)) throw new Error(why);
@@ -242,13 +285,18 @@ export class Device {
     const ev = { kind: t.kind, content: t.content, tags: t.tags, created_at: t.created_at ?? Math.floor(Date.now() / 1000), pubkey: a.groupX };
     const msg = getEventHash(ev as any);
     const g = flat(a);
-    const sig = await this.withAServer('Your servers didn’t sign', async s => {
+    const sig = await this.withAMember('Nothing of yours signed', async s => {
       // The commitments are made before the request goes out: the server signs against them.
       const mine: { idx: number; handle: string; commit: Commit }[] = [];
       for (const idx of this.idxs) mine.push({ idx, ...(await this.ops.commit(g, idx)) });
       const participants = [...this.idxs, ...partsOf(s)].sort((x, y) => x - y);
       return {
-        body: { type: 'cosign_req', event: ev, msg, participants, grant: a.grant, commits: mine.map(m => m.commit), commit: mine[0].commit, frost: 2, approved: opts.approved === true },
+        // A server is asked as a server is asked; another device is asked the way a server asks
+        // one (`sign_req`), so a device answering needs no new message of its own. The epoch goes
+        // with a device round: neither side may sign in an epoch the other has left (§5.5).
+        body: s.role === 'server'
+          ? { type: 'cosign_req', event: ev, msg, participants, grant: a.grant, commits: mine.map(m => m.commit), commit: mine[0].commit, frost: 2, approved: opts.approved === true }
+          : { type: 'sign_req', event: ev, msg, participants, epoch: this.epoch, commits: mine.map(m => m.commit), commit: mine[0].commit, frost: 2 },
         finish: async res => {
           const theirs: [number, string][] = res.zs ?? [[partsOf(s)[0], res.z]];
           const commits = [...mine.map(m => m.commit), ...(res.commits ?? [res.commit])];
@@ -275,10 +323,10 @@ export class Device {
   private async ownKey(): Promise<Uint8Array> {
     const a = this.need();
     if (this.selfKey && Date.now() - this.selfKey.at < 600_000) return this.selfKey.key;
-    const x = await this.withAServer('Couldn’t work with your own key', async s => {
+    const x = await this.withAMember('Couldn’t work with your own key', async s => {
       const participants = [...this.idxs, ...partsOf(s)].sort((p, q) => p - q);
       return {
-        body: { type: 'ecdh_req', peerX: a.groupX, participants, grant: a.grant },
+        body: { type: 'ecdh_req', peerX: a.groupX, participants, grant: a.grant, ...(s.role === 'server' ? {} : { epoch: this.epoch }) },
         finish: async res => {
           const mine: string[] = [];
           for (const idx of this.idxs) mine.push(await this.ops.ecdhPartial(idx, participants, a.groupX));
@@ -321,6 +369,19 @@ export class Device {
       if (inner?.type === 'mail') return;
       return void this.handle(inner, m.from);
     }
+    // Between the user's own devices only: who is awake, and the rounds they ask each other
+    // for. None of this ever goes to or comes from a server (§5.1).
+    if (member.role === 'device') {
+      switch (m.type) {
+        case 'awake':
+          this.heard.set(from, Date.now());
+          if (m.reply !== true) this.box.send(from, { type: 'awake', epoch: this.epoch, reply: true });
+          return;
+        case 'asleep': this.heard.delete(from); return;
+        case 'sign_req': return void this.onSignReq(m, member);
+        case 'ecdh_req': return void this.onEcdhReq(m, member);
+      }
+    }
     const server = member.role === 'server' ? member : null;
     if (!server) return;
     switch (m.type) {
@@ -359,6 +420,87 @@ export class Device {
     }));
     await this.save();
     this.host.onMembers?.(a.members);
+  }
+
+  // --- Co-signing for another of the user's devices (§5.1, §5.5) ---------------------------------
+
+  /** Said once, and said again word for word if it is asked again: never a second partial (§11). */
+  private replyTo(from: Member, id: string, body: object) {
+    const full = { id, ...body };
+    this.answered.set(id, full);
+    if (this.answered.size > 200) for (const k of [...this.answered.keys()].slice(0, 50)) this.answered.delete(k);
+    this.box.send(from.pk!, full);
+  }
+
+  /**
+   * Another of the user's devices wants the rest of a signature: its 3 points and this one's 3
+   * are 6, and no server sees the event at all. What this device checks is what any co-signer
+   * checks (§5.2) — the event is the one the digest names, it is this account's, it is not a
+   * replay, and the round is in this epoch. The destructive check is the asking device's, which
+   * §5.5 accepts between two of the user's own devices; a host with the archive can refuse here.
+   */
+  private async onSignReq(m: any, from: Member) {
+    const a = this.account;
+    const id = m?.id;
+    if (!a || typeof id !== 'string') return;
+    const was = this.answered.get(id);
+    if (was) return void this.box.send(from.pk!, was);
+    const reply = (body: object) => this.replyTo(from, id, { type: 'sign_res', ...body });
+    const ev = m.event;
+    if (!ev || typeof ev !== 'object' || typeof m.msg !== 'string') return reply({ ok: false, reason: 'a request this device couldn’t read' });
+    if (a.removed) return reply({ ok: false, reason: 'revoked: this device was reported lost' });
+    if (this.unreadable || !this.idxs.length) return reply({ ok: false, reason: 'this device has no part to sign with' });
+    // Sign only what we were shown: the digest must be this event's id under the account's key.
+    const plain = { pubkey: a.groupX, created_at: Number(ev.created_at), kind: Number(ev.kind), tags: ev.tags, content: ev.content };
+    if (ev.pubkey !== a.groupX || getEventHash(plain as any) !== m.msg) return reply({ ok: false, reason: 'the event is not the one the message names' });
+    const now = Math.floor(Date.now() / 1000);
+    if (now - plain.created_at > 30) return reply({ ok: false, reason: 'too old: relays replay recent requests' });
+    if (plain.created_at - now > 600) return reply({ ok: false, reason: 'refused: dated in the future' });
+    // Neither side may sign in an epoch the other has left (§5.5). Behind is not a refusal:
+    // the asker goes on to a server, and this device catches up when its deltas arrive.
+    if (Number(m.epoch ?? this.epoch) !== this.epoch) return reply({ ok: false, reason: `a round for epoch ${m.epoch}; this device is on ${this.epoch}` });
+    const theirs: Commit[] = Array.isArray(m.commits) ? m.commits : (m.commit ? [m.commit] : []);
+    const want = partsOf(from).sort((x, y) => x - y).join();
+    if (theirs.map(c => c?.idx).sort((x, y) => x - y).join() !== want) return reply({ ok: false, reason: 'commitments that aren’t that device’s parts' });
+    let allowed: boolean;
+    try { allowed = (await this.host.mayCoSign?.(plain, from)) ?? true; } catch { allowed = false; }
+    if (!allowed) return reply({ ok: false, reason: 'refused: declined on this device' });
+    try {
+      const g = flat(a);
+      const mine: { idx: number; handle: string; commit: Commit }[] = [];
+      for (const idx of this.idxs) mine.push({ idx, ...(await this.ops.commit(g, idx)) });
+      const commits = [...theirs, ...mine.map(x => x.commit)];
+      const zs: [number, string][] = [];
+      for (const x of mine) zs.push([x.idx, await this.ops.sign(g, x.idx, x.handle, m.msg, commits)]);
+      reply({ ok: true, commits: mine.map(x => x.commit), zs, commit: mine[0].commit, z: zs[0][1] });
+      this.say(`Signed with ${from.name}.`);
+    } catch (e) {
+      this.answered.delete(id); // a round that never happened: let it be asked again
+      reply({ ok: false, reason: whyOf(e) });
+    }
+  }
+
+  /** The same for a shared secret (§5.6): this device's halves, so two devices can read alone. */
+  private async onEcdhReq(m: any, from: Member) {
+    const a = this.account;
+    const id = m?.id;
+    if (!a || typeof id !== 'string') return;
+    const was = this.answered.get(id);
+    if (was) return void this.box.send(from.pk!, was);
+    const reply = (body: object) => this.replyTo(from, id, { type: 'ecdh_res', ...body });
+    if (a.removed) return reply({ ok: false, reason: 'revoked: this device was reported lost' });
+    if (!isHex32(m.peerX)) return reply({ ok: false, reason: 'no peer to work with' });
+    const participants: number[] = Array.isArray(m.participants) ? m.participants.map(Number) : [];
+    if (!this.idxs.every(i => participants.includes(i))) return reply({ ok: false, reason: 'a round this device isn’t in' });
+    if (Number(m.epoch ?? this.epoch) !== this.epoch) return reply({ ok: false, reason: `a round for epoch ${m.epoch}; this device is on ${this.epoch}` });
+    try {
+      const points: string[] = [];
+      for (const idx of this.idxs) points.push(await this.ops.ecdhPartial(idx, participants, m.peerX));
+      reply({ ok: true, points, point: points[0] });
+    } catch (e) {
+      this.answered.delete(id);
+      reply({ ok: false, reason: whyOf(e) });
+    }
   }
 
   // --- Refreshes ---------------------------------------------------------------------------------
@@ -453,6 +595,12 @@ export class Device {
   private async tend() {
     if (this.closed || !this.account) return;
     for (const s of this.servers()) this.box.send(s.pk!, { type: 'ping', idx: this.idxs[0], ts: Date.now() });
+    // The user's other devices hear that this one is awake, so whichever of them signs next asks
+    // a device rather than a server, with nobody asked and nothing to set up. Servers never hear it.
+    if (this.idxs.length && Date.now() - this.saidAwake > SAY_AWAKE_EVERY) {
+      this.saidAwake = Date.now();
+      for (const d of this.others()) this.box.send(d.pk!, { type: 'awake', epoch: this.epoch });
+    }
     const p = this.account.pending;
     if (p && Date.now() - p.at > 48 * 3600_000) {
       await this.ops.dropPending(p.epoch).catch(() => {});
