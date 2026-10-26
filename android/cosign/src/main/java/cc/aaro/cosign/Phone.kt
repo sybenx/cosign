@@ -496,6 +496,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         val srv = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
         val id = env.random(8).toHex()
         growing = id to java.util.Collections.synchronizedList(mutableListOf()); growWelcome = null
+        vouched[publicKeyHex(m.sk.hexToBytes())] = System.currentTimeMillis()
         send(srv.pk!!, mapOf("type" to "add_device", "id" to id, "pk" to publicKeyHex(m.sk.hexToBytes()), "name" to android.os.Build.MODEL.ifBlank { "This phone" }, "lock" to true, "grow" to true))
         note("Getting this phone a device's full share of your key…")
     }
@@ -800,6 +801,7 @@ class Signer(private val context: Context, val slot: String = "0") {
             val enrolled = ask(mapOf("type" to "enroll", "how" to "repair", "key" to key["key"], "group" to record, "k" to k, "name" to s.name) + tok + proof)
             if (enrolled?.get("type") != "enrolled") return@execute note("Couldn't add ${s.name}: ${enrolled?.get("reason") ?: "it didn't answer"}", "denied")
             val via = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return@execute
+            vouched[key["pk"] as String] = System.currentTimeMillis()
             send(via.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to key["pk"], "name" to s.name, "relays" to s.relays, "lock" to true, "server" to true, "k" to k))
             val updated = (ui.value.member ?: return@execute).let { it.copy(group = it.group.copy(relays = relaysNow)) }
             secrets.saveMembership(Json.stringify(membershipToMap(updated)))
@@ -1309,6 +1311,7 @@ class Signer(private val context: Context, val slot: String = "0") {
     fun confirmAddDevice() {
         val a = ui.value.adding ?: return
         val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
+        vouched[a.pk] = System.currentTimeMillis()
         send(target.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to a.pk, "name" to a.name, "relays" to a.relays, "lock" to true))
         ui.update { it.copy(adding = null) }
         note("Adding ${a.name}…")
@@ -1324,9 +1327,22 @@ class Signer(private val context: Context, val slot: String = "0") {
      * into a delta per helper share: the server's go back to it, and ours, with the
      * server's deltas for them, sum to sigmas sealed to the new device.
      */
+    /** Keys this phone has vouched for, just now, with your lock: pk → when. */
+    private val vouched = ConcurrentHashMap<String, Long>()
+
     private fun onRepair(msg: Map<*, *>, from: Member, m: Membership) {
         val id = msg["id"] as? String ?: return
         val newPk = msg["pk"] as? String ?: return
+        // Only for something this phone asked to add, just now, with your lock. A repair makes
+        // a share out of this phone's own shares, so a server that could ask for one unasked
+        // could mint itself a device — three points, which with its own makes four, and your
+        // account would sign without you ever again. The server checks for your lock, but the
+        // server is exactly who this is protecting you from.
+        val ours = making?.pk == newPk || System.currentTimeMillis() - (vouched[newPk] ?: 0) < 120_000
+        if (!ours) {
+            note("${from.name} asked this phone to make shares for something you didn't add. Refused.", "denied")
+            return
+        }
         val helpers = (msg["helpers"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
         if (!helpers.containsAll(m.idxs) || !helpers.containsAll(from.idxs)) return
         val ks = (msg["ks"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: listOfNotNull((msg["k"] as? Long)?.toInt())
