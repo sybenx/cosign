@@ -25,7 +25,10 @@ device plus one more point, and there are exactly three ways to find it:
 
 The first of these is already in the specification twice: §5.1 prefers another device
 when one is awake, and §5.5 says two devices may sign with no server at all. Neither is
-built. Both became worth building the day the Mac app became a real device.
+built, and neither was waiting on a second device to exist: the browser extension has been
+a member device with 3 points for a while, and two phones would have done as well. What
+changed is that the Mac app put a second device in daily use beside the phone, which is
+what makes an unbuilt preference worth building.
 
 So "servers optional" is not a new mechanism. It is §5.1 point 1, finished.
 
@@ -160,6 +163,68 @@ have it:
   "No dedicated cosign servers" can mean *no separate thing to run or pay for* rather than
   *no always-on member*, and that keeps the lost-device tap.
 
+### 4.1 One identical share for every site
+
+A variant the user raised: *I thought each server or site's piece was identical? So 4 add
+up to 1? And we use id's signatures or origin to differentiate.*
+
+**The arithmetic is right.** A share is an index and a scalar. Copies of one share are one
+participant, not several: a round uses one Lagrange coefficient per index, so a hundred
+sites holding the same piece are worth 1 point between them. That does fix §4's collusion
+problem completely — no number of sites reaches the threshold.
+
+It replaces it with a worse one. **A share that every site holds is a bearer token worth
+one point.** Nothing in the maths asks who is holding it; whoever has a copy can compute
+that index's partial. The number of copies grows with every site the user approves, each
+copy sits in JavaScript its operator re-delivers on every load, and so the token is public
+in the limit — the time to public is just how many sites you have signed into.
+
+What one public point does, exactly:
+
+- **A stolen device plus the token is 4 points.** In a serverless group that is the one win
+  being given away: today a stolen phone holds 3 and there is no 1-point member anywhere to
+  be its fourth, so it is useless. With the token in the world, a stolen phone *is* the
+  account — which is the nsec-on-the-phone position Cosign exists to improve on. And report
+  lost cannot help: the refusal works because a member refuses, and a bearer token has no
+  one to refuse — the thief is as much a holder as anyone.
+- **The paper plus the token is 3.** Still short. The one mercy in the design.
+- **A site that is merely sloppy leaks it.** One holder that replays a nonce across two
+  messages hands over the secret itself: two partials on one index with one nonce pair
+  solve for the share. §3 already forbids keeping nonces where a copy or a restore could
+  replay them, and browser storage is exactly where copies and restores happen — profile
+  sync, browser restore, two tabs of the same origin. One secret in N browsers is N chances
+  at it, and the share that leaks is everyone's.
+
+**Revocation stops being possible.** You cannot revoke one holder of a shared secret. A
+refresh rotates the share, which does genuinely kill every leaked copy — but then the new
+value has to be handed to every site the user still wants, so every refresh re-publishes
+the token to a wider circle than the last one. What that describes is a shared password,
+rotated now and then, given to every site you sign into.
+
+**Origin and signature checks are policy, not maths** — the hub's reading is right. They
+say who is *claiming* to ask. They cannot stop a holder from computing its own partial,
+because that needs no permission from anyone. Origin policy is valuable, and it already
+exists in the only place it can be enforced: the device, through grants (§6.2). Nothing
+about it requires the site to hold a piece.
+
+There is also no way to bind a share to a machine inside a browser. A non-extractable
+WebCrypto key cannot do the scalar arithmetic a FROST partial needs, so the share has to
+be reachable by the page's own code, and therefore by whoever serves that code.
+
+**The rule that falls out of all three variants** — per-site shares, one identical share,
+and a server — is worth stating on its own, because it decides the question:
+
+> A point is only safely revocable if exactly **one** party holds it and that party can
+> **refuse**.
+
+A server satisfies it. A relay holding the 1 satisfies it (§9.1). An always-on box the user
+owns satisfies it. A second device satisfies it with 3 points instead of 1. A browser
+holding a member share of its own — an extension or installed PWA, one holder, pinned code,
+removable on its own — satisfies it, and is the honest form of "the thing I already use
+carries part of my key"; note that anything holding 1 point does arm a stolen device until
+report lost, which is fine precisely because that holder is the one who refuses. A piece
+copied to every site satisfies neither half.
+
 ## 5. Transport
 
 Nothing changes: it is already relays only. Live rounds are ephemeral gift wraps (kind
@@ -188,6 +253,9 @@ place a waiting delta sits, so dealers must re-send.
 ## 7. Threat model, serverless
 
 - **A malicious site's share** — the §4 case. Not built, and not recommended.
+- **One identical share held by every site** — §4.1. Fixes the collusion arithmetic and
+  replaces it with a bearer token: a stolen device plus that token is 4 points, with no
+  holder left who can refuse, and a refresh is the only revocation it has.
 - **A stolen phone** (3) — cannot sign: the remaining device refuses it, and there is no
   1-point member anywhere to make its fourth. Strictly better than today, where a thief
   with an unlocked phone and one cooperating server has 4 (§12).
@@ -233,8 +301,9 @@ place a waiting delta sits, so dealers must re-send.
 2. **Then let a group have no servers**, as a setup choice, gated on two devices plus a
    paper or on three devices, with the sentence *a lost device means getting the paper
    out* said plainly at setup and in settings.
-3. **Do not give web pages shares.** If a browser should carry part of the key, it carries
-   it as a device — extension or installed PWA, 3 points, added by a scan, revocable.
+3. **Do not give web pages shares**, per-site or one identical piece for all of them
+   (§4, §4.1). If a browser should carry part of the key, it carries it as a member of its
+   own — extension or installed PWA, added by a scan, removable on its own.
 4. **Offer the 1-point member inside a relay** for people who want always-on without
    running anything: it is already blessed by §9.1 and it keeps the lost-device tap.
 
