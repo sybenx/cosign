@@ -215,7 +215,21 @@ export function openGroup(loaded: Loaded, io: Io) {
     // Nothing from a member taken out (a device reported lost, an old paper): it must get
     // nothing more from this server, not even a piece of a decryption. Removal is final;
     // a device removed by mistake is added again by one of yours, or the paper.
-    if (from.removed) return;
+    //
+    // With one exception, for a week: a device that was reported lost may say it wasn't them.
+    // Reporting is instant and final and the first report used to win outright, so a thief
+    // with one device could report every other device lost and then cancel each recovery the
+    // user started, and the user's own devices were already mute. Two devices that report
+    // each other are now both out, which leaves a thief able to deny service and never able
+    // to take over. Nothing else is heard from a removed device: not signing, not reading,
+    // not vouching, not dealing.
+    if (from.removed) {
+      if (now() - from.removed > CONTEST || msg.lock !== true) return;
+      if (msg.type === 'remove_member') return onContest(msg, from);
+      if (msg.type === 'guard_cancel') return cancelGuard(msg, from);
+      if (msg.type === 'cancel_recovery') return cancelRecovery(from);
+      return;
+    }
 
     const fromPhone = isDevice(from); // any of your devices
     switch (msg.type) {
@@ -1309,12 +1323,33 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (msg.plan) startRefresh(msg.plan as RefreshPlan, by);
   }
 
+  /**
+   * "That wasn't me": a device reported lost says the device that reported it is the one to
+   * take out. Both go, because no server can tell which of two of the user's own devices is
+   * in the user's hands. What is left — the other devices, or the paper — is what the account
+   * comes back from, and neither side of the argument can sign in the meantime.
+   */
+  function onContest(msg: any, by: Member) {
+    const target = members.find(m => m.idx === Number(msg.idx));
+    if (!target || target.idx !== by.removedBy || target.role === 'server' || target.removed) return;
+    by.contested = now();
+    target.removed = now(); target.removedBy = by.idx;
+    save();
+    startGuard('remove', msg, by, { target: target.idx, wait: 0 });
+    send(target.pk, { type: 'removed', by: by.name });
+    toOther({ type: 'members', members });
+    toDevices({ type: 'members', members: publicMembers(), epoch: S.epoch ?? 0 });
+    for (const d of devices()) if (d.push) void io.push(d.push);
+    note(`${by.name} says it wasn't lost and reported ${target.name}: both are out now. Your other devices, or your paper backup, bring the account back.`);
+  }
+
   /** The plan must be the next epoch, dealt by the device that sent it and a server, over every remaining share. */
   function startRefresh(plan: RefreshPlan, by: Member) {
     if (refresh?.plan.epoch === plan?.epoch || Number(plan?.epoch) <= (S.epoch ?? 0)) return; // a repeat, or done already
     const want = members.filter(m => !m.removed).flatMap(m => sharesOf(m).map(idx => ({ idx, pk: m.pk })));
     const ok = plan && plan.epoch === (S.epoch ?? 0) + 1 && plan.threshold === S.group.threshold && Array.isArray(plan.dealers) && Array.isArray(plan.holders)
       && plan.dealers.includes(by.pk!) && plan.dealers.some(d => members.some(m => m.pk === d && m.role === 'server' && !m.removed))
+      && !plan.dealers.some(d => members.some(m => m.pk === d && (m.removed || m.contested)))
       && plan.holders.length === want.length && want.every(w => plan.holders.some(h => h.idx === w.idx && h.pk === w.pk))
       && Array.isArray(plan.points) && want.every(w => plan.points.some(([i, p]) => i === w.idx && p === pointOf(w.idx)));
     if (!ok) return note(`refused a refresh from ${by.name}: its plan doesn't match the members`);
@@ -1602,6 +1637,8 @@ export function openGroup(loaded: Loaded, io: Io) {
    * not to make the user wait for something they asked for.
    */
   const ADD_WAIT = Number(process.env.COSIGN_ADD_WAIT ?? 3600);
+  /** How long a device reported lost may say it wasn't them (COSIGN.md §7.2). */
+  const CONTEST = Number(process.env.COSIGN_CONTEST ?? 7 * 86400);
   // The host's age-out (stale()), in seconds: only for accounts that never finished being set up.
   const UNFINISHED_AFTER = Number(process.env.COSIGN_UNFINISHED_AFTER ?? 86400);
   const sealTo = (pk: string, body: object) => nip44.v2.encrypt(JSON.stringify(body), nip44.v2.utils.getConversationKey(F.hexToBytes(S.self.sk), pk));
