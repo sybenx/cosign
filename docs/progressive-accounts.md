@@ -416,6 +416,34 @@ holds the identity for good) are unchanged by anything here.
    - **It settles nothing about a wait**, because no wait applies to the case the author
      described. §7.4's wait remains for the paper without a surviving device and for
      taking the account out.
+
+   **The author's decision on the helper** (2026-10-26): *I think if you can fingerprint
+   in with one device, you're good. It's the second gate past just stealing a phone.* So
+   the vouching device's own lock is the gate; the helping device contributes silently and
+   every member is told a device was added, as now. No second user to ask, and no wait.
+
+   What that requires is already normative and needs no new rule: COSIGN.md §7.1 says the
+   vouching device "MUST ask for it at the moment of vouching, **even when the device is
+   already unlocked**". A cached unlock, a session window or a recent biometric MUST NOT
+   stand in for it, and a device with no screen lock cannot vouch at all. The reference app
+   follows this today — the library's `confirmAddDevice` is only reachable after the app
+   has asked, and it refuses outright when no screen lock is set — though the prompt itself
+   lives in the app, which is the next point.
+
+   Two honest limits on the gate, for the reviewer rather than against the decision:
+
+   - **Against a thief, the gate is real.** The shares sit in the device's keystore inside
+     the app's sandbox, so a thief cannot carry them to a build that skips the prompt. The
+     OS asks, and a thief who has the phone but not the finger or the PIN stops there.
+     This is a genuine second gate and it is the one §7.1 was designed around.
+   - **Against a modified or hostile app on the user's own device, it is not**, and
+     neither is anything else here: §7.1 already says the lock is a claim the device makes
+     and that other members take its word. The hardware-bound user-verification key of
+     §7.1 (an Android Keystore key requiring user authentication, or a WebAuthn credential
+     with user verification, whose signature the other members check) is what would turn
+     the claim into evidence. Until it exists, "fingerprint in with one device" is as
+     strong as that device's own app, which is the right amount of strong for theft and
+     not evidence for anyone else.
 2. **Whether a device should ever hold fewer than 3 shares** — an old phone in a drawer,
    a cheap always-on box at home — and whether "a device of mine that is worth 1" is a
    useful third category beside device and guest.
