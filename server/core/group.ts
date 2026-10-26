@@ -38,7 +38,16 @@ export interface Member { idx: number; name: string; role: 'server' | 'phone' | 
   /** A server with no NIP-46 signer key (a public Worker, say): it never answers sites. */
   noSites?: boolean;
   /** In a weighted key a member holds several shares (a device 3, a server 1). `idx`/`sharePub` are the first. */
-  shares?: { idx: number; sharePub: string }[] }
+  shares?: { idx: number; sharePub: string }[];
+  /**
+   * Learned from another server's list and nothing else (when, in seconds). Such a member
+   * may hold shares and sign, but it is not treated as one of the user's devices until it
+   * has proved it holds them, because a server that can write the member list could
+   * otherwise write itself in as a device and act as one (COSIGN.md §4.4).
+   */
+  viaServer?: number;
+  /** When this server added it (a member added before this field is treated as long-standing). */
+  since?: number }
 /**
  * A grant. `parent` is set for one a connected site added under itself (the browser
  * extension adds one per website it signs for); `via` names what connected it.
@@ -70,6 +79,17 @@ export function openGroup(loaded: Loaded, io: Io) {
   /** The phone your server's code added first: pairing only. Everything else is any device. */
   const phone = () => members.find(m => m.role === 'phone')!;
   const isDevice = (m?: Member) => !!m && (m.role === 'phone' || m.role === 'device') && !m.removed;
+  /**
+   * May act for the user in a way that cannot be taken back: removing a device, handing out
+   * pieces, taking the account out, cancelling a wait or a recovery. A member this server
+   * only ever heard about from another server's list may not, until it has proved it holds
+   * the shares that list claims (`viaServer`, cleared in `attempt`). Otherwise one
+   * dishonest server could write itself in as a device and have every other server report
+   * the user's real devices lost. Everything else a device does — signing, grants, mail,
+   * taking part in a refresh — is unaffected, so nothing a real new device needs is
+   * delayed: it does those at the server that added it, and this one catches up.
+   */
+  const mayAct = (m?: Member) => isDevice(m) && !m!.viaServer;
   /** Your devices that can sign: the phone, and any added since. */
   const devices = () => members.filter(m => isDevice(m) && m.pk);
   const byPk = (pk: string) => members.find(m => m.pk === pk);
@@ -206,13 +226,13 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'cosign_req': return answerOnce(from, msg.id, () => onCosignReq(msg, from));
       case 'phone_signed': { if (fromPhone) onPhoneSigned(msg); return; }
       case 'app_grant': { if (fromPhone) grantApp(msg); return; }
-      case 'add_device': { if (fromPhone) addDevice(msg, from).catch(err => send(from.pk, { type: 'add_failed', id: msg.id, reason: err.message })); return; }
+      case 'add_device': { if (mayAct(from)) addDevice(msg, from).catch(err => send(from.pk, { type: 'add_failed', id: msg.id, reason: err.message })); return; }
       case 'repair_delta': { if (fromPhone) onRepairDelta(msg, from); return; }
       case 'members': { if (!fromPhone) mergeMembers(msg.members ?? []); return; }
-      case 'remove_member': { if (fromPhone) onRemove(msg, from); return; }
-      case 'take_out': { if (fromPhone) onTakeOut(msg, from); return; }
-      case 'forget': { if (fromPhone) onForget(msg, from); return; }
-      case 'guard_cancel': { if (fromPhone) cancelGuard(msg, from); return; }
+      case 'remove_member': { if (mayAct(from)) onRemove(msg, from); return; }
+      case 'take_out': { if (mayAct(from)) onTakeOut(msg, from); return; }
+      case 'forget': { if (mayAct(from)) onForget(msg, from); return; }
+      case 'guard_cancel': { if (mayAct(from)) cancelGuard(msg, from); return; }
       case 'refresh_request': {
         if (!fromPhone || !msg.plan) return;
         // A periodic one needs no lock: it takes nobody out, and only runs once the key has sat long enough.
@@ -233,7 +253,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'backup_get': { if (from.role === 'backup') sendBackup(from); return; }
       case 'recover': { if (from.role === 'backup') startRecovery(msg, from); return; }
       case 'recover_finish': { if (from.role === 'backup') finishRecovery(from); return; }
-      case 'cancel_recovery': { if (fromPhone && msg.lock === true) cancelRecovery(from); return; }
+      case 'cancel_recovery': { if (mayAct(from) && msg.lock === true) cancelRecovery(from); return; }
       case 'mail_for': { if (fromPhone) holdMail(String(msg.to), { from: from.pk!, content: String(msg.content), epoch: Number(msg.epoch) }); return; }
       case 'refreshed': { if (fromPhone) { S.mail ??= {}; S.mail[from.pk!] = (S.mail[from.pk!] ?? []).filter((x: any) => x.epoch > Number(msg.epoch)); save(); } return; }
       case 'cancel_batch': { // Undo on a deletion in its 10 s
@@ -486,6 +506,9 @@ export function openGroup(loaded: Loaded, io: Io) {
       const commits = [...mine.commits, ...theirs];
       // FROST (RFC 9591) only: the earlier hand-rolled math is no longer taken.
       if (Sig.schemeOfAll(S.group, id, commits, theirZs) !== 2) return { m, reason: 'bad partial' };
+      // It signed with the shares the list says it holds, which nothing but the real member
+      // can do: whatever another server told us, it is one of the user's from here on.
+      if (m.viaServer) { delete m.viaServer; save(); }
       const scheme = 2 as const;
       const zs = Sig.partialAll(scheme, S.group, myShares, mine.nonces, id, commits);
       countSigned();
@@ -1104,11 +1127,13 @@ export function openGroup(loaded: Loaded, io: Io) {
     let dirty = false;
     for (const m of list) {
       const mine = members.find(x => x.idx === m.idx);
-      if (!mine) { members.push({ ...m, push: m.push ?? null }); dirty = true; continue; }
+      // Taken, because the other server may be the only one that saw a new device added —
+      // but marked, because this server has no evidence of its own that it is a device.
+      if (!mine) { members.push({ ...m, push: m.push ?? null, viaServer: now() }); dirty = true; continue; }
       if (m.removed && !mine.removed) { mine.removed = m.removed; dirty = true; }
       if (!mine.pk && m.pk) { mine.pk = m.pk; dirty = true; }
       // A paper backup that became the phone it restored (after the wait, at the other server).
-      if (mine.role === 'backup' && m.role === 'device' && !m.removed) { Object.assign(mine, { role: 'device', pk: m.pk, name: m.name }); dirty = true; }
+      if (mine.role === 'backup' && m.role === 'device' && !m.removed) { Object.assign(mine, { role: 'device', pk: m.pk, name: m.name, viaServer: now() }); dirty = true; }
       if (m.noSites && !mine.noSites) { mine.noSites = true; dirty = true; }
       // A device that grew its shares (after a paper recovery), at the other server.
       // Only a change of which shares it holds: points move by refresh, which each server works out itself.
