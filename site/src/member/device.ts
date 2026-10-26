@@ -10,6 +10,15 @@
 //   const signed = await device.sign({ kind: 1, content: 'hello', tags: [] });
 //
 // Ported from the browser extension's member code, with every secret behind ShareOps.
+//
+// **A host must keep this running.** Everything here waits on timers: reconnecting to a
+// relay, asking a server again when a relay dropped the question, letting go of a refresh
+// nobody committed. A WebKit page that is hidden has its timers stalled, so a signer kept in
+// a hidden webview goes deaf — the messages arrive on the relays and nothing acts on them,
+// and a join hangs with no error anywhere. The Marble Mac app turns that throttling off for
+// its signer page (WKPreferences _setHiddenPageDOMTimerThrottlingEnabled and friends); an
+// iOS host will have to do the same, and any host should check this before blaming the
+// protocol for a round that never finishes.
 
 import { getEventHash, type Event } from 'nostr-tools/pure';
 import * as nip44 from 'nostr-tools/nip44';

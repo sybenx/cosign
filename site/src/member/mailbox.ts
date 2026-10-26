@@ -97,7 +97,9 @@ export class Mailbox {
     const up = [...this.conns.values()].filter(r => r?.connected) as Relay[];
     for (const e of sealParts(this.sk, toPk, msg)) {
       if (!up.length) { this.queue.push(e); continue; }
-      for (const r of up) r.publish(e).catch(() => {});
+      // A relay that has stopped answering never settles its publish, so each one is given
+      // a few seconds and then let go: nothing here waits on a relay to say it took a message.
+      for (const r of up) void Promise.race([r.publish(e), new Promise(done => setTimeout(done, 5000))]).catch(() => {});
     }
   }
 
