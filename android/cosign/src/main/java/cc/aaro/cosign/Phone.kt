@@ -59,7 +59,17 @@ data class Group(val groupX: String, val npub: String, val threshold: Int, val r
 /** One of this device's own shares. */
 data class Share(val idx: Int, val secret: String) : java.io.Serializable
 /** [mirrored]: the key brought in had an odd y, so FROST holds its twin (the same npub); null if not known here. */
-data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null) : java.io.Serializable {
+/**
+ * A quiet refresh this device has followed but not applied (COSIGN.md §7.7). The servers hold
+ * the new shares as pending and go on signing with the current ones until a device commits, so
+ * a device that applied them at once would be on an epoch nobody else has — and if that refresh
+ * is never committed, the servers drop it after 48 hours and the device is stranded for good.
+ */
+data class Pending(val epoch: Int, val id: String?, val shares: List<Share>, val points: List<Point>, val at: Long) : java.io.Serializable
+
+data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null,
+    /** Waiting for the servers' commit; dropped if it never comes (PENDING_DROP). */
+    val pending: Pending? = null) : java.io.Serializable {
     /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
     val share get() = shares.first().secret
     val idxs get() = shares.map { it.idx }
@@ -248,7 +258,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         }
         if (relays == null || sk != m.sk) connect(m.group.relays, m.sk)
         relays?.watch(mapOf("kinds" to Policy.ARCHIVED.toList(), "authors" to listOf(m.group.groupX)))
-        if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status() }, 0, 10, TimeUnit.SECONDS)
+        if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status(); dropStalePending() }, 0, 10, TimeUnit.SECONDS)
         timer.schedule({ requestState(); ui.value.push?.let { tellPush(it) } }, 2, TimeUnit.SECONDS)
         // Judge "the future" by the network's time, not this phone's clock.
         if (clockCheck?.isCancelled != false) clockCheck = timer.scheduleWithFixedDelay({
@@ -526,8 +536,13 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     private fun startRefresh(plan: Map<*, *>, m: Membership): Refresh? {
         val epoch = (plan["epoch"] as? Long)?.toInt() ?: return null
-        if (epoch <= m.epoch || refresh?.epoch == epoch) return null
-        val run = try { Refresh(plan, publicKeyHex(m.sk.hexToBytes()), m.shares.map { it.idx to it.secret }, ::send, { r -> timer.execute { refreshed(r) } }, env) } catch (e: Exception) {
+        if (epoch <= m.epoch || refresh?.epoch == epoch || m.pending?.epoch == epoch) return null
+        // A quiet refresh (periodic) is held until the servers commit it; anything else — the
+        // refresh after a device is reported lost — takes effect as soon as it is worked out.
+        val quiet = plan["periodic"] == true
+        val id = plan["id"] as? String
+        val done: (Refresh.Result) -> Unit = if (quiet) { r -> timer.execute { holdPending(r, id) } } else { r -> timer.execute { refreshed(r) } }
+        val run = try { Refresh(plan, publicKeyHex(m.sk.hexToBytes()), m.shares.map { it.idx to it.secret }, ::send, done, env) } catch (e: Exception) {
             note("Couldn't refresh: ${e.message}", "denied"); return null
         }
         refresh = run
@@ -540,6 +555,36 @@ class Signer(private val context: Context, val slot: String = "0") {
         return run
     }
 
+    /** The new shares, kept but not used, until a server says the key has moved. */
+    private fun holdPending(r: Refresh.Result, id: String?) {
+        val m = ui.value.member ?: return
+        if (r.epoch <= m.epoch) return
+        val kept = m.copy(pending = Pending(r.epoch, id, r.shares.map { Share(it.first, it.second) }, r.points.map { Point(it.first, it.second) }, System.currentTimeMillis()))
+        secrets.saveMembership(Json.stringify(membershipToMap(kept)))
+        ui.update { it.copy(member = kept) }
+    }
+
+    /** A server says the key has moved: now the shares that were waiting are this phone's. */
+    private fun onCommitted(msg: Map<*, *>) {
+        val m = ui.value.member ?: return
+        val p = m.pending ?: return
+        val epoch = (msg["epoch"] as? Long)?.toInt() ?: return
+        val id = msg["id"] as? String
+        if (epoch != p.epoch || (id != null && p.id != null && id != p.id)) return
+        refreshed(Refresh.Result(p.epoch, p.shares.map { it.idx to it.secret }, p.points.map { it.idx to it.sharePub }))
+    }
+
+    /** One nobody committed is let go, as the servers let theirs go; this phone stays where it is. */
+    private fun dropStalePending() {
+        val m = ui.value.member ?: return
+        val p = m.pending ?: return
+        if (System.currentTimeMillis() - p.at < 48 * 3600_000L) return
+        val kept = m.copy(pending = null)
+        secrets.saveMembership(Json.stringify(membershipToMap(kept)))
+        ui.update { it.copy(member = kept) }
+        note("An epoch your servers never finished was let go; your key is unchanged.")
+    }
+
     private fun refreshed(r: Refresh.Result) {
         val m = ui.value.member ?: return
         val at = r.points.toMap()
@@ -548,7 +593,7 @@ class Signer(private val context: Context, val slot: String = "0") {
             val pts = mm.idxs.map { Point(it, at[it]!!) }
             mm.copy(sharePub = pts[0].sharePub, shares = if (mm.shares != null) pts else null)
         }
-        val updated = m.copy(shares = r.shares.map { Share(it.first, it.second) }, group = m.group.copy(members = members), epoch = r.epoch)
+        val updated = m.copy(shares = r.shares.map { Share(it.first, it.second) }, group = m.group.copy(members = members), epoch = r.epoch, pending = null)
         secrets.saveMembership(Json.stringify(membershipToMap(updated)))
         ui.update { it.copy(member = updated) }
         for (s in servers()) send(s.pk!!, mapOf("type" to "refreshed", "epoch" to r.epoch))
@@ -564,6 +609,7 @@ class Signer(private val context: Context, val slot: String = "0") {
                 return onRefreshMsg(inner, sender, m)
             }
             "refresh_plan" -> { (msg["plan"] as? Map<*, *>)?.let { startRefresh(it, m) } }
+            "refresh_committed" -> onCommitted(msg)
             "refresh_part" -> refresh?.take(msg, from)
             "removed" -> { ui.update { it.copy(removedBy = msg["by"] as? String ?: "another device") }; note("This phone was reported lost from ${msg["by"]}", "denied") }
             "recovery" -> { ui.update { it.copy(recovery = (msg["name"] as? String ?: "a new phone") to ((msg["until"] as? Long) ?: 0L)) }; note("Your paper backup is being used for ${msg["name"]}", "denied") }
@@ -1955,11 +2001,20 @@ class Signer(private val context: Context, val slot: String = "0") {
         val shares = (m["shares"] as? List<*>)?.map { val s = it as Map<*, *>; Share((s["idx"] as Long).toInt(), s["secret"] as String) }
             ?: listOf(Share(idx, m["share"] as? String ?: return null))
         return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null,
-            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean)
+            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean,
+            (m["pending"] as? Map<*, *>)?.let { p ->
+                Pending((p["epoch"] as Long).toInt(), p["id"] as? String,
+                    (p["shares"] as? List<*>)?.map { val x = it as Map<*, *>; Share((x["idx"] as Long).toInt(), x["secret"] as String) } ?: emptyList(),
+                    (p["points"] as? List<*>)?.map { val x = it as Map<*, *>; Point((x["idx"] as Long).toInt(), x["sharePub"] as String) } ?: emptyList(),
+                    (p["at"] as? Long) ?: 0L)
+            })
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
         "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer, "epoch" to m.epoch, "mirrored" to m.mirrored,
+        "pending" to m.pending?.let { p -> mapOf("epoch" to p.epoch, "id" to p.id, "at" to p.at,
+            "shares" to p.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) },
+            "points" to p.points.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }) },
         "group" to mapOf(
             "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
             "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
