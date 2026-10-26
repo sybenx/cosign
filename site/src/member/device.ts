@@ -283,13 +283,27 @@ export class Device {
     if (this.joining && (m.type === 'welcome' || m.type === 'sigma')) return void this.onJoinPiece(m, from, this.host.name ?? 'This device');
     const a = this.account;
     if (!a) return;
-    // Only the servers of this account are listened to at all.
-    const server = a.members.find(x => x.role === 'server' && x.pk === from);
+    // Only members of this account are listened to at all.
+    const member = a.members.find(x => x.pk === from);
+    if (!member) return;
+    // A refresh is dealt by one of your devices and a server together, and each dealer sends
+    // its part straight to every holder — so these come from a device as often as from a
+    // server. What they are allowed to do is checked where they are used: a part counts only
+    // from a dealer that plan named. Everything else is from a server or from nobody.
+    if (m.type === 'refresh_plan') return void this.onPlan(m.plan);
+    if (m.type === 'refresh_part') return void this.onPart(m, from);
+    // What a server kept for this device while it was away: opened as if it had just arrived.
+    if (m.type === 'mail' && typeof m.content === 'string' && isHex32(m.from)) {
+      let inner: any;
+      try { inner = JSON.parse(nip44.v2.decrypt(m.content, nip44.v2.utils.getConversationKey(hexToBytes(this.sk), m.from))); } catch { return; }
+      // One layer: mail inside mail is nobody's doing but a server playing games.
+      if (inner?.type === 'mail') return;
+      return void this.handle(inner, m.from);
+    }
+    const server = member.role === 'server' ? member : null;
     if (!server) return;
     switch (m.type) {
       case 'members': return void this.onMembers(m);
-      case 'refresh_plan': return void this.onPlan(m.plan);
-      case 'refresh_part': return void this.onPart(m, from);
       case 'refresh_committed': return void this.onCommitted(m);
       case 'removed': {
         a.removed = { by: String(m.by ?? 'another device'), at: Date.now() };
