@@ -12,6 +12,24 @@ the one person who can least afford it, and it quietly breaks the invariant the 
 design rests on. The honest cost of dropping servers is paid somewhere else: **a lost
 device stops being a tap and starts being a trip to the paper backup.**
 
+## 0a. Nothing is asked of the user
+
+A steer from the user, which decides more of this than it looks: *people should just be
+automagically shifted around to the best set of circumstances for themselves.* Telling
+someone "you now have enough devices to stop relying on servers" is asking them to manage
+their keys, and that is the thing this design exists to abolish.
+
+So everything below is chosen by the software, continuously, with no prompt and no setting:
+which member supplies the fourth point (an awake device if there is one, a server
+otherwise), when a refresh happens, which sites are reissued to, and whether an always-on
+member is used or merely kept. The user is shown only what they must physically do — scan
+a code to add a device, keep the paper somewhere — and told in one plain sentence when an
+arrangement changes something they would care about. That is a sentence, not a choice.
+
+A corollary worth keeping in view: **not using a server is better than not having one.**
+An unused server costs nothing, sees nothing, and is still the point that turns a lost
+device into a tap rather than a trip to the paper (§3).
+
 ## 1. Where the fourth point comes from
 
 Threshold 4. A device holds 3, a server 1, the paper 2 (§3). So every signature is a
@@ -282,11 +300,12 @@ weighting where it finishes the thief's.
 
 **What is left even granting everything else:**
 
-- **A site you still approve receives every new piece.** It is not a leak that ages out;
-  it is a standing hand-out to every web app the user ever signed into, re-delivered at
-  each epoch, and a site's code is re-delivered by its operator on every load — so the
-  population of parties who own the account if they also get the phone is every site,
-  every CDN in front of it, and every dependency in its build.
+- **Not that a site you approve receives the piece** — holding it gives a site nothing it
+  could not already do, since an approved site can already ask the user's devices to sign.
+  The piece is not a capability, it is a copy. What matters is how many places a current
+  copy sits in: every site, every CDN in front of one, every dependency in its build, and
+  every browser profile that can be lifted — and any one of those copies, with the phone,
+  is the key.
 - **Nonce hygiene** is manageable but must be exactly right: one index in N browsers is N
   chances that one of them persists a nonce and gets duplicated or restored, and two
   partials on one index with one nonce pair solve for the piece itself. The rule is that
@@ -395,15 +414,18 @@ place a waiting delta sits, so dealers must re-send.
    on the Mac. Nothing in the spec changes, no account changes, and the everyday round
    stops going through anyone else's machine whenever two of the user's devices are both
    awake. This is the same code a serverless account needs.
-2. **Then let a group have no servers**, as a setup choice, gated on two devices plus a
-   paper or on three devices, with the sentence *a lost device means getting the paper
-   out* said plainly at setup and in settings.
+2. **Then stop asking the question at all.** A group does not have to drop its servers to
+   stop routing through them: with step 1 in place, two awake devices sign each other's
+   rounds and the servers sit there unused, silent, and still holding the point that makes
+   a lost device a tap rather than a trip to the paper. That is the best arrangement in
+   both directions and nobody has to choose it. A group with no servers follows for anyone
+   who wants it, under the points rule of §3 — but as a consequence, not a setting, and
+   never a prompt (§0a).
 3. **Do not give web pages shares**, per-site or one identical piece for all of them,
    with or without cycling (§4, §4.1, §4.2). If a browser should carry part of the key, it carries it as a member of its
    own — extension or installed PWA, added by a scan, removable on its own.
 4. **Offer the 1-point member inside a relay** for people who want always-on without
    running anything: it is already blessed by §9.1 and it keeps the lost-device tap.
-
 5. **Merge the phone's side of §7.7**, so keys cycle every 30 days as the specification
    says and as the user already believes. The server half is on main waiting for it, a
    quiet refresh takes about a second and a half, and it is what makes a leaked anything
