@@ -439,11 +439,11 @@ holds the identity for good) are unchanged by anything here.
    - **Against a modified or hostile app on the user's own device, it is not**, and
      neither is anything else here: §7.1 already says the lock is a claim the device makes
      and that other members take its word. The hardware-bound user-verification key of
-     §7.1 (an Android Keystore key requiring user authentication, or a WebAuthn credential
-     with user verification, whose signature the other members check) is what would turn
-     the claim into evidence. Until it exists, "fingerprint in with one device" is as
-     strong as that device's own app, which is the right amount of strong for theft and
-     not evidence for anyone else.
+     §7.1 is what would turn the claim into evidence. Until it exists, "fingerprint in with
+     one device" is as strong as that device's own app, which is the right amount of strong
+     for theft and not evidence for anyone else. **The author has asked for that key to be
+     built**, and its normative text is now [user-verification.md](user-verification.md),
+     to be reviewed on its own.
 2. **Whether a device should ever hold fewer than 3 shares** — an old phone in a drawer,
    a cheap always-on box at home — and whether "a device of mine that is worth 1" is a
    useful third category beside device and guest.
