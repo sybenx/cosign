@@ -40,7 +40,7 @@ spawnSync('pkill', ['-f', 'server.ts test-guards/']);
 for (const f of [phoneFile, tabletFile, paperFile]) if (existsSync(f)) rmSync(f);
 spawnSync('node', ['setup.ts', '--dir', 'test-guards', '--port', '8758', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });
-for (const s of ['a', 'b']) { const l = openSync(`${serverDir}logs/guards-${s}.log`, 'w'); kids.push(spawn('node', ['server.ts', `test-guards/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '6' } })); }
+for (const s of ['a', 'b']) { const l = openSync(`${serverDir}logs/guards-${s}.log`, 'w'); kids.push(spawn('node', ['server.ts', `test-guards/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '6', COSIGN_ADD_WAIT: '2' } })); }
 await sleep(3000);
 
 // --- The key: a phone, a tablet, a paper ------------------------------------------------

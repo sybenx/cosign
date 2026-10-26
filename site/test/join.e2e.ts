@@ -55,7 +55,7 @@ spawnSync('node', ['setup.ts', '--dir', 'test-join/own', '--port', '8764', '--we
 for (const s of ['a', 'b']) start(['server.ts', `test-join/own/${s}`], `join-own-${s}.log`);
 // Three home servers: two to set from their page, one fixed where it was started.
 for (const [d, port] of [['follows', 8766], ['invite', 8768]] as const)
-  start(['server.ts', '--root', `test-join/${d}`], `join-${d}.log`, { COSIGN_PORT: String(port), COSIGN_PROFILES_EVERY: '15000', COSIGN_PROFILE_AGE: '20' });
+  start(['server.ts', '--root', `test-join/${d}`], `join-${d}.log`, { COSIGN_PORT: String(port), COSIGN_PROFILES_EVERY: '15000', COSIGN_PROFILE_AGE: '20', COSIGN_ADD_WAIT: '2' });
 start(['server.ts', '--root', 'test-join/fixed'], 'join-fixed.log', { COSIGN_PORT: '8770', COSIGN_ENROLL: 'open' });
 await sleep(4500);
 

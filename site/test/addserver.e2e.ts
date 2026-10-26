@@ -35,7 +35,7 @@ spawnSync('node', ['setup.ts', '--dir', 'test-addserver', '--port', '8763', '--w
 mkdirSync(serverDir + 'logs', { recursive: true });
 const l = openSync(`${serverDir}logs/addserver-a.log`, 'w');
 // The Worker under wrangler dev is on this machine: let this test's server reach it (egress.ts refuses loopback otherwise).
-kids.push(spawn('node', ['server.ts', 'test-addserver/a'], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RELAY_ALLOW: worker } }));
+kids.push(spawn('node', ['server.ts', 'test-addserver/a'], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RELAY_ALLOW: worker, COSIGN_ADD_WAIT: '2' } }));
 await sleep(3000);
 const html = await (await fetch('http://localhost:8763/')).text();
 const uri = html.match(/href="(cosign:pair\?[^"]+)"/)![1].replaceAll('&amp;', '&');

@@ -1158,7 +1158,15 @@ export function openGroup(loaded: Loaded, io: Io) {
       if (m.removed && !mine.removed) { mine.removed = m.removed; dirty = true; }
       if (!mine.pk && m.pk) { mine.pk = m.pk; dirty = true; }
       // A paper backup that became the phone it restored (after the wait, at the other server).
-      if (mine.role === 'backup' && m.role === 'device' && !m.removed) { Object.assign(mine, { role: 'device', pk: m.pk, name: m.name, viaServer: now() }); dirty = true; }
+      if (mine.role === 'backup' && m.role === 'device' && !m.removed) {
+        // The paper reached every server and each ran the same wait, so a server that saw
+        // this very recovery has evidence of its own and takes it as its own. One that
+        // never saw it is only repeating what it was told.
+        const ours = S.recovery?.pk === m.pk;
+        Object.assign(mine, { role: 'device', pk: m.pk, name: m.name, ...(ours ? {} : { viaServer: now() }) });
+        if (ours) { S.recovery = null; S.backup = null; }
+        dirty = true;
+      }
       if (m.noSites && !mine.noSites) { mine.noSites = true; dirty = true; }
       // A device that grew its shares (after a paper recovery), at the other server.
       // Only a change of which shares it holds: points move by refresh, which each server works out itself.

@@ -39,7 +39,7 @@ spawnSync('node', ['setup.ts', '--dir', 'test-periodic', '--port', '8784', '--we
 mkdirSync(serverDir + 'logs', { recursive: true });
 for (const s of ['a', 'b']) {
   const l = openSync(`${serverDir}logs/periodic-${s}.log`, 'w');
-  kids.push(spawn('node', ['server.ts', `test-periodic/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_REFRESH_MIN_AGE: '15', COSIGN_PENDING_DROP: '10' } }));
+  kids.push(spawn('node', ['server.ts', `test-periodic/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_REFRESH_MIN_AGE: '15', COSIGN_PENDING_DROP: '10', COSIGN_ADD_WAIT: '2' } }));
 }
 await sleep(3000);
 

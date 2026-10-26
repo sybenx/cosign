@@ -34,7 +34,7 @@ spawnSync('pkill', ['-f', 'server.ts test-paper2/']);
 for (const f of [phoneFile, newFile, paperFile]) if (existsSync(f)) rmSync(f);
 spawnSync('node', ['setup.ts', '--dir', 'test-paper2', '--port', '8759', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });
-for (const s of ['a', 'b']) { const l = openSync(`${serverDir}logs/paper2-${s}.log`, 'w'); kids.push(spawn('node', ['server.ts', `test-paper2/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '8' } })); }
+for (const s of ['a', 'b']) { const l = openSync(`${serverDir}logs/paper2-${s}.log`, 'w'); kids.push(spawn('node', ['server.ts', `test-paper2/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '8', COSIGN_ADD_WAIT: '2' } })); }
 await sleep(3000);
 
 const html = await (await fetch('http://localhost:8759/')).text();

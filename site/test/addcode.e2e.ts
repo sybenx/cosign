@@ -45,7 +45,7 @@ mkdirSync(serverDir + 'logs', { recursive: true });
 spawnSync('node', ['setup.ts', '--dir', 'test-addcode/own', '--port', '8794', '--weighted', '--force'], { cwd: serverDir });
 for (const s of ['a', 'b']) start(['server.ts', `test-addcode/own/${s}`], `addcode-own-${s}.log`);
 for (const [d, port] of [['home', 8796], ['other', 8798]] as const)
-  start(['server.ts', '--root', `test-addcode/${d}`], `addcode-${d}.log`, { COSIGN_PORT: String(port), COSIGN_ENROLL: 'invite' });
+  start(['server.ts', '--root', `test-addcode/${d}`], `addcode-${d}.log`, { COSIGN_PORT: String(port), COSIGN_ENROLL: 'invite', COSIGN_ADD_WAIT: '2' });
 await sleep(4000);
 
 const html = await (await fetch('http://localhost:8794/')).text();
