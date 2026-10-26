@@ -264,6 +264,14 @@ class Signer(private val context: Context, val slot: String = "0") {
         if (clockCheck?.isCancelled != false) clockCheck = timer.scheduleWithFixedDelay({
             Clock.check()?.let { off -> if (kotlin.math.abs(off) > 60) note("This phone's clock is ${kotlin.math.abs(off)} s ${if (off < 0) "ahead" else "behind"}: using the network's time") }
         }, 0, 30, TimeUnit.MINUTES)
+        // Conversation keys live while the phone is awake: when the screen goes off they are
+        // wiped, and whatever needs them next pays a round trip to your servers again.
+        if (screenOff == null) {
+            val r = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: android.content.Intent?) { sharedXs.forgetAll() }
+            }
+            screenOff = try { context.registerReceiver(r, android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF)); r } catch (_: Exception) { null }
+        }
     }
 
     fun stop() { pinger?.cancel(false); pinger = null; relays?.stop(); relays = null; sk = null }
@@ -611,7 +619,8 @@ class Signer(private val context: Context, val slot: String = "0") {
             "refresh_plan" -> { (msg["plan"] as? Map<*, *>)?.let { startRefresh(it, m) } }
             "refresh_committed" -> onCommitted(msg)
             "refresh_part" -> refresh?.take(msg, from)
-            "removed" -> { ui.update { it.copy(removedBy = msg["by"] as? String ?: "another device") }; note("This phone was reported lost from ${msg["by"]}", "denied") }
+            // Reported lost: this phone keeps nothing it could read your messages with.
+            "removed" -> { sharedXs.forgetAll(); ui.update { it.copy(removedBy = msg["by"] as? String ?: "another device") }; note("This phone was reported lost from ${msg["by"]}", "denied") }
             "recovery" -> { ui.update { it.copy(recovery = (msg["name"] as? String ?: "a new phone") to ((msg["until"] as? Long) ?: 0L)) }; note("Your paper backup is being used for ${msg["name"]}", "denied") }
             "recovery_cancelled" -> { ui.update { it.copy(recovery = null) }; note("${msg["by"]} cancelled using your paper backup", "approved") }
             else -> return false
@@ -1292,6 +1301,8 @@ class Signer(private val context: Context, val slot: String = "0") {
         justRemoved[site.pk] = System.currentTimeMillis()
         for (s in servers()) send(s.pk!!, mapOf("type" to "revoke", "pk" to site.pk))
         appByPk(site.pk)?.let { apps.edit().remove(it.pkg).apply() }
+        // An app's access has ended: what it could read with goes now, not when the screen does.
+        sharedXs.forgetAll()
         // Removing the extension removes every site it added; your servers do the same.
         ui.update { it.copy(sites = it.sites.filter { x -> x.pk != site.pk && x.parent != site.pk }) }
         note("Removed ${site.origin}", "denied")
@@ -1488,6 +1499,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         myUndos["site:${sum.pk}"] = System.currentTimeMillis()
         send(target.pk!!, mapOf("type" to "undo_site", "pk" to sum.pk))
         appByPk(sum.pk)?.let { apps.edit().remove(it.pkg).apply() }
+        sharedXs.forgetAll()
         justRemoved[sum.pk] = System.currentTimeMillis()
         ui.update { u -> u.copy(summary = null, sites = u.sites.filter { it.pk != sum.pk && it.parent != sum.pk }) }
         note("Undoing everything ${sum.origin} did…")
@@ -1535,7 +1547,31 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     private val apps = context.getSharedPreferences(named("apps"), Context.MODE_PRIVATE)
     private val waiting = ConcurrentHashMap<String, CompletableFuture<Map<*, *>>>()
-    private val sharedXs = ConcurrentHashMap<String, Pair<Long, ByteArray>>()
+    /**
+     * The conversation keys this phone has worked out with other people (COSIGN.md §5.6).
+     *
+     * Each one takes a server, so throwing them away costs a round trip to get it back; they
+     * are kept while this phone is awake and this process lives. Never written down: not in the
+     * state file, not in the keystore, nowhere. They go when the screen goes off, when an app's
+     * access ends, and when this phone is reported lost — and the bytes are wiped, not merely
+     * dropped, so what is left behind in memory is zeros.
+     */
+    internal class Kept {
+        private val by = ConcurrentHashMap<String, ByteArray>()
+        val size get() = by.size
+        operator fun get(peer: String): ByteArray? = by[peer]
+        operator fun set(peer: String, x: ByteArray) { by.put(peer, x)?.let { java.util.Arrays.fill(it, 0) } }
+        /** Forget them all, for real. Returns how many there were. */
+        fun forgetAll(): Int {
+            val n = by.size
+            for (x in by.values) java.util.Arrays.fill(x, 0)
+            by.clear()
+            return n
+        }
+    }
+
+    private val sharedXs = Kept()
+    private var screenOff: android.content.BroadcastReceiver? = null
 
     fun appGrant(pkg: String): AppGrant? = apps.getString(pkg, null)?.let { j ->
         (Json.parse(j) as? Map<*, *>)?.let { AppGrant(pkg, it["pk"] as String, it["label"] as String, it["dm"] == true) }
@@ -1581,15 +1617,18 @@ class Signer(private val context: Context, val slot: String = "0") {
         awake()
         val group = groupJson(m)
         val tried = mutableListOf<String>()
+        // Why each server couldn't, in its own words (Asking): one "revoked" is one server's
+        // word, not the account's.
+        val answers = mutableListOf<String?>()
         for (srv in partners(m)) {
             val cs = m.shares.map { it to (Json.parse(FrostNative.commit(group, it.idx, it.secret)) as Map<*, *>) }
             val mine = cs.map { it.second["commit"] as Map<*, *> }
             val res = askServer(srv, mapOf("type" to "cosign_req", "id" to env.random(8).toHex(), "event" to ev.toMap(), "msg" to ev.id,
                 "participants" to (m.idxs + srv.idxs).sorted(), "commits" to mine, "commit" to mine[0], "frost" to 2, "grant" to g.pk, "approved" to approved))
-                ?: run { tried += "${srv.name}: no answer"; null } ?: continue
+                ?: run { tried += "${srv.name}: no answer"; answers += null; null } ?: continue
             if (res["ok"] != true) {
                 val why = res["reason"] as? String ?: "refused"
-                if (why.startsWith("revoked")) { apps.edit().remove(g.pkg).apply(); throw Revoked() }
+                answers += why
                 if (why.startsWith("needs-approval:")) throw NeedsApproval(why.removePrefix("needs-approval:").trim())
                 tried += "${srv.name}: $why"; continue
             }
@@ -1606,6 +1645,8 @@ class Signer(private val context: Context, val slot: String = "0") {
             if (ev.kind != 22242 || approved) note("Signed ${Describe.kind(ev.kind)} for ${g.label}", if (approved) "approved" else "auto")
             return signed
         }
+        // Every server that answered says this app has no access: now it really hasn't.
+        if (Asking.outcome(answers) == Asking.Outcome.REVOKED_EVERYWHERE) { apps.edit().remove(g.pkg).apply(); sharedXs.forgetAll(); throw Revoked() }
         throw IllegalStateException("Couldn't reach your servers (${tried.joinToString("; ")})")
     }
 
@@ -1648,20 +1689,47 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     /** The shared x with [peerX], from this phone's half and a server's. Kept ten minutes, in memory. */
     private fun sharedX(g: AppGrant, peerX: String): ByteArray {
-        sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) return x }
+        sharedXs[peerX]?.let { return it }
         val m = ui.value.member ?: error("$appName isn't set up yet")
         awake()
+        // As in signForApp: why each server couldn't, and what that comes to (Asking).
+        val answers = mutableListOf<String?>()
         for (srv in partners(m)) {
             val participants = (m.idxs + srv.idxs).sorted()
-            val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk)) ?: continue
-            if (res["ok"] != true) { if ((res["reason"] as? String)?.startsWith("revoked") == true) throw Revoked(); continue }
+            val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk))
+            if (res == null) { answers += null; continue }
+            if (res["ok"] != true) { answers += (res["reason"] as? String ?: "refused"); continue }
             val mine = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX).hexToBytes() }
             val theirs = ((res["points"] as? List<*>) ?: listOf(res["point"])).map { (it as String).hexToBytes() }
             val x = Secp256k1.pubKeyCombine((mine + theirs).toTypedArray()).copyOfRange(1, 33)
-            sharedXs[peerX] = System.currentTimeMillis() to x
+            sharedXs[peerX] = x
             return x
         }
+        if (Asking.outcome(answers) == Asking.Outcome.REVOKED_EVERYWHERE) { sharedXs.forgetAll(); throw Revoked() }
         throw IllegalStateException("Couldn't reach your servers")
+    }
+
+    /**
+     * What a round of asking every server comes to, when none of them could do the thing. One
+     * server that was away when an app connected hasn't heard of it yet — the servers pass
+     * grants on as they catch up — so its "revoked" is its own word, not the account's. The app
+     * has really lost its access only when every server that answered said the same.
+     */
+    internal object Asking {
+        enum class Outcome { NOBODY_ANSWERED, REVOKED_EVERYWHERE, REFUSED }
+
+        /**
+         * [answers]: each server's reason for not doing it, or null where a server said nothing.
+         * A server that says nothing settles nothing: with one of them quiet this can't be the
+         * account's answer, whatever the rest say. Being slow to believe an app has lost its
+         * access costs nothing — the servers are what actually refuse it — while being quick to
+         * believe it takes a working app's access away over one server's silence and one's word.
+         */
+        fun outcome(answers: List<String?>): Outcome {
+            if (answers.isEmpty() || answers.all { it == null }) return Outcome.NOBODY_ANSWERED
+            val everyone = answers.none { it == null }
+            return if (everyone && answers.all { it!!.startsWith("revoked") }) Outcome.REVOKED_EVERYWHERE else Outcome.REFUSED
+        }
     }
 
     fun nip44(g: AppGrant, peer: String, text: String, encrypt: Boolean): String {
