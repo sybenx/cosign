@@ -565,13 +565,13 @@ device with its lock (§7.4).
 Pieces are refreshed quietly about once a month, and a server that has gone silent is
 replaced at the same time. Nothing about it is visible to the user.
 
+Built, apart from replacing a dead server: the servers hold a pending epoch and commit
+it, and a device asks for one once its epoch is 30 days old, checks it with every
+server and then commits.
+
 - **Trigger.** An online device sends `refresh_request {reason: "periodic"}`, with no
   lock, once the epoch is 30 or more days old. A server accepts only if its epoch is at
   least 25 days old and no refresh is pending.
-Built: the servers hold a pending epoch and commit it, and the phone asks for one when
-its epoch is 30 days old, checks it with every server and commits. Replacing a dead
-server at the same time is not built.
-
 - **Replacing a dead server.** *(not built yet)* A server counts as dead only when **at least two live
   servers** have seen it silent for 7 or more days (servers record when they last heard
   from each other), not on the device's word alone. A dead server is left out of the new
@@ -856,8 +856,8 @@ Until they are, the server holds a NIP-46 signer key for nostrconnect sites, and
 public server refuses their encrypt and decrypt requests (§9.2). Also not built: the DM
 prompt, device-only signing (§5.5), the passkey page for reporting a device (§7.2),
 per-app members on iOS (§4.1), and the hardware-bound lock (§7.1). Planned and not yet specified:
-the 24-word paper (§8.1), automatic server swaps (§3, §9.5) and the member library
-(§4.3). Feature freeze since 2026-10-24: nothing new is added to this document until real
+the 24-word paper (§8.1) and automatic server swaps (§3, §9.5). The quiet monthly refresh
+(§7.7) and the member library (§4.3) are built and not yet released. Feature freeze since 2026-10-24: nothing new is added to this document until real
 use calls for it. Exactly which parts of §5.1 and
 §7 the server and app follow is tracked in the repository, not here.
 
