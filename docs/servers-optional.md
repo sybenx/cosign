@@ -25,10 +25,11 @@ device plus one more point, and there are exactly three ways to find it:
 
 The first of these is already in the specification twice: §5.1 prefers another device
 when one is awake, and §5.5 says two devices may sign with no server at all. Neither is
-built, and neither was waiting on a second device to exist: the browser extension has been
-a member device with 3 points for a while, and two phones would have done as well. What
-changed is that the Mac app put a second device in daily use beside the phone, which is
-what makes an unbuilt preference worth building.
+built, and neither was ever waiting on a second device to exist: this account has had a
+phone and a tablet signed in for a while, with a browser extension or two beside them, and
+the Mac makes a third today. Several devices have been the normal shape all along —
+device-to-device signing is simply unbuilt, and §5.1 has preferred it on paper the whole
+time.
 
 So "servers optional" is not a new mechanism. It is §5.1 point 1, finished.
 
@@ -225,6 +226,101 @@ carries part of my key"; note that anything holding 1 point does arm a stolen de
 report lost, which is fine precisely because that holder is the one who refuses. A piece
 copied to every site satisfies neither half.
 
+### 4.2 The same share, with refresh
+
+The user's answer to §4.1: *if we're ever concerned about one leaked piece, we cycle our
+keys. Otherwise they cycle on a regular basis automagically, 30 days. Reissuing can be
+silent if you're active.* And: report lost in an account with several devices is the
+remaining devices refreshing at once, which makes the stolen device's 3 points and every
+old copy of the site piece worthless together.
+
+**First, what actually runs today.** Periodic refresh is §7.7, "approved; not built yet",
+and that is half true: the server side is on main — pending shares, the check signature,
+the commit, a minimum epoch age of 25 days, pending dropped after 48 hours — and the
+phone's side, the thing that notices an epoch is 30 days old and asks, sits on an unmerged
+branch. **So nothing cycles automatically at the moment.** Refresh runs after a device is
+reported lost and after the paper is used, and that is all. Anyone reasoning about
+cadence should know that the cadence is currently zero, and that it is one merge from
+being 30 days.
+
+**Second, how fast a refresh is.** Measured just now over public relays, in the end-to-end
+test, a quiet refresh with everyone awake: **1.3 s** for both other members to reach the
+new epoch and **1.6 s** for the device that only followed, including the two-phase check
+and commit. A report-lost refresh is one phase, so faster. The refresh is not the slow
+part of anything; noticing the phone is gone is.
+
+**What refresh genuinely fixes.** A leaked copy of the piece is worth a point only in the
+epoch it came from: shares of different epochs do not combine. So a copy that leaked last
+month and a device stolen this month are 3 points and 1 point that cannot be added
+together. The "it becomes public in the limit" objection of §4.1 is answered — with
+cycling, public means *public for one epoch*, and an on-demand refresh closes it sooner.
+That is a real correction and it stands.
+
+**What refresh does not fix, and cannot.** Every site that is still approved holds a
+**current** piece at all times — silent reissue is the whole point of the design. So the
+dangerous combination is not stale, it is continuous: the unlocked phone (3) and any one
+approved site's piece (1) are 4 points **of the same epoch**, and 4 points of one epoch is
+not a signature, it is the key. They interpolate to the account's secret, which is why §12
+says it in so many words: *the identity is permanent; 4 points of one epoch in a thief's
+hands cannot be undone.* No refresh reaches that thief, because they need no member's help
+ever again — they have the key, not a share of it. There is no exposure window to measure:
+reconstruction is instant and permanent, and the 1.6 s refresh arrives after the fact.
+
+Set against today's refusal, the difference is the whole of it:
+
+| | Thief has the unlocked phone (3) |
+|---|---|
+| **Today** | needs a server to **cooperate** for its 1. Report lost and every honest server refuses, so the thief never reaches 4 at all. The refusal is the protection; the refresh is the cleanup |
+| **With a shared site piece** | needs nobody. The fourth point is already in their hands, or in any browser profile they also took. There is nothing to refuse, and nothing to clean up |
+
+**And the weights cannot be arranged out of it.** The piece is useful exactly when it is
+dangerous. "Useful" means it completes a device's set — that is the only thing a 1-point
+member does — and the thief's phone is a device. Re-weighting to t = 8 with devices at 6
+makes a stolen phone plus the piece 7 points and safe; it also makes an honest phone plus
+the piece 7 points and useless. Any weighting where the piece can finish a signature is a
+weighting where it finishes the thief's.
+
+**What is left even granting everything else:**
+
+- **A site you still approve receives every new piece.** It is not a leak that ages out;
+  it is a standing hand-out to every web app the user ever signed into, re-delivered at
+  each epoch, and a site's code is re-delivered by its operator on every load — so the
+  population of parties who own the account if they also get the phone is every site,
+  every CDN in front of it, and every dependency in its build.
+- **Nonce hygiene** is manageable but must be exactly right: one index in N browsers is N
+  chances that one of them persists a nonce and gets duplicated or restored, and two
+  partials on one index with one nonce pair solve for the piece itself. The rule is that
+  the piece may be stored and a nonce never may. A page reloaded mid-round must lose the
+  round, not resume it.
+- **Every site removal becomes an epoch bump.** §6.2 and §12 promise that removing a
+  grant ends the site: with a shared piece that is only true after a refresh, so removal
+  has to trigger one. That is workable — it is also an epoch bump per sign-out, each one
+  having to reach every offline device and renew the paper's parts (§8.2).
+- **The phone-only user is where it all lands.** The piece changes nothing for someone
+  with two devices, and that is the only case it was for. For the one-device user it is
+  load-bearing — and that user has one dealer, so their refresh is the weakest in the
+  design, and their fourth point lives in a browser store that a cleared cookie jar
+  removes. The feature is for the person who can least afford it.
+
+**Verdict.** Refresh answers the objection it was aimed at, and §4.1 was too absolute
+about "public forever": with cycling, a stale copy really is harmless. It does not make
+the scheme acceptable, because the risk was never accumulation — it is that the fourth
+point sits, current, in the hands of parties who cannot be asked to refuse. The rule at
+the end of §4.1 survives untouched, and now with a reason rather than a worry: **the point
+that completes a signature must be held by a party that can refuse, because a party
+holding four points of one epoch never has to ask anyone anything again.**
+
+**What it would take.** Not a cadence and not a weighting. It would take the completing
+point being a party that can refuse — a relay holding the 1 (§9.1), a box the user owns,
+another device, or the user's browser holding a member share of its own, one per browser
+rather than one copied to every site. All of those are available without a dedicated
+server, and all of them keep report lost meaning what it says.
+
+**One thing worth doing out of this exchange regardless:** merge the phone's side of §7.7
+so that keys really do cycle every 30 days. The user already believes they do, the server
+half is waiting for it, and quiet refresh is worth having on its own — it is what makes a
+leaked anything age out.
+
 ## 5. Transport
 
 Nothing changes: it is already relays only. Live rounds are ephemeral gift wraps (kind
@@ -253,9 +349,10 @@ place a waiting delta sits, so dealers must re-send.
 ## 7. Threat model, serverless
 
 - **A malicious site's share** — the §4 case. Not built, and not recommended.
-- **One identical share held by every site** — §4.1. Fixes the collusion arithmetic and
-  replaces it with a bearer token: a stolen device plus that token is 4 points, with no
-  holder left who can refuse, and a refresh is the only revocation it has.
+- **One identical share held by every site** — §4.1, §4.2. Fixes the collusion arithmetic
+  and replaces it with a piece that cannot refuse: a stolen device plus that piece is 4
+  points of one epoch, which is the key itself, and no refresh reaches someone who needs
+  no member's help again.
 - **A stolen phone** (3) — cannot sign: the remaining device refuses it, and there is no
   1-point member anywhere to make its fourth. Strictly better than today, where a thief
   with an unlocked phone and one cooperating server has 4 (§12).
@@ -301,11 +398,16 @@ place a waiting delta sits, so dealers must re-send.
 2. **Then let a group have no servers**, as a setup choice, gated on two devices plus a
    paper or on three devices, with the sentence *a lost device means getting the paper
    out* said plainly at setup and in settings.
-3. **Do not give web pages shares**, per-site or one identical piece for all of them
-   (§4, §4.1). If a browser should carry part of the key, it carries it as a member of its
+3. **Do not give web pages shares**, per-site or one identical piece for all of them,
+   with or without cycling (§4, §4.1, §4.2). If a browser should carry part of the key, it carries it as a member of its
    own — extension or installed PWA, added by a scan, removable on its own.
 4. **Offer the 1-point member inside a relay** for people who want always-on without
    running anything: it is already blessed by §9.1 and it keeps the lost-device tap.
+
+5. **Merge the phone's side of §7.7**, so keys cycle every 30 days as the specification
+   says and as the user already believes. The server half is on main waiting for it, a
+   quiet refresh takes about a second and a half, and it is what makes a leaked anything
+   age out (§4.2).
 
 Step 1 is worth doing whether or not the rest is ever agreed: it is a privacy improvement
 for every existing account, it is already in the specification, and it is the only part
