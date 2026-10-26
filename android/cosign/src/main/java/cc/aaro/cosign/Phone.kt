@@ -583,17 +583,44 @@ class Signer(private val context: Context, val slot: String = "0") {
     // shares (core/Backup.kt) and asks to recover; after a wait any of your devices can
     // cancel, the paper's shares are this phone's.
 
-    private var making: Pair<String, String>? = null // the paper's secret and public key, until it's shown
+    /**
+     * A paper backup asked for and not yet shown: its request, its secret and its public key.
+     * Kept in this phone's own store rather than in memory, because the servers now hold a
+     * paper's pieces back for a wait that every device is told about (COSIGN.md §7.4) — so an
+     * hour, and a restart, can pass between asking and printing. It is the key this phone
+     * generated and is about to show as a QR either way; what is new is how long it sits here,
+     * and it is deleted the moment the paper is shown or the wait is stopped.
+     */
+    private class Making(val id: String, val sk: String, val pk: String)
+    private var makingHeld: Making? = null
+    private var making: Making?
+        get() = makingHeld ?: (secrets.load("making")?.let { j ->
+            (Json.parse(j) as? Map<*, *>)?.let { m ->
+                val id = m["id"] as? String; val sk = m["sk"] as? String; val pk = m["pk"] as? String
+                if (id != null && sk != null && pk != null) Making(id, sk, pk) else null
+            }
+        })?.also { makingHeld = it }
+        set(v) {
+            makingHeld = v
+            secrets.save("making", v?.let { Json.stringify(mapOf("id" to it.id, "sk" to it.sk, "pk" to it.pk)) })
+        }
 
     /** You unlocked this phone: make a paper backup. */
     fun makePaper() {
         val m = ui.value.member ?: return
         val srv = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
         val bsk = generateSecretKey(env).toHex()
-        making = bsk to publicKeyHex(bsk.hexToBytes())
-        send(srv.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to making!!.second, "name" to "Paper backup", "lock" to true, "backup" to true))
+        val id = env.random(8).toHex()
+        making = Making(id, bsk, publicKeyHex(bsk.hexToBytes()))
+        send(srv.pk!!, mapOf("type" to "add_device", "id" to id, "pk" to making!!.pk, "name" to "Paper backup", "lock" to true, "backup" to true))
         ui.update { it.copy(paperStatus = "Making your paper backup…") }
-        timer.schedule({ if (making != null && ui.value.paper == null) { making = null; ui.update { it.copy(paperStatus = null, error = "Your server didn't answer. Try again in a minute.") } } }, 40, TimeUnit.SECONDS)
+        // Nothing heard at all: the server is down. A wait is not that — it arrives as a guard
+        // for this request, and then this phone simply waits for it (onGuard).
+        timer.schedule({
+            if (making?.id == id && ui.value.paper == null && ui.value.guards.none { it.id == id }) {
+                making = null; ui.update { it.copy(paperStatus = null, error = "Your server didn't answer. Try again in a minute.") }
+            }
+        }, 40, TimeUnit.SECONDS)
         if (m.group.members.any { it.role == "backup" }) note("Making a new paper backup: the old one stops working", "approved")
     }
 
@@ -602,7 +629,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         (servers().map { "s=${it.pk}" } + m.group.relays.map { "r=" + Uri.encode(it) } + listOfNotNull(m.mirrored?.let { "m=${if (it) 1 else 0}" })).joinToString("&")
 
     private fun onBackupMade() {
-        val (bsk, _) = making ?: return
+        val bsk = making?.sk ?: return
         val m = ui.value.member ?: return
         ui.update { it.copy(paper = paperCode(bsk, m), paperStatus = null) }
         making = null
@@ -978,8 +1005,21 @@ class Signer(private val context: Context, val slot: String = "0") {
             "waiting" -> ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.WAITING, "Your servers release their part after the wait. Any of your other devices can stop it.", g.until)) }
             "cancelled" -> { takeOutId = null; ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "Stopped from one of your devices.")) } }
         }
-        val what = when (g.kind) { "take_out" -> "taking your account out of $appName"; "forget" -> "removing your servers' pieces"; else -> "reporting a device lost" }
-        if (g.state == "waiting" && g.id != takeOutId) note("${g.by} started $what", "denied")
+        val mine = making?.id == g.id
+        val what = when (g.kind) {
+            "take_out" -> "taking your account out of $appName"
+            "forget" -> "removing your servers' pieces"
+            "add" -> if (mine) "making a paper backup" else "adding a paper backup or a server"
+            "remove" -> "reporting a device lost"
+            else -> "something on your account"
+        }
+        if (g.kind == "add" && mine) when (g.state) {
+            // Asked for here: the servers make its pieces after the wait, and any of the
+            // user's other devices can stop it until then.
+            "waiting" -> ui.update { it.copy(paperStatus = "Your paper backup is ready in a little while. Any of your other devices can stop it.") }
+            "cancelled" -> { making = null; ui.update { it.copy(paperStatus = null, error = "Stopped from one of your devices.") } }
+        }
+        if (g.state == "waiting" && g.id != takeOutId && !mine) note("${g.by} started $what", "denied")
     }
 
     // --- Creating an account here -----------------------------------------------------------
@@ -1308,7 +1348,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         } }
         val one = sigmas.size == 1
         send(from.pk!!, mapOf("type" to "repair_delta", "id" to id, "deltas" to toSrv) + (if (one) mapOf("delta" to toSrv[0][3]) else emptyMap()))
-        if (making?.second == newPk) {
+        if (making?.pk == newPk) {
             // A paper: our pieces, sealed to it, kept by the servers.
             val content = Nip44.encrypt(Json.stringify(mapOf("sigmas" to sigmas)), Nip44.conversationKey(m.sk.hexToBytes(), newPk), env.random(32))
             return send(from.pk!!, mapOf("type" to "backup_piece", "id" to id, "content" to content))

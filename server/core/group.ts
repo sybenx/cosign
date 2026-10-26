@@ -964,9 +964,28 @@ export function openGroup(loaded: Loaded, io: Io) {
   /** Deltas waiting to be summed, by new share and the helper share they're for. */
   const slot = (k: number, j: number) => `${k}:${j}`;
 
-  async function addDevice(msg: any, by: Member) {
+  async function addDevice(msg: any, by: Member, waited = false) {
     const pk = String(msg.pk ?? '');
     if (!/^[0-9a-f]{64}$/.test(pk)) throw new Error('that code is damaged');
+    // A paper backup is 2 points and a server is 1, and either, handed to a key the asking
+    // device keeps, is the threshold with that device's own 3 — the whole key, from one
+    // device, for good. So these two wait: every device is told and woken, any one of them
+    // can stop it, and **no piece is made until the wait ends**, because a wait that only
+    // delays trust is no use once the pieces are out. A device is not held this way: it is
+    // the everyday action, and it is what §7.1's lock is for.
+    if ((msg.backup === true || msg.server === true) && !waited) {
+      const had = guardById(msg.id);
+      if (had && !active(had)) throw new Error(had.cancelled ? 'that was stopped from one of your devices' : 'that was already done');
+      const g = startGuard('add', msg, by, { wait: ADD_WAIT, target: undefined });
+      if (!had) {
+        S.pendingAdds = { ...(S.pendingAdds ?? {}), [g.id]: { msg, by: by.idx } };
+        for (const id of Object.keys(S.pendingAdds).slice(0, -10)) delete S.pendingAdds[id];
+        save();
+        note(`${by.name} asked to add ${msg.backup === true ? 'a paper backup' : 'a server'}; any of your devices can stop it before ${new Date(g.until * 1000).toISOString()}`);
+      }
+      send(by.pk, { type: 'guard', ...guardView(g) });
+      return;
+    }
     // `grow`: a device with too few shares to sign with one server (restored from a 2-share
     // paper) asks for a device's full 3, made by repair like any new device's, under its own key.
     const grow = msg.grow === true && pk === by.pk;
@@ -1399,7 +1418,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   // cancelled by any of them, with its lock. Devices send each to every server, with one id.
 
   interface Guard {
-    id: string; kind: 'remove' | 'take_out' | 'forget'; by: number; byName: string; target?: number;
+    id: string; kind: 'remove' | 'take_out' | 'forget' | 'add'; by: number; byName: string; target?: number;
     at: number; until: number; paper?: boolean;
     cancelled?: number; cancelledBy?: string; done?: number;
   }
@@ -1470,7 +1489,8 @@ export function openGroup(loaded: Loaded, io: Io) {
     g.cancelled = now(); g.cancelledBy = from.name;
     save();
     tellGuard(g);
-    note(`${from.name} stopped ${g.kind === 'take_out' ? 'taking your account out' : 'removing your servers’ pieces'}`);
+    if (g.kind === 'add') { delete (S.pendingAdds ?? {})[g.id]; save(); }
+    note(`${from.name} stopped ${g.kind === 'take_out' ? 'taking your account out' : g.kind === 'add' ? 'adding that' : 'removing your servers’ pieces'}`);
   }
 
   /** Each tick: a wait that ran out and wasn't cancelled completes. */
@@ -1484,6 +1504,19 @@ export function openGroup(loaded: Loaded, io: Io) {
         send(by.pk, { type: 'released', id: g.id, shares: myShares, group: { groupX, threshold: S.group.threshold, members: publicMembers() } });
         tellGuard(g);
         note(`released this server's share to ${by.name}: your account is out of Cosign there`);
+      } else if (g.kind === 'add') {
+        const held = (S.pendingAdds ?? {})[g.id];
+        const asker = held ? members.find(m => m.idx === held.by) : undefined;
+        g.done = now();
+        delete (S.pendingAdds ?? {})[g.id];
+        save();
+        tellGuard(g);
+        if (!asker || !mayAct(asker)) { note(`the add ${g.id} was let go: ${asker ? asker.name + ' can’t act for you now' : 'whoever asked is gone'}`); continue; }
+        note(`the wait ended: adding ${held.msg.backup === true ? 'a paper backup' : 'a server'} for ${asker.name}`);
+        void addDevice(held.msg, asker, true).catch(err => {
+          note(`couldn’t add it after the wait: ${err.message}`);
+          send(asker.pk, { type: 'add_failed', id: g.id, reason: err.message });
+        });
       } else if (g.kind === 'forget') {
         g.done = now(); save();
         tellGuard(g);
@@ -1549,6 +1582,12 @@ export function openGroup(loaded: Loaded, io: Io) {
   interface Piece { from: string; content: string; epoch: number }
   /** How long recovery waits. Three days; shorter for tests. */
   const WAIT = Number(process.env.COSIGN_RECOVERY_WAIT ?? 3 * 86400);
+  /**
+   * How long a paper backup or a new server waits before its pieces are made (COSIGN.md
+   * §7.4). Short: it is there so every device hears of it and any one of them can stop it,
+   * not to make the user wait for something they asked for.
+   */
+  const ADD_WAIT = Number(process.env.COSIGN_ADD_WAIT ?? 3600);
   // The host's age-out (stale()), in seconds: only for accounts that never finished being set up.
   const UNFINISHED_AFTER = Number(process.env.COSIGN_UNFINISHED_AFTER ?? 86400);
   const sealTo = (pk: string, body: object) => nip44.v2.encrypt(JSON.stringify(body), nip44.v2.utils.getConversationKey(F.hexToBytes(S.self.sk), pk));
