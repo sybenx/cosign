@@ -37,8 +37,12 @@ export interface Account {
   signer?: string;
   /** This device's own grant, which its servers check before helping it read anything. */
   grant?: string;
-  /** A quiet refresh followed but not yet committed by the servers (COSIGN.md §7.7). */
-  pending?: { epoch: number; id: string | null; at: number };
+  /**
+   * A quiet refresh followed but not yet committed by the servers (COSIGN.md §7.7). The new
+   * points are kept with it: the parts move when it is committed, and the points must move
+   * with them or this device would be signing with parts its own record disagrees with.
+   */
+  pending?: { epoch: number; id: string | null; at: number; points?: [number, string][] };
   /** Reported lost by another of your devices: this one does nothing more. */
   removed?: { by: string; at: number };
 }
@@ -83,15 +87,21 @@ export class Device {
   private joining: { welcome?: any; from?: string; sigmas: [number, number, string][]; done: (a: Account) => void; fail: (e: Error) => void } | null = null;
   private selfKey: { at: number; key: Uint8Array } | null = null;
 
-  constructor(
-    private host: Host,
-    private sk: string,
-    private account: Account | undefined,
-    private idxs: number[],
-    private epoch: number,
-    /** The parts are there but can't be read (a re-signed app): this device must join again. */
-    readonly unreadable: boolean,
-  ) {
+  private host: Host;
+  private sk: string;
+  private account: Account | undefined;
+  private idxs: number[];
+  private epoch: number;
+  /** The parts are there but can't be read (a re-signed app): this device must join again. */
+  readonly unreadable: boolean;
+
+  constructor(host: Host, sk: string, account: Account | undefined, idxs: number[], epoch: number, unreadable: boolean) {
+    this.host = host;
+    this.sk = sk;
+    this.account = account;
+    this.idxs = idxs;
+    this.epoch = epoch;
+    this.unreadable = unreadable;
     this.box = new Mailbox(sk, account?.relays ?? host.relays ?? JOIN_RELAYS, (m, from) => void this.handle(m, from));
     this.ticker = setInterval(() => void this.tend(), 10_000);
   }
@@ -361,12 +371,18 @@ export class Device {
     if (!a) return;
     this.plans.delete(epoch);
     const dealers = [...held.parts.values()];
-    const points = await this.ops.refreshApply(flat(a), epoch, dealers);
+    // Everyone starts from the points the plan names, whatever each has heard since — a
+    // member list that arrived mid-way can't be what this is worked out from (refresh.ts).
+    const named: [number, string][] = Array.isArray(held.plan.points) ? held.plan.points : [];
+    const start: Group = named.length
+      ? { groupX: a.groupX, threshold: Number(held.plan.threshold ?? a.threshold), members: named.map(([idx, sharePub]) => ({ idx, sharePub })) }
+      : flat(a);
+    const points = await this.ops.refreshApply(start, epoch, dealers);
     // A quiet refresh is held: the servers go on signing with the current parts until a device
     // commits, so one that moved now would be alone on an epoch — and stranded for good if
     // nobody ever commits (COSIGN.md §7.7). Anything else takes effect as soon as it is worked out.
     if (held.plan.periodic === true) {
-      a.pending = { epoch, id: held.plan.id ?? null, at: Date.now() };
+      a.pending = { epoch, id: held.plan.id ?? null, at: Date.now(), points };
       await this.save();
       return;
     }
@@ -379,8 +395,9 @@ export class Device {
     if (!a || !p) return;
     const epoch = Number(m.epoch);
     if (epoch !== p.epoch || (m.id && p.id && m.id !== p.id)) return;
+    const points = p.points ?? null;
     delete a.pending;
-    await this.apply(epoch, null);
+    await this.apply(epoch, points);
   }
 
   /** The new parts are this device's now: its points move with everyone else's. */

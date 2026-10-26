@@ -160,6 +160,7 @@ cd frost && cargo build --release --features android   # the desktop FROST the A
 cd android && ./gradlew :cosign:testDebugUnitTest
 cd site && node test/guards.e2e.ts      # report lost, take out, forget; what a paper and a removed device get
 cd site && node test/paper.e2e.ts       # paper backup through a refresh; cancelled and finished recovery
+cd site && node test/member.e2e.ts      # the member library (src/member) joining, signing and refreshing
 ```
 
 ## License

@@ -57,7 +57,14 @@ export class Mailbox {
   private queue: Event[] = [];
   readonly pk: string;
 
-  constructor(private sk: string, readonly relays: string[], private onMessage: (msg: any, fromPk: string, sentAt: number) => void) {
+  private sk: string;
+  readonly relays: string[];
+  private onMessage: (msg: any, fromPk: string, sentAt: number) => void;
+
+  constructor(sk: string, relays: string[], onMessage: (msg: any, fromPk: string, sentAt: number) => void) {
+    this.sk = sk;
+    this.relays = relays;
+    this.onMessage = onMessage;
     this.pk = pubOf(sk);
     for (const url of relays) void this.connect(url);
   }
