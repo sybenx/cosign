@@ -197,6 +197,9 @@ function handle(msg: any, from: string) {
     say(msg.hold && !msg.undo ? `APPROVED: ${msg.hold}` : msg.undo ? `co-signed an undo for ${srv.name}` : `co-signed kind ${ev.kind} for ${srv.name} (a server is down)`);
     reply({ ok: true, commits: mine.commits, zs, commit: mine.commits[0], z: zs[0][1] });
   } else if (msg.type === 'ecdh_req') {
+    // Only your own devices (COSIGN.md §5.6): a server never coordinates a decryption, so one
+    // asking is something else wanting to read your messages, which nothing here asked for.
+    if (srv) { say(`REFUSED an ecdh piece to ${srv.name}`); send(from, { type: 'ecdh_res', id: msg.id, ok: false, reason: 'not-allowed: your devices read your messages, your servers don’t' }); return; }
     const points = myShares().map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
     send(from, { type: 'ecdh_res', id: msg.id, ok: true, points, point: points[0] });
   } else if (msg.type === 'repair') {

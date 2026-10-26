@@ -1836,9 +1836,32 @@ class Signer(private val context: Context, val slot: String = "0") {
         note("Not answered in time: ${ask.hold} (${ask.app})", "denied")
     }
 
+    /**
+     * Who may ask this phone for a piece of a decryption (COSIGN.md §5.6). Your own devices
+     * may: they hold as much of your key as this one does, and one of them coordinating a
+     * decryption is you reading your own messages. A server may not. A server never
+     * coordinates a decryption — it asks because something else wants to read your messages,
+     * and nothing on this phone asked for it. Until now any server that asked was helped,
+     * which left that rule a promise rather than a fact.
+     */
+    internal object Helping {
+        fun helps(role: String?) = role == "phone" || role == "device"
+    }
+
     private fun onEcdhReq(msg: Map<*, *>, from: Member, m: Membership) {
         val id = msg["id"] as? String ?: return
         answered[id]?.let { send(from.pk!!, it); return }
+        if (!Helping.helps(from.role)) {
+            val no = mapOf("type" to "ecdh_res", "id" to id, "ok" to false,
+                "reason" to "not-allowed: your devices read your messages, your servers don't")
+            answered[id] = no
+            send(from.pk!!, no)
+            if (System.currentTimeMillis() - lastEcdhNote > 60_000) {
+                lastEcdhNote = System.currentTimeMillis()
+                note("${from.name} asked for a piece of reading your messages. Refused: only your own devices do that.", "denied")
+            }
+            return
+        }
         val participants = (msg["participants"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
         val peerX = msg["peerX"] as? String ?: return
         if (!isHex32(peerX) || participants.sorted() != (from.idxs + m.idxs).sorted()) return
