@@ -509,7 +509,23 @@ class Signer(private val context: Context, val slot: String = "0") {
     /** How old an epoch has to be before this phone asks for the next one. */
     private val quietAfter = (System.getenv("COSIGN_QUIET_AFTER")?.toLongOrNull() ?: (30L * 86400))
 
-    private fun checkMessage(groupX: String, epoch: Int) = sha256("cosign-refresh:$groupX:$epoch".toByteArray()).toHex()
+    /** The two pieces of a quiet refresh that are pure arithmetic, so a test can hold them still. */
+    internal object Quietly {
+        /** The only thing a pending epoch's shares ever sign, before it is committed (§7.7). */
+        fun checkMessage(groupX: String, epoch: Int) = sha256("cosign-refresh:$groupX:$epoch".toByteArray()).toHex()
+
+        /**
+         * The group as it will be once that epoch is committed: every share point at its new
+         * place, without the members this refresh leaves out. A point missing from [points]
+         * keeps the one it has, so a member that isn't part of this refresh is unchanged.
+         */
+        fun pendingGroup(groupX: String, threshold: Int, members: List<Member>, points: List<Pair<Int, String>>, drop: List<Int>): String {
+            val at = points.toMap()
+            val pts = members.filter { it.idx !in drop }.flatMap { it.points }.map { Point(it.idx, at[it.idx] ?: it.sharePub) }
+            return Json.stringify(mapOf("groupX" to groupX, "threshold" to threshold,
+                "members" to pts.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
+        }
+    }
 
     /** Time for the next epoch: this one is old enough and nothing else is going on. */
     private fun quietDue(m: Membership) = quiet == null && refresh == null && m.epochAt > 0 && Clock.now() - m.epochAt >= quietAfter
@@ -537,17 +553,11 @@ class Signer(private val context: Context, val slot: String = "0") {
     /** Our part of the new epoch is ready: check it with every server, then commit. */
     private fun onQuietReady(r: Refresh.Result, id: String, drop: List<Int>) {
         val m = ui.value.member ?: return
-        quiet = Quiet(r.epoch, id, drop, r, pendingGroupJson(m, r.points, drop), checkMessage(m.group.groupX, r.epoch))
+        quiet = Quiet(r.epoch, id, drop, r, Quietly.pendingGroup(m.group.groupX, m.group.threshold, m.group.members, r.points, drop), Quietly.checkMessage(m.group.groupX, r.epoch))
         timer.execute { checkAndCommit() }
     }
 
     /** The group as it will be, for the check round: the new points, without anyone left out. */
-    private fun pendingGroupJson(m: Membership, points: List<Pair<Int, String>>, drop: List<Int>): String {
-        val at = points.toMap()
-        val pts = m.group.members.filter { it.idx !in drop }.flatMap { it.points }.map { Point(it.idx, at[it.idx] ?: it.sharePub) }
-        return Json.stringify(mapOf("groupX" to m.group.groupX, "threshold" to m.group.threshold,
-            "members" to pts.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }))
-    }
 
     /**
      * The check: this phone signs `cosign-refresh:<key>:<epoch>` with each server on the new
