@@ -368,7 +368,17 @@ export class Device {
   /** A plan from one of your devices (through a server): what this one's parts become. */
   private onPlan(plan: any) {
     if (!plan || typeof plan.epoch !== 'number' || plan.epoch <= this.epoch) return;
-    if (!this.plans.has(plan.epoch)) this.plans.set(plan.epoch, { plan, parts: new Map() });
+    const id = plan.id ?? null;
+    // One this device has already worked out and is holding. The dealers go on re-sending the
+    // plan and their parts for a while after — through each server as well as straight here —
+    // and there is nothing left to do with them.
+    const p = this.account?.pending;
+    if (p && p.epoch === plan.epoch && (p.id ?? null) === id) return;
+    const held = this.plans.get(plan.epoch);
+    if (held && (held.plan.id ?? null) === id) return;
+    // A dropped attempt and the one after it share an epoch: the newer one replaces it, and
+    // the parts already collected go with it, because they belong to the attempt that named them.
+    this.plans.set(plan.epoch, { plan, parts: new Map() });
   }
 
   private async onPart(m: any, from: string) {
@@ -376,6 +386,7 @@ export class Device {
     const held = this.plans.get(epoch);
     if (!held || !Array.isArray(m.commits) || !Array.isArray(m.deltas)) return;
     if (!held.plan.dealers?.includes(from)) return; // only the dealers this plan named
+    if ((m.id ?? null) !== (held.plan.id ?? null)) return; // and only this attempt's parts
     held.parts.set(from, { commits: m.commits, deltas: m.deltas });
     if (held.parts.size < (held.plan.dealers?.length ?? 2)) return;
     const a = this.account;

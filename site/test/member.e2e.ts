@@ -66,6 +66,11 @@ const asPhone = (to: string, msg: object) => { for (const e of sealParts(ph.sk, 
 
 const kept: Kept = { mailboxKey: bytesToHex(randomBytes(32)), shares: [], epoch: 0 };
 const ops = hostFor(kept);
+// The dealers re-send the plan and their parts for a while after a refresh is worked out,
+// through each server as well as straight here: the maths should happen once.
+let applied = 0;
+const realApply = ops.refreshApply;
+ops.refreshApply = (g, e, d) => { applied++; return realApply(g, e, d); };
 const device = await openDevice({
   ops, relays: ph.group.relays, name: 'Test Mac',
   onStatus: t => console.log(`[mac] ${t}`),
@@ -114,6 +119,8 @@ const before = JSON.stringify(kept.shares);
 asPhone(phonePk, { type: 'test_periodic', commitTo: 'none' });
 check('the plan and both dealers’ parts reach the library', await waitFor(() => (kept.group as any)?.pending?.epoch === 1, 60_000));
 check('it holds them: still on epoch 0', device.status().epoch === 0 && kept.epoch === 0);
+await sleep(12_000); // the dealers are still re-sending
+check('the re-sent plan and parts are let be: worked out once', applied === 1, applied === 1 ? '' : `worked out ${applied} times`);
 check('and its parts are untouched', JSON.stringify(kept.shares) === before);
 await signs('a held refresh doesn’t stop it signing');
 check('nobody commits: the servers drop it', await waitFor(() => !state('a').pending && !state('b').pending, 40_000));
