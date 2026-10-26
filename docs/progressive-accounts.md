@@ -386,7 +386,36 @@ holds the identity for good) are unchanged by anything here.
    wants two devices to vouch for an instant add, or one with its lock; with exactly two
    devices the second case is the only one available, and the wait of §7.4 has no
    always-on member to enforce it. Either the wait is held by the other device, or adding
-   a third device at this stage is instant on one lock. This proposal does not choose.
+   a third device at this stage is instant on one lock.
+
+   **The author's answer** (2026-10-26, not yet written into the sections above; it is
+   recorded here so that a review of §1–§9 is a review of one text): *I have my phone, my
+   tablet. I can use either to sign into my computer. If they can all coordinate and can
+   be LIVE, then we treat them as worthy piece holders.* So **either** existing device may
+   vouch, with its own lock, and no wait applies; liveness is the condition, not seniority.
+
+   Three things follow, and the second is for the reviewer to argue with:
+
+   - **Liveness is not just a preference here, it is arithmetic.** Adding a device by
+     repair needs 4 points of helpers (§7.1), and one device is 3. With two devices and no
+     always-on member, *both* must be awake to add a third — which is exactly what "can
+     all coordinate and can be LIVE" says. With an always-on member, one device and that
+     member make the 4, and the other device need not be there.
+   - **The helper is not the same as the voucher.** The second device's shares are needed
+     for the maths whether or not its user is asked. A device that contributes without
+     asking anyone has helped, not vouched — so this is §7.1's "one device vouched with
+     its lock" case, instant, with the other device helping silently. The consequence: a
+     thief holding one *unlocked* device, while the user's other device is awake at home,
+     can grow themselves a third device and then hold 6 points without it. That is not
+     worse than what COSIGN.md §12 already accepts — a stolen unlocked device plus one
+     cooperating member is 4 points, which is the key — and at this stage it is strictly
+     better whenever the other device is asleep, because then there is no fourth point in
+     the world. But it is the same baseline reached by a different route, and the open
+     question is whether the lone helper should have to be noticed or asked: every member
+     is already told that a device was added (§10), which is a notice after the fact.
+   - **It settles nothing about a wait**, because no wait applies to the case the author
+     described. §7.4's wait remains for the paper without a surviving device and for
+     taking the account out.
 2. **Whether a device should ever hold fewer than 3 shares** — an old phone in a drawer,
    a cheap always-on box at home — and whether "a device of mine that is worth 1" is a
    useful third category beside device and guest.
