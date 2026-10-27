@@ -1,285 +1,377 @@
-# An app key of its own — proposal
+# An app key of its own — proposal, second draft
 
 **Status: proposal, for review. Nothing here is built.** Written as specification text so it
 can be attacked. It is not part of [COSIGN.md](COSIGN.md) until it has been reviewed and the
-author agrees; §11 lists what it would change there, and §12 what it costs the other two
+author agrees; §12 lists what it would change there, §13 what it costs the other two
 proposals in flight.
 
-**What it is for.** Marble keeps the user's notes as encrypted packs
-(`~/igloo/marble-notes-sync-v3.md`, option B+). It wants two things Cosign cannot give it
-today: a key that **only Marble's own clients** can reach, so that no site or app the user
-has merely connected can read the notes; and a key that **signs the packs on the device**,
-with no FROST round per pack and no link to the user's npub. It also wants both to **rotate
-when a device is removed**, so that a device taken out of the account stops being able to
-read or write.
+This draft answers an independent red team of the first one
+(`~/igloo/cosign-app-keys-redteam.md`, verdict: *build it with changes — substantial ones*;
+two critical findings, five high). It was right, and three of its findings I checked against
+the code myself before believing them.
 
-This proposal gives Cosign a general mechanism — an **app key**, derived per namespace and
-per epoch, reachable only by callers a device can identify — and makes Marble its first and
-only caller. It needs no new cryptography and no change to any message on the wire.
+**What changed, and the first one matters most:**
 
-**One thing to read before anything else.** The construction Marble asked for,
-`K_e = HKDF(to-self shared x, "marble/notes/v1/" + epoch)`, does **not** rotate, and the
-property it is relied on for is false. The to-self secret is the account's key against
-itself; a refresh moves everybody's shares but keeps the same account key, so that secret is
-the same in every epoch, for ever. Any device that ever held it can compute every future
-epoch's key by incrementing the counter. A removed device would keep reading new notes forever.
-§3 replaces it with something that does rotate, for the same cost.
+- **"It rotates" was overclaimed, and the claim is now gone.** The account's key is permanent
+  by design, the label is public, so every epoch's key — including epochs that do not exist
+  yet — is a deterministic function of a permanent secret. Anyone who ever holds the key
+  **whole** owns every namespace in every epoch, past and future, for ever, locally, with
+  nothing to notice. This mechanism compartmentalises against **apps and sites**; it is not
+  forward secrecy against the key's own holders, and §4 now refuses to serve an account whose
+  key was ever whole.
+- **The `created_at` cut-off did not work.** A removed device writes now and *dates* the write
+  before the boundary; on a replaceable event the newest date wins, so its forgery beat every
+  genuine pack. Replaced by a **signed epoch-boundary checkpoint** (§7), which also removes
+  the need for a timestamp devices do not have.
+- **"No server change" was false.** Every ECDH round is refused unless it names a live grant
+  (`server/core/group.ts:716`, verified), so as written the app key was reachable *through* a
+  grant and died *with* one — the opposite of what §9 claimed. §9 now states the one small
+  server change it needs.
+- **A granted site can already make a device compute `x(ns,e)`** by naming the label point as
+  the peer of a `nip04`/`nip44` decrypt, and NIP-04 uses that value *verbatim* as its AES key.
+  The first draft's confidentiality rested on an HKDF salt differing, by luck. §5 makes that a
+  requirement and adds the check that closes it.
+- **The derived value is never verified.** `ecdhCombine` rejects only the identity point
+  (`server/frost.ts:159`, verified), so one dishonest partner can make a device derive a key
+  **nobody** holds and encrypt under it — silent, permanent data loss. §6 requires a check
+  before anything is written.
+- The label's bytes are pinned exactly, with test vectors, because three platforms will
+  implement it (§3); blinding is demoted to MAY with its real cost named (§8); the first-party
+  rule closes three holes the reviewer found in today's code (§4); and §11 says plainly that
+  this is the one access in Cosign a user cannot revoke.
 
 ---
 
-## 1. What an app key is
+## 1. What an app key is, and what it is not
 
-An **app key** is a secret that:
+An **app key** is a secret derived from the account's key by a **threshold round**, belonging
+to a **namespace** (`marble/notes/v1`) and a **committed epoch**, reachable only through a
+**first-party call on a device**.
 
-- is derived from the account's key by a **threshold round**, so no single member can produce
-  it and no member holds it at rest;
-- belongs to a **namespace** (`marble/notes/v1`) and an **epoch** (the account's current
-  epoch, §7.3), so it changes when the account's membership changes;
-- is reachable only through a **first-party call on a device** (§4), never over NIP-46 and
-  never through a site's or app's grant;
-- yields, by HKDF, as many keys as the namespace needs: a content key, a tag key, and a
-  **signing key** that is an ordinary Nostr secret key (§5).
+**What it gives you:** an app's data is closed to every site and app the user has merely
+connected, including those with full message access, and closed to a device that has been
+removed from the account. The namespace's own signing key signs its records on the device, in
+a millisecond, with no FROST round and no link to the user's npub.
 
-It is **not** a share of the account's key, carries no points, and signing with it is not
-signing as the user.
+**What it does not give you, stated here because the first draft implied otherwise:** it is
+**not forward secrecy**. The account's key is permanent (COSIGN.md §3; a refresh moves shares
+and keeps the key), and the label is public, so `x(ns,e)` is a fixed function of a permanent
+secret. Anybody who holds the key whole — by importing an nsec, by taking the account out
+(§7.6), by the escape hatch (§8.4), by rebuilding to re-split (§3) — can compute every
+namespace's every epoch, for ever, offline, and nothing in the account will ever show it. A
+refresh does not help, and neither does re-splitting: §4 is the only answer, and it is a
+refusal rather than a repair.
+
+It is not a share of the account's key, carries no points, and signing with it is not signing
+as the user.
 
 ## 2. The label point
 
-For a namespace `ns` and epoch `e`, the label is the byte string
-
-```
-cosign-app-key:v1:<ns>:<epoch>
-```
-
-and the **label point** `P(ns,e)` is that label mapped onto secp256k1 by try-and-increment:
-
-```
-for i = 0, 1, 2, …:  x = SHA256("cosign-app-key-point:v1" ‖ label ‖ i)
-                     if 02‖x is a point on the curve: P = that point, stop
-```
+For a namespace `ns`, an epoch `e` and the account's **namespace salt** `S` (§4.4), the label
+point `P(ns,e)` is the label's bytes mapped onto secp256k1 by try-and-increment.
 
 - **`P` MUST be obtained by hashing to the curve, never as `h·G` for a hash `h`.** If the
-  discrete log of `P` were known, then `s·P = h·(s·G)` — computable by anyone holding the
-  account's **public** key and `h`, which is everyone. That one substitution would turn this
-  whole mechanism into a public value.
-- The label and therefore `P` are public. Nothing about them is a secret; the secret is
-  `s·P`, which needs the key.
+  discrete log of `P` were known then `s·P = h·(s·G)`, computable by anyone holding the
+  account's **public** key — which is everyone. That one substitution turns the mechanism into
+  a public value.
+- Try-and-increment is adequate here: `P` is a fixed public point, nothing depends on the map
+  being constant-time or uniform, and the reviewer confirmed `Point.fromHex('02' ‖ x)` is the
+  even-y lift the construction assumes (`server/frost.ts:154`).
 
-## 3. Deriving it, and why that rotates
+## 3. The bytes, exactly
 
-The app key's root is the threshold ECDH of the account's key with the label point:
+Three platforms will implement this — TypeScript, Kotlin, Rust — and an encoding that differs
+between them derives different keys and writes into **disjoint invisible data sets**. So the
+bytes are pinned, with no room for a judgement call:
 
 ```
-x(ns,e) = s · P(ns,e)        taken as the x-coordinate, 32 bytes
-K(ns,e) = HKDF-Extract(SHA-256, salt = "cosign-app-key:v1", ikm = x(ns,e))
+label      = "cosign-app-key:v1" ‖ 0x00 ‖ S ‖ 0x00 ‖ ns ‖ 0x00 ‖ epoch_be4
+             S         32 bytes, the account's namespace salt (§4.4)
+             ns        the namespace's name, ASCII, no trailing 0x00 of its own
+             epoch_be4 the committed epoch as a 4-byte big-endian unsigned integer
+point_hash = SHA-256("cosign-app-key-point:v1" ‖ 0x00 ‖ label ‖ i_u8)
+             i_u8      a single byte, 0, 1, 2, …, and an implementation MUST stop at 255
+P(ns,e)    = the first i whose 02 ‖ point_hash is a point on secp256k1
+x(ns,e)    = the x-coordinate of s · P(ns,e), 32 bytes
+K(ns,e)    = HKDF-Extract(SHA-256, salt = "cosign-app-key:v1", ikm = x(ns,e))
 ```
 
-This is the round Cosign already runs for decryption (§5.6): each member taking part returns
-`λ_i · s_i · P` for its shares and the coordinator adds them (`ecdhPartial`, `ecdhCombine`).
-**The only thing that differs from reading a message is which point is asked about.** No new
-message, no new maths, no server change.
+- The epoch is a **number**, never its decimal spelling: `"7"` and `"07"` would be two keys
+  and two data sets. 4 bytes big-endian, and that is the whole of it.
+- A conforming implementation MUST ship **test vectors**: for a fixed `S`, `ns` and epochs
+  0, 1, 7 and 255, the chosen `i`, `P`'s x-coordinate, and `K`'s first 8 bytes. Two platforms
+  that disagree on any of them are not interoperable, and the failure is silent.
 
-**Why it rotates, where the to-self secret does not.** `x(ns,e)` can only be computed by a
-set of members that reaches the threshold *in the epoch they are in*. A device that has been
-removed:
+## 4. Who may ask, and which accounts may be asked
 
-- cannot run a round — it is worth 3 points, the threshold is 4, and every honest member
-  refuses it from the moment it is reported (§7.2);
-- cannot derive the new epoch's key from the old one — the two are unrelated values, not a
-  counter apart.
+### 4.1 The first-party rule
 
-And a device that is **still** a member can recompute **any** epoch's key, old ones included,
-because `x(ns,e)` depends on the account key and the label and not on which shares are
-current. Two consequences, both good:
+> **A device MUST answer a derive call only for a caller it has identified itself, by a
+> platform mechanism, against a list compiled into that device's own build.** Never for a
+> site or app holding a grant, and the call MUST NOT exist over NIP-46.
 
-- **nothing has to be re-encrypted when the epoch moves.** Marble's option B budgeted for
-  re-encrypting old packs lazily; that cost disappears. Old packs stay readable by the
-  members that remain, for ever, with one round each.
-- **a removed device keeps what it already had.** It can still read the packs of the epochs
-  it lived through, because it holds those keys already. Rotation stops it reading what comes
-  **next**; it does not reach back. §9 says what that means.
+- **Android.** The device MUST take the calling UID from the binder and resolve it to a
+  package name **and the digest of the signing certificate of that package**, and match both.
+  Three things in today's code have to change first, which the reviewer found:
+  - identity MUST NOT come from `activity.callingActivity?.packageName`
+    (`Nip55Request.kt:70`): an Activity's caller is forwardable with
+    `FLAG_ACTIVITY_FORWARD_RESULT`, so a third-party app can present itself as Marble. The
+    binder's calling UID is the only identity that cannot be handed on.
+  - a caller-supplied `callbackUrl` origin MUST NOT share an identity namespace with package
+    names (`Nip55Request.kt:66`), and `http://localhost` MUST NOT be first-party for anything
+    (`:148`).
+  - no certificate check exists anywhere today (`Nip55Provider` uses `callingPackage` alone).
+    A build that has not got one MUST NOT answer a derive call at all. Note that pinning a
+    digest breaks on Play App Signing rotation: the list holds the signing-certificate
+    digests the publisher controls, and rotating one is a release of the device software.
+- **The browser extension.** Only its own extension pages, or an **exact** HTTPS origin on the
+  compiled list: scheme, host and port all matching, no wildcard, no subdomain, and `http://`
+  never (`background.ts:727` accepts it today for ordinary sites, which is fine there and not
+  here). The page MUST be top-level: the manifest's `all_frames: false` happens to prevent
+  framing today, and an implementation MUST write that down and set
+  `frame-ancestors 'none'` rather than rely on it.
+- **A desktop host.** First-party by construction *only* when the call is made in the host's
+  own process. **The Mac app is Tauri, where the app is a webview**, so "a webview is not the
+  host" does not settle it: until the host can prove a page is one it loaded itself, from its
+  own bundle, over a scheme no remote content can occupy, it MUST refuse the derive call.
+- **NIP-46.** Never. A server cannot tell one app from another, and one signer key is shared
+  by every site that connects by code (§6.1).
 
-## 4. Who may ask: the first-party rule
+No user approval is asked for and none would help: the honest question is "is this really
+Marble?", which a signature answers and a person cannot.
 
-> **A device MUST answer an app-key derive call only for a caller it has identified itself,
-> by a platform mechanism, against a list compiled into that device's own build.** It MUST
-> NOT answer one for a site or app that merely holds a grant, and the call MUST NOT exist
-> over NIP-46 at all.
+### 4.2 Accounts this is refused for
 
-- **Android.** The call arrives over the signer's AIDL or content provider. The device takes
-  the calling UID, resolves it to a package name **and the digest of the certificate that
-  signed that package**, and matches both against the compiled list. A package name alone is
-  not an identity: anyone may publish an app by that name.
-- **The browser extension.** Only its **own** extension pages, or an exact HTTPS origin on
-  the compiled list (Marble asks for `notes.marble.syb.lol`). Scheme, host and port MUST all
-  match; no wildcards, no subdomain matching, and never a page the extension did not load
-  itself.
-- **A desktop host** (the Mac app) calls it in its own process, which is first-party by
-  construction. A host MUST NOT expose it to anything it loads — a webview is not the host.
-- **NIP-46.** Never. A server cannot tell one app from another, and a signer key is shared by
-  every site that connects by code (§6.1). A derive call answered over NIP-46 would hand the
-  namespace to whoever reached that key, which is the hole this mechanism exists to close.
+> **A device MUST refuse every derive call for an account whose key has ever been whole in one
+> place.**
 
-**No user approval is asked for, and none would help.** The question "may this app derive its
-own key?" is not one a person can answer better than the platform can: the honest version of
-it is "is this really Marble?", and the package signature answers that. A prompt here would
-be the key-management nagging §0a of
-[progressive-accounts.md](progressive-accounts.md) exists to abolish.
+That is the only mitigation for §1's permanence. It covers an imported nsec, a take-out, the
+escape hatch, a rebuild-and-re-split, and the whole-key stages of
+[progressive-accounts.md](progressive-accounts.md) (§3.1, §3.2 there) — whose durable "a whole
+copy may exist" flag (§4.3 there) is exactly the signal to read. Where no such flag exists yet,
+a device MUST assume the worst for any account it did not watch being created by distributed
+key generation.
 
-**The caller never sees `x` or `K`.** A device hands out only what the namespace is for: the
-content key for a pack, or a signature. A first-party caller that *is* the device's own host
-(the Mac) holds them by construction; one that is a separate process (Marble on Android, a
-page in the extension) MUST be given derived material for the operation it asked for, not the
-root.
+**Only a DKG-created, never-rebuilt account gets what §1 offers.** An implementation that
+cannot tell MUST say so to the namespace rather than guess.
 
-## 5. What the namespace gets
+### 4.3 What the caller gets
 
-From `K = K(ns,e)`, with HKDF-Expand and SHA-256:
+The caller gets what the operation needs — a decrypted pack, a signature — and **never `x` or
+`K`**. A first-party caller that *is* the host holds them by construction; one that is a
+separate process MUST be handed derived material for the operation it asked for.
+
+### 4.4 The namespace salt
+
+`S` is 32 random bytes, generated once when the account is created, carried in the signed
+member record (COSIGN.md §3's epoch record), and never changed by anything but §4.5.
+
+Without it, a rebuild-and-re-split restarts the epoch counter at 0 with the same key, so the
+new incarnation's epochs 0…k have **byte-identical** app keys and addresses to the old one's:
+re-splitting after a compromise would not clear it. With it, whoever re-splits may also deal a
+fresh `S` and leave every old namespace behind.
+
+### 4.5 Abandoning a namespace
+
+A deliberate break — after a compromise, or after an XSS on a first-party origin — is a **new
+salt**, dealt like any other member-record change, with the namespace's data re-encrypted or
+left behind as the namespace decides. It is the only way to make old app keys worthless, and
+it is a user-visible, deliberate act. Nothing automatic does it.
+
+## 5. `x` is never a key
+
+> **`x(ns,e)` MUST NOT be used as a key, MUST NOT be returned to any caller, and MUST be put
+> through HKDF-Extract with the salt of §3, which MUST differ from every NIP-44 salt.**
+
+This is not tidiness. A granted site can already make a device compute `s·P(ns,e)` today, by
+naming the label point's x-coordinate as the peer of `nip44.decrypt` or `nip04.decrypt` —
+nothing checks the peer (`background.ts:149`). For NIP-44 the site gets a decryption under
+`HKDF(x, "nip44-v2")` and learns nothing about `K`. **For NIP-04 the shared x is the AES-CBC
+key verbatim** (`background.ts:165`, `group.ts:797`), so a granted site has an
+encrypt-and-decrypt oracle under exactly `x(ns,e)`. The first draft was safe by luck.
+
+So, in addition:
+
+> **A device MUST refuse a `nip04_*` or `nip44_*` request from any grant whose peer is a label
+> point of a namespace it knows.** The check is a handful of point comparisons against the
+> namespaces in its build, over the epochs it has seen.
+
+## 6. Checking what came back
+
+> **Before anything is written under a fresh `K`, a device MUST confirm it derived the value
+> others derive.**
+
+`ecdhCombine` rejects only the identity point (`server/frost.ts:159`, verified): no partial is
+verified, unlike signing, which has `verifyPartial` and a final check. One dishonest partner
+returning `(λᵢsᵢ + δ)·P` makes the device derive a key **nobody** holds, encrypt a flush under
+it and publish — unreadable by every device including itself, for ever, with no error anywhere.
+Today the same bad partial costs one visible MAC failure; under this mechanism it costs the
+data.
+
+Either check is enough and neither needs new cryptography:
+
+- **a known plaintext**: `HMAC(K, "kid")` against the newest pack the device can already read
+  in that namespace and epoch; or
+- **two disjoint partner sets**: derive twice, through different members, and require the same
+  value. The first time a namespace is used in an epoch there is nothing to compare against, so
+  this is the one that must work then.
+
+## 7. Epoch boundaries, by checkpoint and not by clock
+
+The first draft asked readers to reject an old epoch's record dated after that epoch ended. It
+does not work: a removed device holds the old epoch's keys, computes every address, writes
+*now* and **dates** the write just under the boundary. On a replaceable event the newest date
+wins, so relays serve the forgery and every honest reader accepts it — signature valid,
+cut-off passed. Every record last written in the previous epoch becomes the removed device's to
+rewrite, and a deleted one its to resurrect. It also needed `epochAt`, which **devices do not
+have**: it is server state only (`group.ts:1401`, `:1464`), never sent to a device, and absent
+from the extension and the Android library (verified).
+
+Instead:
+
+> **On its first write in a new epoch, a device MUST publish an epoch-boundary checkpoint under
+> `sk(ns,e)`: the previous epoch's number, and for each of that epoch's records its address, its
+> hash and its own sequence number as of the boundary. A reader MUST accept a record of a
+> retired epoch only if it matches that checkpoint, and MUST ignore `created_at` in the
+> decision.**
+
+- It closes the forgery: the removed device cannot alter a hash list signed under a key it
+  cannot derive.
+- It removes the dependence on a timestamp devices do not have, and on §7.7's gossiped commit
+  moment having an agreed time at all.
+- It tells a new device how far back to walk, which §11.3 otherwise leaves open.
+- It makes the tag key's rotation unnecessary (§8), and it keeps **honest offline work**: a
+  laptop that was away writes records of the old epoch, and they are judged by the checkpoint
+  rather than thrown away for being late — which the clock rule did silently.
+
+Marble already writes a checkpoint per flush, so this is a field or two, not a mechanism.
+
+Two more rules, both about not deriving from an epoch that is not real yet:
+
+- **Only a committed epoch.** A device MUST NOT derive for a pending epoch (§7.7's two-phase
+  refresh): a pending epoch may be dropped, and records written under a key from an epoch that
+  never happened are readable by nobody afterwards.
+- **A failed round is not a new epoch.** When no member answers, a device MUST say so and stop,
+  not fall back to another epoch's key and not drop the write. The round failing and the epoch
+  moving look identical today (`group.ts:795`), and a server outage must not become silent
+  write loss.
+
+## 8. What the namespace gets, and what a server sees
+
+From `K = K(ns,e)`, HKDF-Expand with SHA-256, asking for 48 bytes where a scalar is wanted and
+reducing mod *n* (rejecting 0):
 
 | | info | what it is |
 |---|---|---|
-| content key | `"content"` | 32 bytes, the NIP-44 v2 key for packs of this epoch |
-| tag key | `"tag"` | 32 bytes, for the `d` values of this epoch's addresses |
-| signing key | `"sign"` | 32 bytes → a secp256k1 secret, reduced mod *n*, rejecting 0 |
-| Blossom key | `"blossom"` | as the namespace needs it |
+| content key | `"content"` | 32 bytes, the NIP-44 v2 key for this epoch's records |
+| tag key | `"tag"` | 32 bytes, for the addresses of this epoch |
+| signing key | `"sign"` | a secp256k1 secret: each device derives the same one and signs locally |
+| any other | the namespace's own | as it needs |
 
-**The signing key is an ordinary Nostr key.** Each device derives the same one and signs
-packs locally in about a millisecond: no round, no server, nothing signed by the account. Its
-public key `pk(ns,e)` is how the packs are found, so **no pointer is published anywhere** —
-every device that can derive the key knows the address, and a device that cannot derive it
-learns nothing from a relay but an unfamiliar pubkey. That answers H2 of Marble's review
-(there is no key event to lose, race or overwrite) by having no event at all.
+`pk(ns,e)` is how the records are found, so **nothing is published as a pointer** — every
+device that can derive the key knows the address, and a relay sees an unfamiliar pubkey. A
+namespace MAY keep one tag key across epochs now that §7 does the work the rotation was for;
+rotating it costs each reader a walk back and buys only that a removed device cannot enumerate
+addresses it already knows.
 
-**The tag key MUST rotate with the epoch too.** Marble's draft keeps one stable tag key from
-epoch 0. A removed device would then go on knowing every address for ever — not able to read
-new packs, but able to enumerate them, and able to write junk to the same addresses under the
-old signing key. Rotating it costs the readers one extra walk back, which they do anyway.
+**A server sees the round, and the label is public**, so it can recognise which namespace is
+being derived — metadata about which app the user runs. A device **MAY** blind it: pick random
+`r` in `[2, n-2]`, ask about `r·P`, lift the x-only answer and multiply by `r⁻¹`; both lifts
+give the same x-coordinate, so x-only is enough. `r` MUST come from the system's randomness and
+MUST NOT be fixed for tests. What blinding costs, which the first draft did not say: the
+account's ECDH caches are keyed on the peer, so every blinded derive is a fresh round, and a
+`peerX` that never recurs on a regular cadence is itself recognisable. It is a privacy trade,
+not a free one.
 
-## 6. When the epoch moves
+## 9. The server change this needs
 
-- The epoch is the account's own (§7.3). **Nothing new is published and nothing new has to be
-  learned**: every member already knows the epoch and the time it began (`epochAt`), from the
-  refresh it took part in or from the member record it holds.
-- A refresh happens after every removal, after a paper restore, and periodically (§7.7). So
-  "the epoch moves when a device is removed" needs no new trigger: it already does.
-- **Writes move at once.** A device MUST write new packs only under the current epoch's
-  signing key, and MUST stop writing under the previous one as soon as it sees the new epoch.
-- **Reads walk back.** A reader follows `pk(ns,e)`, then `pk(ns,e-1)`, and so on, as far as
-  the namespace keeps history.
-- **A pack under an old epoch is only history, and only until the moment that epoch ended.** A
-  reader MUST reject a pack signed by `pk(ns,e-1)` whose `created_at` is later than
-  `epochAt(e)`. Without that rule a removed device could go on writing convincing packs under
-  the key it kept; with it, anything it writes after the moment it was removed is ignored by
-  every honest reader. This is the one rule in this document that an implementation gets wrong
-  silently, because nothing fails: the forged packs simply look old.
+The first draft claimed none. In fact every round is refused unless it names a live grant
+(`group.ts:716`): `if (!liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: …' })`.
+So as written the app key would be reachable through a grant and would die with one — and if a
+device borrowed its own grant, the namespace would appear in the user's list of connected apps,
+where **Remove** would silently break it, and where 90 days unused expires it.
 
-## 7. What a server sees, and hiding the label
+> **The smallest change: a server MUST accept a derive round from a device that names the
+> **device's own member key** as its grant, without a site lookup, and MUST NOT create or show a
+> grant for it.** Everything else about the round is unchanged, including that only a device may
+> ask (§5.6 and the fix released in 0.12.6).
 
-The round is the one servers already answer, so a server sees: a device asking for a point,
-the point, and its own partial. Because the label is public, a server can recognise it — it
-learns "this device derived Marble's notes key for epoch 7", which is metadata about which
-app the user runs, not about the notes.
+A server still cannot tell an app key from a message being read, which is why the first-party
+rule has to live on the device.
 
-A device **SHOULD blind it**: pick random `r`, ask about `r·P`, and multiply the result by
-`r⁻¹`.
+## 10. Two devices, no server
 
-```
-ask for      Q = r · P(ns,e)        (x-only on the wire, as today)
-receive      s · Q
-compute      x = (r⁻¹ · (s · Q)).x = (s · P).x
-```
+Two devices reach the threshold between them (6 points of 4), so a namespace can be derived
+with no server at all by the device-to-device round of §5.5 — the same path, the same rules,
+and §6's two-disjoint-sets check is not available there with only two devices, so the
+known-plaintext check is the one that must work.
 
-The server then sees a point it cannot distinguish from any other decryption, the
-arithmetic is one inversion and two multiplications, and nothing on the wire changes. (The
-x-only form loses the sign of the point, which does not matter: both lifts give the same
-x-coordinate for `s·P`.)
+## 11. What it does not protect against
 
-## 8. Where this sits with the rest of Cosign
+1. **Anybody who ever held the key whole** (§1, §4.2). Every namespace, every epoch, for ever,
+   offline, undetectable. This is the ceiling on everything else here.
+2. **A breached device in the current epoch.** It derives everything the namespace has and
+   signs what it likes. Removing it rotates the epoch; it keeps what it already took.
+3. **A removed device's past.** Every key it derived, it keeps: it reads those epochs' records
+   for ever, wherever it kept them, and §7 stops it only from writing convincingly.
+4. **A stolen device plus one cooperating member.** 3 points and 1 is the threshold, as it is
+   for signing (COSIGN.md §12's accepted baseline).
+5. **An XSS on a first-party origin.** It is first-party as far as the browser and this rule are
+   concerned. The response is §4.5's new salt, and nothing automatic notices.
+6. **Servers keeping history.** What a server kept, it keeps (§5.4). The records are not the
+   account's events and never pass through a server, so a server sees only derive rounds — but
+   the namespace also gets no backup from the servers, which a namespace used to storing things
+   under the npub may not expect.
+7. **Relays.** An unfamiliar pubkey's records, their number, size, timing and source address.
+   A relay that correlates two identities by address and time will.
+8. **Per-relay allow-lists.** A namespace that needs its `pk(ns,e)` allow-listed to get past
+   spam filtering hands that relay's operator a dated map from each epoch's key to the account
+   that asked — the link §8 otherwise does not publish.
+9. **The platform's answer to "who is calling".** On a rooted phone, or with a replaced
+   extension, that answer is worth what the device is worth, which is case 2.
+10. **This access cannot be revoked.** Every other access in Cosign can be taken back from a
+    device: a site's grant, an app's, a server's share. A first-party caller's is in the build.
+    The user cannot withdraw it except by removing the device or abandoning the namespace
+    (§4.5), and nothing in the interface will offer to.
 
-- It is **not** a grant and MUST NOT be reachable by one (§4). Removing every site's access
-  changes nothing about it; removing a **device** is what takes it away.
-- It needs **no change to any server**. A server answering the round cannot tell an app key
-  from a message being read, which is why the first-party rule has to live on the device.
-- Two devices can derive it **with no server at all**, by the device-to-device round of
-  §5.5 — the same path, the same rule.
-- The account's own to-self secret (`peerX = groupX`) stays what it is: reachable by anything
-  with decrypt access, which is why no namespace key may be derived from it (§0 and C2 of
-  Marble's review).
+## 12. What this would change in COSIGN.md
 
-## 9. What it does not protect against
+- **§5.6**: a second use for the decryption round, with §2's hash-to-curve requirement, §3's
+  encoding, §5's "`x` is never a key" and the refusal of a grant-driven ECDH against a label
+  point, §6's check on what came back, and §8's optional blinding.
+- **§6.2**: an app key is not a grant, no grant reaches one, and §9's reserved
+  own-device grant exists and is never shown as a connected app.
+- **§6.3, §6.4**: §4.1's first-party rule per door, including that NIP-46 has no such call.
+- **§7.3, §7.7**: that a refresh rotates every namespace's keys, that only a committed epoch is
+  derived from, and that the boundary is a checkpoint and not a clock (§7).
+- **§3**: the namespace salt in the epoch record (§4.4).
+- **§12**: the properties of §11, especially 1 and 10.
 
-Stated plainly, because a mechanism like this invites more faith than it has earned.
+## 13. Conflicts with the other two proposals
 
-1. **A breached device in the current epoch.** It derives everything the namespace has and
-   signs anything it likes. There is no key separation inside a device; a device that is
-   compromised is compromised for its notes too. The only answer is removing it, which
-   rotates the epoch.
-2. **A removed device's past.** It keeps every key it ever derived, so it can read the packs
-   of the epochs it lived through, for ever, wherever it kept them. Only new epochs are
-   closed to it. If that matters for a particular note, the note has to be rewritten — which
-   is a Marble decision, not something this mechanism can do.
-3. **A stolen device plus one cooperating member.** 3 points and 1 is the threshold: a thief
-   with an unlocked device and any one server derives the namespace, exactly as they can sign
-   (§12 of COSIGN.md, the accepted baseline).
-4. **An XSS on an allow-listed origin.** For the extension's web caller, a script injected
-   into `notes.marble.syb.lol` is first-party as far as the browser is concerned, and so as
-   far as this rule is concerned. It gets what the page gets. Marble's own draft assumes an
-   epoch bump after such a fix, which is the right response and it is not automatic: somebody
-   has to notice.
-5. **Servers keeping history.** Everything a server ever kept, it keeps. The packs are not
-   under the account's npub and do not go through a server at all, so a server sees only the
-   derive rounds — and with §7's blinding, not even which namespace. But the archive of
-   everything the account *did* sign stays as it is (§5.4), for ever.
-6. **Relays.** They see an unfamiliar pubkey writing packs: their number, their size, their
-   timing, and the IP they came from. Nothing here hides that, and a relay that correlates
-   two identities by IP and time will do so.
-7. **One operator with several servers.** Servers together are 3 points and cannot reach the
-   threshold, so an operator alone derives nothing — but an operator who also has a stolen
-   device is case 3.
-8. **Someone who can make a device call it.** The first-party rule is as strong as the
-   platform's answer to "who is calling": a package signature on Android, an origin in a
-   browser. On a rooted phone, or in a browser whose extension has been replaced, that answer
-   is worth what the device is worth, which is case 1.
+Both live on the branch `claude/progressive-accounts` and are not on `main`, which is why the
+reviewer could not check these citations.
 
-## 10. Questions this leaves open
+- **progressive-accounts.** At its §3.1 and §3.2 the key is whole on one device, so §4.2
+  refuses the derive call outright there. The first draft said a namespace must not be told
+  rotation protects it "until the account is split"; that was wrong, and the reviewer was right:
+  splitting never restores it. Once a key has been whole anywhere, for that account, it is over.
+- **user-verification.** No conflict. The derive call is not in the granting class and needs no
+  assertion; if §11's open question about asking for the lock is ever answered yes, it becomes
+  an `approve`-shaped action and belongs in that document's table.
+- **The archive.** A namespace's records are not the account's events, so the destructive policy
+  never judges them and nothing holds a mass overwrite for approval. That is the intent and
+  also the trade: only the namespace's own checkpoints stand between a compromised first-party
+  caller and all of it.
 
-1. **Does the namespace list belong in the build, or in the account?** Compiled in (as §4
-   says) means adding a first-party caller needs a release of the device software, which is
-   slow but has no attack surface. In the account it would be a signed member record entry —
-   faster, and a new thing for a compromised device to write to.
-2. **Should a second namespace exist at all yet?** One caller, one namespace, is the safest
-   first version. The mechanism is general; the list should not be.
-3. **How far back do readers walk?** Every epoch since the account began is a round each. A
-   namespace that writes a checkpoint per epoch would bound it; Marble has checkpoints already.
-4. **Should the derive round require the device's lock?** It is not a granting action (it
-   hands out no shares), but it is "read everything in this namespace". My instinct is no —
-   it happens whenever notes sync, and a prompt would be constant — but a once-a-day lock,
-   like a session, is arguable.
+## 14. Still open
 
-## 11. What this would change in COSIGN.md
-
-- **§5.6**: a second use for the decryption round — an app key against a label point — with
-  the hash-to-curve requirement and the blinding recommendation of §7.
-- **§6.2**: a sentence saying an app key is not a grant and no grant reaches one.
-- **§6.3, §6.4**: the first-party rule of §4, per door, and that NIP-46 has no such call.
-- **§7.3**: that a refresh rotates every namespace's keys as a consequence, and the
-  `created_at` cut-off of §6 that makes the rotation mean something.
-- **§12**: the properties of §9, especially that a removed device keeps its past.
-
-## 12. Conflicts with the other two proposals in flight
-
-- **[progressive-accounts.md](progressive-accounts.md).** At its §3.1 and §3.2 the whole key
-  lives on one device. There, an app key is a local computation, not a threshold round, and
-  **none of the rotation in §3 means anything**: the device can derive every epoch of every
-  namespace by itself, for ever, and so can any copy of that key. A namespace MUST NOT be
-  told that rotation protects it until the account is split (§3.3 there). The derive call
-  should refuse, or say plainly what it is, on a whole-key device.
-- **[user-verification.md](user-verification.md).** No conflict, and one thing to keep
-  straight: the derive call is **not** in the granting class (§4.2 there) and needs no UV
-  assertion. If the open question of §10.4 here is ever answered "yes, ask for the lock", it
-  becomes an `approve`-shaped action and belongs in that document's table rather than this one.
-- **The archive.** Packs are not events of the account's, so they never enter the archive and
-  the destructive policy never judges them. That is the intent (H1 of Marble's review: an app
-  that can sign as the user cannot touch the notes) and it is also the trade: **nothing holds
-  a mass overwrite of the notes for approval.** Only the namespace's own checkpoints protect
-  against that, and they are Marble's to design.
+1. **Where the first-party list lives**: compiled in (as §4.1 says) means a release to add a
+   caller and no attack surface; in the signed member record means faster and a new thing for a
+   compromised device to write.
+2. **Whether the Tauri host can be first-party at all** (§4.1), which decides whether the Mac
+   can hold notes.
+3. **Whether `S` (§4.4) can be added to existing accounts** without a refresh, and what an
+   account that has none does meanwhile.
+4. **Whether to ask for the device's lock** on a derive, once a day rather than once a sync.
+5. **What a namespace does when §4.2 refuses it**: run without Cosign's help, or not run.
