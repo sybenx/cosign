@@ -31,9 +31,9 @@ const hex = (n = 8) => bytesToHex(randomBytes(n));
 let failures = 0;
 const check = (label: string, ok: boolean, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!ok) failures++; };
 const kids: ChildProcess[] = [];
-const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts test-nip46/']); process.exit(code); };
+const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-nip46']); process.exit(code); };
 
-spawnSync('pkill', ['-f', 'server.ts test-nip46/']);
+spawnSync('pkill', ['-f', 'server.ts.*test-nip46']);
 if (existsSync(phoneFile)) rmSync(phoneFile);
 spawnSync('node', ['setup.ts', '--dir', 'test-nip46', '--port', '8795', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });

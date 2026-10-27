@@ -26,10 +26,10 @@ const waitFor = async (pred: () => boolean, ms: number) => { const until = Date.
 let failures = 0;
 const check = (label: string, ok: boolean, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!ok) failures++; };
 const kids: ChildProcess[] = [];
-const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts test-addserver/']); process.exit(code); };
+const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-addserver']); process.exit(code); };
 
 const w0 = await (await fetch(worker.replace(/^ws/, 'http') + '/status')).json() as any;
-spawnSync('pkill', ['-f', 'server.ts test-addserver/']);
+spawnSync('pkill', ['-f', 'server.ts.*test-addserver']);
 if (existsSync(phoneFile)) rmSync(phoneFile);
 spawnSync('node', ['setup.ts', '--dir', 'test-addserver', '--port', '8763', '--weighted', '--single', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });

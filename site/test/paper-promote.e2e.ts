@@ -23,7 +23,7 @@ const waitFor = async (pred: () => boolean, ms: number) => { const until = Date.
 let failures = 0;
 const check = (label: string, ok: boolean, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!ok) failures++; };
 const kids: ChildProcess[] = [];
-const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts test-promote/']); process.exit(code); };
+const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-promote']); process.exit(code); };
 const run = (args: string[], env: Record<string, string> = {}) => {
   const k = spawn('node', args, { cwd: serverDir, env: { ...process.env, ...env } });
   let out = '';
@@ -32,7 +32,7 @@ const run = (args: string[], env: Record<string, string> = {}) => {
   return { k, out: () => out };
 };
 
-spawnSync('pkill', ['-f', 'server.ts test-promote/']);
+spawnSync('pkill', ['-f', 'server.ts.*test-promote']);
 for (const f of [phoneFile, paperFile]) if (existsSync(f)) rmSync(f);
 spawnSync('node', ['setup.ts', '--dir', 'test-promote', '--port', '8772', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });

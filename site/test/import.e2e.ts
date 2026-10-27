@@ -7,7 +7,7 @@
 //   node test/import.e2e.ts        (starts and stops a shared server itself, in server/test-import/)
 
 import { readFileSync, openSync, mkdirSync } from 'node:fs';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { generateSecretKey, getPublicKey, verifyEvent, getEventHash } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -30,7 +30,7 @@ execFileSync('rm', ['-rf', serverDir + 'test-import']);
 mkdirSync(serverDir + 'logs', { recursive: true });
 // Two shared servers: a new account needs at least two.
 const hostProcs = ['h', 'h2'].map((d, i) => { const log = openSync(serverDir + `logs/import-${d}.log`, 'w'); return spawn('node', ['server.ts', '--root', `test-import/${d}`, '--port', String(8997 + i * 2)], { cwd: serverDir, env: { ...process.env, COSIGN_ENROLL: 'open' }, stdio: ['ignore', log, log] }); });
-const done = (code: number) => { for (const p of hostProcs) p.kill(); process.exit(code); };
+const done = (code: number) => { for (const p of hostProcs) p.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-import']); process.exit(code); };
 await sleep(3000);
 const hosts = ['h', 'h2'].map(d => JSON.parse(readFileSync(serverDir + `test-import/${d}/host.json`, 'utf8')));
 const host = hosts[0];

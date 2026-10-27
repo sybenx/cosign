@@ -10,7 +10,7 @@
 //   node test/shared.e2e.ts        (starts and stops everything itself, in server/test-shared/)
 
 import { readFileSync, writeFileSync, existsSync, openSync, mkdirSync } from 'node:fs';
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, execFileSync, type ChildProcess } from 'node:child_process';
 import { verifyEvent } from 'nostr-tools/pure';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import { SignerClient, newSession } from '../src/client.ts';
@@ -32,7 +32,7 @@ const run = (args: string[], log: string, env: Record<string, string> = {}) => {
   children.push(c);
   return c;
 };
-const done = (code: number) => { for (const c of children) c.kill(); process.exit(code); };
+const done = (code: number) => { for (const c of children) c.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-shared']); process.exit(code); };
 const waitFor = async (pred: () => boolean, ms: number) => { const until = Date.now() + ms; while (!pred() && Date.now() < until) await sleep(250); return pred(); };
 
 // --- Two keys, server A of each on host 1 and server B of each on host 2 ---------------

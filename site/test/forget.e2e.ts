@@ -39,7 +39,7 @@ const hex = (n = 8) => bytesToHex(randomBytes(n));
 let failures = 0;
 const check = (label: string, ok: boolean, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!ok) failures++; };
 const kids: ChildProcess[] = [];
-const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts test-forget/']); process.exit(code); };
+const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-forget']); process.exit(code); };
 const run = (args: string[], env: Record<string, string> = {}) => {
   const k = spawn('node', args, { cwd: serverDir, env: { ...process.env, ...env } });
   let out = '';
@@ -50,7 +50,7 @@ const run = (args: string[], env: Record<string, string> = {}) => {
 
 // A throwaway key, split by the servers as the earlier 2-of-3 did, so this test holds it.
 const groupSk = randomBytes(32);
-spawnSync('pkill', ['-f', 'server.ts test-forget/']);
+spawnSync('pkill', ['-f', 'server.ts.*test-forget']);
 if (existsSync(phoneFile)) rmSync(phoneFile);
 spawnSync('node', ['setup.ts', '--legacy', '--nsec', nsecEncode(groupSk), '--dir', 'test-forget', '--port', '8778', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });

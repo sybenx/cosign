@@ -7,7 +7,7 @@
 //   node test/create.e2e.ts        (starts and stops everything itself, in server/test-create/)
 
 import { readFileSync, readdirSync, openSync, mkdirSync } from 'node:fs';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { verifyEvent, getEventHash } from 'nostr-tools/pure';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import { SignerClient, newSession } from '../src/client.ts';
@@ -27,7 +27,7 @@ execFileSync('rm', ['-rf', serverDir + 'test-create']);
 mkdirSync(serverDir + 'logs', { recursive: true });
 const log = openSync(serverDir + 'logs/create-host.log', 'w');
 const hostProc = spawn('node', ['server.ts', '--root', 'test-create/h', '--port', '8995'], { cwd: serverDir, env: { ...process.env, COSIGN_ENROLL: 'open' }, stdio: ['ignore', log, log] });
-const done = (code: number) => { hostProc.kill(); process.exit(code); };
+const done = (code: number) => { hostProc.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-create']); process.exit(code); };
 await sleep(3000);
 const host = JSON.parse(readFileSync(serverDir + 'test-create/h/host.json', 'utf8'));
 

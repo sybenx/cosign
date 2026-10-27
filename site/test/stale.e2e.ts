@@ -24,7 +24,7 @@ const hex = (n = 8) => bytesToHex(randomBytes(n));
 let failures = 0;
 const check = (label: string, ok: boolean, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!ok) failures++; };
 const kids: ChildProcess[] = [];
-const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts test-stale/']); process.exit(code); };
+const done = (code: number) => { for (const k of kids) k.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-stale']); process.exit(code); };
 const run = (args: string[], env: Record<string, string> = {}) => {
   const k = spawn('node', args, { cwd: serverDir, env: { ...process.env, ...env } });
   let out = '';
@@ -39,7 +39,7 @@ const serve = (s: string) => {
   return k;
 };
 
-spawnSync('pkill', ['-f', 'server.ts test-stale/']);
+spawnSync('pkill', ['-f', 'server.ts.*test-stale']);
 for (const f of [phoneFile, tabletFile]) if (existsSync(f)) rmSync(f);
 spawnSync('node', ['setup.ts', '--dir', 'test-stale', '--port', '8774', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });

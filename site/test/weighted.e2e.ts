@@ -19,7 +19,7 @@ let failures = 0;
 const check = (label: string, ok: boolean, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ' — ' + extra : ''}`); if (!ok) failures++; };
 const kill = (pattern: string) => spawnSync('pkill', ['-f', pattern]);
 
-kill('server.ts test-weighted/');
+kill('server.ts.*test-weighted');
 spawnSync('node', ['setup.ts', '--dir', 'test-weighted', '--port', '8751', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });
 const log = (n: string) => openSync(`${serverDir}logs/weighted-${n}.log`, 'w');
@@ -55,7 +55,7 @@ const t = bytesToHex(randomBytes(16));
 for (const s of servers) ctl.publish(sealTo(phone.sk, s.pk, { type: 'ticket', t, origin: 'weighted.test', expires: Math.floor(Date.now() / 1000) + 900 }));
 await sleep(1500);
 const site = new SignerClient(newSession(phone.signer, phone.group.relays));
-try { await site.connect(t); } catch (e) { check('a site connects', false, String(e)); kill('server.ts test-weighted/'); process.exit(1); }
+try { await site.connect(t); } catch (e) { check('a site connects', false, String(e)); kill('server.ts.*test-weighted'); process.exit(1); }
 check('a site gets the new key', (await site.getPublicKey()) === phone.group.groupX);
 const ev = await site.signEvent({ kind: 1, content: 'made by nobody', tags: [] }).catch(e => e);
 check('the phone (3) and a server (1) sign', verifyEvent(ev) && ev.pubkey === phone.group.groupX);
@@ -90,6 +90,6 @@ const err = await site.signEvent({ kind: 1, content: 'servers alone', tags: [] }
 check('the two servers alone (2 of 4) can’t', !!err, `${Date.now() - t1} ms: ${err?.message}`);
 
 site.close();
-kill('server.ts test-weighted/');
+kill('server.ts.*test-weighted');
 console.log(failures ? `${failures} failed` : 'all passed');
 process.exit(failures ? 1 : 0);

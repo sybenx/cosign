@@ -8,7 +8,7 @@
 //   node test/dealt.e2e.ts        (starts and stops everything itself, in server/test-dealt/)
 
 import { readFileSync, openSync, mkdirSync, existsSync } from 'node:fs';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { verifyEvent, getEventHash, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
@@ -30,7 +30,7 @@ mkdirSync(serverDir + 'logs', { recursive: true });
 const hosts = [8993, 8994].map((port, i) => spawn('node', ['server.ts', '--root', `test-dealt/h${i + 1}`, '--port', String(port)], {
   cwd: serverDir, env: { ...process.env, COSIGN_ENROLL: 'open', COSIGN_UNFINISHED_AFTER: '8', COSIGN_AGE_EVERY: '1000' }, stdio: ['ignore', openSync(serverDir + `logs/dealt-h${i + 1}.log`, 'w'), openSync(serverDir + `logs/dealt-h${i + 1}.log`, 'a')],
 }));
-const done = (code: number) => { for (const h of hosts) h.kill(); process.exit(code); };
+const done = (code: number) => { for (const h of hosts) h.kill(); spawnSync('pkill', ['-f', 'server.ts.*test-dealt']); process.exit(code); };
 await sleep(3000);
 const hostCfg = [1, 2].map(i => JSON.parse(readFileSync(serverDir + `test-dealt/h${i}/host.json`, 'utf8')));
 

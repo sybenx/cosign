@@ -42,13 +42,22 @@ spawnSync('rm', ['-rf', serverDir + 'test-addcode']);
 mkdirSync(serverDir + 'logs', { recursive: true });
 
 // The account's own two servers, and two home servers that take nobody by default.
-spawnSync('node', ['setup.ts', '--dir', 'test-addcode/own', '--port', '8794', '--weighted', '--force'], { cwd: serverDir });
-for (const s of ['a', 'b']) start(['server.ts', `test-addcode/own/${s}`], `addcode-own-${s}.log`);
+spawnSync('node', ['setup.ts', '--dir', 'test-addcode/own', '--port', '8780', '--weighted', '--force'], { cwd: serverDir });
+// The account's own servers run the wait for a server add (the fix in 0.12.5): no piece is made
+// until it ends, so without this the add below is held for the default hour.
+for (const s of ['a', 'b']) start(['server.ts', `test-addcode/own/${s}`], `addcode-own-${s}.log`, { COSIGN_ADD_WAIT: '2' });
 for (const [d, port] of [['home', 8796], ['other', 8798]] as const)
   start(['server.ts', '--root', `test-addcode/${d}`], `addcode-${d}.log`, { COSIGN_PORT: String(port), COSIGN_ENROLL: 'invite', COSIGN_ADD_WAIT: '2' });
 await sleep(4000);
 
-const html = await (await fetch('http://localhost:8794/')).text();
+// Both of the account's own servers, before anything reads the pairing page: a port something
+// else already has used to kill this suite on the line below, with a TypeError and no checks at
+// all, which reads as a broken test rather than as a busy port.
+for (const [s, port] of [['a', 8780], ['b', 8781]] as const) {
+  const up = await fetch(`http://localhost:${port}/status`).then(r => r.ok).catch(() => false);
+  if (!up) { check(`server ${s} is listening on ${port}`, false, `something else has the port, or it crashed — see logs/addcode-own-${s}.log`); done(1); }
+}
+const html = await (await fetch('http://localhost:8780/')).text();
 const uri = html.match(/href="(cosign:pair\?[^"]+)"/)![1].replaceAll('&amp;', '&');
 const phone = run(['test/fake-phone.ts', uri], { PHONE_STATE: phoneFile });
 check('the phone and its two servers make an account', await waitFor(() => phone.out().includes('made npub'), 60_000));
