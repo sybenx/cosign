@@ -119,8 +119,13 @@ to a **namespace** (`marble/notes/v1`) and a **committed epoch**, reachable only
 **first-party call on a device**.
 
 **What it gives you:** an app's data is closed to every site and app the user has merely
-connected, including those with full message access, and closed to a device that has been
-removed from the account. The namespace's own signing key signs its records on the device, in
+connected, including those with full message access — and closed to a device that has been
+removed from the account **only if that device never pre-derived**. A member device can run one
+ordinary decryption round per epoch, at any time, and keep every future epoch's key: the epoch
+lives in a public label and the account's secret is permanent, so being removed later takes away
+nothing it already took. §7's status block has the verification, §7.4 the two ways out, and §11.3
+the property as it actually stands. Until one of those fixes is taken, the honest claim is: closed
+to apps and sites, and closed to a removed device that did not think of it. The namespace's own signing key signs its records on the device, in
 a millisecond, with no FROST round and no link to the user's npub.
 
 **What it does not give you, stated here because the first draft implied otherwise:** it is
@@ -324,6 +329,16 @@ content is encrypted under a random group secret that **every member holds**, re
 included until the next refresh (NIP-XX.md, kind 30242) — so it is not readable by a bare
 key-holder, and it *is* readable by exactly the members `S` is meant to outlive. And it is a
 published replaceable event: putting `S` there once could never be taken back.
+
+> **An account that exists already gets `S` without a refresh, and a namespace MUST stay off
+> until every member device has acknowledged it** (§14.4, decided). `S` is not key material and
+> nothing in the maths depends on it, so it is dealt to the current member devices with no epoch
+> change and no new shares — but a device that has not got it cannot read or write the namespace,
+> and two devices with different salts write into disjoint invisible data sets, which is §3's
+> failure reached by another road. So the gate is the acknowledgement, not the dealing, and a
+> client MUST be able to say which device is still waiting. An account whose devices are rarely
+> all online at once is the ordinary case, not the hard one, so "waiting for your other device"
+> is a state the app has to wear without looking broken.
 
 > **The account's member record MUST carry a commitment to `S`:
 > `SHA-256("cosign-salt-commit:v1" ‖ S)`.** A hash reveals nothing and pays three times over:
@@ -550,7 +565,39 @@ A DLEQ failure names the culprit and a disagreement does not: with proofs in pla
 exclude the partner whose proof failed and say which one it was. Without them it can say nothing
 useful, which is the other reason §6.2 is not optional.
 
-## 7. Epoch boundaries: the boundary checkpoint, as a protocol
+## 7. Epoch boundaries: the boundary checkpoint — **not buildable as written**
+
+> **Status, after a fourth review that attacked this section alone**
+> (`~/igloo/cosign-checkpoint-redteam.md`: *§7 still is not a design that can be built*, five
+> critical, six high, seven medium). **Nothing in §7 is to be built**, and the namespace that
+> would depend on it is blocked on a redesign. The rules below are kept because the reasoning
+> around them is still the record of what the problem is; they are not the answer.
+>
+> **The one that matters most is not about §7 at all.** §7.1 says "the only key trusted anywhere
+> is the current epoch's — the one no removed device has". **A removed device does have it**, and
+> I verified this in the code myself rather than taking the review's word: the epoch appears only
+> in the *public* label (§3's `msg`), the account's secret is permanent, `onEcdhReq` puts **no
+> constraint of any kind** on `msg.peerX` (`group.ts:701-717`) and `ecdhPartial` has no epoch
+> input at all (`frost.ts:152-156`). So any member device, while it is still a member and with no
+> compromise of anything else, runs one ordinary round per epoch and keeps `K(ns,e)` for epoch
+> `e`, `e+1`, `e+2` … — several hundred epochs in a night, which is more than the account will
+> ever reach. Being reported lost takes away nothing it already has. §7.3's "a device cannot
+> derive for an epoch its shares do not belong to" is true of mismatched **shares** and false of
+> the **label**, which is what §7 leaned on.
+>
+> §1 and §11 already said that every epoch's key, future ones included, is a deterministic
+> function of a permanent secret. What nobody had noticed is that **the permanent secret does not
+> have to be held whole for that to bite** — a threshold round at the right moment is enough. So
+> this is not a §7 bug that §7 can fix. §1's headline, "closed to a device that has been removed
+> from the account", is **false against a device that pre-derived**, and it is corrected there.
+>
+> The other four criticals are §7's own, and they are summarised at §7.4 with the fix each one
+> needs, because they change the shape of the mechanism rather than its wording: the top of the
+> chain is unauthenticated and the union rule makes one bad checkpoint sufficient; §7.2's
+> recovery cases launder a removed device's forgery into the current epoch; removal is
+> unconditional while the epoch move is not, so there is a window in which the removed device
+> writes in the *current* epoch where no checkpoint judges it; and replacing a lost phone — the
+> path §7 exists for — ends in either that laundering or total silent loss.
 
 The first draft asked readers to reject an old epoch's record dated after that epoch ended. It
 does not work: a removed device holds the old epoch's keys, computes every address, writes *now*
@@ -685,6 +732,69 @@ so**, which is the form the compromised-device erasure takes.
   and for `devices()` (`:1379-1385`), never for another server, so an absent server never receives
   the plan or the deltas. That is a Cosign bug this proposal depends on, not a namespace problem:
   it belongs on the fix list before a namespace relies on partner plurality.
+
+### 7.4 What the fourth review found, and the two ways out
+
+Four criticals belong to §7 itself. Each is a change of shape, not of wording.
+
+- **The top of the chain is unauthenticated, and union makes one bad checkpoint sufficient.**
+  Anchoring is a rule about *descendants*; nothing sits above the current epoch, so at the top the
+  only rule is the union — and the union inverts the quantifier. "Acceptable if **any**
+  verifiable checkpoint lists it" means the union's security is that of its weakest member: any
+  current member device, or an XSS on a first-party origin, forges `e−1` records and mints **one**
+  epoch-`e` checkpoint listing them, and they become §7.2's accepted case everywhere. The union
+  stopped the previous draft's silent *erasure* and bought silent *minting*.
+- **§7.2's cases 2 and 3 are an authentication bypass.** An honest late `e−1` write and a removed
+  device's forged `e−1` write are the same object: same shared key, same content key, same tag
+  key, both either absent from the list or hash-mismatched. §7.2 tells an honest device to
+  re-sign both "under `sk(ns,e)` by the first device that can", and gives no criterion — because
+  none is available to it. The forgery gets notarised into the current epoch.
+- **Removal is unconditional; the epoch move is not.** `target.removed = now()`
+  (`group.ts:1334`) always happens; `startRefresh` (`:1341`) is conditional on a plan, accepts
+  only `S.epoch + 1` over its current points, and completes only on every dealer's part. The
+  extension has no `remove_member` at all. So a device can be **out while the epoch has not
+  moved** — and then it writes in the *current* epoch, which boundary checkpoints never judge.
+  Unbounded window, no notice. That is worse than the checkpoint never being written, because
+  there is nothing for a checkpoint to say.
+- **Replacing a lost phone ends in bypass or total silent loss.** The replacement joins at epoch
+  `e` with an empty local store, and there is no epoch-`e` checkpoint because the only device
+  that saw `e−1` is the lost one. §7.1 has it write a checkpoint "from its own view", which is
+  empty, so the entire vault becomes case 3: either it re-signs all of it (the bypass above,
+  performed on 100% of the data) or `unverified` forbids adoption and the user's notes sit on
+  relays, readable with keys the new device holds, while the rule says no. A reinstall and a
+  paper restore are the same shape, and so is COSIGN.md §7.3's documented 30-day re-add.
+
+**Two ways out, and they are alternatives rather than steps.**
+
+1. **Give the namespace's writes an author.** The root of all of it is that a namespace's records
+   have no author: one secret per epoch, shared by every member of that epoch, the removed one
+   included. The checkpoint is an attempt to patch authorship with a content snapshot, which is
+   why union, anchoring, the recovery cases and the re-signing rule pull against each other. Put
+   the writing device's **Cosign member key** signature inside the encrypted body, name the
+   device, and accept only a device that a membership list shows as not removed. Union becomes
+   union-over-devices — bounded and tiebroken — anchoring can be deleted, the recovery cases
+   become decidable, and pre-derivation stops mattering *for writes*. The cost is real and is
+   not in the protocol today: `publicMembers()` deletes removed members outright with no removal
+   time (`group.ts:1180`), and both clients discard them, so the membership history this needs
+   **does not exist anywhere**; "removed at epoch `r`" becomes a server's word that is
+   load-bearing for data integrity; and the boundary checkpoint survives only as the witness for
+   "this existed before the removal".
+2. **Bind the label to something minted at the boundary**, which is the only answer to
+   pre-derivation and does nothing for the other four. The review proposes the epoch's new
+   **share points**; a better candidate is already in the protocol — the group record's
+   `epoch.id`, a 128-bit random per-epoch value, and the per-refresh **group secret** it is
+   encrypted under, which every member holds and which changes on every refresh
+   (NIP-XX.md, kind 30242). A device removed at the boundary never receives either. The cost is
+   the same in both versions and it is the walk-back: a device that joins at epoch `c` can no
+   longer derive an epoch below `c` without that epoch's own minted value, which nothing retains
+   — so the chain would have to carry key-derivation input, and the boundary checkpoint becomes a
+   much heavier object than §7 imagined.
+
+**What is not an option is leaving §1's claim as it is.** If neither fix is taken, the honest
+statement is that this mechanism closes a namespace to apps and sites, and to a removed device
+**that never pre-derived** — a non-adaptive attacker — and that a device whose holder thought to
+run the rounds owns the namespace for every epoch the account will ever reach. That is a real
+property. It is not the one §1, §11.3 and §11.4 have been claiming.
 
 ## 8. What the namespace gets, and what a server sees
 
@@ -851,15 +961,21 @@ rules. Three things to say plainly about it:
    whole key at the time, which for an imported account is usually the machine an nsec leaks
    from — so §4.2's protection is about the *bytes* of an old nsec, not about the computer they
    were on. §4.5 is the only answer and it is a deliberate, visible act.
-3. **A breached device in the current epoch.** It derives everything the namespace has and
-   signs what it likes. Removing it rotates the epoch; it keeps what it already took, `S`
-   included (case 2).
-4. **A removed device's past.** Every key it derived, it keeps: it reads those epochs' records
-   for ever, wherever it kept them. The third draft added that "§7 stops it only from writing
-   convincingly", which was **false** — the epoch-`(e−1)` checkpoint is signed under a key the
-   device removed at that boundary holds, so it owned every epoch below the one it lost. §7.1's
-   top-anchored chain is what makes the sentence true, and it is true only from the current
-   epoch downwards.
+3. **A breached device in the current epoch, and in every epoch after it.** It derives
+   everything the namespace has and signs what it likes. Removing it rotates the epoch — and
+   **that is not the protection it reads as**: one ordinary round per epoch, run while the device
+   was still a member, gives it `K(ns,e+1)`, `K(ns,e+2)` and as far forward as it cares to go,
+   because the epoch is in a public label and the account's secret is permanent (§7's status
+   block, verified in the code). A few hundred rounds is a night's work and more epochs than the
+   account will reach. It keeps what it already took, `S` included (case 2), and what it took
+   includes the future. §7.4's two fixes are the only answers; without one of them "removed" is
+   not a boundary for a namespace, only for the rounds a device can still ask for.
+4. **A removed device's past, and its future.** Every key it derived, it keeps: it reads those
+   epochs' records for ever, wherever it kept them. The third draft added that "§7 stops it only
+   from writing convincingly"; the fourth review showed that **§7 stops it from nothing** as
+   written — it can hold the current epoch's key by pre-derivation (case 3), so it sits at the
+   top of the chain where nothing anchors it, and it can write as convincingly as any member.
+   §7 is marked not buildable for that reason.
 5. **A stolen device plus one cooperating member.** 3 points and 1 is the threshold, as it is
    for signing (COSIGN.md §12's accepted baseline).
 6. **An XSS on a first-party origin.** It is first-party as far as the browser and this rule are
@@ -942,7 +1058,12 @@ reviewer could not check these citations.
    lives inside the app, which is a vault change and needs its own review.
 3. ~~Whether the paper carries `S`~~ — **answered: it does** (§4.4), with the consequence
    stated there: a paper plus a whole-key copy opens every namespace for ever.
-4. **Whether `S` can be added to an existing account without a refresh** — mine, and the answer
+4. ~~**Whether `S` can be added to an existing account without a refresh**~~ — **answered by the
+   author: existing accounts get `S` in the same release as new ones, and a namespace stays off
+   until every member device has acknowledged it.** So the acknowledgement is not a nicety to be
+   added later: it is the gate, it has to work on an account whose devices are not all online at
+   once, and "off" has to be a state the app can be in without looking broken. What follows is
+   the reasoning that led there, and it stands — the answer
    is **yes**, with a caveat the second review supplied: `S` is not key material and nothing in
    the maths depends on it, so it is dealt to the current member devices with no epoch change
    and no new shares. But "and acknowledged" was hand-waving — there is no acknowledgement in
