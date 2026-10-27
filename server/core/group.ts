@@ -251,7 +251,12 @@ export function openGroup(loaded: Loaded, io: Io) {
       case 'app_grant': { if (fromPhone) grantApp(msg); return; }
       case 'add_device': { if (mayAct(from)) addDevice(msg, from).catch(err => send(from.pk, { type: 'add_failed', id: msg.id, reason: err.message })); return; }
       case 'repair_delta': { if (fromPhone) onRepairDelta(msg, from); return; }
-      case 'members': { if (!fromPhone) mergeMembers(msg.members ?? []); return; }
+      // Only another server's list. It used to be any member that isn't a device, which the
+      // paper backup also is: it could send a list saying its own entry is a device, and
+      // `mergeMembers` would believe it (the backup-became-a-phone clause), which made a paper
+      // thief a device for everything gated on that — grants included — with none of the wait
+      // a recovery runs.
+      case 'members': { if (from.role === 'server') mergeMembers(msg.members ?? []); return; }
       case 'remove_member': { if (mayAct(from)) onRemove(msg, from); return; }
       case 'take_out': { if (mayAct(from)) onTakeOut(msg, from); return; }
       case 'forget': { if (mayAct(from)) onForget(msg, from); return; }
