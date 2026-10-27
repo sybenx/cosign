@@ -52,7 +52,9 @@ const owner = bytesToHex(randomBytes(32)), known = bytesToHex(randomBytes(32)), 
 const ownerPk = pubOf(owner), knownPk = pubOf(known), strangerPk = pubOf(stranger);
 
 spawnSync('node', ['setup.ts', '--dir', 'test-join/own', '--port', '8764', '--weighted', '--force'], { cwd: serverDir });
-for (const s of ['a', 'b']) start(['server.ts', `test-join/own/${s}`], `join-own-${s}.log`);
+// The account's own servers run the wait for a server add (COSIGN.md §7.1, the fix in 0.12.5):
+// no piece is made until it ends, so without this the add below is held for the default hour.
+for (const s of ['a', 'b']) start(['server.ts', `test-join/own/${s}`], `join-own-${s}.log`, { COSIGN_ADD_WAIT: '2' });
 // Three home servers: two to set from their page, one fixed where it was started.
 for (const [d, port] of [['follows', 8766], ['invite', 8768]] as const)
   start(['server.ts', '--root', `test-join/${d}`], `join-${d}.log`, { COSIGN_PORT: String(port), COSIGN_PROFILES_EVERY: '15000', COSIGN_PROFILE_AGE: '20', COSIGN_ADD_WAIT: '2' });

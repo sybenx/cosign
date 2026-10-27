@@ -52,7 +52,7 @@ const run = (args: string[], env: Record<string, string> = {}) => {
 const groupSk = randomBytes(32);
 spawnSync('pkill', ['-f', 'server.ts test-forget/']);
 if (existsSync(phoneFile)) rmSync(phoneFile);
-spawnSync('node', ['setup.ts', '--legacy', '--nsec', nsecEncode(groupSk), '--dir', 'test-forget', '--port', '8793', '--force'], { cwd: serverDir });
+spawnSync('node', ['setup.ts', '--legacy', '--nsec', nsecEncode(groupSk), '--dir', 'test-forget', '--port', '8778', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });
 for (const s of ['a', 'b']) {
   const l = openSync(`${serverDir}logs/forget-${s}.log`, 'w');
@@ -60,7 +60,14 @@ for (const s of ['a', 'b']) {
 }
 await sleep(3000);
 
-const html = await (await fetch('http://localhost:8793/')).text();
+// Both servers, not just the one with the page: a server that could not bind its port used to
+// leave this suite running against a dead B, which showed up as "the archive didn't sync"
+// rather than as "B never started".
+for (const [s, port] of [['a', 8778], ['b', 8779]] as const) {
+  const up = await fetch(`http://localhost:${port}/status`).then(r => r.ok).catch(() => false);
+  if (!up) { check(`server ${s} is listening on ${port}`, false, 'something else has the port, or it crashed — see logs/forget-' + s + '.log'); done(1); }
+}
+const html = await (await fetch('http://localhost:8778/')).text();
 const uri = html.match(/href="(cosign:pair\?[^"]+)"/)![1].replaceAll('&amp;', '&');
 const phone = run(['test/fake-phone.ts', uri], { PHONE_STATE: phoneFile });
 check('the phone pairs with the key the servers hold', await waitFor(() => /paired|npub/.test(phone.out()), 60_000), phone.out().split('\n').slice(-2).join(' | ').slice(0, 100));

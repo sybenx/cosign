@@ -41,13 +41,13 @@ const serve = (s: string) => {
 
 spawnSync('pkill', ['-f', 'server.ts test-stale/']);
 for (const f of [phoneFile, tabletFile]) if (existsSync(f)) rmSync(f);
-spawnSync('node', ['setup.ts', '--dir', 'test-stale', '--port', '8768', '--weighted', '--force'], { cwd: serverDir });
+spawnSync('node', ['setup.ts', '--dir', 'test-stale', '--port', '8774', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });
 for (const s of ['a', 'b']) if (existsSync(`${serverDir}logs/stale-${s}.log`)) rmSync(`${serverDir}logs/stale-${s}.log`);
 const srv: Record<string, ReturnType<typeof serve>> = { a: serve('a'), b: serve('b') };
 await sleep(3000);
 
-const html = await (await fetch('http://localhost:8768/')).text();
+const html = await (await fetch('http://localhost:8774/')).text();
 const uri = html.match(/href="(cosign:pair\?[^"]+)"/)![1].replaceAll('&amp;', '&');
 const phone = run(['test/fake-phone.ts', uri], { PHONE_STATE: phoneFile });
 check('the phone and two servers make a key', await waitFor(() => phone.out().includes('made npub'), 60_000));
@@ -96,7 +96,7 @@ const before = log('b').length;
 asPhone(servers[1].pk, { type: 'sign_req', id: hex(6), event: { kind: 1, content: 'through the stale server', tags: [], created_at: Math.floor(Date.now() / 1000) } });
 await sleep(5000);
 check('B signs nothing after it knows', !/signed/.test(log('b').slice(before)), log('b').slice(before).split('\n').filter(Boolean).slice(-2).join(' / '));
-const status = await (await fetch('http://localhost:8769/status')).json().catch(() => ({ activity: [] })) as any;
+const status = await (await fetch('http://localhost:8775/status')).json().catch(() => ({ activity: [] })) as any;
 check('and the status page says so', (status.activity ?? []).some((a: any) => /generation behind/.test(a.text ?? '')),
   (status.activity ?? []).map((a: any) => a.text).slice(0, 2).join(' / '));
 
