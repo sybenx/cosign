@@ -5,10 +5,28 @@ can be attacked. It is not part of [COSIGN.md](COSIGN.md) until it has been revi
 author agrees; §12 lists what it would change there, §13 what it costs the other two
 proposals in flight.
 
-This draft answers an independent red team of the first one
-(`~/igloo/cosign-app-keys-redteam.md`, verdict: *build it with changes — substantial ones*;
-two critical findings, five high). It was right, and three of its findings I checked against
-the code myself before believing them.
+This draft answers **two** independent red teams. The first went at the whole proposal
+(`~/igloo/cosign-app-keys-redteam.md`: *build it with changes — substantial ones*, two critical,
+five high). The second went only at the secret salt that answered the first
+(`~/igloo/cosign-app-keys-salt-redteam.md`: *a good idea this draft spends three times over*,
+three critical). Both were right, and the claims of theirs that mattered most I checked against
+the code before believing them.
+
+**What the second review changed, in order of how badly I had it wrong:**
+
+1. **Blinding is mandatory, not optional.** I had removed it *because* of the salt. Backwards:
+   the salt hides how to construct the label point; the round puts that point on the wire, where
+   a key-holder who sees it once computes the app key at home. §8.
+2. **The one place I told implementers to publish the salt is gone.** §12 still said to put it
+   in the group record, which §4.4 forbids in the same breath — and my reason for forbidding it
+   was wrong too. §4.4, §12.
+3. **Nothing committed to the salt**, so the join path could be handed a chosen one by a relay.
+   There is now a commitment in the member record, which also makes "every device has the same
+   one" checkable. §4.4, §4.4.1.
+4. The salt's own permanence is a standing weakness rather than a footnote — it never rotates,
+   it is the most copied secret in the account, and a leak of it cannot be noticed (§11.2); the
+   paper's four consequences are spelled out (§4.4); §4.5 admits it is a sketch; and the
+   "dealt and acknowledged" of §14.4 needed an acknowledgement that does not exist yet.
 
 **What changed, and the first one matters most:**
 
@@ -46,14 +64,18 @@ key already decrypts everything the account encrypts to itself and signs as the 
 do not need the call, and denying it to the *account* only takes away the compartmentalisation
 against apps and sites, which is the thing Marble needs. The refusal is gone.
 
-What replaces it is better than either: **the namespace salt is a members-only secret.** `s`
-alone does not derive an app key — the label needs `S`, and `S` is never published, never sent
-to a server and never put in the epoch record. So the nsec that existed before an import, held
-by whoever held it, cannot construct the label point at all, and an imported account gets a
-real guarantee rather than a disclaimer. Two further consequences fall out: a server can no
-longer recognise which namespace is being derived, so §8's blinding stops being necessary, and
-the thing a client must never claim is now precise — protection fails against someone who held
-**both** `s` and `S`, not against anyone who ever touched the key.
+What replaces it: **the namespace salt is a members-only secret.** `s` alone does not derive an
+app key — the label needs `S` as well, and `S` is never published, never sent to a server and
+never put in the group record. So the bytes of an nsec from before an import do not reach the
+notes by themselves.
+
+**What that is worth, said carefully** (a second review spent most of its length on this, and
+it was right to): it raises the cost and narrows who can, and it is not a guarantee. `S` never
+rotates while being the most widely copied secret in the account — every device, every paper —
+a leak of it is undetectable by construction, and the machine that generated it was holding the
+whole key at the time, which is usually the machine an nsec leaks from. So §4.2's rule stands
+unchanged: a client says a namespace is closed to apps, sites and removed devices, and does not
+say it is closed to whoever has held the key.
 
 ---
 
@@ -113,9 +135,16 @@ K(ns,e)    = HKDF-Extract(SHA-256, salt = "cosign-app-key:v1", ikm = x(ns,e))
 
 - The epoch is a **number**, never its decimal spelling: `"7"` and `"07"` would be two keys
   and two data sets. 4 bytes big-endian, and that is the whole of it.
-- A conforming implementation MUST ship **test vectors**: for a fixed `S`, `ns` and epochs
-  0, 1, 7 and 255, the chosen `i`, `P`'s x-coordinate, and `K`'s first 8 bytes. Two platforms
-  that disagree on any of them are not interoperable, and the failure is silent.
+- A conforming implementation MUST ship **test vectors**: for a **published test salt** (never
+  a real one), a fixed `ns` and epochs 0, 1, 7 and 255, the chosen `i`, `P`'s x-coordinate, and
+  `K`'s first 8 bytes. Two platforms that disagree on any of them are not interoperable, and the
+  failure is silent.
+- The hash is keyed by a secret, so use it as one: **`HMAC-SHA-256` with `S` as the key** over
+  the rest of the label, rather than `S` inside a plain SHA-256 prefix. The encoding above is
+  injective either way and prefix-keyed SHA-256 is not exploitable here, but HMAC costs nothing
+  and removes the question.
+- `S` MUST come from a cryptographic random source, and **a label MUST NOT be logged**: a
+  key-holder who has seen one point on the wire has an offline oracle for guessing a weak salt.
 
 ## 4. Who may ask, and which accounts may be asked
 
@@ -216,10 +245,42 @@ separate process MUST be handed derived material for the operation it asked for.
 
 `S` is 32 random bytes, generated once when the account is created, and it is **secret**:
 
-> **`S` MUST NOT be published, MUST NOT be sent to a server, and MUST NOT be put in the epoch
-> record** (which COSIGN.md §3 encrypts under the group secret — readable by anyone holding the
-> key, which is precisely who must not have it). It is held by the account's **member devices**
-> and nowhere else.
+> **`S` MUST NOT appear in any event the account signs, MUST NOT be sent to a server, and
+> MUST NOT be put in the group record.** It is held by the account's **member devices** and
+> nowhere else.
+
+The group record is the wrong place for two reasons, and not the one an earlier draft gave. Its
+content is encrypted under a random group secret that **every member holds**, removed ones
+included until the next refresh (NIP-XX.md, kind 30242) — so it is not readable by a bare
+key-holder, and it *is* readable by exactly the members `S` is meant to outlive. And it is a
+published replaceable event: putting `S` there once could never be taken back.
+
+> **The account's member record MUST carry a commitment to `S`:
+> `SHA-256("cosign-salt-commit:v1" ‖ S)`.** A hash reveals nothing and pays three times over:
+> a device that is handed a salt checks it against the commitment, so nothing can inject one
+> (§4.4.1); two devices that disagree find out instead of writing into disjoint data sets; and
+> §14.4's "every device has it" becomes a thing a client can check rather than hope.
+
+> **`S` MUST be stored at the root of a device's own state, never inside the group or
+> membership record it keeps.** That record is authored by a server — it arrives in the
+> `members` message (`group.ts:1135`) and is replaced wholesale — so a salt kept there would be
+> a salt a server could overwrite.
+
+### 4.4.1 Getting it to a new device
+
+The channel exists: the vouching device seals its sigmas to the newcomer over NIP-44
+(`Phone.kt:1451`, and the extension's member code), and `S` travels with them. But **nothing on
+that path authenticates the sender**: `onJoinPiece` records who sent a sigma and never checks
+it (`Phone.kt:1514`), and the extension does not keep the sender at all. The sigmas survive
+that because each one is checked against the group's commitments and the server re-checks the
+resulting share points (`group.ts:1143`); **`S` has nothing to check against**, so a relay that
+sees the newcomer's key in its own subscription filter could hand it a salt of its choosing —
+and an attacker who also held the old whole key would then have *chosen* the salt, which ends
+the guarantee without ever learning the real one.
+
+The commitment above is what closes that, and it is the reason it is a MUST rather than a nice
+idea: a newcomer takes a salt only when it hashes to the commitment in the record it was
+given.
 
 - **A new device gets it with its shares**, sealed to it on the path that already seals its
   sigmas (§7.1). A device that has shares but not `S` can sign and read messages; it simply
@@ -232,19 +293,37 @@ separate process MUST be handed derived material for the operation it asked for.
   to the old one's. With it, whoever re-splits may deal a fresh `S` and leave every old
   namespace behind (§4.5).
 - **The paper backup carries `S`** (the author's decision, 2026-10-27). So a paper restore
-  brings a namespace's data back with the account, rather than leaving the account alive and
-  the data unreadable for ever. It is written into the paper's code beside the backup key, and
-  it means plainly: **a paper holder who also holds a copy of the whole key — an old nsec, say —
-  derives every namespace for ever.** The paper is already worth 2 points and a stolen paper
-  plus a whole-key copy was already the end of the account (COSIGN.md §12); what this adds is
-  that it is also the end of the namespaces. Said here so that nobody has to work it out.
+  brings a namespace's data back with the account, rather than leaving the account alive and the
+  data unreadable for ever. It goes in the paper's code beside the backup key — 64 more hex
+  characters, which that QR takes without trouble, and no server ever sees it, because the
+  paper's code is made on the device and only its public key is sent (verified). Four things
+  follow, and all four should be said out loud rather than discovered:
+  - **A paper holder who also holds a copy of the whole key derives every namespace for ever.**
+    A stolen paper plus a whole-key copy was already the end of the account (COSIGN.md §12);
+    this makes it the end of the namespaces too.
+  - **Paper plus two servers reaches the namespaces with no wait in the way.** Recovering the
+    *account* that way is guarded by §7.4's wait; reading `S` off a QR is not a protocol step
+    and nothing delays it.
+  - **Every paper printed before this exists has no salt**, so restoring from one brings the
+    account back and leaves the namespace silent. A client MUST say that plainly rather than
+    show an empty namespace.
+  - **A new salt (§4.5) silently invalidates every paper in existence** for the namespace, and
+    §8.1's planned 24-word form becomes about 48 words with a second secret in it.
 
 ### 4.5 Abandoning a namespace
 
 A deliberate break — after a compromise, or after an XSS on a first-party origin — is a **new
-salt**, dealt like any other member-record change, with the namespace's data re-encrypted or
-left behind as the namespace decides. It is the only way to make old app keys worthless, and
-it is a user-visible, deliberate act. Nothing automatic does it.
+salt** with a new commitment, dealt to every member device. It is the only way to make old app
+keys worthless, and it is a user-visible, deliberate act that nothing automatic does.
+
+**This is a sketch, not a mechanism, and the spec should not pretend otherwise.** What it does
+not yet say: who re-encrypts the existing data and reads it meanwhile; that old data stays
+readable under the old salt for ever, so a re-salt protects what comes next and nothing else;
+that it invalidates every paper (§4.4); and that it severs §7's chain, because an epoch's
+boundary checkpoint is signed under a key derived through the salt, so **after a re-salt every
+retired epoch becomes unverifiable** and its records can only be taken on trust or abandoned.
+A namespace that wants re-salting to be usable has to design that, and until it does, §4.5 is
+the lever you pull when the alternative is worse.
 
 ## 5. `x` is never a key
 
@@ -263,6 +342,11 @@ So, in addition:
 > **A device MUST refuse a `nip04_*` or `nip44_*` request from any grant whose peer is a label
 > point of a namespace it knows.** The check is a handful of point comparisons against the
 > namespaces in its build, over the epochs it has seen.
+
+A device that has no salt yet cannot make that check, because it cannot construct the label
+points. Such a device MUST NOT be a first-party caller for the namespace either (§4.4), so the
+two go together: **until a device has the salt it is not part of the namespace at all**, and it
+answers grants exactly as it does today.
 
 ## 6. Checking what came back
 
@@ -342,15 +426,29 @@ namespace MAY keep one tag key across epochs now that §7 does the work the rota
 rotating it costs each reader a walk back and buys only that a removed device cannot enumerate
 addresses it already knows.
 
-**A server sees the round, and with a secret salt (§4.4) it cannot tell what the point is for**
-— it is one more peer it has never seen. That was the whole purpose of the blinding the first
-draft recommended, so blinding is no longer needed. A device **MAY** still blind — pick random
-`r` in `[2, n-2]`, ask about `r·P`, lift the x-only answer and multiply by `r⁻¹`; both lifts
-give the same x-coordinate, so x-only suffices, and `r` MUST come from the system's randomness
-and MUST NOT be fixed for tests — but it should know the cost: the account's ECDH caches are
-keyed on the peer, so every blinded derive is a fresh round, and a peer that never recurs on a
-regular cadence is itself a pattern. Blinding is worth it only if `S` may have leaked, which is
-the case where §4.5 applies instead.
+> **A device MUST blind the point it asks about.** Pick `r` at random in `[2, n-2]` from the
+> system's randomness — never a fixed `r`, not even "for tests" — ask about `r·P`, lift the
+> x-only answer and multiply by `r⁻¹`. Both lifts give the same x-coordinate, so x-only on the
+> wire is enough.
+
+The second draft made this optional on the grounds that a secret salt already hides the label
+from the server. That was backwards, and it is the mistake this draft exists to correct. **The
+salt hides how to *construct* `P`; it does nothing about `P`'s value once a device puts it on
+the wire**, and putting it on the wire is the whole of the round: `onEcdhReq` takes `msg.peerX`
+as plain hex and must, in order to answer (`server/core/group.ts:701`, `:718`). So anyone
+holding the key who sees **one** `ecdh_req` — on a relay, on a server, in a log — computes
+`s·lift(peerX)` at home and has `K`, with no threshold, no grant, no round and no salt. The
+pre-import nsec that §4.2 is about needs to watch once.
+
+Worse, §9's own change makes those rounds easy to pick out: a derive names the device's own
+member key as its grant, so `msg.grant === from.pk` marks it. Harvesting is targeted, not bulk.
+
+So the two defences are complements and the draft had them as alternatives: **the salt stops
+offline enumeration, blinding stops online harvesting**, and a namespace needs both. What
+blinding costs is real and worth paying: the account's ECDH caches are keyed on the peer, so
+every derive is a fresh round, and a peer that never recurs on a regular cadence is itself a
+pattern — a pattern that reveals *that* a namespace is being derived, which is the cheaper
+secret to lose.
 
 ## 9. The server change this needs
 
@@ -382,26 +480,36 @@ known-plaintext check is the one that must work.
    them. The key alone is not enough — an nsec from before an import cannot construct the label
    — but a member device that was taken out had both. This is the ceiling on everything else
    here.
-2. **A breached device in the current epoch.** It derives everything the namespace has and
-   signs what it likes. Removing it rotates the epoch; it keeps what it already took.
-3. **A removed device's past.** Every key it derived, it keeps: it reads those epochs' records
+2. **The salt itself, which never rotates and is copied the most.** `S` is in every member
+   device and on every paper, it does not change when the epoch does, and **a leak of it cannot
+   be noticed** — there is no use of it that looks different afterwards. A device reported lost
+   keeps it for ever and the removal flow does nothing about it; a paper COSIGN.md §8.1 calls
+   worthless after a new one is printed still carries a live salt; a stale backup of a device
+   yields a dead share and a live salt. It was also generated on the machine that held the
+   whole key at the time, which for an imported account is usually the machine an nsec leaks
+   from — so §4.2's protection is about the *bytes* of an old nsec, not about the computer they
+   were on. §4.5 is the only answer and it is a deliberate, visible act.
+3. **A breached device in the current epoch.** It derives everything the namespace has and
+   signs what it likes. Removing it rotates the epoch; it keeps what it already took, `S`
+   included (case 2).
+4. **A removed device's past.** Every key it derived, it keeps: it reads those epochs' records
    for ever, wherever it kept them, and §7 stops it only from writing convincingly.
-4. **A stolen device plus one cooperating member.** 3 points and 1 is the threshold, as it is
+5. **A stolen device plus one cooperating member.** 3 points and 1 is the threshold, as it is
    for signing (COSIGN.md §12's accepted baseline).
-5. **An XSS on a first-party origin.** It is first-party as far as the browser and this rule are
+6. **An XSS on a first-party origin.** It is first-party as far as the browser and this rule are
    concerned. The response is §4.5's new salt, and nothing automatic notices.
-6. **Servers keeping history.** What a server kept, it keeps (§5.4). The records are not the
+7. **Servers keeping history.** What a server kept, it keeps (§5.4). The records are not the
    account's events and never pass through a server, so a server sees only derive rounds — but
    the namespace also gets no backup from the servers, which a namespace used to storing things
    under the npub may not expect.
-7. **Relays.** An unfamiliar pubkey's records, their number, size, timing and source address.
+8. **Relays.** An unfamiliar pubkey's records, their number, size, timing and source address.
    A relay that correlates two identities by address and time will.
-8. **Per-relay allow-lists.** A namespace that needs its `pk(ns,e)` allow-listed to get past
+9. **Per-relay allow-lists.** A namespace that needs its `pk(ns,e)` allow-listed to get past
    spam filtering hands that relay's operator a dated map from each epoch's key to the account
    that asked — the link §8 otherwise does not publish.
-9. **The platform's answer to "who is calling".** On a rooted phone, or with a replaced
+10. **The platform's answer to "who is calling".** On a rooted phone, or with a replaced
    extension, that answer is worth what the device is worth, which is case 2.
-10. **This access cannot be revoked.** Every other access in Cosign can be taken back from a
+11. **This access cannot be revoked.** Every other access in Cosign can be taken back from a
     device: a site's grant, an app's, a server's share. A first-party caller's is in the build.
     The user cannot withdraw it except by removing the device or abandoning the namespace
     (§4.5), and nothing in the interface will offer to.
@@ -416,7 +524,10 @@ known-plaintext check is the one that must work.
 - **§6.3, §6.4**: §4.1's first-party rule per door, including that NIP-46 has no such call.
 - **§7.3, §7.7**: that a refresh rotates every namespace's keys, that only a committed epoch is
   derived from, and that the boundary is a checkpoint and not a clock (§7).
-- **§3**: the namespace salt in the epoch record (§4.4).
+- **§3**: nothing. The namespace salt MUST NOT go in the group record — an earlier draft of
+  this list said it should, which contradicted §4.4's own MUST, and the record is a published
+  event, so doing it once could not be taken back. What belongs there is the **commitment** of
+  §4.4, which is a hash and reveals nothing.
 - **§12**: the properties of §11, especially 1 and 10.
 
 ## 13. Conflicts with the other two proposals
@@ -447,9 +558,14 @@ reviewer could not check these citations.
 3. ~~Whether the paper carries `S`~~ — **answered: it does** (§4.4), with the consequence
    stated there: a paper plus a whole-key copy opens every namespace for ever.
 4. **Whether `S` can be added to an existing account without a refresh** — mine, and the answer
-   is **yes**: `S` is not key material and nothing in the maths depends on it, so it is dealt to
-   the current member devices and acknowledged, with no epoch change and no new shares. The one
-   rule is that a namespace MUST NOT start until every member device has it, or devices derive
-   into two disjoint invisible data sets (§3's failure, by another route).
+   is **yes**, with a caveat the second review supplied: `S` is not key material and nothing in
+   the maths depends on it, so it is dealt to the current member devices with no epoch change
+   and no new shares. But "and acknowledged" was hand-waving — there is no acknowledgement in
+   the protocol, and the paths it would travel drop things silently: a server's held mail is
+   capped at 50 entries and expires after 30 days, and the ciphertext sits in that server's
+   state meanwhile. So **a namespace MUST NOT start until every member device's own
+   acknowledgement has been seen**, checked against the commitment of §4.4, and that
+   acknowledgement has to be specified before any of this is built. Otherwise two devices derive
+   into disjoint invisible data sets, which is §3's failure reached by another road.
 5. **Whether to ask for the device's lock** on a derive, once a day rather than once a sync —
    open, and it belongs in the user-verification document if the answer is yes.
