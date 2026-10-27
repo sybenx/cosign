@@ -68,6 +68,9 @@ while (!devOut.includes('JOIN ')) await sleep(200);
 const join = new URL(devOut.split('JOIN ')[1].split('\n')[0].replace('cosign:', 'cosign://'));
 await sleep(2500);
 const t2 = Date.now();
+// In the app your tap and your lock vouch for a new device; a test says so instead.
+ctl.publish(sealTo(phone.sk, phone.group.members.find((m: any) => m.idx === phone.idx).pk, { type: 'test_vouch', pk: join.searchParams.get('pk') }));
+await sleep(1500);
 ctl.publish(sealTo(phone.sk, servers[0].pk, { type: 'add_device', id: `${Date.now()}w`, pk: join.searchParams.get('pk'), name: 'Test tablet', relays: join.searchParams.getAll('r'), lock: true }));
 while (!devOut.includes('JOINED') && Date.now() - t2 < 40_000) await sleep(250);
 check('the tablet gets 3 shares by repair', /JOINED .* with shares \d+, \d+, \d+/.test(devOut), `${Date.now() - t2} ms: ${devOut.split('\n').find(l => l.includes('JOINED')) ?? ''}`);

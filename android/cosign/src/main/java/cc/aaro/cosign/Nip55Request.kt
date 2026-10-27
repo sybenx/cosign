@@ -107,9 +107,13 @@ class Nip55Request(private val activity: Activity) {
 
     private fun sign(ev: Event, approved: Boolean) {
         current.value = Stage.Working(if (approved) "Signing…" else "Signing with your server…")
+        // What this request is, as it is now: an app may send another before this one is
+        // answered (the sheet is singleTop and takes them on the same object), and work
+        // already under way must stay the request it started as.
+        val app = pkg
         work.execute {
             try {
-                val signed = phone.signForApp(phone.appGrant(pkg)!!, ev, approved)
+                val signed = phone.signForApp(phone.appGrant(app)!!, ev, approved)
                 activity.runOnUiThread { answer("result" to signed.sig, "event" to signed.toJson()) }
             } catch (e: NeedsApproval) {
                 activity.runOnUiThread { current.value = Stage.Approve(e.what) } // your server saw what this phone missed
@@ -123,11 +127,13 @@ class Nip55Request(private val activity: Activity) {
 
     private fun crypt() {
         current.value = Stage.Working("Working with your server…")
+        // The request as it is now, for the same reason as in [sign].
+        val app = pkg; val how = type; val who = peer; val what = payload
         work.execute {
             try {
-                val g = phone.appGrant(pkg)!!
-                val encrypt = type.endsWith("encrypt")
-                val out = if (type.startsWith("nip44")) phone.nip44(g, peer, payload, encrypt) else phone.nip04(g, peer, payload, encrypt)
+                val g = phone.appGrant(app)!!
+                val encrypt = how.endsWith("encrypt")
+                val out = if (how.startsWith("nip44")) phone.nip44(g, who, what, encrypt) else phone.nip04(g, who, what, encrypt)
                 activity.runOnUiThread { answer("result" to out) }
             } catch (e: Exception) {
                 activity.runOnUiThread { fail(e.message ?: "Couldn't do that.") }

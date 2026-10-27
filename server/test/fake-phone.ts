@@ -83,8 +83,21 @@ async function addServer(x: { host: string; relays: string[]; name?: string; tok
   say(`adding a server as member ${k}`);
 }
 const hostWait = new Map<string, (r: any) => void>();
-/** What this phone asked to have added: a repair for anything else is refused. */
-const vouched = new Set<string>();
+/**
+ * What this phone asked to have added, kept in its state rather than in memory: a phone can
+ * be stopped between asking and the server coming back, and one that forgot would refuse to
+ * finish adding the device you just approved.
+ */
+const VOUCH_LIFE = 10 * 60_000;
+const vouched = {
+  add(pk: string) {
+    if (!st) return;
+    const now = Date.now();
+    st.vouching = [...(st.vouching ?? []).filter((v: any) => now - v.at < VOUCH_LIFE && v.pk !== pk), { pk, at: now }];
+    writeFileSync(stateFile, JSON.stringify(st, null, 2));
+  },
+  has(pk: string) { return (st?.vouching ?? []).some((v: any) => v.pk === pk && Date.now() - v.at < VOUCH_LIFE); },
+};
 
 function growShares() {
   growing = { id: F.bytesToHex(F.randomBytes(6)), sigmas: [] };
@@ -204,6 +217,9 @@ function handle(msg: any, from: string) {
     say(msg.hold && !msg.undo ? `APPROVED: ${msg.hold}` : msg.undo ? `co-signed an undo for ${srv.name}` : `co-signed kind ${ev.kind} for ${srv.name} (a server is down)`);
     reply({ ok: true, commits: mine.commits, zs, commit: mine.commits[0], z: zs[0][1] });
   } else if (msg.type === 'ecdh_req') {
+    // Only your own devices (COSIGN.md §5.6): a server never coordinates a decryption, so one
+    // asking is something else wanting to read your messages, which nothing here asked for.
+    if (srv) { say(`REFUSED an ecdh piece to ${srv.name}`); send(from, { type: 'ecdh_res', id: msg.id, ok: false, reason: 'not-allowed: your devices read your messages, your servers don’t' }); return; }
     const points = myShares().map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
     send(from, { type: 'ecdh_res', id: msg.id, ok: true, points, point: points[0] });
   } else if (msg.type === 'repair') {

@@ -89,6 +89,10 @@ check('until committed, everyone stays on epoch 0', !state('a').epoch && !state(
 await signs('and signing goes on with the current shares');
 check('nobody commits: it is dropped', await waitFor(() => !state('a').pending && !state('b').pending, 40_000));
 check('still epoch 0 everywhere', !state('a').epoch && !state('b').epoch);
+// A device that only followed must not have moved either: one that applied a refresh its
+// servers never committed would be alone on an epoch, unable to sign and unable to catch up.
+check('the tablet, which followed it, stayed where everyone else is', !json(tabletFile).epoch, `tablet epoch ${json(tabletFile).epoch ?? 0}`);
+check('and it kept the shares it signs with', await waitFor(() => json(tabletFile).shares?.length === 3, 5000));
 await signs('a site still signs');
 
 // --- Committed to one server only: the other learns from it, the tablet catches up -------

@@ -101,7 +101,8 @@ await sleep(1500);
 const site = new SignerClient(newSession(np.signer, np.group.relays));
 await site.connect(t);
 const ev = await site.signEvent({ kind: 1, content: 'restored from paper', tags: [] }).catch(e => e);
-check('the restored phone (3) and the server (1) sign as the same key', verifyEvent(ev) && ev.pubkey === ph.group.groupX, String(ev?.message ?? ''));
+check('the restored phone (3) and the server (1) sign as the same key', verifyEvent(ev) && ev.pubkey === ph.group.groupX,
+  String(ev?.message ?? '') + ' | phone: ' + fresh.out().split('\n').filter(Boolean).slice(-4).join(' / '));
 
 site.close();
 console.log(failures ? `${failures} failed` : 'all passed');

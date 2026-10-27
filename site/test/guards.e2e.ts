@@ -61,7 +61,7 @@ const parts = new Parts();
 const ctl = new Pool(ph.group.relays, e => {
   const to = e.tags.find(t => t[0] === 'p')?.[1];
   const sk = to && keys.get(to);
-  if (!sk || e.pubkey !== server.pk) return;
+  if (!sk) return;
   const m = parts.take(e.pubkey, openFrom(sk, e));
   if (m) heard.push({ to: to!, m });
 });
@@ -172,6 +172,29 @@ check('renamed, it keeps the same grant under the new name',
   await waitFor(() => state().sites?.some((x: any) => x.pk === grantPk && x.origin === 'Marble'), 15_000),
   (state().sites ?? []).filter((x: any) => x.pk === grantPk).map((x: any) => x.origin).join(', '));
 check('and it is still one grant, as it was added', state().sites.filter((x: any) => x.pk === grantPk).length === 1);
+
+// --- Who may ask a device for a piece of reading your messages (COSIGN.md §5.6) -------------
+//
+// Your own devices may: a device coordinating a decryption is you reading your own messages.
+// A server may not — it never coordinates one, so a server that asks is something else wanting
+// to read them, and nothing on your phone asked for it. Here the server's own key does the
+// asking, which is what a breached or curious server would do.
+
+// The app from the renaming above is still connected, so its grant is a live one.
+const d1 = hex();
+as(ph.sk, { type: 'ecdh_req', id: d1, participants: [...ph.shares.map((x: any) => x.idx), server.idx].sort((a: number, b: number) => a - b), peerX, grant: grantPk });
+check('a device with a live grant gets its piece from a server', await waitFor(() => got(phonePk, m => m.id === d1 && m.ok === true), 15_000));
+
+// Hear what the phone answers a server: the subscription is built from these keys, so it
+// has to be asked again after adding one.
+keys.set(server.pk, state().self.sk);
+listen();
+await sleep(2000);
+const asServer = (to: string, msg: object) => { for (const e of sealParts(state().self.sk, to, msg)) ctl.publish(e); };
+const d2 = hex();
+asServer(phonePk, { type: 'ecdh_req', id: d2, participants: [...ph.shares.map((x: any) => x.idx), server.idx].sort((a: number, b: number) => a - b), peerX });
+check('a server asking a device for one is refused', await waitFor(() => got(server.pk, m => m.id === d2 && m.ok === false && String(m.reason).startsWith('not-allowed')), 20_000),
+  heard.filter(h => h.to === server.pk && h.m.id === d2).map(h => String(h.m.reason)).join() || 'nothing came back');
 
 // --- Reported lost: at once, and for good -------------------------------------------------
 

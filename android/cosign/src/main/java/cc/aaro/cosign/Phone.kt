@@ -59,7 +59,22 @@ data class Group(val groupX: String, val npub: String, val threshold: Int, val r
 /** One of this device's own shares. */
 data class Share(val idx: Int, val secret: String) : java.io.Serializable
 /** [mirrored]: the key brought in had an odd y, so FROST holds its twin (the same npub); null if not known here. */
-data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null) : java.io.Serializable {
+/**
+ * A quiet refresh this device has followed but not applied (COSIGN.md §7.7). The servers hold
+ * the new shares as pending and go on signing with the current ones until a device commits, so
+ * a device that applied them at once would be on an epoch nobody else has — and if that refresh
+ * is never committed, the servers drop it after 48 hours and the device is stranded for good.
+ */
+data class Pending(val epoch: Int, val id: String?, val shares: List<Share>, val points: List<Point>, val at: Long) : java.io.Serializable
+
+/** Something this device vouched for, with the person's lock, and when (COSIGN.md §7.1). */
+data class Vouch(val pk: String, val at: Long) : java.io.Serializable
+
+data class Membership(val sk: String, val idx: Int, val shares: List<Share>, val signer: String, val group: Group, val epoch: Int = 0, val mirrored: Boolean? = null,
+    /** Waiting for the servers' commit; dropped if it never comes (PENDING_DROP). */
+    val pending: Pending? = null,
+    /** What this device asked to have added lately: a repair for anything else is refused. */
+    val vouching: List<Vouch> = emptyList()) : java.io.Serializable {
     /** The first share: what a one-share member signs with, and what repair uses until weighted repair. */
     val share get() = shares.first().secret
     val idxs get() = shares.map { it.idx }
@@ -248,12 +263,20 @@ class Signer(private val context: Context, val slot: String = "0") {
         }
         if (relays == null || sk != m.sk) connect(m.group.relays, m.sk)
         relays?.watch(mapOf("kinds" to Policy.ARCHIVED.toList(), "authors" to listOf(m.group.groupX)))
-        if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status() }, 0, 10, TimeUnit.SECONDS)
+        if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status(); dropStalePending() }, 0, 10, TimeUnit.SECONDS)
         timer.schedule({ requestState(); ui.value.push?.let { tellPush(it) } }, 2, TimeUnit.SECONDS)
         // Judge "the future" by the network's time, not this phone's clock.
         if (clockCheck?.isCancelled != false) clockCheck = timer.scheduleWithFixedDelay({
             Clock.check()?.let { off -> if (kotlin.math.abs(off) > 60) note("This phone's clock is ${kotlin.math.abs(off)} s ${if (off < 0) "ahead" else "behind"}: using the network's time") }
         }, 0, 30, TimeUnit.MINUTES)
+        // Conversation keys live while the phone is awake: when the screen goes off they are
+        // wiped, and whatever needs them next pays a round trip to your servers again.
+        if (screenOff == null) {
+            val r = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: android.content.Intent?) { sharedXs.forgetAll() }
+            }
+            screenOff = try { context.registerReceiver(r, android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF)); r } catch (_: Exception) { null }
+        }
     }
 
     fun stop() { pinger?.cancel(false); pinger = null; relays?.stop(); relays = null; sk = null }
@@ -496,7 +519,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         val srv = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
         val id = env.random(8).toHex()
         growing = id to java.util.Collections.synchronizedList(mutableListOf()); growWelcome = null
-        vouched[publicKeyHex(m.sk.hexToBytes())] = System.currentTimeMillis()
+        vouch(publicKeyHex(m.sk.hexToBytes()))
         send(srv.pk!!, mapOf("type" to "add_device", "id" to id, "pk" to publicKeyHex(m.sk.hexToBytes()), "name" to android.os.Build.MODEL.ifBlank { "This phone" }, "lock" to true, "grow" to true))
         note("Getting this phone a device's full share of your key…")
     }
@@ -527,8 +550,13 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     private fun startRefresh(plan: Map<*, *>, m: Membership): Refresh? {
         val epoch = (plan["epoch"] as? Long)?.toInt() ?: return null
-        if (epoch <= m.epoch || refresh?.epoch == epoch) return null
-        val run = try { Refresh(plan, publicKeyHex(m.sk.hexToBytes()), m.shares.map { it.idx to it.secret }, ::send, { r -> timer.execute { refreshed(r) } }, env) } catch (e: Exception) {
+        if (epoch <= m.epoch || refresh?.epoch == epoch || m.pending?.epoch == epoch) return null
+        // A quiet refresh (periodic) is held until the servers commit it; anything else — the
+        // refresh after a device is reported lost — takes effect as soon as it is worked out.
+        val quiet = plan["periodic"] == true
+        val id = plan["id"] as? String
+        val done: (Refresh.Result) -> Unit = if (quiet) { r -> timer.execute { holdPending(r, id) } } else { r -> timer.execute { refreshed(r) } }
+        val run = try { Refresh(plan, publicKeyHex(m.sk.hexToBytes()), m.shares.map { it.idx to it.secret }, ::send, done, env) } catch (e: Exception) {
             note("Couldn't refresh: ${e.message}", "denied"); return null
         }
         refresh = run
@@ -541,6 +569,36 @@ class Signer(private val context: Context, val slot: String = "0") {
         return run
     }
 
+    /** The new shares, kept but not used, until a server says the key has moved. */
+    private fun holdPending(r: Refresh.Result, id: String?) {
+        val m = ui.value.member ?: return
+        if (r.epoch <= m.epoch) return
+        val kept = m.copy(pending = Pending(r.epoch, id, r.shares.map { Share(it.first, it.second) }, r.points.map { Point(it.first, it.second) }, System.currentTimeMillis()))
+        secrets.saveMembership(Json.stringify(membershipToMap(kept)))
+        ui.update { it.copy(member = kept) }
+    }
+
+    /** A server says the key has moved: now the shares that were waiting are this phone's. */
+    private fun onCommitted(msg: Map<*, *>) {
+        val m = ui.value.member ?: return
+        val p = m.pending ?: return
+        val epoch = (msg["epoch"] as? Long)?.toInt() ?: return
+        val id = msg["id"] as? String
+        if (epoch != p.epoch || (id != null && p.id != null && id != p.id)) return
+        refreshed(Refresh.Result(p.epoch, p.shares.map { it.idx to it.secret }, p.points.map { it.idx to it.sharePub }))
+    }
+
+    /** One nobody committed is let go, as the servers let theirs go; this phone stays where it is. */
+    private fun dropStalePending() {
+        val m = ui.value.member ?: return
+        val p = m.pending ?: return
+        if (System.currentTimeMillis() - p.at < 48 * 3600_000L) return
+        val kept = m.copy(pending = null)
+        secrets.saveMembership(Json.stringify(membershipToMap(kept)))
+        ui.update { it.copy(member = kept) }
+        note("An epoch your servers never finished was let go; your key is unchanged.")
+    }
+
     private fun refreshed(r: Refresh.Result) {
         val m = ui.value.member ?: return
         val at = r.points.toMap()
@@ -549,7 +607,7 @@ class Signer(private val context: Context, val slot: String = "0") {
             val pts = mm.idxs.map { Point(it, at[it]!!) }
             mm.copy(sharePub = pts[0].sharePub, shares = if (mm.shares != null) pts else null)
         }
-        val updated = m.copy(shares = r.shares.map { Share(it.first, it.second) }, group = m.group.copy(members = members), epoch = r.epoch)
+        val updated = m.copy(shares = r.shares.map { Share(it.first, it.second) }, group = m.group.copy(members = members), epoch = r.epoch, pending = null)
         secrets.saveMembership(Json.stringify(membershipToMap(updated)))
         ui.update { it.copy(member = updated) }
         for (s in servers()) send(s.pk!!, mapOf("type" to "refreshed", "epoch" to r.epoch))
@@ -565,8 +623,10 @@ class Signer(private val context: Context, val slot: String = "0") {
                 return onRefreshMsg(inner, sender, m)
             }
             "refresh_plan" -> { (msg["plan"] as? Map<*, *>)?.let { startRefresh(it, m) } }
+            "refresh_committed" -> onCommitted(msg)
             "refresh_part" -> refresh?.take(msg, from)
-            "removed" -> { ui.update { it.copy(removedBy = msg["by"] as? String ?: "another device") }; note("This phone was reported lost from ${msg["by"]}", "denied") }
+            // Reported lost: this phone keeps nothing it could read your messages with.
+            "removed" -> { sharedXs.forgetAll(); ui.update { it.copy(removedBy = msg["by"] as? String ?: "another device") }; note("This phone was reported lost from ${msg["by"]}", "denied") }
             "recovery" -> { ui.update { it.copy(recovery = (msg["name"] as? String ?: "a new phone") to ((msg["until"] as? Long) ?: 0L)) }; note("Your paper backup is being used for ${msg["name"]}", "denied") }
             "recovery_cancelled" -> { ui.update { it.copy(recovery = null) }; note("${msg["by"]} cancelled using your paper backup", "approved") }
             else -> return false
@@ -801,7 +861,7 @@ class Signer(private val context: Context, val slot: String = "0") {
             val enrolled = ask(mapOf("type" to "enroll", "how" to "repair", "key" to key["key"], "group" to record, "k" to k, "name" to s.name) + tok + proof)
             if (enrolled?.get("type") != "enrolled") return@execute note("Couldn't add ${s.name}: ${enrolled?.get("reason") ?: "it didn't answer"}", "denied")
             val via = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return@execute
-            vouched[key["pk"] as String] = System.currentTimeMillis()
+            vouch(key["pk"] as String)
             send(via.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to key["pk"], "name" to s.name, "relays" to s.relays, "lock" to true, "server" to true, "k" to k))
             val updated = (ui.value.member ?: return@execute).let { it.copy(group = it.group.copy(relays = relaysNow)) }
             secrets.saveMembership(Json.stringify(membershipToMap(updated)))
@@ -1288,6 +1348,8 @@ class Signer(private val context: Context, val slot: String = "0") {
         justRemoved[site.pk] = System.currentTimeMillis()
         for (s in servers()) send(s.pk!!, mapOf("type" to "revoke", "pk" to site.pk))
         appByPk(site.pk)?.let { apps.edit().remove(it.pkg).apply() }
+        // An app's access has ended: what it could read with goes now, not when the screen does.
+        sharedXs.forgetAll()
         // Removing the extension removes every site it added; your servers do the same.
         ui.update { it.copy(sites = it.sites.filter { x -> x.pk != site.pk && x.parent != site.pk }) }
         note("Removed ${site.origin}", "denied")
@@ -1311,7 +1373,7 @@ class Signer(private val context: Context, val slot: String = "0") {
     fun confirmAddDevice() {
         val a = ui.value.adding ?: return
         val target = servers().sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }.firstOrNull() ?: return
-        vouched[a.pk] = System.currentTimeMillis()
+        vouch(a.pk)
         send(target.pk!!, mapOf("type" to "add_device", "id" to env.random(8).toHex(), "pk" to a.pk, "name" to a.name, "relays" to a.relays, "lock" to true))
         ui.update { it.copy(adding = null) }
         note("Adding ${a.name}…")
@@ -1327,8 +1389,25 @@ class Signer(private val context: Context, val slot: String = "0") {
      * into a delta per helper share: the server's go back to it, and ours, with the
      * server's deltas for them, sum to sigmas sealed to the new device.
      */
-    /** Keys this phone has vouched for, just now, with your lock: pk → when. */
-    private val vouched = ConcurrentHashMap<String, Long>()
+    /**
+     * Keys this phone has vouched for, with your lock, and when. Kept with the account rather
+     * than in memory: the signer process can be killed between you approving a device and the
+     * server asking for this phone's part of it, and a device that forgot would refuse to
+     * finish adding the one you just approved.
+     */
+    private fun vouch(pk: String) {
+        val m = ui.value.member ?: return
+        val now = System.currentTimeMillis()
+        val kept = m.vouching.filter { now - it.at < VOUCH_LIFE && it.pk != pk } + Vouch(pk, now)
+        val updated = m.copy(vouching = kept)
+        secrets.saveMembership(Json.stringify(membershipToMap(updated)))
+        ui.update { it.copy(member = updated) }
+    }
+
+    private fun vouchedFor(pk: String): Boolean {
+        val m = ui.value.member ?: return false
+        return m.vouching.any { it.pk == pk && System.currentTimeMillis() - it.at < VOUCH_LIFE }
+    }
 
     private fun onRepair(msg: Map<*, *>, from: Member, m: Membership) {
         val id = msg["id"] as? String ?: return
@@ -1338,7 +1417,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         // could mint itself a device — three points, which with its own makes four, and your
         // account would sign without you ever again. The server checks for your lock, but the
         // server is exactly who this is protecting you from.
-        val ours = making?.pk == newPk || System.currentTimeMillis() - (vouched[newPk] ?: 0) < 120_000
+        val ours = making?.pk == newPk || vouchedFor(newPk)
         if (!ours) {
             note("${from.name} asked this phone to make shares for something you didn't add. Refused.", "denied")
             return
@@ -1498,6 +1577,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         myUndos["site:${sum.pk}"] = System.currentTimeMillis()
         send(target.pk!!, mapOf("type" to "undo_site", "pk" to sum.pk))
         appByPk(sum.pk)?.let { apps.edit().remove(it.pkg).apply() }
+        sharedXs.forgetAll()
         justRemoved[sum.pk] = System.currentTimeMillis()
         ui.update { u -> u.copy(summary = null, sites = u.sites.filter { it.pk != sum.pk && it.parent != sum.pk }) }
         note("Undoing everything ${sum.origin} did…")
@@ -1545,7 +1625,31 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     private val apps = context.getSharedPreferences(named("apps"), Context.MODE_PRIVATE)
     private val waiting = ConcurrentHashMap<String, CompletableFuture<Map<*, *>>>()
-    private val sharedXs = ConcurrentHashMap<String, Pair<Long, ByteArray>>()
+    /**
+     * The conversation keys this phone has worked out with other people (COSIGN.md §5.6).
+     *
+     * Each one takes a server, so throwing them away costs a round trip to get it back; they
+     * are kept while this phone is awake and this process lives. Never written down: not in the
+     * state file, not in the keystore, nowhere. They go when the screen goes off, when an app's
+     * access ends, and when this phone is reported lost — and the bytes are wiped, not merely
+     * dropped, so what is left behind in memory is zeros.
+     */
+    internal class Kept {
+        private val by = ConcurrentHashMap<String, ByteArray>()
+        val size get() = by.size
+        operator fun get(peer: String): ByteArray? = by[peer]
+        operator fun set(peer: String, x: ByteArray) { by.put(peer, x)?.let { java.util.Arrays.fill(it, 0) } }
+        /** Forget them all, for real. Returns how many there were. */
+        fun forgetAll(): Int {
+            val n = by.size
+            for (x in by.values) java.util.Arrays.fill(x, 0)
+            by.clear()
+            return n
+        }
+    }
+
+    private val sharedXs = Kept()
+    private var screenOff: android.content.BroadcastReceiver? = null
 
     fun appGrant(pkg: String): AppGrant? = apps.getString(pkg, null)?.let { j ->
         (Json.parse(j) as? Map<*, *>)?.let { AppGrant(pkg, it["pk"] as String, it["label"] as String, it["dm"] == true) }
@@ -1591,15 +1695,18 @@ class Signer(private val context: Context, val slot: String = "0") {
         awake()
         val group = groupJson(m)
         val tried = mutableListOf<String>()
+        // Why each server couldn't, in its own words (Asking): one "revoked" is one server's
+        // word, not the account's.
+        val answers = mutableListOf<String?>()
         for (srv in partners(m)) {
             val cs = m.shares.map { it to (Json.parse(FrostNative.commit(group, it.idx, it.secret)) as Map<*, *>) }
             val mine = cs.map { it.second["commit"] as Map<*, *> }
             val res = askServer(srv, mapOf("type" to "cosign_req", "id" to env.random(8).toHex(), "event" to ev.toMap(), "msg" to ev.id,
                 "participants" to (m.idxs + srv.idxs).sorted(), "commits" to mine, "commit" to mine[0], "frost" to 2, "grant" to g.pk, "approved" to approved))
-                ?: run { tried += "${srv.name}: no answer"; null } ?: continue
+                ?: run { tried += "${srv.name}: no answer"; answers += null; null } ?: continue
             if (res["ok"] != true) {
                 val why = res["reason"] as? String ?: "refused"
-                if (why.startsWith("revoked")) { apps.edit().remove(g.pkg).apply(); throw Revoked() }
+                answers += why
                 if (why.startsWith("needs-approval:")) throw NeedsApproval(why.removePrefix("needs-approval:").trim())
                 tried += "${srv.name}: $why"; continue
             }
@@ -1616,6 +1723,8 @@ class Signer(private val context: Context, val slot: String = "0") {
             if (ev.kind != 22242 || approved) note("Signed ${Describe.kind(ev.kind)} for ${g.label}", if (approved) "approved" else "auto")
             return signed
         }
+        // Every server that answered says this app has no access: now it really hasn't.
+        if (Asking.outcome(answers) == Asking.Outcome.REVOKED_EVERYWHERE) { apps.edit().remove(g.pkg).apply(); sharedXs.forgetAll(); throw Revoked() }
         throw IllegalStateException("Couldn't reach your servers (${tried.joinToString("; ")})")
     }
 
@@ -1658,20 +1767,47 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     /** The shared x with [peerX], from this phone's half and a server's. Kept ten minutes, in memory. */
     private fun sharedX(g: AppGrant, peerX: String): ByteArray {
-        sharedXs[peerX]?.let { (at, x) -> if (System.currentTimeMillis() - at < 600_000) return x }
+        sharedXs[peerX]?.let { return it }
         val m = ui.value.member ?: error("$appName isn't set up yet")
         awake()
+        // As in signForApp: why each server couldn't, and what that comes to (Asking).
+        val answers = mutableListOf<String?>()
         for (srv in partners(m)) {
             val participants = (m.idxs + srv.idxs).sorted()
-            val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk)) ?: continue
-            if (res["ok"] != true) { if ((res["reason"] as? String)?.startsWith("revoked") == true) throw Revoked(); continue }
+            val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk))
+            if (res == null) { answers += null; continue }
+            if (res["ok"] != true) { answers += (res["reason"] as? String ?: "refused"); continue }
             val mine = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX).hexToBytes() }
             val theirs = ((res["points"] as? List<*>) ?: listOf(res["point"])).map { (it as String).hexToBytes() }
             val x = Secp256k1.pubKeyCombine((mine + theirs).toTypedArray()).copyOfRange(1, 33)
-            sharedXs[peerX] = System.currentTimeMillis() to x
+            sharedXs[peerX] = x
             return x
         }
+        if (Asking.outcome(answers) == Asking.Outcome.REVOKED_EVERYWHERE) { sharedXs.forgetAll(); throw Revoked() }
         throw IllegalStateException("Couldn't reach your servers")
+    }
+
+    /**
+     * What a round of asking every server comes to, when none of them could do the thing. One
+     * server that was away when an app connected hasn't heard of it yet — the servers pass
+     * grants on as they catch up — so its "revoked" is its own word, not the account's. The app
+     * has really lost its access only when every server that answered said the same.
+     */
+    internal object Asking {
+        enum class Outcome { NOBODY_ANSWERED, REVOKED_EVERYWHERE, REFUSED }
+
+        /**
+         * [answers]: each server's reason for not doing it, or null where a server said nothing.
+         * A server that says nothing settles nothing: with one of them quiet this can't be the
+         * account's answer, whatever the rest say. Being slow to believe an app has lost its
+         * access costs nothing — the servers are what actually refuse it — while being quick to
+         * believe it takes a working app's access away over one server's silence and one's word.
+         */
+        fun outcome(answers: List<String?>): Outcome {
+            if (answers.isEmpty() || answers.all { it == null }) return Outcome.NOBODY_ANSWERED
+            val everyone = answers.none { it == null }
+            return if (everyone && answers.all { it!!.startsWith("revoked") }) Outcome.REVOKED_EVERYWHERE else Outcome.REFUSED
+        }
     }
 
     fun nip44(g: AppGrant, peer: String, text: String, encrypt: Boolean): String {
@@ -1892,9 +2028,32 @@ class Signer(private val context: Context, val slot: String = "0") {
         note("Not answered in time: ${ask.hold} (${ask.app})", "denied")
     }
 
+    /**
+     * Who may ask this phone for a piece of a decryption (COSIGN.md §5.6). Your own devices
+     * may: they hold as much of your key as this one does, and one of them coordinating a
+     * decryption is you reading your own messages. A server may not. A server never
+     * coordinates a decryption — it asks because something else wants to read your messages,
+     * and nothing on this phone asked for it. Until now any server that asked was helped,
+     * which left that rule a promise rather than a fact.
+     */
+    internal object Helping {
+        fun helps(role: String?) = role == "phone" || role == "device"
+    }
+
     private fun onEcdhReq(msg: Map<*, *>, from: Member, m: Membership) {
         val id = msg["id"] as? String ?: return
         answered[id]?.let { send(from.pk!!, it); return }
+        if (!Helping.helps(from.role)) {
+            val no = mapOf("type" to "ecdh_res", "id" to id, "ok" to false,
+                "reason" to "not-allowed: your devices read your messages, your servers don't")
+            answered[id] = no
+            send(from.pk!!, no)
+            if (System.currentTimeMillis() - lastEcdhNote > 60_000) {
+                lastEcdhNote = System.currentTimeMillis()
+                note("${from.name} asked for a piece of reading your messages. Refused: only your own devices do that.", "denied")
+            }
+            return
+        }
         val participants = (msg["participants"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
         val peerX = msg["peerX"] as? String ?: return
         if (!isHex32(peerX) || participants.sorted() != (from.idxs + m.idxs).sorted()) return
@@ -1988,11 +2147,22 @@ class Signer(private val context: Context, val slot: String = "0") {
         val shares = (m["shares"] as? List<*>)?.map { val s = it as Map<*, *>; Share((s["idx"] as Long).toInt(), s["secret"] as String) }
             ?: listOf(Share(idx, m["share"] as? String ?: return null))
         return Membership(m["sk"] as String, idx, shares, m["signer"] as? String ?: return null, parseGroup(m["group"])?.takeIf { it.groupX.isNotEmpty() } ?: return null,
-            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean)
+            (m["epoch"] as? Long)?.toInt() ?: 0, m["mirrored"] as? Boolean,
+            (m["pending"] as? Map<*, *>)?.let { p ->
+                Pending((p["epoch"] as Long).toInt(), p["id"] as? String,
+                    (p["shares"] as? List<*>)?.map { val x = it as Map<*, *>; Share((x["idx"] as Long).toInt(), x["secret"] as String) } ?: emptyList(),
+                    (p["points"] as? List<*>)?.map { val x = it as Map<*, *>; Point((x["idx"] as Long).toInt(), x["sharePub"] as String) } ?: emptyList(),
+                    (p["at"] as? Long) ?: 0L)
+            },
+            (m["vouching"] as? List<*>)?.mapNotNull { v -> (v as? Map<*, *>)?.let { Vouch(it["pk"] as? String ?: return@mapNotNull null, (it["at"] as? Long) ?: 0L) } } ?: emptyList())
     }
 
     private fun membershipToMap(m: Membership) = mapOf(
         "sk" to m.sk, "idx" to m.idx, "shares" to m.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) }, "signer" to m.signer, "epoch" to m.epoch, "mirrored" to m.mirrored,
+        "pending" to m.pending?.let { p -> mapOf("epoch" to p.epoch, "id" to p.id, "at" to p.at,
+            "shares" to p.shares.map { mapOf("idx" to it.idx, "secret" to it.secret) },
+            "points" to p.points.map { mapOf("idx" to it.idx, "sharePub" to it.sharePub) }) },
+        "vouching" to m.vouching.map { mapOf("pk" to it.pk, "at" to it.at) },
         "group" to mapOf(
             "groupX" to m.group.groupX, "npub" to m.group.npub, "threshold" to m.group.threshold, "relays" to m.group.relays,
             "members" to m.group.members.map { mapOf("idx" to it.idx, "name" to it.name, "role" to it.role, "pk" to it.pk, "sharePub" to it.sharePub) +
@@ -2000,7 +2170,12 @@ class Signer(private val context: Context, val slot: String = "0") {
         ),
     )
 
-    companion object { const val KIND_MEMBER = 28001; private const val PART = 24_000 }
+    companion object {
+        const val KIND_MEMBER = 28001
+        private const val PART = 24_000
+        /** How long after you approve something this phone will make parts for it. */
+        private const val VOUCH_LIFE = 10 * 60_000L
+    }
 }
 
 object Describe {
