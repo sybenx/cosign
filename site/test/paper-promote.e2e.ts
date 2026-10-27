@@ -34,12 +34,12 @@ const run = (args: string[], env: Record<string, string> = {}) => {
 
 spawnSync('pkill', ['-f', 'server.ts test-promote/']);
 for (const f of [phoneFile, paperFile]) if (existsSync(f)) rmSync(f);
-spawnSync('node', ['setup.ts', '--dir', 'test-promote', '--port', '8761', '--weighted', '--force'], { cwd: serverDir });
+spawnSync('node', ['setup.ts', '--dir', 'test-promote', '--port', '8766', '--weighted', '--force'], { cwd: serverDir });
 mkdirSync(serverDir + 'logs', { recursive: true });
 for (const s of ['a', 'b']) { const l = openSync(`${serverDir}logs/promote-${s}.log`, 'w'); kids.push(spawn('node', ['server.ts', `test-promote/${s}`], { cwd: serverDir, stdio: ['ignore', l, l], env: { ...process.env, COSIGN_RECOVERY_WAIT: '12', COSIGN_ADD_WAIT: '2' } })); }
 await sleep(3000);
 
-const html = await (await fetch('http://localhost:8761/')).text();
+const html = await (await fetch('http://localhost:8766/')).text();
 const uri = html.match(/href="(cosign:pair\?[^"]+)"/)![1].replaceAll('&amp;', '&');
 const phone = run(['test/fake-phone.ts', uri], { PHONE_STATE: phoneFile, PAPER_FILE: paperFile });
 check('the phone and two servers make a key', await waitFor(() => phone.out().includes('made npub'), 60_000));
