@@ -11,9 +11,17 @@ export class Archive {
   private persist: (byKey: Record<string, Ev[]>) => void;
   /** The network's time, in seconds: one from the future is judged by it. */
   private now: () => number;
+  /**
+   * Whether an event really is one of this account's. The host hands it in because the
+   * check needs the group key, and it is asked here rather than at each caller so there is
+   * one door: what is kept is judged against, shown to devices as dated ahead, and deleted
+   * by its id with one tap, so an event that was never signed by the account has no
+   * business being kept at all.
+   */
+  private ours: (e: Ev) => boolean;
 
-  constructor(byKey: Record<string, Ev[]> | undefined, persist: (byKey: Record<string, Ev[]>) => void, now: () => number) {
-    this.byKey = byKey ?? {}; this.persist = persist; this.now = now;
+  constructor(byKey: Record<string, Ev[]> | undefined, persist: (byKey: Record<string, Ev[]>) => void, now: () => number, ours: (e: Ev) => boolean = () => true) {
+    this.byKey = byKey ?? {}; this.persist = persist; this.now = now; this.ours = ours;
   }
 
   private save() { this.persist(this.byKey); }
@@ -30,7 +38,7 @@ export class Archive {
 
   /** Keep a signed version. Newest first; duplicates and older-than-kept versions are ignored. */
   record(e: Ev): boolean {
-    if (!ARCHIVED.has(e.kind) || !e.id || !e.sig) return false;
+    if (!ARCHIVED.has(e.kind) || !e.id || !e.sig || !this.ours(e)) return false;
     const key = keyOf(e);
     const list = (this.byKey[key] ??= []);
     if (list.some(x => x.id === e.id)) return false;

@@ -61,7 +61,16 @@ export function openGroup(loaded: Loaded, io: Io) {
   const S = loaded.state;
   S.sites ??= []; S.tickets ??= []; S.changes ??= [];
   const save = () => io.save.state(S);
-  const archive = new Archive(loaded.archive, byKey => io.save.archive(byKey), io.trustedNow);
+  /**
+   * Signed by this account, and not merely shaped like it. Everything kept — in the archive,
+   * in the history, in the saved copies — is supposed to be an event of the user's own key,
+   * and the things built on it act as if that were checked: a change is judged against the
+   * version it replaces, Undo **signs the content of a saved copy again**, and one tap
+   * removes an id the archive says is dated ahead. A member that could put its own events
+   * in there could therefore have the account sign a deletion, or a post it wrote.
+   */
+  const ours = (e: any): boolean => !!e && e.pubkey === groupX && (() => { try { return verifyEvent(e as Event); } catch { return false; } })();
+  const archive = new Archive(loaded.archive, byKey => io.save.archive(byKey), io.trustedNow, ours);
   const history = new History(loaded.history, loaded.saved, io.save);
 
   const members: Member[] = S.group.members;
@@ -312,10 +321,14 @@ export function openGroup(loaded: Loaded, io: Io) {
         if (msg.change) addChange(msg.change, true);
         return;
       }
-      case 'sync': { if (!fromPhone) mergeSync(msg); return; }
-      case 'forget': { if (!fromPhone) { archive.forget(String(msg.id)); pushState(); } return; }
-      case 'logged': { if (!fromPhone && msg.entry?.event) history.add(msg.entry); return; }
-      case 'saved': { if (!fromPhone) for (const e of msg.events ?? []) history.save(e); return; }
+      case 'sync': { if (from.role === 'server') mergeSync(msg); return; }
+      // Another server dropping something from its archive, after a device had it deleted
+      // (`removeFuture`). It used to be called 'forget', which is also what a device calls
+      // "remove my servers' pieces" — so this clause could never run, and a server that was
+      // offline when the device asked kept the entry for ever.
+      case 'archive_forget': { if (from.role === 'server') { archive.forget(String(msg.id)); pushState(); } return; }
+      case 'logged': { if (from.role === 'server' && ours(msg.entry?.event)) history.add(msg.entry); return; }
+      case 'saved': { if (from.role === 'server') for (const e of msg.events ?? []) if (ours(e)) history.save(e); return; }
     }
   }
 
@@ -832,7 +845,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     const deletion = await frostSign({ kind: 5, created_at: now(), content: 'Dated in the future by mistake', tags: [['e', id], ['k', String(target.kind)]] }, 'Your phone', { undo: id });
     await publishOut(deletion);
     archive.forget(id);
-    toOther({ type: 'forget', id });
+    toOther({ type: 'archive_forget', id });
     pushState();
     note(`removed the ${kindName(target.kind)} dated in the future`);
   }
