@@ -104,4 +104,68 @@ object Frost {
 
     /** The share's public point, to check a received share before keeping it. */
     fun sharePub(secret: String): String = compress(mulG(BigInteger(1, secret.hexToBytes()))).toHex()
+
+    // --- The proof that a partial is the share's (server/frost.ts ecdhProve/ecdhVerify) -------
+    //
+    // A partial on its own is unverifiable, so one wrong contribution — a stale share, a
+    // corrupted copy at rest, a dishonest partner — makes this phone derive a value nobody else
+    // has, and the only symptom is a NIP-44 MAC failure wherever the plaintext was wanted.
+    // Chaum-Pedersen, over the share point everyone can see:
+    //
+    //   v random;  R1 = v*G;  R2 = v*Q
+    //   c = int(H_tag("cosign/ecdh-dleq", be32(i) || be32(participants…) || Q_x || L || A || R1 || R2)) mod n
+    //   z = v + c * lambda_i * s_i             L = lambda_i * sharePub_i,  A = the partial
+    //   check  z*G == R1 + c*L   and   z*Q == R2 + c*A
+
+    data class EcdhPart(val idx: Int, val point: String, val proof: String)
+
+    private fun dleqChallenge(idx: Int, participants: List<Int>, peerX: String, L: ByteArray, A: ByteArray, R1: ByteArray, R2: ByteArray): BigInteger =
+        scalar(tagged("cosign/ecdh-dleq",
+            be32(idx),
+            concat(*participants.sorted().map { be32(it) }.toTypedArray()),
+            peerX.hexToBytes(),
+            compress(L), compress(A), compress(R1), compress(R2)))
+
+    /** The challenge over hex points, so a vector can pin the bytes without a random nonce. */
+    fun dleqChallengeForTest(idx: Int, participants: List<Int>, peerX: String, l: String, a: String, r1: String, r2: String): BigInteger =
+        dleqChallenge(idx, participants, peerX, parse(l), parse(a), parse(r1), parse(r2))
+
+    /** This share's partial, with the proof that it is this share's. */
+    fun ecdhProve(idx: Int, secret: String, participants: List<Int>, peerX: String, env: Env): EcdhPart {
+        val q = Secp256k1.pubkeyParse(byteArrayOf(2) + peerX.hexToBytes())
+        val k = lagrange(idx, participants).multiply(BigInteger(1, secret.hexToBytes())).mod(N)
+        require(k.signum() != 0) { "degenerate share" }
+        val a = mul(q, k)
+        val l = mulG(k)
+        while (true) {
+            val v = randomScalar(env)
+            val r1 = mulG(v)
+            val r2 = mul(q, v)
+            val c = dleqChallenge(idx, participants, peerX, l, a, r1, r2)
+            if (c.signum() == 0) continue // a challenge of zero proves nothing
+            val z = v.add(c.multiply(k)).mod(N)
+            return EcdhPart(idx, compress(a).toHex(), compress(r1).toHex() + compress(r2).toHex() + bytes32(z).toHex())
+        }
+    }
+
+    /** Check a partial against the share point in the member list. False for anything malformed. */
+    fun ecdhVerify(idx: Int, participants: List<Int>, peerX: String, sharePub: String, point: String, proof: String): Boolean = try {
+        if (proof.length != 66 + 66 + 64) false else {
+            val r1 = parse(proof.substring(0, 66))
+            val r2 = parse(proof.substring(66, 132))
+            val z = BigInteger(1, proof.substring(132).hexToBytes())
+            if (z.signum() <= 0 || z >= N) false else {
+                val q = Secp256k1.pubkeyParse(byteArrayOf(2) + peerX.hexToBytes())
+                val a = parse(point)
+                val lam = lagrange(idx, participants)
+                if (lam.signum() == 0) false else {
+                    val l = mul(parse(sharePub), lam)
+                    val c = dleqChallenge(idx, participants, peerX, l, a, r1, r2)
+                    if (c.signum() == 0) false
+                    else compress(mulG(z)).contentEquals(compress(add(r1, mul(l, c)))) &&
+                        compress(mul(q, z)).contentEquals(compress(add(r2, mul(a, c))))
+                }
+            }
+        }
+    } catch (_: Exception) { false }
 }

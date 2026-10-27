@@ -714,8 +714,12 @@ export function openGroup(loaded: Loaded, io: Io) {
     if (msg.participants.length < S.group.threshold) return respond({ ok: false, reason: 'bad request' });
     // The phone asks on behalf of an app it has let read your messages; that app must still have access.
     if (!liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
-    const points = myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
-    return respond({ ok: true, points, point: points[0] });
+    // A proof per partial: the asker can check each one against the share point in the member
+    // list before it combines, instead of finding out from a MAC failure. `points` stays for
+    // clients that don't know about `parts` yet.
+    const parts = myShares.map(s => F.ecdhProve({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
+    const points = parts.map(p => p.point);
+    return respond({ ok: true, parts, points, point: points[0] });
   }
 
   // --- Apps on your phone (Android signer, NIP-55) ------------------------------------
@@ -787,7 +791,20 @@ export function openGroup(loaded: Loaded, io: Io) {
       if (participants.length < S.group.threshold) { tried.push(`${m.name}: not enough shares`); continue; }
       const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, isDevice(m) ? phoneWait(false, order.slice(i + 1)) : 6_000);
       if (!res.ok) { tried.push(`${m.name}: ${res.reason}`); continue; }
-      const x = F.ecdhCombine([...myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants, peerX })), ...(res.points ?? [res.point])]);
+      // Check each partial against the share point everyone can see, when the answer carries
+      // the proofs. A wrong one used to combine into a value nobody else has and surface as a
+      // MAC failure at whoever asked; now it names the member that sent it and we try the next.
+      const theirs: string[] = res.points ?? [res.point];
+      if (Array.isArray(res.parts) && res.parts.length) {
+        const bad = (res.parts as F.EcdhPart[]).find(p => !F.ecdhVerify({
+          idx: p.idx, participants, peerX, point: p.point, proof: p.proof,
+          sharePub: Sig.sharePoints(S.group).find((x: any) => x.idx === p.idx)?.sharePub ?? '',
+        }));
+        if (bad) { note(`${m.name} sent a piece of a decryption that doesn't match its share (${bad.idx})`); tried.push(`${m.name}: its piece doesn't match its share`); continue; }
+        theirs.length = 0;
+        theirs.push(...(res.parts as F.EcdhPart[]).map(p => p.point));
+      }
+      const x = F.ecdhCombine([...myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants, peerX })), ...theirs]);
       ecdhCache.set(peerX, { x, at: io.now() });
       return x;
     }

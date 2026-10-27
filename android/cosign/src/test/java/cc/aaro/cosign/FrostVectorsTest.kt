@@ -2,6 +2,7 @@ package cc.aaro.cosign
 
 import cc.aaro.cosign.core.Frost
 import cc.aaro.cosign.core.Secp
+import cc.aaro.cosign.core.SystemEnv
 import cc.aaro.cosign.core.hexToBytes
 import cc.aaro.cosign.core.toHex
 import org.json.JSONObject
@@ -60,6 +61,53 @@ class FrostVectorsTest {
             val o = a.getJSONObject(k)
             val p = o.getJSONArray("participants").let { arr -> (0 until arr.length()).map { arr.getInt(it) } }
             assertEquals(o.getString("expect"), Frost.ecdhPartial(o.getInt("idx"), phoneSecret, p, o.getString("peerX")))
+        }
+    }
+
+    /**
+     * The proof that a partial is the share's. What has to match across the two
+     * implementations is the challenge's transcript — a difference there makes every proof
+     * fail with nothing to say why — and that a proof made on one side checks out on the other.
+     */
+    @Test fun ecdhProofsAgreeWithTheServer() {
+        val phoneSecret = v.getJSONArray("shares").getJSONObject(2).getString("secret")
+        val a = v.getJSONArray("dleq")
+        assertTrue("the vectors carry dleq cases", a.length() > 0)
+        for (k in 0 until a.length()) {
+            val o = a.getJSONObject(k)
+            val p = o.getJSONArray("participants").let { arr -> (0 until arr.length()).map { arr.getInt(it) } }
+            val idx = o.getInt("idx")
+            val peerX = o.getString("peerX")
+            val sharePub = o.getString("sharePub")
+
+            // The server's proof verifies here.
+            assertTrue("vector $k verifies", Frost.ecdhVerify(idx, p, peerX, sharePub, o.getString("point"), o.getString("proof")))
+
+            // And a proof made here verifies here, over the same partial the server computed.
+            val mine = Frost.ecdhProve(idx, phoneSecret, p, peerX, SystemEnv)
+            assertEquals(o.getString("point"), mine.point)
+            assertTrue(Frost.ecdhVerify(idx, p, peerX, sharePub, mine.point, mine.proof))
+
+            // A partial that is off by an offset of the peer point — the attack the proof is
+            // for — does not verify with the honest proof.
+            assertTrue(!Frost.ecdhVerify(idx, p, peerX, sharePub, Frost.ecdhPartial(idx, Frost.bytes32(BigInteger(1, phoneSecret.hexToBytes()).add(BigInteger.ONE)).toHex(), p, peerX), mine.proof))
+
+            // Malformed proofs are false, not exceptions.
+            for (bad in listOf("", mine.proof.substring(0, 100), "z".repeat(196), mine.proof.substring(0, 132) + "0".repeat(64)))
+                assertTrue(!Frost.ecdhVerify(idx, p, peerX, sharePub, mine.point, bad))
+        }
+    }
+
+    /** The challenge's bytes, with the nonce points fixed so there is nothing random in it. */
+    @Test fun theDleqChallengeHashesTheSameBytes() {
+        val a = v.getJSONArray("dleq")
+        for (k in 0 until a.length()) {
+            val o = a.getJSONObject(k)
+            val c = o.getJSONObject("challenge")
+            val p = o.getJSONArray("participants").let { arr -> (0 until arr.length()).map { arr.getInt(it) } }
+            assertEquals(c.getString("expect"), Frost.bytes32(Frost.dleqChallengeForTest(
+                o.getInt("idx"), p, o.getString("peerX"),
+                c.getString("L"), c.getString("A"), c.getString("R1"), c.getString("R2"))).toHex())
         }
     }
 }
