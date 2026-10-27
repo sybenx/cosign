@@ -371,6 +371,19 @@ published replaceable event: putting `S` there once could never be taken back.
 
 ### 4.4.1 Getting it to a new device
 
+> **A secret MUST be dealt only to a member the dealing device has first-hand evidence of, and
+> never to one it knows only from a server's list.** A device takes its member list wholesale
+> from whatever a server sends: `onMembers` guards only that the list contains this phone and
+> that the epoch is not older (`Phone.kt:1455-1462`), and the extension, which is better, keeps
+> the share points it already knows but still takes the **member set** from the list
+> (`device.ts:213-226`). So "deal `S` to every member device" means "deal `S` to whoever a
+> server wrote in", and live finding #1 — only partly fixed in 0.12.6 — is exactly a server
+> writing one in. First-hand evidence means the device took part in that member's repair, or has
+> verified a signature or a proven partial from that member's indices, which an injected member
+> can never produce.
+
+
+
 The channel exists: the vouching device seals its sigmas to the newcomer over NIP-44
 (`Phone.kt:1451`, and the extension's member code), and `S` travels with them. But **nothing on
 that path authenticates the sender**: `onJoinPiece` records who sent a sigma and never checks
