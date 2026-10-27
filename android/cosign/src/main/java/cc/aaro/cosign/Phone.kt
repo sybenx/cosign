@@ -1669,6 +1669,7 @@ class Signer(private val context: Context, val slot: String = "0") {
             else -> had
         }
         for (s in servers()) send(s.pk!!, mapOf("type" to "app_grant", "pk" to g.pk, "origin" to g.label))
+        grantSent[g.pk] = System.currentTimeMillis()
         if (had == null) note("Connected ${g.label}", "approved")
         timer.schedule({ requestState() }, 2, TimeUnit.SECONDS)
         return g
@@ -1699,33 +1700,42 @@ class Signer(private val context: Context, val slot: String = "0") {
         // word, not the account's.
         val answers = mutableListOf<String?>()
         for (srv in partners(m)) {
+          // Twice at most, and only for a grant made moments ago: a server that answers
+          // "revoked" may simply not have the grant yet (it travels by relay). Sending it
+          // again and asking once more costs a second and turns a wrong "your app was
+          // removed" into a signature.
+          var attempt = 0
+          while (true) {
             val cs = m.shares.map { it to (Json.parse(FrostNative.commit(group, it.idx, it.secret)) as Map<*, *>) }
             val mine = cs.map { it.second["commit"] as Map<*, *> }
             val res = askServer(srv, mapOf("type" to "cosign_req", "id" to env.random(8).toHex(), "event" to ev.toMap(), "msg" to ev.id,
                 "participants" to (m.idxs + srv.idxs).sorted(), "commits" to mine, "commit" to mine[0], "frost" to 2, "grant" to g.pk, "approved" to approved))
-                ?: run { tried += "${srv.name}: no answer"; answers += null; null } ?: continue
+                ?: run { tried += "${srv.name}: no answer"; answers += null; null } ?: break
             if (res["ok"] != true) {
                 val why = res["reason"] as? String ?: "refused"
-                answers += why
                 if (why.startsWith("needs-approval:")) throw NeedsApproval(why.removePrefix("needs-approval:").trim())
-                tried += "${srv.name}: $why"; continue
+                if (why.startsWith("revoked:") && attempt == 0 && justGranted(g.pk)) { attempt++; regrant(srv, g); continue }
+                answers += why
+                tried += "${srv.name}: $why"; break
             }
             // A server holds one share; it may answer the earlier way, one commit and one z.
             val theirs = (res["commits"] as? List<*>)?.map { it as Map<*, *> } ?: listOf(res["commit"] as Map<*, *>)
             val theirZs = (res["zs"] as? List<*>)?.map { val l = it as List<*>; (l[0] as Long).toInt() to l[1] as String } ?: listOf(srv.idx to res["z"] as String)
-            if (theirs.map { (it["idx"] as Long).toInt() }.sorted() != srv.idxs.sorted() || theirZs.map { it.first }.sorted() != srv.idxs.sorted()) { tried += "${srv.name}: bad partial"; continue }
+            if (theirs.map { (it["idx"] as Long).toInt() }.sorted() != srv.idxs.sorted() || theirZs.map { it.first }.sorted() != srv.idxs.sorted()) { tried += "${srv.name}: bad partial"; break }
             val commits = Json.stringify(mine + theirs)
-            if (!theirZs.all { (i, z) -> FrostNative.verifyPartial(group, ev.id, commits, i, z) }) { tried += "${srv.name}: bad partial"; continue }
+            if (!theirZs.all { (i, z) -> FrostNative.verifyPartial(group, ev.id, commits, i, z) }) { tried += "${srv.name}: bad partial"; break }
             val zs = cs.map { (s, c) -> listOf(s.idx, FrostNative.sign(group, s.idx, s.secret, c["nonces"] as String, ev.id, commits)) }
             val signed = ev.copy(sig = FrostNative.aggregate(group, ev.id, commits, Json.stringify(zs + theirZs.map { listOf(it.first, it.second) })))
             send(srv.pk!!, mapOf("type" to "phone_signed", "event" to signed.toMap(), "grant" to g.pk, "approved" to approved))
             // Relay logins happen once per relay an app connects to: not worth a line each.
             if (ev.kind != 22242 || approved) note("Signed ${Describe.kind(ev.kind)} for ${g.label}", if (approved) "approved" else "auto")
             return signed
+          }
         }
         // Every server that answered says this app has no access: now it really hasn't.
         if (Asking.outcome(answers) == Asking.Outcome.REVOKED_EVERYWHERE) { apps.edit().remove(g.pkg).apply(); sharedXs.forgetAll(); throw Revoked() }
-        throw IllegalStateException("Couldn't reach your servers (${tried.joinToString("; ")})")
+        note("Couldn't sign ${Describe.kind(ev.kind)} for ${g.label}: ${tried.joinToString("; ")}", "denied")
+        throw IllegalStateException(whyNot(tried, answers))
     }
 
     // --- Cosign's own actions (a like, a follow) -----------------------------------------
@@ -1771,12 +1781,18 @@ class Signer(private val context: Context, val slot: String = "0") {
         val m = ui.value.member ?: error("$appName isn't set up yet")
         awake()
         // As in signForApp: why each server couldn't, and what that comes to (Asking).
+        val tried = mutableListOf<String>()
         val answers = mutableListOf<String?>()
         for (srv in partners(m)) {
             val participants = (m.idxs + srv.idxs).sorted()
-            val res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk))
-            if (res == null) { answers += null; continue }
-            if (res["ok"] != true) { answers += (res["reason"] as? String ?: "refused"); continue }
+            var res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk))
+            // A grant still in flight answers "revoked": send it again and ask once more.
+            if (res != null && res["ok"] != true && (res["reason"] as? String ?: "").startsWith("revoked:") && justGranted(g.pk)) {
+                regrant(srv, g)
+                res = askServer(srv, mapOf("type" to "ecdh_req", "id" to env.random(8).toHex(), "peerX" to peerX, "participants" to participants, "grant" to g.pk))
+            }
+            if (res == null) { tried += "${srv.name}: no answer"; answers += null; continue }
+            if (res["ok"] != true) { val why = res["reason"] as? String ?: "refused"; tried += "${srv.name}: $why"; answers += why; continue }
             val mine = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX).hexToBytes() }
             // Check what came back against the share points in the member list, when the server
             // sent its proofs. Without them a wrong piece combines into a value nobody else has
@@ -1805,7 +1821,8 @@ class Signer(private val context: Context, val slot: String = "0") {
             return x
         }
         if (Asking.outcome(answers) == Asking.Outcome.REVOKED_EVERYWHERE) { sharedXs.forgetAll(); throw Revoked() }
-        throw IllegalStateException("Couldn't reach your servers")
+        note("Couldn't read a message for ${g.label}: ${tried.joinToString("; ")}", "denied")
+        throw IllegalStateException(whyNot(tried, answers))
     }
 
     /**
@@ -1860,6 +1877,24 @@ class Signer(private val context: Context, val slot: String = "0") {
         .sortedBy { if (ui.value.online[it.idx] == true) 0 else 1 }
 
     /** Ask a server and wait for its answer, saying it again once in case a relay dropped it. */
+    /**
+     * When each grant was last sent to the servers. A grant travels by relay, so an app's first
+     * request can reach a server before the grant does — and a server with no grant for it
+     * answers "revoked", which looks exactly like the app having been removed. `signOwn` has
+     * always slept 2.5 s for this; an app coming through NIP-55 did not, so its first request
+     * raced and the user was told their servers could not be reached. In memory only: the race
+     * is seconds long, and after a restart there is nothing to wait for.
+     */
+    private val grantSent = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private fun justGranted(pk: String) = System.currentTimeMillis() - (grantSent[pk] ?: 0L) < 30_000
+
+    /** Send the grant again and give it a moment: a "revoked" from a server that never saw it. */
+    private fun regrant(srv: Member, g: AppGrant) {
+        send(srv.pk!!, mapOf("type" to "app_grant", "pk" to g.pk, "origin" to g.label))
+        grantSent[g.pk] = System.currentTimeMillis()
+        Thread.sleep(1200)
+    }
+
     private fun askServer(srv: Member, msg: Map<String, Any?>): Map<*, *>? {
         val id = msg["id"] as String
         val f = CompletableFuture<Map<*, *>>()
@@ -1868,6 +1903,20 @@ class Signer(private val context: Context, val slot: String = "0") {
         val again = timer.schedule({ if (!f.isDone) send(srv.pk!!, msg) }, 2, TimeUnit.SECONDS)
         return try { f.get(if (ui.value.online[srv.idx] == true) 6 else 3, TimeUnit.SECONDS) } catch (_: Exception) { null }
             finally { again.cancel(false); waiting.remove(id) }
+    }
+
+    /**
+     * What to tell the person when no server did the thing. "Couldn't reach your servers" is
+     * wrong whenever a server answered and refused — which is what a first sign-in looked like
+     * when the grant was still in flight — so say which it was, and in a server's own words.
+     */
+    private fun whyNot(tried: List<String>, answers: List<String?>): String {
+        val spoke = answers.count { it != null }
+        return when {
+            tried.isEmpty() -> "Couldn't reach your servers"
+            spoke == 0 -> "Couldn't reach your servers (${tried.joinToString("; ")})"
+            else -> "Your servers didn't sign it (${tried.joinToString("; ")})"
+        }
     }
 
     /** An app can wake Cosign from nothing: make sure the relays are up before asking. */
