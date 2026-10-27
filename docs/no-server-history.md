@@ -1,5 +1,58 @@
 # Servers keep no history — proposal, first draft
 
+> **Status after an independent red team (`~/igloo/cosign-no-history-redteam.md`): this cannot
+> be built as written** — five critical, eleven high. The direction is fine and the author's
+> decision stands; §4, §5 and §9 each specified a mechanism that does not exist and priced it at
+> zero. **Two of the findings change the premise the decision was made on**, so they are at the
+> top of this file rather than buried in a revision, and the author should see them before any
+> more work is done here. Both verified in the code by me, not taken on trust.
+>
+> **1. Deleting the archive removes the gate that forces a device into a destructive signing.**
+> This is a security regression, not a weaker check. `assess` guards *both* of its hold branches
+> with `if (prev)` (`policy.ts:112-117`), so with no version to compare against it returns a
+> **positive** verdict — `{change: 'Follow list: 0 items'}` — not silence. And the hold is the
+> only thing that keeps the other server out of the round:
+> `partners((hold ? devices() : [...devices(), ...others()]))` (`group.ts:519`). So no `prev`
+> means no hold, no hold means the two servers are eligible partners, and **two servers alone
+> sign a follow-list wipe with the phone asleep and never asked.** Today that is impossible,
+> because a wipe always holds and a hold always needs a device. §4's `unjudged` does not weaken
+> the second opinion; it removes the first one. The device fails the same way at the same moment
+> (`core/Policy.kt:70` returns null when `prev == null`), so the two checks fail open together
+> and are not independent.
+>
+> **2. The account's write-relay list lives in the archive.** `ourWriteRelays()` is
+> `archive.latest('10002')` (`group.ts:952`) and it feeds `publishOut` (`:956`) — every event a
+> server originates. Delete the archive and a server publishes only to the group's own
+> coordination relays, so Undo, deletions and restores stop reaching the relays the account
+> actually uses. It is also circular with §4: the server needs the relay list to know which
+> relays to read the relay list from. An attacker's cheapest first move is one relay-list
+> rewrite.
+>
+> Neither of those was in the cost/benefit the decision was taken on. Both are fixable, and
+> neither fix is free: the first needs the hold gate decoupled from `prev` (a verdict of
+> "could not tell" that behaves like a hold for participant choice, which is a change to how
+> rounds are formed), and the second needs the write-relay list kept somewhere that is not the
+> archive — which is a small store of exactly the kind this document is deleting.
+>
+> The other three criticals, in short: §5's device log is append-only with no reader, no cap, no
+> dedupe and **no `ours` check** (`Phone.kt:1546`, `:1931`, `:401` are its only three
+> references), so promoting it to the account's history re-points finding #8 rather than retiring
+> it, and §3's sentence that the `ours` validator has nothing left to validate is **wrong** —
+> three new unvalidated inputs appear. §9's addition of kind 30078 and the wallet kinds to
+> `ARCHIVED` would make `undoSite` publish an **empty** app-data record and an **empty** wallet
+> record, because `ARCHIVED` is a switch on six behaviours and the restore path signs
+> `content: before?.content ?? ''` (`group.ts:921`); it needs a `JUDGED` set separate from
+> `ARCHIVED`. And `assess`'s comparison reads **tags**, while both those kinds keep their state
+> in ciphertext `content` with no tags, so the judgement it would make is `removed === 0` for
+> ever: no holds bought at all.
+>
+> Also, against §2's table: `S.changes` is history by any reading — persisted, synced between
+> servers, and rendered on the server's own page — so §10's proposed sentence for COSIGN §5.4
+> would be false on arrival. And `~/igloo/cosign-no-history-carry.md` holds four more items that
+> arrived from the DM spec while this was under review, including a direct contradiction: this
+> §5 leans on `logged`, whose `prev` comes from a server, while the DM spec's §5.5 forbids taking
+> that version from a server for exactly the finding-#8 reason. The DM spec is the correct one.
+
 **Status: proposal, for review. Nothing here is built.** Written as specification text so it can
 be attacked. It is not part of [COSIGN.md](COSIGN.md) until it has been reviewed and the author
 agrees; §10 lists what it would change there.
