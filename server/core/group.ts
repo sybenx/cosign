@@ -494,6 +494,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       tags: unsigned.tags ?? [], content: unsigned.content ?? '',
     };
     if (forgetting()) throw new Error('This server is removing its pieces of your account.');
+    if (behind()) throw new Error('This server is a generation behind: it missed a refresh, so its pieces no longer fit. Take it out and enroll it again.');
     const id = getEventHash(ev);
     const prev = archive.latest(keyOf(ev));
     const judged = assess(ev, prev);
@@ -671,6 +672,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   function onSignReq(msg: any, from: Member): object {
     const respond = (r: object) => ({ type: 'sign_res', id: msg.id, ...r });
     if (forgetting()) return respond({ ok: false, reason: 'this server is removing its pieces of the account' });
+    if (behind()) return respond({ ok: false, reason: 'this server is a generation behind: it missed a refresh, so its pieces no longer fit. Take it out and enroll it again.' });
     const ev = msg.event;
     const participants: number[] = msg.participants;
     if (from.role !== 'server') return respond({ ok: false, reason: 'only servers coordinate' });
@@ -701,6 +703,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   function onEcdhReq(msg: any, from: Member): object {
     const respond = (r: object) => ({ type: 'ecdh_res', id: msg.id, ...r });
     if (forgetting()) return respond({ ok: false, reason: 'this server is removing its pieces of the account' });
+    if (behind()) return respond({ ok: false, reason: 'this server is a generation behind: it missed a refresh, so its pieces no longer fit. Take it out and enroll it again.' });
     // **One of your devices, and nothing else.** Not the paper, which with this server's
     // piece could read every message at once with no wait and nobody told — and not another
     // server either: a server asking for a piece of a decryption *is* a server coordinating
@@ -749,6 +752,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   function onCosignReq(msg: any, from: Member): object {
     const respond = (r: object) => ({ type: 'cosign_res', id: msg.id, ...r });
     if (forgetting()) return respond({ ok: false, reason: 'this server is removing its pieces of the account' });
+    if (behind()) return respond({ ok: false, reason: 'this server is a generation behind: it missed a refresh, so its pieces no longer fit. Take it out and enroll it again.' });
     const ev = msg.event;
     if (!isDevice(from)) return respond({ ok: false, reason: 'only your devices do this' });
     const participants: number[] = msg.participants ?? [];
@@ -778,6 +782,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   const ecdhCache = new Map<string, { x: Uint8Array; at: number }>();
   async function frostEcdh(peerX: string): Promise<Uint8Array> {
     if (forgetting()) throw new Error('This server is removing its pieces of your account.');
+    if (behind()) throw new Error('This server is a generation behind: it missed a refresh, so its pieces no longer fit. Take it out and enroll it again.');
     const hit = ecdhCache.get(peerX);
     if (hit && io.now() - hit.at < 600_000) return hit.x;
     const tried: string[] = [];
@@ -932,7 +937,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   // --- Keeping the two servers and the phone in step ------------------------------
 
   function syncTo() {
-    toOther({ type: 'sync', sites: S.sites, tickets: S.tickets, changes: S.changes, archive: archive.all() });
+    toOther({ type: 'sync', sites: S.sites, tickets: S.tickets, changes: S.changes, archive: archive.all(), epoch: S.epoch ?? 0, pending: S.pending?.epoch ?? null });
   }
 
   function mergeSync(msg: any) {
@@ -952,6 +957,29 @@ export function openGroup(loaded: Loaded, io: Io) {
     for (const c of (msg.changes ?? []) as Change[]) {
       const mine = (S.changes as Change[]).find(x => x.id === c.id);
       if (!mine) addChange(c, true); else if (c.undone && !mine.undone) { mine.undone = true; dirty = true; }
+    }
+    // A generation behind. The sync is the only message the two servers exchange often
+    // enough to carry this, and nothing else ever told them: a server that was away when
+    // the key refreshed refuses every later plan (`startRefresh` wants `S.epoch + 1` over
+    // points it no longer has) and never receives the one it missed (the plan and the part
+    // are held as mail only for the paper and for devices). So it sat there answering
+    // rounds with partials that cannot verify, which looks to the user like a slow server
+    // rather than a dead one. It cannot repair itself — the run is over and the deltas are
+    // gone — so what it does is say so and stop pretending.
+    const theirs = Number(msg.epoch ?? 0);
+    const mine = S.epoch ?? 0;
+    // Mid-refresh is not behind: in the two-phase one (COSIGN.md §7.7) the other server
+    // commits first and this one goes on signing with its current shares until it commits
+    // too, so a pending epoch or a run in flight is the ordinary case, not a stranding.
+    const mid = !!S.pending || !!(refresh && !refresh.done);
+    if (theirs > mine && !mid && !behind()) {
+      S.behindAt = now();
+      note(`this server is a generation behind (epoch ${mine}; the others are on ${theirs}): it missed a refresh, so its pieces no longer fit. It can't sign or help read until it is taken out and enrolled again.`);
+      dirty = true;
+    } else if ((theirs <= mine || mid) && behind()) {
+      S.behindAt = null;
+      note('this server is in step with the others again');
+      dirty = true;
     }
     if (dirty) save();
     pushState();
@@ -1462,6 +1490,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     delete S.self.share;
     S.epoch = r.epoch;
     S.epochAt = now();
+    S.behindAt = null; // caught up, if it ever was behind
     // The paper's parts for this epoch are its dealers' only: drop any from a refresh that was started and never ran.
     const dealers = dealersOf ?? refresh?.plan.dealers;
     if (S.backup && dealers) {
@@ -1549,6 +1578,12 @@ export function openGroup(loaded: Loaded, io: Io) {
 
   /** Stopped while its pieces wait to be deleted: no signing, no decrypting. */
   const forgetting = () => guards().some(g => g.kind === 'forget' && !g.cancelled);
+  /**
+   * Behind the others by at least one epoch, so its shares are on a polynomial nobody else
+   * is on. Set from the sync (`mergeSync`) and cleared when it catches up, which today only
+   * happens by being taken out and enrolled again.
+   */
+  const behind = () => !!S.behindAt;
 
   function cancelGuard(msg: any, from: Member) {
     const g = guardById(msg.id);
