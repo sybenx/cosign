@@ -79,7 +79,22 @@ class Nip55Request(private val activity: Activity) {
     }
 
     /** Yes to [Stage.Connect]. */
-    fun connect() { phone.connectApp(pkg, label); next() }
+    /**
+     * The grant goes to the servers by relay, so an app's first request can arrive at a server
+     * before the grant does — and a server with no grant for it answers "revoked", which used
+     * to surface as "Couldn't reach your servers" on a sign-in that had in fact worked. Answer
+     * `get_public_key` at once, because it needs no server; anything else waits for the grant
+     * off the UI thread, and the library retries a fresh grant's "revoked" once besides.
+     */
+    fun connect() {
+        phone.connectApp(pkg, label)
+        if (type == "get_public_key") return next()
+        current.value = Stage.Working("Connecting…")
+        work.execute {
+            Thread.sleep(2500)
+            activity.runOnUiThread { next() }
+        }
+    }
 
     /** Yes to [Stage.Dms]. */
     fun allowDms() { phone.allowDms(phone.appGrant(pkg)!!); crypt() }
