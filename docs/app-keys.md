@@ -36,9 +36,24 @@ the code myself before believing them.
   **nobody** holds and encrypt under it — silent, permanent data loss. §6 requires a check
   before anything is written.
 - The label's bytes are pinned exactly, with test vectors, because three platforms will
-  implement it (§3); blinding is demoted to MAY with its real cost named (§8); the first-party
-  rule closes three holes the reviewer found in today's code (§4); and §11 says plainly that
-  this is the one access in Cosign a user cannot revoke.
+  implement it (§3); the first-party rule closes three holes the reviewer found in today's code
+  (§4); and §11 says plainly that this is the one access in Cosign a user cannot revoke.
+
+**And one change after the review, from a challenge to this draft rather than to the first.**
+Refusing the derive call for any account whose key was ever whole — which is what I wrote
+first — **protects nothing and costs the whole point of the mechanism.** Somebody holding the
+key already decrypts everything the account encrypts to itself and signs as the account; they
+do not need the call, and denying it to the *account* only takes away the compartmentalisation
+against apps and sites, which is the thing Marble needs. The refusal is gone.
+
+What replaces it is better than either: **the namespace salt is a members-only secret.** `s`
+alone does not derive an app key — the label needs `S`, and `S` is never published, never sent
+to a server and never put in the epoch record. So the nsec that existed before an import, held
+by whoever held it, cannot construct the label point at all, and an imported account gets a
+real guarantee rather than a disclaimer. Two further consequences fall out: a server can no
+longer recognise which namespace is being derived, so §8's blinding stops being necessary, and
+the thing a client must never claim is now precise — protection fails against someone who held
+**both** `s` and `S`, not against anyone who ever touched the key.
 
 ---
 
@@ -140,20 +155,31 @@ K(ns,e)    = HKDF-Extract(SHA-256, salt = "cosign-app-key:v1", ikm = x(ns,e))
 No user approval is asked for and none would help: the honest question is "is this really
 Marble?", which a signature answers and a person cannot.
 
-### 4.2 Accounts this is refused for
+### 4.2 Accounts whose key was once whole
 
-> **A device MUST refuse every derive call for an account whose key has ever been whole in one
-> place.**
+An earlier draft refused the derive call for these outright. That was wrong. Whoever holds the
+account's key already reads everything it encrypts to itself and signs as it; the call gives
+them nothing, and refusing it to the account removes only the protection from apps and sites
+that the mechanism exists for.
 
-That is the only mitigation for §1's permanence. It covers an imported nsec, a take-out, the
-escape hatch, a rebuild-and-re-split, and the whole-key stages of
-[progressive-accounts.md](progressive-accounts.md) (§3.1, §3.2 there) — whose durable "a whole
-copy may exist" flag (§4.3 there) is exactly the signal to read. Where no such flag exists yet,
-a device MUST assume the worst for any account it did not watch being created by distributed
-key generation.
+What stands in their way instead is §4.4: **`s` alone is not enough.** The label needs the
+account's namespace salt, which is a members-only secret. So:
 
-**Only a DKG-created, never-rebuilt account gets what §1 offers.** An implementation that
-cannot tell MUST say so to the namespace rather than guess.
+- **an nsec that existed before the account was imported** — the commonest ever-whole case —
+  cannot construct the label point, and therefore cannot derive any namespace, however long it
+  is kept;
+- **anyone who held the key whole *and* the salt** derives everything, for ever, offline, and
+  no later refresh or re-split changes it. That is a member device that was taken out, or a
+  take-out, or the escape hatch (§8.4) performed by a member.
+
+> **A client MUST NOT claim protection against a holder of both the key and the salt**, and
+> where it cannot tell whether such a holder exists — a durable "a whole copy may exist" flag
+> is the signal (progressive-accounts §4.3) — it MUST say so to the namespace rather than imply
+> otherwise.
+
+At progressive-accounts' whole-key stages (§3.1, §3.2 there) the device holds both by
+construction, so nothing here protects anything from that device: the derive call still works
+and the claims are empty until the account is split.
 
 ### 4.3 What the caller gets
 
@@ -161,15 +187,30 @@ The caller gets what the operation needs — a decrypted pack, a signature — a
 `K`**. A first-party caller that *is* the host holds them by construction; one that is a
 separate process MUST be handed derived material for the operation it asked for.
 
-### 4.4 The namespace salt
+### 4.4 The namespace salt is a members-only secret
 
-`S` is 32 random bytes, generated once when the account is created, carried in the signed
-member record (COSIGN.md §3's epoch record), and never changed by anything but §4.5.
+`S` is 32 random bytes, generated once when the account is created, and it is **secret**:
 
-Without it, a rebuild-and-re-split restarts the epoch counter at 0 with the same key, so the
-new incarnation's epochs 0…k have **byte-identical** app keys and addresses to the old one's:
-re-splitting after a compromise would not clear it. With it, whoever re-splits may also deal a
-fresh `S` and leave every old namespace behind.
+> **`S` MUST NOT be published, MUST NOT be sent to a server, and MUST NOT be put in the epoch
+> record** (which COSIGN.md §3 encrypts under the group secret — readable by anyone holding the
+> key, which is precisely who must not have it). It is held by the account's **member devices**
+> and nowhere else.
+
+- **A new device gets it with its shares**, sealed to it on the path that already seals its
+  sigmas (§7.1). A device that has shares but not `S` can sign and read messages; it simply
+  cannot take part in a namespace until it has it.
+- **A server never needs it.** A server computes `λ·s·P` for a point the device names; it
+  never constructs the label. So it also never learns which namespace is being derived, which
+  is the privacy §8 used to need blinding for.
+- Without a salt at all, a rebuild-and-re-split restarts the epoch counter at 0 with the same
+  key, so the new incarnation's epochs 0…k would have **byte-identical** app keys and addresses
+  to the old one's. With it, whoever re-splits may deal a fresh `S` and leave every old
+  namespace behind (§4.5).
+- **The paper backup is the open question** (§14.3). If the paper carries `S`, a full device
+  loss is recoverable and a paper holder who *also* has an old whole-key copy can derive
+  everything. If it does not, the account survives a paper restore and the namespace's data
+  does not. My recommendation is that the paper carries it and that this is said out loud: the
+  paper is already 2 points and losing all of a namespace's data is the worse failure.
 
 ### 4.5 Abandoning a namespace
 
@@ -274,14 +315,15 @@ namespace MAY keep one tag key across epochs now that §7 does the work the rota
 rotating it costs each reader a walk back and buys only that a removed device cannot enumerate
 addresses it already knows.
 
-**A server sees the round, and the label is public**, so it can recognise which namespace is
-being derived — metadata about which app the user runs. A device **MAY** blind it: pick random
+**A server sees the round, and with a secret salt (§4.4) it cannot tell what the point is for**
+— it is one more peer it has never seen. That was the whole purpose of the blinding the first
+draft recommended, so blinding is no longer needed. A device **MAY** still blind — pick random
 `r` in `[2, n-2]`, ask about `r·P`, lift the x-only answer and multiply by `r⁻¹`; both lifts
-give the same x-coordinate, so x-only is enough. `r` MUST come from the system's randomness and
-MUST NOT be fixed for tests. What blinding costs, which the first draft did not say: the
-account's ECDH caches are keyed on the peer, so every blinded derive is a fresh round, and a
-`peerX` that never recurs on a regular cadence is itself recognisable. It is a privacy trade,
-not a free one.
+give the same x-coordinate, so x-only suffices, and `r` MUST come from the system's randomness
+and MUST NOT be fixed for tests — but it should know the cost: the account's ECDH caches are
+keyed on the peer, so every blinded derive is a fresh round, and a peer that never recurs on a
+regular cadence is itself a pattern. Blinding is worth it only if `S` may have leaked, which is
+the case where §4.5 applies instead.
 
 ## 9. The server change this needs
 
@@ -308,8 +350,11 @@ known-plaintext check is the one that must work.
 
 ## 11. What it does not protect against
 
-1. **Anybody who ever held the key whole** (§1, §4.2). Every namespace, every epoch, for ever,
-   offline, undetectable. This is the ceiling on everything else here.
+1. **Anybody who held the key whole *and* the namespace salt** (§1, §4.2, §4.4). Every
+   namespace, every epoch, for ever, offline, undetectable, and no refresh or re-split reaches
+   them. The key alone is not enough — an nsec from before an import cannot construct the label
+   — but a member device that was taken out had both. This is the ceiling on everything else
+   here.
 2. **A breached device in the current epoch.** It derives everything the namespace has and
    signs what it likes. Removing it rotates the epoch; it keeps what it already took.
 3. **A removed device's past.** Every key it derived, it keeps: it reads those epochs' records
@@ -364,14 +409,22 @@ reviewer could not check these citations.
   also the trade: only the namespace's own checkpoints stand between a compromised first-party
   caller and all of it.
 
-## 14. Still open
+## 14. Still open, and who answers each
 
-1. **Where the first-party list lives**: compiled in (as §4.1 says) means a release to add a
-   caller and no attack surface; in the signed member record means faster and a new thing for a
-   compromised device to write.
-2. **Whether the Tauri host can be first-party at all** (§4.1), which decides whether the Mac
-   can hold notes.
-3. **Whether `S` (§4.4) can be added to existing accounts** without a refresh, and what an
-   account that has none does meanwhile.
-4. **Whether to ask for the device's lock** on a derive, once a day rather than once a sync.
-5. **What a namespace does when §4.2 refuses it**: run without Cosign's help, or not run.
+1. **Where the first-party list lives** — mine. Compiled in (as §4.1 says) means a release to
+   add a caller and no attack surface; in the signed member record means faster and a new thing
+   for a compromised device to write. I would keep it compiled in while there is one caller.
+2. **Whether the Tauri host can be first-party at all** (§4.1) — **the Mac app's own session**,
+   not this document: the question is whether any remote content can ever occupy the page that
+   would make the call, which only its own configuration answers. Until it does, §4.1 refuses,
+   and that decides whether the Mac can hold a namespace's data.
+3. **Whether the paper carries `S`** (§4.4) — the author's, because it is a trade between
+   losing a namespace's data on a full-device loss and a paper holder with an old key copy
+   deriving everything. My recommendation is in §4.4.
+4. **Whether `S` can be added to an existing account without a refresh** — mine, and the answer
+   is **yes**: `S` is not key material and nothing in the maths depends on it, so it is dealt to
+   the current member devices and acknowledged, with no epoch change and no new shares. The one
+   rule is that a namespace MUST NOT start until every member device has it, or devices derive
+   into two disjoint invisible data sets (§3's failure, by another route).
+5. **Whether to ask for the device's lock** on a derive, once a day rather than once a sync —
+   open, and it belongs in the user-verification document if the answer is yes.
