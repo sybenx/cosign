@@ -220,8 +220,12 @@ function handle(msg: any, from: string) {
     // Only your own devices (COSIGN.md §5.6): a server never coordinates a decryption, so one
     // asking is something else wanting to read your messages, which nothing here asked for.
     if (srv) { say(`REFUSED an ecdh piece to ${srv.name}`); send(from, { type: 'ecdh_res', id: msg.id, ok: false, reason: 'not-allowed: your devices read your messages, your servers don’t' }); return; }
-    const points = myShares().map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
-    send(from, { type: 'ecdh_res', id: msg.id, ok: true, points, point: points[0] });
+    const parts = myShares().map(s => F.ecdhProve({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
+    const points = parts.map(p => p.point);
+    // BREAK_ECDH makes this phone send a partial that is not its share's, with a proof that
+    // does not check out: what a dishonest or stale member looks like from the other side.
+    if (process.env.BREAK_ECDH) { points[0] = F.ecdhPartial({ idx: parts[0].idx, secret: F.toHex32(BigInt('0x' + myShares()[0].secret) + 1n), participants: msg.participants, peerX: msg.peerX }); parts[0] = { ...parts[0], point: points[0] }; say('SENT a bad ecdh piece on purpose'); }
+    send(from, { type: 'ecdh_res', id: msg.id, ok: true, parts, points, point: points[0] });
   } else if (msg.type === 'repair') {
     // Only for something this phone asked to add (the app keeps your lock behind this). A
     // repair makes a share out of this phone's shares, so a server that could ask for one

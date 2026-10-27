@@ -156,6 +156,71 @@ export function ecdhPartial(a: { idx: number; secret: string; participants: numb
   return bytesToHex(P.multiply(k).toBytes(true));
 }
 
+// A partial on its own is unverifiable: `ecdhCombine` below rejects only the identity, so one
+// wrong contribution — a stale share, a corrupted copy at rest, a dishonest partner — makes the
+// asker derive a value nobody else has, and the only symptom today is a NIP-44 MAC failure at
+// whoever asked. Signing has `verifyPartial`; this is the same thing for a decryption.
+//
+// Chaum-Pedersen: the scalar behind the partial is the scalar behind the published share point.
+// With lambda public, the verifier scales that point itself, so the statement is
+// log_G(lambda_i * s_i * G) = log_Q(lambda_i * s_i * Q) for the peer point Q the round is about.
+//
+//   v random;  R1 = v*G;  R2 = v*Q
+//   c = int(H_tag("cosign/ecdh-dleq", be32(i) || be32(participants…) || Q_x || L || A || R1 || R2)) mod n
+//   z = v + c * lambda_i * s_i                           L = lambda_i * sharePub_i, A = the partial
+//   check  z*G == R1 + c*L   and   z*Q == R2 + c*A
+//
+// 98 bytes on the wire (R1 ‖ R2 ‖ z), one scalar multiplication and one hash to make, two of
+// each to check. The transcript carries the index and the participant list so a proof cannot be
+// lifted into a round with a different lambda.
+
+export const dleqChallenge = (idx: number, participants: number[], peerX: string, L: Pt, A: Pt, R1: Pt, R2: Pt) =>
+  mod(toInt(tagged('cosign/ecdh-dleq',
+    be32(idx),
+    concatBytes(...[...participants].sort((a, b) => a - b).map(be32)),
+    hexToBytes(peerX),
+    L.toBytes(true), A.toBytes(true), R1.toBytes(true), R2.toBytes(true))));
+
+export interface EcdhPart { idx: number; point: string; proof: string }
+
+/** One share's partial, with the proof that it is this share's. */
+export function ecdhProve(a: { idx: number; secret: string; participants: number[]; peerX: string }): EcdhPart {
+  const Q = Point.fromHex('02' + a.peerX);
+  const k = mod(lagrange(a.idx, a.participants) * BigInt('0x' + a.secret));
+  if (k === 0n) throw new Error('degenerate share');
+  const A = Q.multiply(k), L = mulG(k);
+  for (;;) {
+    const v = randomScalar();
+    const R1 = mulG(v), R2 = Q.multiply(v);
+    const c = dleqChallenge(a.idx, a.participants, a.peerX, L, A, R1, R2);
+    if (c === 0n) continue; // a challenge of zero proves nothing, and multiply(0) throws
+    return {
+      idx: a.idx,
+      point: bytesToHex(A.toBytes(true)),
+      proof: bytesToHex(R1.toBytes(true)) + bytesToHex(R2.toBytes(true)) + toHex32(mod(v + c * k)),
+    };
+  }
+}
+
+/** Check a partial against the share point everyone can see. False for anything malformed. */
+export function ecdhVerify(a: { idx: number; participants: number[]; peerX: string; sharePub: string; point: string; proof: string }): boolean {
+  try {
+    if (typeof a.proof !== 'string' || a.proof.length !== 66 + 66 + 64) return false;
+    const R1 = Point.fromHex(a.proof.slice(0, 66));
+    const R2 = Point.fromHex(a.proof.slice(66, 132));
+    const z = BigInt('0x' + a.proof.slice(132));
+    if (z <= 0n || z >= N) return false;
+    const Q = Point.fromHex('02' + a.peerX);
+    const A = Point.fromHex(a.point);
+    const lam = lagrange(a.idx, a.participants);
+    if (lam === 0n) return false;
+    const L = Point.fromHex(a.sharePub).multiply(lam);
+    const c = dleqChallenge(a.idx, a.participants, a.peerX, L, A, R1, R2);
+    if (c === 0n) return false;
+    return mulG(z).equals(R1.add(L.multiply(c))) && Q.multiply(z).equals(R2.add(A.multiply(c)));
+  } catch { return false; }
+}
+
 export function ecdhCombine(parts: string[]): Uint8Array {
   const S = parts.reduce((acc, p) => acc.add(Point.fromHex(p)), Point.ZERO);
   if (S.is0()) throw new Error('degenerate shared point');

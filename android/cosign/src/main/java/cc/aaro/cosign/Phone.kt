@@ -1778,7 +1778,28 @@ class Signer(private val context: Context, val slot: String = "0") {
             if (res == null) { answers += null; continue }
             if (res["ok"] != true) { answers += (res["reason"] as? String ?: "refused"); continue }
             val mine = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX).hexToBytes() }
-            val theirs = ((res["points"] as? List<*>) ?: listOf(res["point"])).map { (it as String).hexToBytes() }
+            // Check what came back against the share points in the member list, when the server
+            // sent its proofs. Without them a wrong piece combines into a value nobody else has
+            // and the only symptom is a MAC failure wherever the plaintext was wanted; with them
+            // it is this server's fault, by name, and the next one gets a turn.
+            val parts = res["parts"] as? List<*>
+            val theirs: List<ByteArray>
+            if (parts != null && parts.isNotEmpty()) {
+                val checked = parts.mapNotNull { it as? Map<*, *> }.map { p ->
+                    val idx = (p["idx"] as? Long)?.toInt() ?: -1
+                    val point = p["point"] as? String ?: ""
+                    val ok = Frost.ecdhVerify(idx, participants, peerX, srv.points.firstOrNull { it.idx == idx }?.sharePub ?: "", point, p["proof"] as? String ?: "")
+                    if (ok) point else null
+                }
+                if (checked.size != parts.size || checked.any { it == null }) {
+                    answers += "its piece doesn't match its share"
+                    note("${srv.name} sent a piece of reading your messages that doesn't match its share.", "denied")
+                    continue
+                }
+                theirs = checked.map { it!!.hexToBytes() }
+            } else {
+                theirs = ((res["points"] as? List<*>) ?: listOf(res["point"])).map { (it as String).hexToBytes() }
+            }
             val x = Secp256k1.pubKeyCombine((mine + theirs).toTypedArray()).copyOfRange(1, 33)
             sharedXs[peerX] = x
             return x
@@ -2057,8 +2078,11 @@ class Signer(private val context: Context, val slot: String = "0") {
         val participants = (msg["participants"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: return
         val peerX = msg["peerX"] as? String ?: return
         if (!isHex32(peerX) || participants.sorted() != (from.idxs + m.idxs).sorted()) return
-        val points = m.shares.map { Frost.ecdhPartial(it.idx, it.secret, participants, peerX) }
-        val body = mapOf("type" to "ecdh_res", "id" to id, "ok" to true, "points" to points, "point" to points[0])
+        val proved = m.shares.map { Frost.ecdhProve(it.idx, it.secret, participants, peerX, env) }
+        val points = proved.map { it.point }
+        val body = mapOf("type" to "ecdh_res", "id" to id, "ok" to true,
+            "parts" to proved.map { mapOf("idx" to it.idx, "point" to it.point, "proof" to it.proof) },
+            "points" to points, "point" to points[0])
         answered[id] = body
         send(from.pk!!, body)
         if (System.currentTimeMillis() - lastEcdhNote > 60_000) {
