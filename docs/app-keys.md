@@ -145,10 +145,25 @@ K(ns,e)    = HKDF-Extract(SHA-256, salt = "cosign-app-key:v1", ikm = x(ns,e))
   here). The page MUST be top-level: the manifest's `all_frames: false` happens to prevent
   framing today, and an implementation MUST write that down and set
   `frame-ancestors 'none'` rather than rely on it.
-- **A desktop host.** First-party by construction *only* when the call is made in the host's
-  own process. **The Mac app is Tauri, where the app is a webview**, so "a webview is not the
-  host" does not settle it: until the host can prove a page is one it loaded itself, from its
-  own bundle, over a scheme no remote content can occupy, it MUST refuse the derive call.
+- **A desktop host.** First-party *only* when the host can prove the caller is a page it
+  loaded from its own bundle, over a scheme no remote content can occupy, **checked at call
+  time and not by a label**. "A webview is not the host" does not settle it, because in Tauri
+  the app *is* a webview.
+
+  The Mac app has answered this for itself (`~/igloo/marble-desktop-first-party.md`): **yes,
+  after four changes it is making** — check the calling webview's URL is exactly its own
+  bundled signer page rather than trusting the label; add navigation guards to the bundled
+  webviews and set `frame-src`/`frame-ancestors 'none'` explicitly; add an ACL manifest so the
+  derive command is reachable from the signer page alone instead of from every local page; and
+  close an event side door by which another bundled page could speak to the signer directly.
+  Its remote webview already cannot reach a custom command, cannot become local, and shares no
+  storage or process with the signer.
+
+  Two things from that answer belong here rather than there. **A label is not an identity**: a
+  host MUST check the caller's URL at the moment of the call, because a label survives a
+  navigation and the guarantee does not. And **the derived key stays in the host**: a page gets
+  an encrypt or a decrypt, never `K` (§4.3), which for that app is a change to its vault and
+  needs its own review before code.
 - **NIP-46.** Never. A server cannot tell one app from another, and one signer key is shared
   by every site that connects by code (§6.1).
 
@@ -173,9 +188,19 @@ account's namespace salt, which is a members-only secret. So:
   take-out, or the escape hatch (§8.4) performed by a member.
 
 > **A client MUST NOT claim protection against a holder of both the key and the salt**, and
-> where it cannot tell whether such a holder exists — a durable "a whole copy may exist" flag
-> is the signal (progressive-accounts §4.3) — it MUST say so to the namespace rather than imply
-> otherwise.
+> **MUST treat the existence of such a holder as unknown unless it knows otherwise.**
+
+Knowing otherwise is rare and specific: the client watched the account created by distributed
+key generation, no member has been removed since, no take-out or escape hatch has run, and no
+paper has left the user's hands. Nothing records most of that. A durable "a whole copy may
+exist" flag (progressive-accounts §4.3) answers the first part and nothing answers the rest,
+so **the default is the unknown**, and what a client says to the namespace, and to the user if
+it says anything at all, is that a namespace is closed to apps, sites and removed devices —
+not that it is closed to whoever has held the key.
+
+This is not pedantry. The one account this is being built for was imported from an existing
+nsec, and whether a member device of it has ever been taken out is not written down anywhere.
+A client that assumed the good case would be wrong about that account today.
 
 At progressive-accounts' whole-key stages (§3.1, §3.2 there) the device holds both by
 construction, so nothing here protects anything from that device: the derive call still works
@@ -206,11 +231,13 @@ separate process MUST be handed derived material for the operation it asked for.
   key, so the new incarnation's epochs 0…k would have **byte-identical** app keys and addresses
   to the old one's. With it, whoever re-splits may deal a fresh `S` and leave every old
   namespace behind (§4.5).
-- **The paper backup is the open question** (§14.3). If the paper carries `S`, a full device
-  loss is recoverable and a paper holder who *also* has an old whole-key copy can derive
-  everything. If it does not, the account survives a paper restore and the namespace's data
-  does not. My recommendation is that the paper carries it and that this is said out loud: the
-  paper is already 2 points and losing all of a namespace's data is the worse failure.
+- **The paper backup carries `S`** (the author's decision, 2026-10-27). So a paper restore
+  brings a namespace's data back with the account, rather than leaving the account alive and
+  the data unreadable for ever. It is written into the paper's code beside the backup key, and
+  it means plainly: **a paper holder who also holds a copy of the whole key — an old nsec, say —
+  derives every namespace for ever.** The paper is already worth 2 points and a stolen paper
+  plus a whole-key copy was already the end of the account (COSIGN.md §12); what this adds is
+  that it is also the end of the namespaces. Said here so that nobody has to work it out.
 
 ### 4.5 Abandoning a namespace
 
@@ -414,13 +441,11 @@ reviewer could not check these citations.
 1. **Where the first-party list lives** — mine. Compiled in (as §4.1 says) means a release to
    add a caller and no attack surface; in the signed member record means faster and a new thing
    for a compromised device to write. I would keep it compiled in while there is one caller.
-2. **Whether the Tauri host can be first-party at all** (§4.1) — **the Mac app's own session**,
-   not this document: the question is whether any remote content can ever occupy the page that
-   would make the call, which only its own configuration answers. Until it does, §4.1 refuses,
-   and that decides whether the Mac can hold a namespace's data.
-3. **Whether the paper carries `S`** (§4.4) — the author's, because it is a trade between
-   losing a namespace's data on a full-device loss and a paper holder with an old key copy
-   deriving everything. My recommendation is in §4.4.
+2. ~~Whether the Tauri host can be first-party~~ — **answered: yes**, after the four changes
+   in §4.1, which that app is making. What remains open there is its own: where the derived key
+   lives inside the app, which is a vault change and needs its own review.
+3. ~~Whether the paper carries `S`~~ — **answered: it does** (§4.4), with the consequence
+   stated there: a paper plus a whole-key copy opens every namespace for ever.
 4. **Whether `S` can be added to an existing account without a refresh** — mine, and the answer
    is **yes**: `S` is not key material and nothing in the maths depends on it, so it is dealt to
    the current member devices and acknowledged, with no epoch change and no new shares. The one
