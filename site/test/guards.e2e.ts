@@ -107,6 +107,24 @@ check('nor a signature', !got(paperPk, m => m.type === 'sign_res' && m.id === s1
 const b1 = hex();
 as(paper.sk, { type: 'backup_get', id: b1 });
 check('but it can fetch its own pieces', await waitFor(() => got(paperPk, m => m.type === 'backup'), 10_000));
+// --- What another server can get: nothing of a decryption -----------------------------------
+//
+// A breached server asking its peers for pieces of a decryption is a server coordinating one,
+// which §5.6 forbids. The arithmetic refuses it here as well (two servers are 2 points of 4),
+// so the reason is what the test watches: it must be refused for being a server, not for the
+// numbers, because on a 2-of-3 key the numbers would have allowed it.
+const other = JSON.parse(readFileSync(`${serverDir}test-guards/b/state.json`, 'utf8')).self as { idx: number; sk: string };
+const otherPk = pubOf(other.sk);
+keys.set(otherPk, other.sk);
+listen(); // the subscription is built from the keys we hold, so take in the other server's
+await sleep(2000);
+const e3 = hex();
+as(other.sk, { type: 'ecdh_req', id: e3, participants: [other.idx, server.idx].sort((a, b) => a - b), peerX, grant: ph.group.groupX });
+await waitFor(() => got(otherPk, m => m.type === 'ecdh_res' && m.id === e3), 8000);
+const answer = heard.find(h => h.to === otherPk && h.m.type === 'ecdh_res' && h.m.id === e3)?.m;
+check('a server gets no piece of a decryption', !!answer && answer.ok === false, answer ? String(answer.reason) : 'no answer');
+check('and it is refused for being a server, not for the arithmetic', /^not-allowed:/.test(String(answer?.reason ?? '')), String(answer?.reason ?? ''));
+
 const e2 = hex();
 as(tb.sk, { type: 'ecdh_req', id: e2, participants: [server.idx], peerX });
 await waitFor(() => got(tabletPk, m => m.type === 'ecdh_res' && m.id === e2), 8000);

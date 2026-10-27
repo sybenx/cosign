@@ -701,14 +701,19 @@ export function openGroup(loaded: Loaded, io: Io) {
   function onEcdhReq(msg: any, from: Member): object {
     const respond = (r: object) => ({ type: 'ecdh_res', id: msg.id, ...r });
     if (forgetting()) return respond({ ok: false, reason: 'this server is removing its pieces of the account' });
-    // Only one of your devices, or another server running the round for one: never the
-    // paper, which with this server's piece could read every message at once, with no
-    // wait and nobody told. And the shares taking part must be enough to sign.
-    if (!isDevice(from) && from.role !== 'server') return respond({ ok: false, reason: 'not allowed' });
+    // **One of your devices, and nothing else.** Not the paper, which with this server's
+    // piece could read every message at once with no wait and nobody told — and not another
+    // server either: a server asking for a piece of a decryption *is* a server coordinating
+    // one, which §5.6 forbids outright. On a weighted key the arithmetic below also refused
+    // it (a server's share and ours are 2 points, short of 4), but on a 2-of-3 key it did
+    // not, and a rule this important should not rest on the arithmetic. The phone has
+    // refused servers for a while ("your devices read your messages, your servers don't");
+    // this is the same rule on this side.
+    if (!isDevice(from)) return respond({ ok: false, reason: 'not-allowed: your devices read your messages, your servers don’t' });
     if (!Array.isArray(msg.participants) || !sameSet(msg.participants, [...sharesOf(from), ...myIdxs])) return respond({ ok: false, reason: 'bad request' });
     if (msg.participants.length < S.group.threshold) return respond({ ok: false, reason: 'bad request' });
     // The phone asks on behalf of an app it has let read your messages; that app must still have access.
-    if (isDevice(from) && !liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
+    if (!liveGrant(msg.grant)) return respond({ ok: false, reason: 'revoked: that app no longer has access' });
     const points = myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants: msg.participants, peerX: msg.peerX }));
     return respond({ ok: true, points, point: points[0] });
   }
