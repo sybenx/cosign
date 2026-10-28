@@ -124,9 +124,10 @@ A co-signer MUST:
    30000–30030; reference 25 each), built only from events validly signed by the group.
 6. Never finish a decryption for a user it does not belong to (it returns partials
    only), and never hold a NIP-46 signer key for such a user. Give decryption partials
-   only to active member devices: never to the backup key or a removed member. Until
-   per-site signer keys exist, a co-signer that still holds a NIP-46 signer key for a
-   user it does not belong to refuses NIP-46 encrypt and decrypt requests.
+   only to active member devices: never to the backup key or a removed member. It MAY
+   watch a site's signer key by its public half (kind 24133, `#p`) to wake the devices
+   that hold it. A co-signer that still holds an older shared NIP-46 signer key for a
+   user it does not belong to refuses NIP-46 encrypt and decrypt requests to it.
 7. Destroy its old piece once a refresh verifies, with no copy kept anywhere.
 8. Enforce waits: refuse to take part in a `repair` for a new device vouched for by one
    device without its lock, or in any round using the backup's shares without a
@@ -178,8 +179,9 @@ A device MUST:
 ## Site access
 
 Sites use NIP-07, NIP-46 or NIP-55 as they do today. A site's access is a grant held by
-the members, never a piece. For NIP-46, the signer key of each site is held only by the
-user's devices and by co-signers the user operates.
+the members, never a piece. For NIP-46, each site gets a signer key of its own, held
+only by the user's devices and by co-signers the user operates; other co-signers know
+only its public half, to wake a device when the site writes to it.
 
 ## Security considerations
 

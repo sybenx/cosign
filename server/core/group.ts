@@ -52,14 +52,23 @@ export interface Member { idx: number; name: string; role: 'server' | 'phone' | 
  * A grant. `parent` is set for one a connected site added under itself (the browser
  * extension adds one per website it signs for); `via` names what connected it.
  */
-export interface Site { pk: string; origin: string; added: number; lastUsed: number; revoked?: number; relays?: string[]; parent?: string; via?: string }
+export interface Site { pk: string; origin: string; added: number; lastUsed: number; revoked?: number; relays?: string[]; parent?: string; via?: string;
+  /**
+   * The site's own NIP-46 mailbox (COSIGN.md §6.1), when your devices hold it: its public
+   * key only. This server watches it to wake a device and never reads what is in it.
+   */
+  signer?: string;
+  /** Which of your devices hold that mailbox's key (member idx): the ones to wake. */
+  holders?: number[] }
+/** A mailbox a device opened for a sign-in code not yet used: watched, to wake that device, until it expires. */
+export interface Watch { pk: string; by: number; until: number; relays?: string[] }
 export interface Ticket { t: string; origin: string; expires: number; used?: boolean }
 export interface Change { id: string; key: string; kind: number; at: number; text: string; by: string; held?: boolean; undone?: boolean }
 
 /** Start serving one group from what its host loaded. Nothing happens until `start()`. */
 export function openGroup(loaded: Loaded, io: Io) {
   const S = loaded.state;
-  S.sites ??= []; S.tickets ??= []; S.changes ??= [];
+  S.sites ??= []; S.tickets ??= []; S.changes ??= []; S.watching ??= [];
   const save = () => io.save.state(S);
   /**
    * Signed by this account, and not merely shaped like it. Everything kept — in the archive,
@@ -192,7 +201,11 @@ export function openGroup(loaded: Loaded, io: Io) {
       // Same for sites: after a restart, relays replay requests this server already
       // answered before it went down, and it no longer remembers them.
       if (age > 30) return;
-      onSiteRequest(e).catch(err => console.error(err));
+      const to = e.tags.filter(t => t[0] === 'p').map(t => t[1]);
+      // A site's own mailbox, held by your devices: wake one, and read nothing.
+      const mailbox = to.find(pk => watched().has(pk));
+      if (mailbox) return wakeFor(mailbox);
+      if (S.signer && to.includes(S.signer.pk)) onSiteRequest(e).catch(err => console.error(err));
     }
   }
 
@@ -248,7 +261,8 @@ export function openGroup(loaded: Loaded, io: Io) {
       // An app on your phone asked it to sign (Android signer): the phone runs the round.
       case 'cosign_req': return answerOnce(from, msg.id, () => onCosignReq(msg, from));
       case 'phone_signed': { if (fromPhone) onPhoneSigned(msg); return; }
-      case 'app_grant': { if (fromPhone) grantApp(msg); return; }
+      case 'app_grant': { if (fromPhone) grantApp(msg, from); return; }
+      case 'watch_signer': { if (fromPhone) watchSigner(msg, from); return; }
       case 'add_device': { if (mayAct(from)) addDevice(msg, from).catch(err => send(from.pk, { type: 'add_failed', id: msg.id, reason: err.message })); return; }
       case 'repair_delta': { if (fromPhone) onRepairDelta(msg, from); return; }
       // Only another server's list. It used to be any member that isn't a device, which the
@@ -482,6 +496,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     for (const c of S.sites as Site[]) if (c.parent === pk && !c.revoked) c.revoked = s.revoked;
     save();
     if (!quiet) toOther({ type: 'revoke', pk });
+    if (s.signer) io.watchChanged?.(); // its mailbox isn't watched any more
     pushState();
     note(`removed ${s.origin} ${where}`);
   }
@@ -738,24 +753,87 @@ export function openGroup(loaded: Loaded, io: Io) {
 
   const liveGrant = (pk: unknown) => { const s = site(String(pk)); return s && !s.revoked ? s : undefined; };
 
-  function grantApp(msg: any) {
+  function grantApp(msg: any, from: Member) {
     const pk = String(msg.pk ?? '');
     if (!/^[0-9a-f]{64}$/.test(pk)) return;
     const s = site(pk);
+    // A site that connected to a mailbox on your device (NIP-46, COSIGN.md §6.1): its key, and
+    // the relays it writes on. Only the public half ever comes here.
+    const signer = typeof msg.signer === 'string' && /^[0-9a-f]{64}$/.test(msg.signer) ? msg.signer : undefined;
+    const relays = Array.isArray(msg.relays) ? [...new Set((msg.relays as unknown[]).filter((r): r is string => typeof r === 'string' && /^wss?:\/\/\S+$/.test(r) && r.length < 200).map(normRelay))].slice(0, 4) : undefined;
+    const mailbox = (x: Site) => {
+      if (!signer) return false;
+      const before = `${x.signer}|${x.holders}|${x.relays}`;
+      x.signer = signer;
+      x.holders = [...new Set([...(x.holders ?? []), from.idx])];
+      if (relays?.length) x.relays = relays;
+      S.watching = (S.watching as Watch[]).filter(w => w.pk !== signer);
+      watchChanged(relays);
+      return before !== `${x.signer}|${x.holders}|${x.relays}`;
+    };
     if (s && !s.revoked) {
       // The same grant, under a new name: an app renamed itself (Cosign became Marble).
       // Only your own device ever says so — this is `fromPhone` — so it is simply taken.
       const now = String(msg.origin ?? '').slice(0, 80);
-      if (now && now !== s.origin) { note(`${s.origin} is called ${now} now`); s.origin = now; save(); syncTo(); }
+      let dirty = mailbox(s);
+      if (now && now !== s.origin) { note(`${s.origin} is called ${now} now`); s.origin = now; dirty = true; }
+      if (dirty) { save(); syncTo(); }
       return pushState();
     }
     // `via`: which of your devices it's on (the extension says "Chrome on Mac").
     const named = typeof msg.via === 'string' && msg.via.trim() ? msg.via.trim().slice(0, 40) : null;
-    const via = named ?? 'App on this phone';
-    if (s) delete s.revoked; // connected again on the phone
-    else S.sites.push({ pk, origin: String(msg.origin ?? 'An app').slice(0, 80), added: now(), lastUsed: now(), via } satisfies Site);
+    const via = named ?? (signer ? 'Connected by code' : 'App on this phone');
+    let x = s;
+    if (x) delete x.revoked; // connected again on the phone
+    else { x = { pk, origin: String(msg.origin ?? 'An app').slice(0, 80), added: now(), lastUsed: now(), via } satisfies Site; S.sites.push(x); }
+    mailbox(x);
     save(); syncTo(); pushState();
-    note(`${msg.origin} connected, ${named ? 'on ' + named : 'as an app on your phone'}`);
+    note(`${msg.origin} connected, ${signer ? 'to a mailbox on ' + from.name : named ? 'on ' + named : 'as an app on your phone'}`);
+  }
+
+  // --- Mailboxes on your devices (NIP-46) ------------------------------------------------
+  //
+  // A site writes to a key only your devices hold. This server sees that something arrived
+  // (the event's `p` tag) and wakes the devices that hold the key, by push; the request
+  // itself it cannot open. That is all a server run by anyone else does for NIP-46 sites.
+
+  /** Every mailbox this server watches: connected sites', and sign-in codes not yet used. */
+  function watched(): Set<string> {
+    const t = now();
+    return new Set([
+      ...(S.sites as Site[]).filter(s => !s.revoked && s.signer).map(s => s.signer!),
+      ...(S.watching as Watch[]).filter(w => w.until > t).map(w => w.pk),
+    ]);
+  }
+
+  /** A device opened a mailbox for a sign-in code: watch it until the code expires. */
+  function watchSigner(msg: any, from: Member) {
+    const pk = String(msg.signer ?? '');
+    if (!/^[0-9a-f]{64}$/.test(pk)) return;
+    const until = Math.min(Number(msg.expires) || 0, now() + 3600);
+    S.watching = [...(S.watching as Watch[]).filter(w => w.pk !== pk && w.until > now()), { pk, by: from.idx, until }].slice(-50);
+    save();
+    watchChanged();
+  }
+
+  function watchChanged(relays?: string[]) {
+    if (relays?.length) void io.listen(relays, 0);
+    io.watchChanged?.();
+  }
+
+  /** Wake whoever holds this mailbox. Once in 20 s per mailbox: a site re-sends until answered. */
+  const woken = new Map<string, number>();
+  function wakeFor(mailbox: string) {
+    if (io.now() - (woken.get(mailbox) ?? 0) < 20_000) return;
+    woken.set(mailbox, io.now());
+    const s = (S.sites as Site[]).find(x => x.signer === mailbox && !x.revoked);
+    const w = (S.watching as Watch[]).find(x => x.pk === mailbox);
+    const holders = s?.holders ?? (w ? [w.by] : []);
+    // Holders first; any other device of yours if none of them can be woken.
+    const targets = devices().filter(d => holders.includes(d.idx) && d.push);
+    const woke = targets.length ? targets : devices().filter(d => d.push);
+    for (const d of woke) void io.push(d.push!);
+    io.debug?.(`a site wrote to a mailbox on your device${s ? ` (${siteName(s.origin)})` : ''}: ${woke.length ? `woke ${woke.map(d => d.name).join(', ')}` : 'no push address to wake it with'}`);
   }
 
   function onCosignReq(msg: any, from: Member): object {
@@ -963,11 +1041,14 @@ export function openGroup(loaded: Loaded, io: Io) {
   }
 
   function mergeSync(msg: any) {
-    let dirty = false;
+    let dirty = false, watching = false;
     for (const s of (msg.sites ?? []) as Site[]) {
       const mine = site(s.pk);
-      if (!mine) { S.sites.push(s); dirty = true; if (s.relays && !s.revoked) void io.listen(s.relays); continue; }
-      if (s.revoked && !mine.revoked) { mine.revoked = s.revoked; dirty = true; }
+      if (!mine) { S.sites.push(s); dirty = true; if (s.relays && !s.revoked) void io.listen(s.relays); if (s.signer) watching = true; continue; }
+      if (s.revoked && !mine.revoked) { mine.revoked = s.revoked; dirty = true; if (mine.signer) watching = true; }
+      // A mailbox the other server heard of first (a device told it, and not yet us).
+      if (s.signer && mine.signer !== s.signer && !mine.revoked) { mine.signer = s.signer; dirty = true; watching = true; }
+      if (s.holders?.some(h => !mine.holders?.includes(h))) { mine.holders = [...new Set([...(mine.holders ?? []), ...s.holders])]; dirty = true; }
       if (s.lastUsed > mine.lastUsed) { mine.lastUsed = s.lastUsed; dirty = true; }
     }
     for (const t of (msg.tickets ?? []) as Ticket[]) {
@@ -1004,6 +1085,7 @@ export function openGroup(loaded: Loaded, io: Io) {
       dirty = true;
     }
     if (dirty) save();
+    if (watching) io.watchChanged?.();
     pushState();
   }
 
@@ -1877,6 +1959,8 @@ export function openGroup(loaded: Loaded, io: Io) {
     pk: me.pk!,
     /** The key sites talk NIP-46 to, if this group has one. */
     signerPk: (S.signer?.pk ?? null) as string | null,
+    /** Every key a site may write to for this group: the shared one, and mailboxes on your devices. */
+    signerPks: (): string[] => [...(S.signer ? [S.signer.pk as string] : []), ...watched()],
     name: me.name,
     /** The group's key (read when asked: a key made by DKG arrives after start). */
     get groupX() { return groupX; },

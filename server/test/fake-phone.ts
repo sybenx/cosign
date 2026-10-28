@@ -15,8 +15,9 @@ import { refreshing } from './refresh-member.ts';
 import { restoreShares } from '../backup.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { nip19 } from 'nostr-tools';
-import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER } from '../net.ts';
+import { Pool, sealParts, openFrom, Parts, pubOf, KIND_MEMBER, KIND_NIP46 } from '../net.ts';
 import { proofTemplate } from '../join.ts';
+import { Bunker, type SiteKey } from '../core/bunker.ts';
 
 const args = process.argv.slice(2);
 const deny = args.includes('--deny');
@@ -33,6 +34,7 @@ const relays = st?.group.relays ?? paper?.relays ?? pairUri!.searchParams.getAll
 const paperPk = paper ? pubOf(paper.sk) : null;
 
 const pool = new Pool(relays, e => {
+  if (e.kind === KIND_NIP46) { void bunker?.onEvent(e); return; }
   if (e.kind !== KIND_MEMBER) return;
   const toPaper = paperPk && e.tags.some(t => t[0] === 'p' && t[1] === paperPk);
   const msg = parts.take(e.pubkey, openFrom(toPaper ? paper.sk : sk, e));
@@ -204,8 +206,15 @@ function handle(msg: any, from: string) {
     return say('making a paper backup');
   }
   if (st.group.members.some((m: any) => m.pk === from) && rf.take(msg, from)) return;
+  // Mailboxes for sites (core/bunker.ts), driven by the test from this phone's own key.
+  if (msg.type === 'test_ticket' && from === pk) { openTicket(String(msg.origin ?? 'a site')); return; }
+  if (msg.type === 'test_nostrconnect' && from === pk) { bunker?.nostrconnect(String(msg.uri), String(msg.origin ?? 'an app')); return; }
+  // A copy of a mailbox from another of your devices.
+  const dev = st.group.members.find((m: any) => m.pk === from && (m.role === 'device' || m.role === 'phone') && !m.removed);
+  if (dev && msg.type === 'site_key') { if (bunker?.adopt(msg.key)) say(`HOLDING a copy of ${msg.key.origin}'s mailbox`); return; }
   const srv = st.group.members.find((m: any) => m.pk === from && m.role === 'server');
   if (!srv) return;
+  if ((msg.type === 'cosign_res' || msg.type === 'ecdh_res') && rounds.has(msg.id)) { rounds.get(msg.id)!(msg); rounds.delete(msg.id); return; }
   if (msg.type === 'sign_req') {
     const ev = msg.event;
     const reply = (r: object) => send(from, { type: 'sign_res', id: msg.id, ...r });
@@ -274,6 +283,104 @@ function handle(msg: any, from: string) {
     say(`state: ${msg.sites.length} site(s), ${msg.changes.length} change(s)`);
   }
 }
+
+// --- This phone as coordinator (COSIGN.md §5.1): its own rounds, for a site's grant --------
+
+const rounds = new Map<string, (r: any) => void>();
+function askServer(to: string, m: any, ms = 8000): Promise<any> {
+  return new Promise(resolve => {
+    m.id = F.bytesToHex(F.randomBytes(8));
+    const timer = setTimeout(() => { rounds.delete(m.id); resolve(null); }, ms);
+    rounds.set(m.id, r => { clearTimeout(timer); resolve(r); });
+    send(to, m);
+  });
+}
+const idxsOf = (m: any): number[] => m.shares?.map((x: any) => x.idx) ?? [m.idx];
+
+async function coSign(grant: string, ev: any): Promise<any> {
+  const msg = getEventHash(ev);
+  const tried: string[] = [];
+  for (const srv of servers()) {
+    let approved = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const shares = myShares();
+      const mine = Sig.commitAll(st.group, shares);
+      const participants = [...shares.map(x => x.idx), ...idxsOf(srv)].sort((a, b) => a - b);
+      const res = await askServer(srv.pk, { type: 'cosign_req', event: { ...ev, id: msg }, msg, participants, commits: mine.commits, commit: mine.commits[0], frost: 2, grant, approved });
+      if (!res) { tried.push(`${srv.name}: no answer`); break; }
+      if (!res.ok) {
+        const why = String(res.reason ?? 'refused');
+        // Something destructive: the person is asked, here on the phone.
+        if (why.startsWith('needs-approval:') && !approved) {
+          if (deny) { say(`DECLINED: ${why.slice(15).trim()}`); throw new Error('declined on your phone'); }
+          say(`APPROVED: ${why.slice(15).trim()}`); approved = true; continue;
+        }
+        tried.push(`${srv.name}: ${why}`); break;
+      }
+      const commits = [...mine.commits, ...res.commits];
+      const zs = Sig.partialAll(2, st.group, shares, mine.nonces, msg, commits);
+      const sig = Sig.combine(2, st.group, msg, commits, [...zs, ...res.zs]);
+      const signed = { ...ev, id: msg, sig };
+      send(srv.pk, { type: 'phone_signed', event: signed, grant, approved });
+      say(`signed kind ${ev.kind} for a site, with ${srv.name}`);
+      return signed;
+    }
+  }
+  throw new Error('could not sign: ' + tried.join('; '));
+}
+
+async function coEcdh(grant: string, peerX: string): Promise<Uint8Array> {
+  const tried: string[] = [];
+  for (const srv of servers()) {
+    const shares = myShares();
+    const participants = [...shares.map(x => x.idx), ...idxsOf(srv)].sort((a, b) => a - b);
+    const res = await askServer(srv.pk, { type: 'ecdh_req', peerX, participants, grant });
+    if (!res?.ok) { tried.push(`${srv.name}: ${res?.reason ?? 'no answer'}`); continue; }
+    const theirs: string[] = res.parts?.length ? res.parts.map((x: any) => x.point) : (res.points ?? [res.point]);
+    say(`read a message piece with ${srv.name}`);
+    return F.ecdhCombine([...shares.map(x => F.ecdhPartial({ idx: x.idx, secret: x.secret, participants, peerX })), ...theirs]);
+  }
+  throw new Error('could not read: ' + tried.join('; '));
+}
+
+const otherDevices = () => st.group.members.filter((m: any) => (m.role === 'device' || m.role === 'phone') && m.pk && m.pk !== pk && !m.removed);
+let bunker: Bunker | null = null;
+function startBunker() {
+  if (bunker || !st?.group?.groupX) return;
+  bunker = new Bunker(st.siteKeys ?? [], {
+    groupX: () => st.group.groupX,
+    relays: () => st.group.relays,
+    me: pk,
+    sign: coSign,
+    ecdh: coEcdh,
+    askDms: async origin => { const yes = process.env.DMS !== 'no'; say(`${yes ? 'ALLOWED' : 'REFUSED'} messages for ${origin}`); return yes; },
+    granted: k => { for (const srv of servers()) send(srv.pk, { type: 'app_grant', pk: k.client, origin: k.origin, signer: k.pk, relays: k.relays }); say(`CONNECTED ${k.origin} to a mailbox on this phone`); },
+    revoked: k => { for (const srv of servers()) send(srv.pk, { type: 'revoke', pk: k.client }); say(`SIGNED OUT ${k.origin}`); },
+    changed: () => {
+      st.siteKeys = bunker!.keys;
+      writeFileSync(stateFile, JSON.stringify(st, null, 2));
+      void pool.add(bunker!.relays());
+      pool.setFilters([memberFilter(), ...bunker!.filters()]);
+      // Every other device of yours gets a copy, sealed to it; never a server.
+      for (const d of otherDevices()) for (const k of bunker!.keys) if (k.by === pk && !copied.has(`${d.pk}:${k.pk}`) && k.client) { copied.add(`${d.pk}:${k.pk}`); send(d.pk, { type: 'site_key', key: k }); }
+    },
+    publish: e => pool.publish(e),
+    log: say,
+  });
+  pool.setFilters([memberFilter(), ...bunker.filters()]);
+  void pool.add(bunker.relays());
+}
+const copied = new Set<string>();
+function openTicket(origin: string) {
+  startBunker();
+  const t = bunker!.ticket(origin);
+  // Watched until it expires, so a server can wake this phone when the site redeems it.
+  for (const srv of servers()) send(srv.pk, { type: 'watch_signer', signer: t.signer, expires: t.expires });
+  writeFileSync(process.env.TICKET_FILE ?? '/tmp/cosign-fake-ticket.json', JSON.stringify({ ...t, pubkey: st.group.groupX }));
+  say(`TICKET for ${origin}: mailbox ${t.signer.slice(0, 8)}…`);
+}
+const memberFilter = () => ({ kinds: [KIND_MEMBER], '#p': paperPk ? [pk, paperPk] : [pk] });
+setInterval(() => { if (!bunker && st?.group?.groupX) startBunker(); }, 2000);
 
 let restored: any = null;
 pool.start([{ kinds: [KIND_MEMBER], '#p': paperPk ? [pk, paperPk] : [pk] }]);

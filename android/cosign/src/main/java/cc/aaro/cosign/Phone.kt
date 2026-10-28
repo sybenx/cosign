@@ -2,6 +2,7 @@ package cc.aaro.cosign
 
 import android.content.Context
 import android.net.Uri
+import cc.aaro.cosign.core.Bunker
 import cc.aaro.cosign.core.Clock
 import cc.aaro.cosign.core.CodeCheck
 import cc.aaro.cosign.core.Event
@@ -186,6 +187,17 @@ class Signer(private val context: Context, val slot: String = "0") {
         fun onBatch(b: BatchAsk) {}; fun onBatchGone(batch: String) {}
         /** Something to say while Cosign isn't on screen (a sign-in that didn't go through). */
         fun onNotice(title: String, text: String) {}
+        /**
+         * A site connected by code (NIP-46, a mailbox on this phone, core/Bunker.kt) asks to read
+         * and send your messages for the first time: ask the person, and [answer] once. Until an
+         * app draws this, the answer is no.
+         */
+        fun onSiteDms(origin: String, answer: (Boolean) -> Unit) { answer(false) }
+        /**
+         * A site connected by code asks for something destructive ([what]): ask the person, and
+         * [answer] once. Until an app draws this, the answer is no.
+         */
+        fun onSiteApproval(origin: String, what: String, answer: (Boolean) -> Unit) { answer(false) }
     }
 
     private val secrets = Secrets(context, slot)
@@ -202,6 +214,10 @@ class Signer(private val context: Context, val slot: String = "0") {
     val label get() = ui.value.member?.group?.npub?.let { if (it.length > 20) it.take(12) + "…" + it.takeLast(6) else it } ?: "New key"
 
     private var relays: Relays? = null
+    /** Sites' own mailboxes (NIP-46), held on this phone only (core/Bunker.kt), and the relays they're read on. */
+    private var bunker: Bunker? = null
+    private var siteRelays: Relays? = null
+    private var siteRelaysFor: Pair<List<String>, List<Map<String, Any>>>? = null
     private var sk: String? = null
     private var pairing: Uri? = null
     private val lastSeen = ConcurrentHashMap<Int, Long>()
@@ -262,6 +278,7 @@ class Signer(private val context: Context, val slot: String = "0") {
             listener?.onNotice("Make your paper backup", "If you lose this phone, you can't get your account back without it. Open $appName to make one.")
         }
         if (relays == null || sk != m.sk) connect(m.group.relays, m.sk)
+        startBunker(m)
         relays?.watch(mapOf("kinds" to Policy.ARCHIVED.toList(), "authors" to listOf(m.group.groupX)))
         if (pinger?.isCancelled != false) pinger = timer.scheduleWithFixedDelay({ pingServers(); status(); dropStalePending() }, 0, 10, TimeUnit.SECONDS)
         timer.schedule({ requestState(); ui.value.push?.let { tellPush(it) } }, 2, TimeUnit.SECONDS)
@@ -279,7 +296,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         }
     }
 
-    fun stop() { pinger?.cancel(false); pinger = null; relays?.stop(); relays = null; sk = null }
+    fun stop() { pinger?.cancel(false); pinger = null; relays?.stop(); relays = null; siteRelays?.stop(); siteRelays = null; siteRelaysFor = null; sk = null }
 
     // --- Joining your servers ------------------------------------------------
 
@@ -1221,8 +1238,12 @@ class Signer(private val context: Context, val slot: String = "0") {
         val m = ui.value.member ?: return
         val origin = params.origin ?: "a site"
         useCode(params.token)
-        val ticket = SignerTicket(m.group.groupX, m.signer, m.group.relays, env.random(16).toHex(), env.now() + 900)
-        for (s in servers()) send(s.pk!!, mapOf("type" to "ticket", "t" to ticket.t, "origin" to origin, "expires" to ticket.expires))
+        // A mailbox of the site's own, on this phone: your servers learn only its public key,
+        // to wake this phone when the site writes to it (COSIGN.md §6.1).
+        val b = startBunker(m)
+        val k = b.ticket(origin)
+        val ticket = SignerTicket(m.group.groupX, k.pk, k.relays, k.t!!, k.expires!!)
+        for (s in servers()) send(s.pk!!, mapOf("type" to "watch_signer", "signer" to k.pk, "expires" to k.expires))
         ui.update { it.copy(connect = Connect(origin, Connect.Stage.WORKING, "Sending to $origin…")) }
         var released = false
         val deps = TransferDeps(SignerTicketProfile, qrstStore, env, "https://qrst.aaro.cc/", CodeCheck.NONE)
@@ -1318,21 +1339,19 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     private fun confirmNostrConnect() {
         val (code, client) = nostrConnect ?: return
+        val m = ui.value.member ?: return
         useCode(client)
         val origin = ui.value.connect?.origin ?: "a site"
-        ui.update { it.copy(connect = Connect(origin, Connect.Stage.WORKING, "Telling your servers…")) }
-        val started = System.currentTimeMillis()
-        nostrConnectTries?.cancel(false)
-        // Say it again until a server answers: relays drop things.
-        nostrConnectTries = timer.scheduleWithFixedDelay({
-            if (nostrConnect?.second != client) { nostrConnectTries?.cancel(false); return@scheduleWithFixedDelay }
-            if (System.currentTimeMillis() - started > 20_000) {
-                nostrConnectTries?.cancel(false); nostrConnect = null
-                ui.update { it.copy(connect = Connect(origin, Connect.Stage.FAILED, "Your servers didn't answer. Are they running?")) }
-                return@scheduleWithFixedDelay
-            }
-            for (s in servers()) send(s.pk!!, mapOf("type" to "nostrconnect", "uri" to code, "origin" to origin))
-        }, 0, 4, TimeUnit.SECONDS)
+        val uri = Uri.parse(code.replaceFirst(Regex("^nostrconnect:(?!//)"), "nostrconnect://"))
+        ui.update { it.copy(connect = Connect(origin, Connect.Stage.WORKING, "Saying hello to $origin…")) }
+        // Answered from a mailbox of its own on this phone, not by your servers: they'd read
+        // everything the site asks, messages included (COSIGN.md §6.1).
+        timer.execute {
+            val k = startBunker(m).nostrconnect(client, uri.getQueryParameters("relay"), uri.getQueryParameter("secret") ?: "", origin)
+            nostrConnect = null
+            if (k == null) ui.update { it.copy(connect = Connect(origin, Connect.Stage.FAILED, "That nostrconnect code is incomplete. Ask the site for a new one.")) }
+            else finishConnect(origin, Outcome.DELIVERED)
+        }
     }
 
     private fun onConnected(msg: Map<*, *>) {
@@ -1348,6 +1367,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         justRemoved[site.pk] = System.currentTimeMillis()
         for (s in servers()) send(s.pk!!, mapOf("type" to "revoke", "pk" to site.pk))
         appByPk(site.pk)?.let { apps.edit().remove(it.pkg).apply() }
+        bunker?.forget(site.pk)
         // An app's access has ended: what it could read with goes now, not when the screen does.
         sharedXs.forgetAll()
         // Removing the extension removes every site it added; your servers do the same.
@@ -1926,6 +1946,83 @@ class Signer(private val context: Context, val slot: String = "0") {
         while ((relays?.up() ?: 0) == 0 && System.currentTimeMillis() < until) Thread.sleep(100)
     }
 
+    // --- Sites' own mailboxes (NIP-46) ---------------------------------------------------
+    //
+    // A site connected by code writes to a key only your devices hold (core/Bunker.kt). This
+    // phone reads the request, runs the round with one server under the site's grant, as for
+    // an app on this phone, and answers. Your servers watch the mailbox's public key to wake
+    // this phone by push, and never see what is in it.
+
+    @Synchronized private fun startBunker(m: Membership): Bunker {
+        bunker?.let { return it }
+        val saved = secrets.load("site-keys")?.let { Json.parse(it) as? List<*> }?.mapNotNull { Bunker.SiteKey.fromMap(it) } ?: emptyList()
+        val myPk = publicKeyHex(m.sk.hexToBytes())
+        val copied = ConcurrentHashMap.newKeySet<String>()
+        val b = Bunker(saved, object : Bunker.Deps {
+            override val me: String = myPk
+            override val env: cc.aaro.cosign.core.Env = this@Signer.env
+            override fun groupX() = (ui.value.member ?: m).group.groupX
+            override fun relays() = (ui.value.member ?: m).group.relays
+            override fun sign(grant: String, origin: String, dm: Boolean, ev: Event): Event {
+                val g = AppGrant("nip46:$grant", grant, origin, dm)
+                val signed = try {
+                    try { signForApp(g, ev, false) } catch (n: NeedsApproval) {
+                        if (!ask { listener?.onSiteApproval(origin, n.what, it) ?: it(false) }) throw IllegalStateException("declined on your phone")
+                        signForApp(g, ev, true)
+                    }
+                } catch (_: Revoked) { bunker?.forget(grant); throw IllegalStateException("revoked: Access for this site was removed on your phone.") }
+                lists.record(signed, groupX())
+                return signed
+            }
+            override fun ecdh(grant: String, origin: String, peerX: String): ByteArray =
+                try { sharedX(AppGrant("nip46:$grant", grant, origin, true), peerX) }
+                catch (_: Revoked) { bunker?.forget(grant); throw IllegalStateException("revoked: Access for this site was removed on your phone.") }
+            override fun askDms(origin: String): Boolean = ask { listener?.onSiteDms(origin, it) ?: it(false) }
+                .also { note(if (it) "$origin may read and send your messages" else "$origin may not read your messages", if (it) "approved" else "denied") }
+            override fun granted(k: Bunker.SiteKey) {
+                for (s in servers()) send(s.pk!!, mapOf("type" to "app_grant", "pk" to k.client, "origin" to k.origin, "signer" to k.pk, "relays" to k.relays))
+                k.client?.let { grantSent[it] = System.currentTimeMillis() }
+                note("Connected ${k.origin}", "approved")
+                timer.schedule({ requestState() }, 2, TimeUnit.SECONDS)
+            }
+            override fun revoked(k: Bunker.SiteKey) {
+                k.client?.let { c -> for (s in servers()) send(s.pk!!, mapOf("type" to "revoke", "pk" to c)) }
+                note("${k.origin} signed out", "denied")
+            }
+            override fun changed(keys: List<Bunker.SiteKey>) {
+                secrets.save("site-keys", Json.stringify(keys.map { it.toMap() }))
+                listenForSites(keys)
+                // Every other device of yours gets a copy of each connected mailbox, sealed to it. Never a server.
+                val mine = ui.value.member ?: m
+                for (d in mine.group.members.filter { (it.role == "device" || it.role == "phone") && it.pk != null && it.pk != myPk })
+                    for (k in keys.filter { it.by == myPk && it.client != null && it.revoked == null })
+                        if (copied.add("${d.pk}:${k.pk}")) send(d.pk!!, mapOf("type" to "site_key", "key" to k.toMap()))
+            }
+            override fun publish(e: Event) { this@Signer.siteRelays?.publish(e) ?: this@Signer.relays?.publish(e) }
+        })
+        bunker = b
+        listenForSites(b.keys)
+        return b
+    }
+
+    /** Read the mailboxes on the relays they're read on; a new set of either means a new subscription. */
+    @Synchronized private fun listenForSites(keys: List<Bunker.SiteKey>) {
+        val b = bunker ?: return
+        val urls = (keys.flatMap { it.relays } + (ui.value.member?.group?.relays ?: emptyList())).map { Bunker.normRelay(it) }.distinct()
+        val filters = b.filters()
+        if (siteRelaysFor == urls to filters && siteRelays != null) return
+        siteRelays?.stop(); siteRelays = null; siteRelaysFor = urls to filters
+        if (filters.isEmpty()) return
+        siteRelays = Relays(urls, { e -> b.onEvent(e) }).also { it.start(filters[0], filters.drop(1)) }
+    }
+
+    /** Ask the person something through the app, and wait (a minute at most) for the answer; no answer is no. */
+    private fun ask(put: ((Boolean) -> Unit) -> Unit): Boolean {
+        val f = CompletableFuture<Boolean>()
+        put { f.complete(it) }
+        return try { f.get(60, TimeUnit.SECONDS) } catch (_: Exception) { false }
+    }
+
     // --- Answering your servers --------------------------------------------------
 
     /** Other keys this phone reads member messages for (a paper being restored): public key → secret. */
@@ -1955,6 +2052,11 @@ class Signer(private val context: Context, val slot: String = "0") {
         if (joinWith != null && (type == "welcome" || type == "sigma")) return onJoinPiece(msg, e.pubkey)
         if (growing != null && (type == "welcome" || type == "sigma") && msg["id"] == growing?.first) return onGrowPiece(msg, e.pubkey)
         val m = ui.value.member ?: return
+        // A copy of a site's mailbox from another of your devices (never from a server).
+        if (type == "site_key" && m.group.members.any { it.pk == e.pubkey && (it.role == "device" || it.role == "phone") }) {
+            if (startBunker(m).adopt(msg["key"])) note("Holding a copy of a site's sign-in from another device")
+            return
+        }
         val from = m.group.members.firstOrNull { it.pk == e.pubkey && it.role == "server" } ?: return
         lastSeen[from.idx] = System.currentTimeMillis()
         when (type) {

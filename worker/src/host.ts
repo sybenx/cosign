@@ -165,7 +165,8 @@ export class CosignHost extends DurableObject {
       const e = m[1] as Event;
       const ok = (yes: boolean, why = '') => ws.send(JSON.stringify(['OK', e.id, yes, why]));
       const to = (e.tags ?? []).filter(t => t[0] === 'p').map(t => t[1]);
-      const mine = to.includes(this.host.pk) || [...this.groups.values()].some(x => to.includes(x.g.pk));
+      // Its own keys, and the mailboxes on your devices it watches to wake them (COSIGN.md §6.1).
+      const mine = to.includes(this.host.pk) || [...this.groups.values()].some(x => to.includes(x.g.pk) || (e.kind === KIND_NIP46 && x.g.signerPks().some(pk => to.includes(pk))));
       if ((e.kind !== KIND_MEMBER && e.kind !== KIND_NIP46) || !mine) return ok(false, 'restricted: this relay only takes messages for its own keys');
       if (!verifyEvent(e)) return ok(false, 'invalid: bad signature');
       ok(true);
@@ -185,7 +186,7 @@ export class CosignHost extends DurableObject {
   }
 
   private onEvent(e: Event, to: string[]) {
-    for (const x of this.groups.values()) if (to.includes(x.g.pk)) x.g.onEvent(e);
+    for (const x of this.groups.values()) if (to.includes(x.g.pk) || (e.kind === KIND_NIP46 && x.g.signerPks().some(pk => to.includes(pk)))) x.g.onEvent(e);
     if (e.kind === KIND_MEMBER && to.includes(this.host.pk)) this.onHostMessage(e).catch(err => console.error(err));
   }
 

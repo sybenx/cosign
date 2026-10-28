@@ -50,7 +50,8 @@ const single = args.includes('--single');
 if (weighted && secretHex) { console.error('--weighted makes a new key; it can\'t split one you have.'); process.exit(1); }
 const key = () => bytesToHex(randomBytes(32));
 const skA = key(), skB = key(), signerSk = key();
-const relays = opt('--relays')?.split(',').map(r => r.trim()).filter(Boolean) ?? ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'];
+// COSIGN_TEST_RELAYS lets the end-to-end tests run against a local relay with no internet.
+const relays = (opt('--relays') ?? process.env.COSIGN_TEST_RELAYS)?.split(',').map(r => r.trim()).filter(Boolean) ?? ['wss://syb.lol', 'wss://nos.lol', 'wss://relay.primal.net'];
 const write = (dir: string, state: object) => {
   mkdirSync(join(root, dir), { recursive: true });
   writeFileSync(join(root, dir, 'state.json'), JSON.stringify(state, null, 2), { mode: 0o600 });

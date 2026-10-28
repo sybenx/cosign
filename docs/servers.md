@@ -132,16 +132,19 @@ and the others only if that one is slow, so most of what you sign is seen by one
 
 ## Where the reference server falls short today
 
-As of 24 October 2026 the reference server does not yet meet one of the musts above:
+As of 28 October 2026 a server holds no signer key for sites connected since:
+each site writes to a mailbox key of its own that only your devices hold, and the server
+knows just its public half, so it can wake your phone when the site writes and nothing
+more ([COSIGN.md §6.1](COSIGN.md#61-connecting)). One thing is left over:
 
-- **It holds a NIP-46 signer key** for the accounts it serves, so it can read the
-  signing requests of sites that connect by a `nostrconnect://` code. Per-site signer
-  keys held only by your devices are designed but not built.
+- **A group made before then still has a shared NIP-46 signer key on its servers**, and
+  sites connected to it before then keep using it until they are connected again by code.
+  For those sites a public server can read their signing requests, so it **refuses their
+  encrypt and decrypt requests**: they can sign through it, but can't read or send your
+  DMs. No new site is connected to that key.
 
-Until they are, a public server **refuses NIP-46 encrypt and decrypt requests**, so
-those sites can sign through it but can't read or send your DMs. Sites that use the
-browser extension or the Android app are not affected. A server that holds no signer
-key, such as the Cloudflare Worker server, never answers NIP-46 sites at all.
+A server that holds no signer key, such as the Cloudflare Worker server, never answers
+NIP-46 sites itself; it still watches mailboxes to wake your devices.
 
 ## Running the reference server
 

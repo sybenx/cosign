@@ -83,9 +83,10 @@ It's a replaceable event: if you run more than one server, list them all in one 
   good. A backup that keeps them defeats that.
 - **Upgrade:** `docker compose pull && docker compose up -d`. The tag follows the
   `0.12` line; set `COSIGN_VERSION` for another.
-- **A public server today holds each account's NIP-46 signer key**, so it can read what
-  `nostrconnect://` sites ask. See
-  ["Where the reference server falls short"](../docs/servers.md#where-the-reference-server-falls-short-today).
+- **It holds no site's NIP-46 signer key** for sites connected since per-site mailboxes (2026-10-28): those keys
+  live on the account's devices, and the server only watches their public halves to wake
+  a phone. Accounts made earlier keep an older shared key for the sites connected then;
+  see ["Where the reference server falls short"](../docs/servers.md#where-the-reference-server-falls-short-today).
 
 ## App stores
 

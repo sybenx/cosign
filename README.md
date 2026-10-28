@@ -82,8 +82,9 @@ required. The live list is at [cosign.aaro.cc/servers](https://cosign.aaro.cc/se
 
 ## What's not done yet
 
-- **Sites with their own older-style sign-in code** can act for you but can't read or
-  send your messages.
+- **Sites connected before per-site mailboxes** (2026-10-28) by code or `nostrconnect://` can act for you but can't
+  read or send your messages until you connect them again: now each site writes
+  to a key only your devices hold (the browser extension doesn't open these yet).
 - **Your devices working together with no server** is designed but not built.
 - **Getting your account onto your own devices when no server has answered for a week**
   is designed but not built.
@@ -110,6 +111,10 @@ public address, and a phone needs nothing but a connection.
 - **Moving a key in** (`site/src/import.ts`, `site/src/member.ts`,
   `core/CosignMember.kt`): a web app holding an nsec deals it, enrolls each server, and
   hands the phone its shares by QRST (`cosign-member`, checked at `type`).
+- **Sites' mailboxes** (`server/core/bunker.ts`, `core/Bunker.kt`): each NIP-46 site
+  writes to a signer key of its own that only your devices hold. The device answers,
+  running the round with a server under the site's grant; servers know only the key's
+  public half, to wake the device by push (COSIGN.md §6.1).
 - **Sign-in** (`site/src/pair.ts`, `site/src/ticket.ts`, `core/SignerTicket.kt`): QRST
   profile [`signer-ticket`](https://github.com/sybenx/qr-secret-transfer/pull/14). The
   site shows a code; the phone hands over a one-time ticket that the site redeems as its
@@ -160,6 +165,7 @@ cd frost && cargo build --release --features android   # the desktop FROST the A
 cd android && ./gradlew :cosign:testDebugUnitTest
 cd site && node test/guards.e2e.ts      # report lost, take out, forget; what a paper and a removed device get
 cd site && node test/paper.e2e.ts       # paper backup through a refresh; cancelled and finished recovery
+cd site && node test/mailbox.e2e.ts     # a site's own mailbox on the phone: signing and DMs, nothing readable on a server
 ```
 
 ## License

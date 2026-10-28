@@ -360,9 +360,9 @@ server never holds their signer key, so it never sees their requests at all.
 - **By code (primary).** The site shows a QRST code for the published profile
   [`signer-ticket`](https://github.com/sybenx/qr-secret-transfer/pull/14) (QRST §5.2
   shape: `{pubkey, signer, relays, t, expires}`). The user scans it with a member
-  device and taps **Connect**. The device tells the holders of the signer key about the
-  ticket; the site redeems it as a NIP-46 `connect` secret and keeps a key of its own,
-  which is its grant. QRST check level `none` is allowed for a camera scan or a verified
+  device and taps **Connect**. The device opens a new signer key for this site (below)
+  and puts its public half in the ticket's `signer`; the site redeems the ticket as a
+  NIP-46 `connect` secret and keeps a key of its own, which is its grant. QRST check level `none` is allowed for a camera scan or a verified
   App Link; `compare` for a pasted link, the `qrst:` handoff or any custom scheme. How
   the code reaches an app is §6.4.
 - **By nostrconnect (fallback).** A `nostrconnect://` code is scanned the same way and
@@ -385,6 +385,26 @@ server never holds their signer key, so it never sees their requests at all.
     woken by push (§10).
   - The first time a NIP-46 site asks to encrypt or decrypt, the phone asks once: **"Let
     *site* read and send your DMs?"** The answer is part of the grant.
+
+  How it travels (reference: `server/core/bunker.ts`, `android/…/core/Bunker.kt`):
+
+  - **One signer key per site** (a *mailbox*), made by the device that connects it. For
+    a code, its public half is the ticket's `signer`; for `nostrconnect://`, the device
+    answers the code itself, from the new mailbox, with the site's secret.
+  - **Servers learn the public half only.** While a ticket is unused the device sends
+    `watch_signer {signer, expires}`; once the site connects, `app_grant` carries
+    `signer` and the site's `relays` with the grant. A server subscribes to kind 24133
+    events `#p` that key, and on one **wakes the devices that hold it by push** (§10), at
+    most once every 20 s per mailbox. It never decrypts them, and cannot.
+  - **Copies go device to device**, sealed to each device's enrollment key
+    (`site_key`), never through a server's hands in the clear. A device holding a copy
+    answers only if the one that made the mailbox hasn't within 2.5 s, which it sees from
+    that device's answer on the relay.
+  - **Every request is a round the device runs** (§5.1) under the site's grant, exactly as
+    for an app on the phone: `cosign_req` for a signature, `ecdh_req` for a message.
+    Servers check the grant and judge the event as for any other request.
+  - **Signing out** (`logout`) or **removing** the site revokes the grant on the servers;
+    the mailbox answers `revoked:` for a day, then goes.
 
 ### 6.2 Grants
 
@@ -681,10 +701,11 @@ holds one share per user, worth one point: it signs nothing alone, and all of a 
 servers together (3) still sign nothing.
 
 A public server MUST NOT coordinate a decryption, MUST NOT hold a NIP-46 signer key
-(§6.1), and MUST destroy old pieces on refresh. Until per-site signer keys exist, a
-public server that still holds a NIP-46 signer key MUST refuse NIP-46 `nip04_*` and
-`nip44_*` encrypt and decrypt requests: NIP-46 sites can sign through it, but not
-read or send DMs.
+(§6.1), and MUST destroy old pieces on refresh. It MAY know a mailbox's public key, to
+wake the devices that hold it. A public server that still holds a group's older shared
+signer key (from before per-site mailboxes) MUST refuse NIP-46 `nip04_*` and `nip44_*`
+encrypt and decrypt requests to it: sites connected that way can sign through it, but
+not read or send DMs, until they are connected again by code.
 
 **What strangers can make it reach.** Accounts, sites and new devices name relays and
 push addresses, and on an open server anyone can create an account. A public server MUST
@@ -847,10 +868,16 @@ server, Marble (the reference app, for Android) and a browser extension, with FR
   restored from a 2-share paper with two servers grows a device's 3; moving an existing
   nsec out of a web app into the phone in one scan (§3, "Creating the key").
 
-**Not built yet:** per-site NIP-46 signer keys held only by the user's devices (§6.1).
-Until they are, the server holds a NIP-46 signer key for nostrconnect sites, and a
-public server refuses their encrypt and decrypt requests (§9.2). Also not built: the DM
-prompt, device-only signing (§5.5), the passkey page for reporting a device (§7.2),
+**Built (2026-10-28):** per-site NIP-46 signer keys held only by the user's
+devices (§6.1): the reference in `server/core/bunker.ts` (tested end to end in
+`site/test/mailbox.e2e.ts`, DMs included), the Android library's `core/Bunker.kt`, and
+servers that watch a mailbox's public key to wake the device. The browser extension
+does not open mailboxes yet. A group's older shared signer key stays on its servers for
+sites connected before this, and public servers still refuse those sites' encrypt and
+decrypt requests (§9.2); no new site is connected to it. **Not built yet:** a server
+the user runs holding mailboxes (§6.1); the DM prompt and the destructive-event prompt
+for sites are callbacks the app draws (`Signer.Listener.onSiteDms`, `onSiteApproval`),
+and until it does, both answer no. Also not built: device-only signing (§5.5), the passkey page for reporting a device (§7.2),
 per-app members on iOS (§4.1), and the hardware-bound lock (§7.1). Planned and not yet specified:
 the 24-word paper (§8.1), automatic server swaps (§3, §9.5) and the member library
 (§4.3). Feature freeze since 2026-10-24: nothing new is added to this document until real

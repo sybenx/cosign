@@ -161,6 +161,7 @@ function serve(dir: string): Served | undefined {
   const io: Io = {
     publish: e => pool.publish(e, relaysOf(x)),
     listen: async (relays, ms) => { for (const r of relays) x.extra.add(normRelay(r)); await pool.add(relays, ms); },
+    watchChanged: () => pool.setFilters(filters()),
     publishOut: async (r, e) => { await publishOut(r, e); }, query,
     push: async url => { const to = await pushTarget(url); if (to) return pinnedFetch(url, { method: 'POST', body: 'cosign:approve', headers: { Priority: 'high' }, redirect: 'manual', dispatcher: pinnedAgent(to) }); },
     now: () => Date.now(),
@@ -193,7 +194,7 @@ if (root && existsSync(join(root, 'groups')))
 function filters(): Filter[] {
   const members = [...groups.values()].map(x => x.g.pk);
   if (host) members.push(host.pk);
-  const signers = [...new Set([...groups.values()].flatMap(x => x.g.signerPk ? [x.g.signerPk] : []))];
+  const signers = [...new Set([...groups.values()].flatMap(x => x.g.signerPks()))];
   return [{ kinds: [KIND_MEMBER], '#p': members }, ...(signers.length ? [{ kinds: [KIND_NIP46], '#p': signers }] : [])];
 }
 
@@ -201,7 +202,7 @@ function filters(): Filter[] {
 function onEvent(e: Event) {
   const to = e.tags.filter(t => t[0] === 'p').map(t => t[1]);
   for (const x of groups.values()) {
-    if (e.kind === KIND_MEMBER ? to.includes(x.g.pk) : e.kind === KIND_NIP46 && !!x.g.signerPk && to.includes(x.g.signerPk)) x.g.onEvent(e);
+    if (e.kind === KIND_MEMBER ? to.includes(x.g.pk) : e.kind === KIND_NIP46 && x.g.signerPks().some(pk => to.includes(pk))) x.g.onEvent(e);
   }
   if (host && e.kind === KIND_MEMBER && to.includes(host.pk)) onHostMessage(e).catch(err => console.error(err));
 }

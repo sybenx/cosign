@@ -27,6 +27,8 @@ export interface Io {
   publishOut(relays: string[], e: Event): Promise<void>;
   /** Fetch stored events from these relays: the archive, a copy of what's being deleted. */
   query(relays: string[], filter: Filter, maxWait: number): Promise<Event[]>;
+  /** The keys sites write to changed (a mailbox on a device was opened or closed): listen again. */
+  watchChanged?(): void;
   /** Wake a device: POST "cosign:approve" to its push endpoint (ntfy). */
   push(url: string): Promise<unknown>;
   /** Milliseconds, by this machine's clock: timeouts and liveness. */

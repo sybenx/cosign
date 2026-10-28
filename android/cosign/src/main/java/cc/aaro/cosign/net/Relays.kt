@@ -27,11 +27,14 @@ class Relays(
     private val seen = Collections.synchronizedSet(LinkedHashSet<String>())
     private val timer = Executors.newSingleThreadScheduledExecutor()
     @Volatile private var filter: Map<String, Any> = emptyMap()
+    @Volatile private var more: List<Map<String, Any>> = emptyList()
     @Volatile private var stored: Map<String, Any>? = null
     @Volatile private var stopped = false
 
-    fun start(filter: Map<String, Any>) {
+    /** [more]: further filters on the same live subscription (a site's mailboxes, core/Bunker.kt). */
+    fun start(filter: Map<String, Any>, more: List<Map<String, Any>> = emptyList()) {
         this.filter = filter
+        this.more = more
         stopped = false
         urls.forEach(::connect)
     }
@@ -63,8 +66,8 @@ class Relays(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 open.add(url); onChange()
                 // Member traffic is live; ask only for the last minute.
-                val f = filter + ("since" to System.currentTimeMillis() / 1000 - 60)
-                webSocket.send(Json.stringify(listOf("REQ", "cosign", f)))
+                val since = "since" to System.currentTimeMillis() / 1000 - 60
+                webSocket.send(Json.stringify(listOf("REQ", "cosign", filter + since) + more.map { it + since }))
                 stored?.let { webSocket.send(Json.stringify(listOf("REQ", "lists", it))) }
             }
 
