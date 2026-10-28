@@ -18,6 +18,38 @@ export interface Share { idx: number; secret: string }
 
 /** Every share point in the group, whoever holds it: what the library calls the members. */
 export const sharePoints = (g: Group) => g.members.flatMap(m => m.shares ?? [{ idx: m.idx, sharePub: m.sharePub }]);
+
+/**
+ * The group with every share point **rebuilt from the group key** rather than taken from the
+ * member list, and null if they cannot be rebuilt.
+ *
+ * This matters because a share point from the list is not evidence of anything. The library
+ * verifies a partial against the point it is handed (`public_package` in `frost/src/lib.rs`
+ * builds the verifying shares straight from each member's `sharePub`), and a server's member
+ * list is where that point comes from. So a member whose point a dishonest server chose can
+ * produce a partial that **verifies**, using nothing but the real library: it signs with the
+ * secret behind the point it supplied. The aggregate then fails — it cannot forge the group's
+ * signature — but anything a caller decides at *verification* time has already been decided
+ * wrongly.
+ *
+ * `sharePubAt` is the sound way to ask: it rebuilds the group polynomial's commitment from the
+ * first `threshold` points and refuses unless its constant term is the group key, which no
+ * single server can arrange. Fail-closed: if the first `threshold` points have been tampered
+ * with, this returns null and the caller must refuse rather than fall back to the list.
+ */
+export function sound(g: Group): Group | null {
+  try {
+    const members = sharePoints(g).map(({ idx }) => ({ idx, sharePub: sharePubAt(g, idx) }));
+    return { groupX: g.groupX, threshold: g.threshold, members };
+  } catch { return null; }
+}
+
+/** Verify a partial against points rebuilt from the group key. False if they can't be rebuilt. */
+export function verifiedPartials(g: Group, msg: string, commits: Commit[], partials: [number, string][]): boolean {
+  const ok = sound(g);
+  if (!ok) return false;
+  return partials.every(([i, z]) => W.verifyPartial(json(ok), msg, JSON.stringify(commits), i, z));
+}
 const json = (g: Group) => JSON.stringify({ groupX: g.groupX, threshold: g.threshold, members: sharePoints(g) });
 const oldNonces = (hex: string) => ({ d: BigInt('0x' + hex.slice(0, 64)), e: BigInt('0x' + hex.slice(64)) });
 

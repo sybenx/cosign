@@ -537,15 +537,25 @@ export function openGroup(loaded: Loaded, io: Io) {
       const theirZs: [number, string][] = res.zs ?? (res.commit ? [[res.commit.idx, res.z]] : []);
       if (!sameSet(theirs.map(c => c.idx), sharesOf(m)) || !sameSet(theirZs.map(z => z[0]), sharesOf(m))) return { m, reason: 'bad partial' };
       const commits = [...mine.commits, ...theirs];
-      // FROST (RFC 9591) only: the earlier hand-rolled math is no longer taken.
-      if (Sig.schemeOfAll(S.group, id, commits, theirZs) !== 2) return { m, reason: 'bad partial' };
-      // It signed with the shares the list says it holds, which nothing but the real member
-      // can do: whatever another server told us, it is one of the user's from here on.
-      if (m.viaServer) { delete m.viaServer; save(); }
+      // FROST (RFC 9591) only: the earlier hand-rolled math is no longer taken. And verified
+      // against share points rebuilt from the group key, never against the ones in the member
+      // list — a list this server may have copied from a peer (`mergeMembers`). A member whose
+      // point a dishonest server chose can produce a partial that verifies against *that*
+      // point, with the unmodified library, by signing with the secret behind it
+      // (test/share-points.ts shows it).
+      if (!Sig.verifiedPartials(S.group, id, commits, theirZs)) return { m, reason: 'bad partial' };
       const scheme = 2 as const;
       const zs = Sig.partialAll(scheme, S.group, myShares, mine.nonces, id, commits);
+      // Throws unless the group's own signature verifies, which is the only thing nothing but
+      // the real member could have helped make.
+      const sig = Sig.combine(scheme, S.group, id, commits, [...zs, ...theirZs]);
+      // Only now. It signed with the shares the list says it holds *and* the aggregate stands:
+      // whatever another server told us, it is one of the user's from here on. This used to be
+      // cleared and saved before the aggregate had an opinion, so a partial that verified and
+      // then failed to combine still bought the mark — and with it everything `mayAct` guards.
+      if (m.viaServer) { delete m.viaServer; save(); }
       countSigned();
-      return { m, signed: { ...ev, id, sig: Sig.combine(scheme, S.group, id, commits, [...zs, ...theirZs]) } as Event };
+      return { m, signed: { ...ev, id, sig } as Event };
     }
 
     // Everyday, with your phone and your other server both awake: ask both at once, each in
@@ -806,9 +816,14 @@ export function openGroup(loaded: Loaded, io: Io) {
       // MAC failure at whoever asked; now it names the member that sent it and we try the next.
       const theirs: string[] = res.points ?? [res.point];
       if (Array.isArray(res.parts) && res.parts.length) {
-        const bad = (res.parts as F.EcdhPart[]).find(p => !F.ecdhVerify({
+        // Points rebuilt from the group key, not the member list's: a proof checked against a
+        // point a dishonest server chose proves only that it knows the secret behind its own
+        // point (test/share-points.ts). Null here means the list's first `threshold` points
+        // cannot be trusted either, so there is nothing to check against and we refuse.
+        const ok = Sig.sound(S.group);
+        const bad = !ok ? { idx: -1 } : (res.parts as F.EcdhPart[]).find(p => !F.ecdhVerify({
           idx: p.idx, participants, peerX, point: p.point, proof: p.proof,
-          sharePub: Sig.sharePoints(S.group).find((x: any) => x.idx === p.idx)?.sharePub ?? '',
+          sharePub: Sig.sharePoints(ok).find((x: any) => x.idx === p.idx)?.sharePub ?? '',
         }));
         if (bad) { note(`${m.name} sent a piece of a decryption that doesn't match its share (${bad.idx})`); tried.push(`${m.name}: its piece doesn't match its share`); continue; }
         theirs.length = 0;
