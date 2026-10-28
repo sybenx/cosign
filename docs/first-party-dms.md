@@ -6,29 +6,51 @@ sites, per-site keys, the grant, migration, push) and the rule both halves obey 
 `~/igloo/cosign-decrypt-rule.md` (**R1–R8**). Neither is restated here; where this document needs
 more it adds to them, and it may not contradict them.
 
-## 1. What this is about, and the thing to understand first
+## 1. What this is about, and the thing I had wrong
 
-Marble embeds the Cosign library. It is not an app asking a signer across an IPC boundary — **it
-is the signer**, in its own process, holding the account's shares. So the words "first-party app"
-mean something different here than they do in `app-keys.md` §4.1: there is no caller to
-identify, no package name to check, no certificate to pin. The question is not *who is asking*
-but **what the host of the library may do with the account, and whether the person is asked.**
+**Corrected in draft 2, after a joint red team over this and the site-facing half
+(`~/igloo/cosign-dm-joint-redteam.md`: four hard contradictions and one wrong premise — the wrong
+premise was mine).**
 
-**And the capability is already shipped.** `Phone.nip44(g, peer, text, encrypt)` is public
-(`Phone.kt:1851`) and takes any peer, so a host app with the library can already decrypt
-anything addressed to the account, today, using the grant the library makes for itself
-(`connectApp(own, appName)`). What stops Marble doing it is that nothing calls it — not a check.
+Draft 1 said Marble embeds the library, therefore *is* the signer, therefore the capability is
+already shipped and only the policy is missing. **That is false, and the code is better than I
+described it.** Verified myself rather than taken on trust:
 
-The library does draw a line, and draws it carefully in one place. `nip44Self`
-(`Phone.kt:1769`) is **peer-less by design**, and its comment is the argument this document has
-to answer:
+- **The library runs key material in a second process.** `Proc.kt` says it in as many words: the
+  signer process (`:signer`) holds the shares, and the main process "draws everything else,
+  including what strangers post (pictures, videos, translations), and only ever asks the signer
+  through `ISigner`; it never sees a share." `Signers`, `Secrets` and `SignerService` each call
+  `Proc.signerOnly(...)` and **throw** outside it (`Signers.kt:25`, `Secrets.kt:24`,
+  `SignerService.kt:38`), and `Cosign.init` only constructs `signers` when `Proc.isSigner`
+  (`Cosign.kt:36-45`). Eight components carry `android:process=":signer"`.
+- **The interface deliberately omits the peer.** `ISigner.aidl` exposes `nip44Own(slot, text,
+  encrypt)` and its comment is the design: *"The other side is always this account's own key: no
+  peer goes in, so this can never read anyone else's messages."* Nothing on that interface takes
+  a peer.
 
-> *"The other side is this account's own key, always — there is no peer to pass in, so this is no
-> way to read anyone else's messages."*
+So `Phone.nip44` is public **within the signer process** and unreachable from the process that
+renders other people's media. The line is not drawn by convention, as draft 1 claimed — it is
+enforced by a process boundary, an AIDL surface and three runtime checks.
 
-So this proposal is not "add a capability". It is **"put rules around one that already exists,
-and move a line the library drew on purpose."** That is a smaller change in code and a larger
-one in what the account promises, which is the opposite of how it looks.
+**What that changes, and all of it is in this proposal's favour except the cost:**
+
+1. **The capability is not shipped.** Building this means putting a peer-taking call on
+   `ISigner`, which is the real cost draft 1 priced at zero, and which punches a hole in exactly
+   the boundary `nip44Own` exists to hold.
+2. **There is a better way in, and it is already built.** Marble's Messages pane can ask its own
+   signer through the **NIP-55 door** rather than through a new IPC method. That door already has
+   the question, the recorded answer, a grant the person can remove, and UI that runs in the
+   signer process (`Nip55Provider`, `Nip55Request`). It is the same door another app would use,
+   which means the capability arrives with its own revocation instead of needing one invented.
+   **This proposal takes that route**, and §11.1's open question answers itself: the line is
+   already enforced, in the right place, and should stay there.
+3. **Draft 1's §3 and §9.1 were too pessimistic** and were licensing a weaker design than the
+   code supports. "A compromised host holds the shares" is false for the realistic compromise:
+   the process that parses a stranger's video holds nothing. §3 and §9 are rewritten accordingly.
+
+> **A new peer-taking method MUST NOT be added to `ISigner`.** A first-party pane that wants to
+> read or send messages goes through the signer's own NIP-55 door, with the question, the record
+> and the removable grant that door already carries.
 
 ## 2. What it must deliver
 
@@ -67,12 +89,21 @@ Three reasons, none of which is "to be safe":
 > app's name in place of the site's, so that the one thing a person sees twice reads the same
 > both times.
 
-**What this does not do, stated because it is the obvious objection:** the answer is not a
-security boundary against a compromised Marble. A host app that has been taken over holds the
-shares; it calls `nip44` directly and the recorded answer is a row in its own storage. The
-answer is a boundary against **Marble as written** — it makes reading DMs a thing the app does
-because the person said so, auditable in the same list as everything else, and switchable off
-without dismantling the account. §9 says what a compromised host gets, and it is everything.
+**What it is a boundary against, corrected in draft 2.** Draft 1 said the answer protects
+nothing against a compromised Marble, because "a host app that has been taken over holds the
+shares". That is wrong (§1): the process that renders other people's pictures and video holds
+nothing, and cannot reach a share or a peer-taking call. So the realistic compromise — a bug in
+media parsing, a malicious post, an injected library in the UI — is **exactly** the one this
+answer stops, because that process can only ask the signer through a door that checks the
+record.
+
+> **The record MUST live in the signer process and MUST NOT be writable from the main process.**
+> It is the one piece of this that a compromised UI must not be able to forge, and the boundary
+> that makes that possible already exists.
+
+What it does not stop is a compromise *of the signer process* — which holds the shares and can
+do anything the account can. That is §9.1, and it is a much smaller target than draft 1 implied:
+no media parsing, no web content, no third-party rendering.
 
 ## 4. Sending
 
@@ -113,14 +144,32 @@ spinning, and an inbox that must be online to be read at all.
 > client MUST read the newest wraps first, MUST show what it has while the rest arrive, and MUST
 > NOT block the pane on the whole inbox.
 
-> **A client MUST keep the conversation key it derives, per correspondent, in the same storage as
-> the account's other secrets, and MUST drop every key for a correspondent when the account's
-> epoch moves.** Then a *conversation* costs one round and a *message from a new person* costs
-> one, which is the difference between usable and not.
+> **The signer process MAY keep a conversation key per correspondent, and the main process MUST
+> NOT ever hold one.** Keys are kept under the grant that asked for them, not only under the
+> peer, so that switching `messages` off, removing the grant, or reporting the device lost drops
+> them — which today's peer-keyed map cannot do, because it is consulted before any gate
+> (`Phone.kt:1637-1651`, `:1780`).
 
-This is a change from today's cache, which is in memory, ten minutes, cleared on screen-off, and
-has no cap (`Phone.kt:1637-1649`, `:276`). Persisting conversation keys is what makes an inbox
-readable offline, and it is also §9's first entry.
+> **A key for the account's *own* key MUST NOT be kept at all.** This is the one the joint review
+> found and it is the sharpest finding in it. A refresh moves shares and **keeps the group key**
+> (COSIGN.md §7.3), so the conversation key with oneself never changes — ever. Keeping it would
+> hand a removed, lost or stolen device a permanent, server-free decryptor for every piece of
+> private data the account writes **in the future**, not merely what it already read: wallet
+> state, mutes, drafts and app data are all self-encrypted and all public on relays. Draft 1's
+> "drop every key when the epoch moves" buys nothing against it, because the key does not depend
+> on the epoch. The cost of the fix is one round per unlock, which is today's behaviour.
+
+So the rule is split by peer, like everything else in R4: **a correspondent's key may be kept, the
+account's own may not.** That is also the honest version of draft 1's claim that persisting keys
+is what makes an inbox usable — it is, for conversations with other people, and it must not be
+done for the account's conversation with itself.
+
+**On R8.** Draft 1's "a client MUST keep the conversation key" reads as a contradiction of R8,
+which forbids any door handing out a shared secret, and the review was right to flag the wording.
+The resolution is the process boundary: the signer derives and keeps the key, and **nothing
+crosses `ISigner` but plaintext and ciphertext**. R8 is about what leaves the signer; this is
+about what the signer remembers. The rule above says so explicitly so the two cannot be read as
+being in conflict.
 
 ## 6. Private data
 
@@ -133,10 +182,25 @@ Marble's *own* app data is not in this: it belongs in an app-key namespace, whic
 reaches and which this document does not touch. What Marble needs `private data` for is the
 **account's** private lists, which are the account's and not an app's.
 
-> **Writing to self is covered by the same answer as reading it** — and the reason is that
-> read-only would break muting, which is self-encrypted and ordinary. The protection against a
-> rewrite belongs on the signing path, where the kind is visible, and is specified in
-> `no-server-history.md` §9 rather than here.
+> **Writing to self is covered by the same answer as reading it, and is gated by it** — the
+> reason for one answer is that read-only would break muting, which is self-encrypted and
+> ordinary. But draft 1 only wrote the *decrypt* side into §3's MUST, which left encryption to
+> self ungated: `messages` alone would have been a write permission for private data. Both
+> directions, with `peer == groupX`, need the `private data` answer.
+
+> **Reading the account's own sent copy of a message needs *both* answers**, and a client MUST
+> say so rather than show half a conversation. The wrap is from a one-time key, which is
+> `messages`; the seal inside it is from the account to itself, which is `private data`. Draft 1
+> said a client with only `messages` "can send and then not read back what it sent", which
+> understated it: it cannot read back **any** of its own side, including from before the
+> permission was given.
+
+The protection against a *rewrite* of private data belongs on the signing path, where the kind is
+visible — and the review is right that it does not exist yet and would not work as assumed:
+`assess` compares **tags** (`policy.ts:46-55`, `:105`), while a private mute list keeps its
+private half in encrypted `content`, so the private half can be emptied and the person is shown
+"Mute list: reordered". That is a finding against the destructive check itself, it is recorded in
+`no-server-history.md` §9, and **this document MUST NOT claim the protection until it exists.**
 
 ## 7. What a server sees, and what it must not be asked for
 
@@ -174,17 +238,23 @@ stands.
 
 ## 9. What this does not protect against
 
-1. **A compromised host app.** It holds the shares; it calls `nip44` with any peer; the recorded
-   answer is a row in storage it controls. Everything the account can read, it can read. §3 is
-   honest about this.
+1. **A compromised signer process.** It holds the shares and can do anything the account can.
+   Draft 1 said this of the *host app*, which was wrong (§1): the main process — the one that
+   parses other people's media — holds nothing, cannot reach a share, and can only ask through a
+   door that checks the record. The target is the signer process, which renders no foreign
+   content and whose attack surface is the relay traffic and the doors themselves.
 2. **A removed device's cached conversations.** §5 asks clients to persist conversation keys,
    which means a device removed from the account keeps every conversation it had already opened,
    for ever. Dropping them on an epoch move (§5) covers *new* epochs and does nothing about what
    was already decrypted. This is the checklist's own tradeoff and it is a real one: persisting
    keys is what makes the inbox usable and what makes a stolen phone worse.
-3. **Metadata.** A relay sees that a device asked about N wraps; a server sees N decryption
-   rounds and their timing. Neither sees who or what. A server that logs can tell how much the
-   account is talking and when.
+3. **Metadata, and it is worse in the send direction than draft 1 said.** Reading: a server sees
+   N decryption rounds and their timing, against one-time keys that tell it nothing about who.
+   **Sending: the peer is the recipient's real public key**, and a server must be told it to
+   answer the round — so a server learns every person the account writes to, and when. That is
+   not hidden by anything in this document, and blinding (app-keys §8) is no help, because the
+   point being blinded is a counterparty's key the server may hold a list of. It should be said
+   on any page that describes this as private messaging.
 4. **The one-time key does not hide the recipient.** NIP-17's wrap is addressed to the account's
    own key by `p` tag, so relays know who receives; that is NIP-17's property, not Cosign's.
 5. **An inbox needs a reachable server.** With no server answering, nothing new can be read —
@@ -203,10 +273,11 @@ stands.
 
 ## 11. Still open
 
-1. **Whether `nip44Self`'s line should be enforced rather than drawn.** The library could require
-   a recorded answer inside `nip44` rather than trusting its host to ask — a check in the library
-   is worth little against the host that embeds it, but it is worth something against the host's
-   *mistakes*, which are likelier than its malice. Mine, and I lean towards enforcing.
+1. ~~**Whether `nip44Self`'s line should be enforced rather than drawn.**~~ **Answered by the
+   code: it is already enforced**, by a process boundary, an AIDL surface that takes no peer, and
+   three `signerOnly` checks (§1). The question was based on my misreading. What remains is not
+   whether to enforce it but **not to breach it**: the rule in §1 forbids adding a peer-taking
+   method to `ISigner`, and the Messages pane uses the signer's own NIP-55 door instead.
 2. **Where a conversation key lives on each platform**, and whether dropping them on an epoch
    move is right or merely tidy. Android has the keystore; the extension has profile storage,
    which live finding #5 already calls out as plain.
