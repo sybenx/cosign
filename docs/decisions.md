@@ -139,3 +139,9 @@ because it describes the code during the freeze.
 - 2026-11-02 · Process: red-team round 5 (draft 5) found 0 critical, 4 high. Patching stopped again; `simplification.md` (second part) proposes requiring a lock, two devices or the paper for every account change (no lockless 3-day path), a fixed data key, and at least 3 servers. Waiting on the user.
 - 2026-11-02 · User: the optional "Refresh now" module is wanted if it stays simple (started by hand, every member online, old epoch valid until all confirm, paper reprinted and checked, old paper dead after commit and said so first). Written after the core passes a clean round.
 - 2026-11-02 · User: doesn't use Grimoire; the interop top set is chosen by use (nak must pass).
+
+## Second simplification (user, 2026-11-02, after red-team round 5)
+
+- 2026-11-02 · User: **every account change needs a face or fingerprint, a second device, or the paper.** No "wait 3 days instead". The 3-day wait stays only for paper recovery and held mass deletions. *(Supersedes 2026-11-02 "a passcode alone counts as no lock, so the 3-day wait applies".)*
+- 2026-11-02 · User: **the private-data key stays the same** when a device is reported lost; changing it comes with the optional refresh module.
+- 2026-11-02 · User: **accounts must have at least 3 servers.** The app adds public ones automatically, alongside a user's private server.
