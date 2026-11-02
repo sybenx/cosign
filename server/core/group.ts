@@ -826,6 +826,15 @@ export function openGroup(loaded: Loaded, io: Io) {
           sharePub: Sig.sharePoints(ok).find((x: any) => x.idx === p.idx)?.sharePub ?? '',
         }));
         if (bad) { note(`${m.name} sent a piece of a decryption that doesn't match its share (${bad.idx})`); tried.push(`${m.name}: its piece doesn't match its share`); continue; }
+        // Every one of its shares, and no others. Each proof only speaks for its own index, so a
+        // partner that sends two of three passes verification and leaves `theirs` a point short:
+        // the combine then returns a point that is nobody's conversation key, ecdhCombine refuses
+        // only the identity, and the single symptom is a MAC failure wherever the plaintext was
+        // wanted — with no member named, because every proof passed.
+        if (!sameSet(sharesOf(m), (res.parts as F.EcdhPart[]).map(p => p.idx))) {
+          note(`${m.name} sent only some of its pieces of a decryption`);
+          tried.push(`${m.name}: it sent only some of its pieces`); continue;
+        }
         theirs.length = 0;
         theirs.push(...(res.parts as F.EcdhPart[]).map(p => p.point));
       }
