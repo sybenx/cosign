@@ -32,10 +32,23 @@ export const sharePoints = (g: Group) => g.members.flatMap(m => m.shares ?? [{ i
  * signature — but anything a caller decides at *verification* time has already been decided
  * wrongly.
  *
- * `sharePubAt` is the sound way to ask: it rebuilds the group polynomial's commitment from the
- * first `threshold` points and refuses unless its constant term is the group key, which no
- * single server can arrange. Fail-closed: if the first `threshold` points have been tampered
- * with, this returns null and the caller must refuse rather than fall back to the list.
+ * `sharePubAt` rebuilds the group polynomial's commitment from the first `threshold` points and
+ * refuses unless its constant term is the group key. Fail-closed: if those points have been
+ * tampered with so that the constant term comes out wrong, this returns null and the caller must
+ * refuse rather than fall back to the list.
+ *
+ * **What this does and does not catch.** It catches a stale share, a corrupted copy at rest, and
+ * a dishonest *partner* — the cases a partial fails for by accident or by one member's malice.
+ * It does **not** catch a server that writes the whole member list, and an earlier version of
+ * this comment wrongly said it did. The constant term constrains a weighted *sum* of the points,
+ * not each point: an attacker that chooses `threshold - 1` of them with scalars it knows can
+ * solve the last from public data so the sum still lands on the group key, and a partial made
+ * with one of its own scalars then verifies. It learns nothing about the account's key, and the
+ * aggregate still refuses it — which is why `attempt` clears `viaServer` only after
+ * `Sig.combine` returns — but for a decryption, where there is no aggregate to refuse it, the
+ * check is weaker than it looks. Closing that needs the rebuilt commitment to be checked against
+ * the member's *own* share points as well (`~/igloo/cosign-extension-reads-spec.md` §3), which
+ * is a change this branch does not make.
  */
 export function sound(g: Group): Group | null {
   try {
