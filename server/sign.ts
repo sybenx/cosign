@@ -18,6 +18,51 @@ export interface Share { idx: number; secret: string }
 
 /** Every share point in the group, whoever holds it: what the library calls the members. */
 export const sharePoints = (g: Group) => g.members.flatMap(m => m.shares ?? [{ idx: m.idx, sharePub: m.sharePub }]);
+
+/**
+ * The group with every share point **rebuilt from the group key** rather than taken from the
+ * member list, and null if they cannot be rebuilt.
+ *
+ * This matters because a share point from the list is not evidence of anything. The library
+ * verifies a partial against the point it is handed (`public_package` in `frost/src/lib.rs`
+ * builds the verifying shares straight from each member's `sharePub`), and a server's member
+ * list is where that point comes from. So a member whose point a dishonest server chose can
+ * produce a partial that **verifies**, using nothing but the real library: it signs with the
+ * secret behind the point it supplied. The aggregate then fails — it cannot forge the group's
+ * signature — but anything a caller decides at *verification* time has already been decided
+ * wrongly.
+ *
+ * `sharePubAt` rebuilds the group polynomial's commitment from the first `threshold` points and
+ * refuses unless its constant term is the group key. Fail-closed: if those points have been
+ * tampered with so that the constant term comes out wrong, this returns null and the caller must
+ * refuse rather than fall back to the list.
+ *
+ * **What this does and does not catch.** It catches a stale share, a corrupted copy at rest, and
+ * a dishonest *partner* — the cases a partial fails for by accident or by one member's malice.
+ * It does **not** catch a server that writes the whole member list, and an earlier version of
+ * this comment wrongly said it did. The constant term constrains a weighted *sum* of the points,
+ * not each point: an attacker that chooses `threshold - 1` of them with scalars it knows can
+ * solve the last from public data so the sum still lands on the group key, and a partial made
+ * with one of its own scalars then verifies. It learns nothing about the account's key, and the
+ * aggregate still refuses it — which is why `attempt` clears `viaServer` only after
+ * `Sig.combine` returns — but for a decryption, where there is no aggregate to refuse it, the
+ * check is weaker than it looks. Closing that needs the rebuilt commitment to be checked against
+ * the member's *own* share points as well (`~/igloo/cosign-extension-reads-spec.md` §3), which
+ * is a change this branch does not make.
+ */
+export function sound(g: Group): Group | null {
+  try {
+    const members = sharePoints(g).map(({ idx }) => ({ idx, sharePub: sharePubAt(g, idx) }));
+    return { groupX: g.groupX, threshold: g.threshold, members };
+  } catch { return null; }
+}
+
+/** Verify a partial against points rebuilt from the group key. False if they can't be rebuilt. */
+export function verifiedPartials(g: Group, msg: string, commits: Commit[], partials: [number, string][]): boolean {
+  const ok = sound(g);
+  if (!ok) return false;
+  return partials.every(([i, z]) => W.verifyPartial(json(ok), msg, JSON.stringify(commits), i, z));
+}
 const json = (g: Group) => JSON.stringify({ groupX: g.groupX, threshold: g.threshold, members: sharePoints(g) });
 const oldNonces = (hex: string) => ({ d: BigInt('0x' + hex.slice(0, 64)), e: BigInt('0x' + hex.slice(64)) });
 
