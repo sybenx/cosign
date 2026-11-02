@@ -153,3 +153,4 @@ because it describes the code during the freeze.
 - 2026-11-02 · User: **a lock is biometric-only**: no passcode fallback; browser passkeys don't count as locks.
 - 2026-11-02 · User: **a two-device approval means typing a 6-digit code** from one device into the other, not a tap.
 - 2026-11-02 · User: **a dead server, public or private, is replaced only in a refresh with a reprint, never by a silent swap.** After a week quiet, the app says so once, calmly, and offers "Refresh now". *(Updates the 2026-10-25 quiet-servers line and the 2026-10-24 "silent auto-swap for public servers".)*
+- 2026-11-02 · Process: red-team round 7 (core draft 7 + refresh draft 1) found 1 critical, 5 high. Stopped again; `simplification.md` part 4 proposes cutting in-place migration from 0.12 (re-import the nsec instead), honest refresh wording ("destroy your old paper"), slip fixes, and lock re-registration as an everyday change. Waiting on the user.

@@ -262,3 +262,71 @@ migration. Five reviews found these sound.
 
 If yes: draft 7 (core) plus `refresh.md` (the ceremony) together, then round 7 over both under the
 same rule, then the test vectors.
+
+---
+
+# After round 7 (core draft 7 + refresh draft 1)
+
+Round 7 found **1 critical, 5 high, 5 medium, 5 low** (`keykin-core-redteam-7.md`). Patching stops
+again. The pattern has changed, though, and the summary says how.
+
+## Plain summary for the user
+
+**The parts that sign, decrypt and join have held for four rounds.** Every serious finding since
+round 3 has been about how the account's membership changes over time. This round's findings sit in
+two places:
+
+1. **What "Refresh now" can promise.** Re-dealing keeps the same key underneath, so pieces copied
+   *before* a refresh still add up among themselves. A lost phone (3 points) plus your **old** paper
+   (2) is still the whole key after a refresh. Refresh does kill the old pieces held by honest servers,
+   which is what makes swapping servers safe. But it cannot make a paper you still have useless: you
+   have to **destroy the old paper**. The draft claimed otherwise; that was wrong, and it is the
+   critical finding. The fix is honesty, not machinery: the screen says "destroy your old paper", and
+   the security section says what refresh can and can't do.
+2. **Moving your existing Cosign 0.12 account across in place.** 0.12 never pinned anyone's face or
+   fingerprint key, so a stolen 0.12 phone could claim a lock, run the move, and leave your other
+   devices out. Making this safe needs its own careful protocol for exactly one account: yours. And
+   your nsec is in Bitwarden anyway.
+
+The other high findings are slips with small fixes.
+
+## Round 7's critical and high findings
+
+| ID | What | Proposal |
+|---|---|---|
+| C1 | Refresh doesn't make old pieces useless: same key, so old-epoch pieces still add up (removed phone + old paper = 5). | **Honest wording.** The display says "destroy your old paper". §10 and refresh §6 state what refresh does: honest servers' old pieces die, so server swaps are safe. Old pieces someone kept (a removed device, an old paper, a dishonest leaving server) still combine among themselves. |
+| H4 | In-place migration from 0.12 can be run by a stolen 0.12 phone. | **Cut in-place migration.** A 0.12 account moves by importing the nsec into a fresh Keykin account (same npub, new pieces), then retiring the 0.12 servers' copies. No 0.12 member is trusted for anything. |
+| H1 | The new backup can't send `refresh_ok`/`adopted`, so a refresh can't finish. | Slip: the backup is left out of both sets; the person's read-back is its confirmation. |
+| H2 | Approvals are checked for their whole life, but their evidence expires (8-day-old device rejects a valid recovery removal). | Slip: freshness (statement age, challenges) is checked only by co-signers at signing time. Everyone else checks the group signature, the approver's membership and the structure. |
+| H3 | A report-lost naming the old epoch, landing around a commit, is lost. | Slip: a `remove` applies to every epoch. A refresh plan must list it, and a member that sees a removal of a key in a newer epoch applies it there too. |
+| H5 | "Fetch deliveries from peers first" has no exception for a dead peer, so one dead server blocks recovery. | Slip: skip a peer that hasn't answered for an hour. |
+
+Mediums and lows that are slips go in the same draft:
+
+- the old epoch retires at most 7 days after the commit;
+- catch-up takes the union of every server's changes;
+- recovery statements name a shared wait id;
+- the inviter types the new device's check instead of comparing;
+- the refresh's lock text is defined;
+- dealers' commitments are fixed at 4 points;
+- the paper is made before the timed part of a refresh;
+- deliveries to the backup and to removed members are dropped.
+
+M5 is a question for you (below).
+
+## Questions for the user
+
+1. **Drop the in-place move from Cosign 0.12.** Your account moves by importing your nsec (from
+   Bitwarden) into a fresh Keykin account. It's the same npub with brand-new pieces, and then the old
+   servers forget their copies. That key was imported once already, so it was "ever whole" either way.
+   Recommended: yes.
+2. **Refresh can't make an old paper useless; you must destroy it.** Refresh still makes swapping
+   servers safe and changes the data key, so it is worth keeping. The screen will say "destroy your old
+   paper", not "it stops working". Recommended: keep refresh with this honest wording.
+3. **Re-register your face or fingerprint without a refresh.** Adding a new fingerprint or face makes
+   the phone's lock stop working (that is how the platforms work). Today that would mean waiting for a
+   refresh, which means a new paper. The proposal: let you register the new lock as an everyday change,
+   approved by a second device (typed code) or your paper. Recommended: yes.
+
+If all three are yes: core draft 8 and refresh draft 2, then round 8 under the same rule, then the test
+vectors.
