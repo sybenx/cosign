@@ -130,3 +130,9 @@ because it describes the code during the freeze.
 - 2026-11-02 · Review, not yet questioned: the paper may cancel waits started without a lock; a running recovery wait freezes lockless changes; optional email/webhook notice channels are a core wire item; migrated accounts are always masters.
 - 2026-11-02 · Review (red team 2, judged against the nsec bar): receive keys dropped (shares simply never go on relays); waits run on changes, several at once; a refresh names two dealers and commits after two servers, or one after 24 h; mutual removal cannot target a recovery; data keys survive a recovery; vouching always asks the person.
 - 2026-11-02 · Process (hub rule): red-team rounds 1–4 each found critical or high problems, so patching stopped after round 4. `docs/keykin/simplification.md` proposes cutting refresh and lockless report-lost from the core; waiting on the user.
+
+## Simplification (user, 2026-11-02, after red-team round 4)
+
+- 2026-11-02 · User: **refresh is dropped from the core** and becomes an optional future module. Pieces of removed devices and dropped servers stay mathematically valid; blocking at servers is the protection, and after a serious leak the fix is a new key with key families. Note for the module: consider a simpler variant, such as refreshing only when every current member is online together, with the paper re-made and checked at print time rather than silently.
+- 2026-11-02 · User: **reporting a device lost needs a face or fingerprint, or two devices together, or the paper** (as decided 2026-10-23). Mutual removal, notices to removed phones and `deposit` go with it.
+- 2026-11-02 · User: "Grimoire" is the web client at grimoire.rocks. nak stays the must-pass tool; the interop plan ranks the clients most worth smooth compatibility.
