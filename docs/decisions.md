@@ -117,3 +117,13 @@ because it describes the code during the freeze.
 
 - 2026-11-02 · User: live findings #17, #4, #5, #7 and #1 are not patched during the freeze (the user is the only user and the nsec is in Bitwarden). Keykin Core closes them, and they MUST be closed before a second user.
 - 2026-11-02 · User: spec in layers (core, modules, freeze), each red-teamed independently, before code.
+
+## Keykin Core draft 2 (proposed 2026-11-02, from red team 1; the user has not yet agreed)
+
+- 2026-11-02 · Proposed: the paper (backup key) may cancel waits started without a lock, and a running recovery wait freezes lockless changes.
+- 2026-11-02 · Proposed: optional email/webhook notice channels are a core wire item, so a single-device owner hears about waits after a theft.
+- 2026-11-02 · Proposed: every deletion (kind 5) and request to vanish (kind 62) needs a lock or the 3-day wait at the server. *(Open, Q3.)*
+- 2026-11-02 · Proposed: joining always shows a 6-digit check on both screens, even after a camera scan. *(Open, Q5.)*
+- 2026-11-02 · Proposed: a passcode-only device cannot cancel waits. *(Open, Q1.)*
+- 2026-11-02 · Proposed: events more than 10 minutes in the future are refused, every kind. *(Open, Q2.)*
+- 2026-11-02 · Proposed: master key export does not exist at all on the wire; migrated accounts are always masters.
