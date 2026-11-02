@@ -1,8 +1,34 @@
 # When one of your devices may believe in another — proposal, first draft
 
-**Status: proposal, for review. Nothing here is built.** It exists because the same hole was
-found three times this week, in three unrelated pieces of work, by three different reviewers. It
-is one hole.
+> **Status after an independent red team (`~/igloo/cosign-device-evidence-redteam.md`): the
+> problem below is real and verified, but this answer to it cannot be built.** Four criticals.
+> The one that matters most is that **evidence (b) is forgeable, and the reviewer demonstrated
+> it** against this repository's own FROST build: `verifyPartial` checks a partial against the
+> share point the *member list* claims, so a member with no share in the key produces an
+> accepted partial. The aggregate still refuses it, but §2(b) records proof at verification
+> time, before the aggregate has an opinion. That finding is why
+> `server/sign.ts`'s `sound()` exists — and why its own comment now says what rebuilding the
+> points does and does not catch, because rebuilding alone is not enough either.
+>
+> Also found: **(b) can never be earned about a *device*** (`partners()` is co-signers only, and
+> the inbound dispatcher routes rounds only from a co-signer, so the only thing a device can
+> prove is a co-signer); **(a)'s vouch record is the sole gate on `onRepair`**, so making it
+> durable would let a party that was once vouched for have shares minted for it months later;
+> and **nothing authenticates key↔indices**, which defeats (a), (b) and (c) from one root.
+>
+> The reviewer's own recommendation is the **signed epoch record** — kind 30242, specified in
+> COSIGN.md §3 and NIP-XX, and **absent from every source file** — as the one authenticated
+> binding of a key to its indices that would subsume all three kinds of evidence. This document
+> never mentioned it, which was its biggest omission.
+>
+> **What survives and is in use:** §1's rule (a device must not seal a secret to, or accept one
+> from, a member it knows only because a server said so), §4's recommendation that per-site
+> mailbox keys are not copied between devices at all, and the statement of the problem. What
+> does not survive is §2's three kinds of evidence as a mechanism.
+
+**Status: proposal, first draft, superseded in part by the review above. Nothing here is built.**
+It exists because the same hole was found three times in one week, in three unrelated pieces of
+work, by three different reviewers. It is one hole.
 
 > **A device takes its member list wholesale from whatever a server sends.** `onMembers`
 > (`Phone.kt:1455-1462`) accepts the list if it contains this phone and its epoch is not older,
