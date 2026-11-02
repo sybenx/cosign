@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 2 · 2026-11-02 · `draft` `optional` · not built
+Draft 3 · 2026-11-02 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -26,8 +26,8 @@ Keykin is the new working name of Cosign. Cosign 0.12 (built, described in `../C
 prototype this replaces; §11 says how existing accounts move over. Old `cosign` names stay
 readable for ever.
 
-Draft 2 folds in the first independent red team (`keykin-core-redteam-1.md` in the shared notes);
-the change list is at the end.
+Drafts 2 and 3 fold in two independent red teams (`keykin-core-redteam-1.md` and `-2.md` in the
+shared notes); the change lists are at the end.
 
 ---
 
@@ -42,9 +42,8 @@ the change list is at the end.
   interoperate with this, and neither does Cosign 0.12's hand-rolled `server/frost.ts` (§11.2).
 - **Share**: one FROST share `s_i = f(i)` at a unique index `i ≥ 1`, worth one point. `f` has
   degree 3; threshold `t = 4`.
-- **Member**: anything holding shares. It has a long-lived **member key** (secp256k1) that
-  authenticates its messages, and a short-lived **receive key** that share-bearing payloads are
-  sealed to (§9.1). Member kinds:
+- **Member**: anything holding shares. It has a **member key** (secp256k1) that seals and
+  authenticates its messages. Member kinds:
 
   | Kind | Shares | What it is |
   |---|---|---|
@@ -73,10 +72,12 @@ the change list is at the end.
 These are the only things this document requires an app to show, because the protocol's safety
 depends on a person seeing them:
 
-1. the 6-digit join check, on both screens, before a join goes ahead (§4.1);
+1. the 6-digit join check, on both screens, and the person confirms on both before a join goes
+   ahead (§4.1);
 2. the account a device joined, when it joined from a join code (§4.2);
 3. a refused record or a refused delta, with the member it came from (§3.3, §7.2);
-4. that an update is needed, when a device meets a version it does not know (§11.1).
+4. that an update is needed, when a device meets a version it does not know (§11.1);
+5. a vouch: a device vouches for a new member only after asking its person, there and then (§6.4).
 
 ## 2. Who does what
 
@@ -93,8 +94,7 @@ would.
    (§6);
 5. push addresses and notice channels (§8.1), and the short inbox, including deliveries kept
    until acknowledged (§7.3, §8.2);
-6. each member's current receive key, as that member signed it (§9.1);
-7. answered request ids until each expires (§5.6), and its own counters for §5.8.
+6. answered request ids until each expires (§5.6), and its own counters for §5.8.
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
 co-signs, enforces waits and the stateless destructive rule (§5.8), sends wake-up pushes, and helps
@@ -196,12 +196,16 @@ valid record they have seen and never go back to a lower epoch.
 
 ### 3.4 One change at a time
 
-- A server holds **at most one** draft record or refresh plan for epoch `n+1`. While it holds one,
-  it refuses any other for `n+1` with `error busy`, except that a removal (§6.5) replaces it: the
-  server drops the old one and tells its sender (`error superseded`).
+- Waits run on **changes**, not records (§6.2), so any number of waits can run at once and a
+  record commits only when its gate is already met. Making the record then takes seconds.
+- A server holds **at most one** draft record or refresh plan for epoch `n+1`. If another arrives,
+  the one with the **lower id** wins; the server drops the other and tells its sender (`error
+  superseded`), who retries after a random delay (reference: 5–60 s). A removal (§6.5) always wins.
+  `withdraw {id}` lets a sender drop its own draft, plan or wait.
 - A server co-signs a record for `n+1` only if it is the draft it holds.
 - If two valid records for the same `n+1` ever appear, every member keeps the one with the lower
-  event id. Members on the other one stop signing, say so (§1.1), and join again.
+  event id. If the other changed no shares, its change is simply made again on top. If it was a
+  refresh, members who adopted it say so (§1.1) and join again.
 
 ## 4. Joining
 
@@ -224,16 +228,16 @@ be at most 10 minutes ahead. Readers MUST also accept `cosign:` in place of `key
 direction it goes. So after the hello, both screens show (§1.1) a 6-digit number,
 `int(SHA-256("keykin-join/1" ‖ g ‖ m ‖ n ‖ s)[0..8], big-endian) mod 10^6` (keys as 32 raw bytes,
 `s` as 16 raw bytes; in the join-code direction `g` and `m` are those in the `welcome_offer`
-below), and the person confirms on the inviting device that they match before step 3. A racer
+below), and the person confirms on both devices that they match before step 2. A racer
 must send its hello before the honest device's key is known, so it cannot choose one that matches.
 
 ### 4.2 The handshake
 
 1. **Hello.** The side that scanned writes to the other, sealed to the key in the code:
-   - invite direction: the new member sends `join_hello {n, s, rk, lock, kind}`: its member key,
-     the secret, its receive key, its lock public key if it has one, and the kind it asks to be;
+   - invite direction: the new member sends `join_hello {n, s, lock, kind}`: its member key,
+     the secret, its lock public key if it has one, and the kind it asks to be;
    - join-code direction: the inviter sends `welcome_offer {g, m, s}`, and the new member answers
-     `join_hello {n, s, rk, lock, kind}` sealed to `m`.
+     `join_hello {n, s, lock, kind}` sealed to `m`.
 
    A side MUST drop a hello or offer without the right `s`, after `x`, or after it already
    accepted one for this `s`.
@@ -245,11 +249,11 @@ must send its hello before the honest device's key is known, so it cannot choose
 3. **Repair.** For each new index, the inviting device (3 shares) and one server (1) run the repair
    of `frost-core`'s `repairable` module with all 4 shares as helpers: each helper share computes
    its Lagrange-weighted deltas, the helpers exchange them (`repair_delta`), and each sums what it
-   received into one `sigma`, sealed to the new member's receive key (`repair_sigma`), together
+   received into one `sigma`, sealed to the new member's key (`repair_sigma`), together
    with `sigma·G`. A server MUST take part only for indices that a co-signed record assigns to
    that new member, or for a backup's indices at a refresh (§7.5). No member ever sees the new
    share.
-4. **Welcome.** The inviting device seals to the new member's receive key (`welcome`): the signed
+4. **Welcome.** The inviting device seals to the new member (`welcome`): the signed
    record, the relays, the release key (devices and servers only), and the data keys (devices only,
    §4.6).
 5. **Checks.** The new member MUST refuse to finish unless:
@@ -262,8 +266,7 @@ must send its hello before the honest device's key is known, so it cannot choose
      and for every new index the summed share satisfies `s_i·G == P_i`. If the sum fails, each
      `sigma·G` shows which helper sent a bad part.
 
-   Then it sends `ack {epoch, rk}` (with a fresh receive key for the next delivery) to the inviter
-   and to every server, and destroys the sigmas and its old receive key.
+   Then it sends `ack {epoch}` to the inviter and to every server, and destroys the sigmas.
 
 Why this holds: nobody without 4 points can produce a record signed by `g`, the inviter's
 contribution cannot be forged, and a racer's hello fails the check.
@@ -326,7 +329,8 @@ record (`verify_signature_share`) and name the member whose partial fails.
 **More than two parties: two calls.** When a round needs more than one co-signer (a recovery
 round, §6.6), the coordinator first sends `commit {signers}` to each and gets back `commitments`;
 each co-signer keeps those nonces in memory only, for at most 120 s, for that one request id. Then
-it sends `sign` with the full commitment list to each, and each answers `partial` with its shares.
+it sends `sign` with the full commitment list and `after: <the commit request's id>` to each,
+under a new id, and each answers `partial` with its shares from the nonces it kept for `after`.
 
 - **Binding.** Binding factors and the group commitment MUST be computed over the full commitment
   list for `signers`, every index of every participant. A co-signer MUST refuse a commitment list
@@ -442,8 +446,7 @@ events that are destructive on their face, and for these a server MUST require *
 passed wait (`hold`):
 
 - every request to vanish (kind 62);
-- a **mass deletion**: a kind 5 with 5 or more `e`/`a` targets, or any `a` target whose kind is 0,
-  3, 10000–19999 or 30000–39999, or a kind 5 that would take this account past 5 deletion targets
+- a **mass deletion**: a kind 5 with 5 or more `e`/`a` targets, or a kind 5 that would take this account past 5 deletion targets
   co-signed by this server without approval in the last 10 minutes (a burst; reference numbers,
   counted per account, no history kept);
 - kind 0 whose content is `{}` or has no non-empty `name`, `display_name`, `about` or `picture`;
@@ -480,49 +483,57 @@ member's `rp` and has the user-present and user-verified flags set; and that `si
 `authData ‖ SHA-256(clientData)` with the member's `pub`. `what` is:
 
 - for a destructive event, `"sign" ‖ event id` (§5.8);
-- for an account change, `"record" ‖ SHA-256(JCS(record content without gate))`;
+- for an account change, `"change" ‖ wait id` (§6.2), so the assertion survives other records
+  committing in between;
 - for any other request, its `type ‖ id ‖ SHA-256(JCS(body without the assertion))`.
 
 Native apps build the same structure themselves. Servers cannot tell that a lock is in hardware
 (no attestation is required); that is a stated limit (§10), not a check.
 
-### 6.2 Waits
+### 6.2 Changes and waits
 
-- A server starts a wait when it gets a gated change without the lock its gate needs. The **wait
-  id** is `SHA-256(JCS(the change))` (for a record, its content without `gate`), so every server
-  names the same wait. The server records the start **on its own clock** and immediately tells every
-  member (an `ask` push and an inbox notice) and every notice channel (§8.1).
-- During a wait the requester re-sends the change (`member` class). A server goes ahead only once
-  its own `W` has passed, and then signs a **waited statement**:
+- A **change** is a small JSON object that says what is to happen, without any epoch:
+  `{"add": <member entry>}`, `{"remove": <key>}`, `{"lock": <new lock>, "key": <member>}`,
+  `{"relays": [...]}`. Its **wait id** is `SHA-256(JCS(change))`, so every server names the same
+  wait, and a wait survives other records committing meanwhile.
+- A server starts a wait when it gets a gated change without the lock its gate needs, records the
+  start **on its own clock**, and immediately tells every member (an `ask` push and an inbox
+  notice) and every notice channel (§8.1). Several waits may run at once.
+- When its own wait has passed, the server signs a **waited statement**:
   `{ "server": <host key>, "wait": <id>, "start": <unix>, "end": <unix>, "sig": <BIP-340 by the host
-  key over SHA-256("keykin-waited/1" ‖ g ‖ wait ‖ start ‖ end)> }`.
-- **Cancel** `cancel {wait}`, from any one member allowed to, ends the wait at that server, which
-  tells everyone:
+  key over SHA-256("keykin-waited/1" ‖ g ‖ wait ‖ start ‖ end)> }`. Verifiers MUST check that
+  `end − start` is at least the wait the gate needs (`W` or `w`).
+- **Cancel** `cancel {wait}` ends the wait at that server, which tells everyone. It may come from:
   - a `device`, with a lock assertion;
   - the `backup` key, signing a fresh server `challenge`, for any wait whose requester had no lock.
     The owner's paper is their proof when the only device is the one that was stolen.
 
-  A helper cannot cancel, and nor can a device with no lock (§13 Q1).
-- **Recovery freezes lockless changes.** While a server is running a recovery wait (§6.6), it
-  refuses every change gated on `W` from a member without a lock, and removing the backup does not
-  end the backup's own wait.
+  A helper cannot cancel, and nor can a device with no lock. The requester may `withdraw` its own.
+- **Recovery freezes lockless members.** From the moment a server starts a recovery wait until the
+  recovery session ends (§6.6), it refuses from any member without a lock: every gated change,
+  `relays` changes, refresh plans, and `remove`. Only the recovery session's own changes go ahead.
+  Removing the backup does not end the backup's own wait.
 - Every wait a member started ends when that member is removed.
 - Signing and everything else carry on as normal during any wait.
 
 ### 6.3 What each change needs
 
-Every account change is a new group record (§3). A server co-signs it only once the gate is met,
-and the record carries the evidence in `gate`, so every other member can check it too:
+Every account change becomes a new group record (§3). A server co-signs it only once the gate is
+met, and the record carries the evidence in `gate`, so every other member can check it too. Signed
+items in `gate` carry **detached** BIP-340 signatures by the signer's member key over
+`SHA-256("keykin-<type>/1" ‖ g ‖ JCS(body))`, because a NIP-59 seal proves nothing to a third party.
 
-- `{ "lock": <assertion> }` from the asking device, over the record (§6.1);
+- `{ "lock": <assertion> }` from the asking device, over the change (§6.1);
 - `{ "vouch": [<vouch>, <vouch>] }` from two distinct devices (§6.4);
-- `{ "waited": [<statement>, …] }` from **at least two** of the record's servers (§6.2);
-- `{ "lock": …, "waited": […] }` where both are needed;
-- `{ "removal": <remove message> }` for a report lost (§6.5).
+- `{ "waited": [<statement>, …] }`: from **at least two** of the record's servers for a change
+  gated on `W`; from **one** for a lock-gated change that also needs `w`;
+- `{ "removal": <remove> }` for a report lost (§6.5);
+- `{ "recovery": { "release_request": …, "waited": [<statement>, <statement>] } }` for a change in a
+  recovery session, with the statements of the two servers' release waits (§6.6).
 
 | Change | Gate |
 |---|---|
-| Add a `device` | the inviting device's lock; or two devices' vouches; else waited |
+| Add a `device` | the inviting device's lock; or two devices' vouches; else `W` waited |
 | Add a `server`, `helper` or `backup` | lock and `w` waited; else `W` waited |
 | Remove a `device` (report lost) | any device; never delayed (§6.5) |
 | Remove a `server`, `helper` or `backup` | lock; else `W` waited |
@@ -531,31 +542,38 @@ and the record carries the evidence in `gate`, so every other member can check i
 | A device registers a lock it did not have | `W` waited (else a thief gives a passcode-only phone their own face) |
 | A device replaces its lock | its old lock; else `W` waited |
 | Change `role` or `origin`, or a member's kind or indices | never (only removal and a new join) |
+| In a recovery session: add the new device, remove members | the `recovery` gate |
 
 A `helper` never vouches, reports, cancels or asks for any of these. One record carries one change,
-except that a refresh may also carry removals.
+except that a refresh may also carry removals. Accounts SHOULD have 3 servers, so that one dead
+server never leaves fewer than two for a `W`-gated change.
 
 ### 6.4 Vouching
 
-`vouch {wait}` from a `device` (sealed, so signed by its member key, and carried in the record),
-naming the wait id of an exact draft, says that device agrees to it. Two distinct devices agreeing
-make an add instant without a lock: two devices could sign without any server anyway.
+`vouch {wait}` from a `device`, with a detached signature, names the wait id of an exact change and
+says that device agrees to it. The device MUST ask its person first (§1.1); an app that vouches in
+the background would let a stolen phone add a second thief device instantly. Two distinct devices
+agreeing make an add instant without a lock: two devices could sign without any server anyway.
 
 ### 6.5 Report lost
 
-- `remove {key}` from a `device` (with its lock assertion if it has a lock). It names a `device`
-  only; removing any other kind is a change gated by §6.3. From the moment a server receives it,
-  the server MUST refuse every round with the removed member, every wait it started, and its push
-  addresses. It is never delayed and needs no other approval.
+- `remove {key}` from a `device` (with its lock assertion if it has a lock, and a detached
+  signature). It names a `device` only; removing any other kind is a change gated by §6.3. It goes
+  to every server as a delivery (§7.3), so a server that was down catches up before it co-signs
+  again. From the moment a server has it, the server MUST refuse every round with the removed
+  member and every wait it started. It is never delayed and needs no other approval.
+- The removed device gets one last `notice` push ("removed by …"), and keeps its inbox and notices
+  for its 7-day window, so an owner whose phone a thief reported first still hears what the thief
+  does next. After that its push addresses are dropped.
 - The reporting device then refreshes without the removed member (§7.2), which puts it in
-  `removed`; the record's gate is the `remove` message.
+  `removed`; the record's gate is the `remove`.
 - **Removal is final.** Nobody is put back; a device removed by mistake joins again.
-- **Mutual removal.** For 7 days from when each server marked it removed (its own clock), a removed
-  device may send exactly one message: `remove` naming the member that removed it. The server then
-  removes both, tells everyone, and drops the remover's refresh if it has not been committed (once
-  committed, the next refresh removes both). Nothing else is accepted from a removed member. So a
-  thief who reports first can at most take the owner's device out with it, and the account falls to
-  the remaining members.
+- **Mutual removal.** For 7 days from when each server marked it removed (its own clock), a device
+  removed by **another device** may send exactly one message: `remove` naming that device. The
+  server then removes both, tells everyone, and drops the remover's refresh if it has not been
+  committed (once committed, the next refresh removes both). A device removed in a recovery session
+  cannot answer back. Nothing else is accepted from a removed member. So a thief who reports first
+  can at most take the owner's device out with it.
 
 ### 6.6 Recovery
 
@@ -564,18 +582,20 @@ A round with no device-class member (I4) happens only in a recovery session.
 1. The backup holder asks each server for a `challenge` and sends `release_request`, signed by the
    backup key over it.
 2. Each server starts a wait (`W`, §6.2), tells every member and channel, and freezes lockless
-   changes (§6.2). Any device with its lock can cancel.
+   members (§6.2). Any device with its lock, or the requester, can stop it.
 3. When its own wait has passed, a server seals the **release bundle** to the backup key: the
    current release key, the current record, and its waited statement (`release`).
-4. The holder fetches the backup's current contributions from the servers (§7.5), opens them, sums
-   the 2 shares and checks them against the record and each part's `sigma·G`.
+4. The holder fetches the backup's current contributions and the wrapped data keys from the
+   servers (§7.5), opens them, sums the 2 shares and checks them against the record and each
+   part's `sigma·G`.
 5. For 7 days after its own wait ended (the **recovery session**), each server takes part, in the
    two-call form (§5.1), in rounds of the backup plus two servers: but only for a recovery join
-   (§4.5), group records that add that device or remove members (gate: waited statements from both
-   servers), and a refresh. Not ordinary events.
+   (§4.5), group records that add that device or remove members (the `recovery` gate, §6.3), and a
+   refresh. Not ordinary events.
+6. After the refresh that follows, the recovery app MUST destroy the backup's shares and the
+   release bundle; the new backup is under a **new backup key** (§7.5).
 
 So a stolen paper needs two servers that each take part after their wait, with every device told.
-A refresh follows every use of the backup and makes a **new backup key** (§7.5).
 
 ### 6.7 Exporting keys
 
@@ -584,7 +604,7 @@ A refresh follows every use of the backup and makes a **new backup key** (§7.5)
   combining their own shares with their own tools cannot be stopped, and this does not try.)
 - **A child key** may be exported in stages: in Core 1.x any child; in a later version only
   children with `origin: import`; then none. Export is `take_out {}` from a device; each server
-  seals its share to that device's receive key only after a lock and `w`, or `W`, and tells every
+  seals its share to that device only after a lock and `w`, or `W`, and tells every
   member.
 - A server treats a group as a child only if it adopted, first-hand at the group's creation, a
   first record that says `role: child` (Key families module). A record made by migration (§11.2) is
@@ -602,36 +622,40 @@ many epochs comes back: it is removed and joins again at new indices.
 
 A refresh moves every remaining member to a new epoch, same `g`. It runs after any removal, after
 the backup is used, and periodically (reference: every 30 days, by any online device, no lock;
-servers refuse a periodic one if their epoch is under 25 days old). With no device online nothing
-happens and nothing is deleted. A server that has gone quiet is not dropped by a refresh; it is
-removed first, by a §6.3 change.
+servers refuse a periodic one if their epoch is under 25 days old). A device that is the account's
+only device and has no lock does not start periodic refreshes: a thief holding it could store junk
+backup contributions. With no device online nothing happens and nothing is deleted. A server that
+has gone quiet is not dropped by a refresh; it is removed first, by a §6.3 change.
 
-1. **Plan.** The device sends `refresh_plan` (§3.4): the next epoch `{n, id}`, the holders (current
-   members minus any removed now), and its own **dealing**: a random degree-3 polynomial with zero
-   constant term, its commitments, and for every holder index a delta sealed to that holder's
-   receive key. It also seals a new release key to every device and server holder, and a new data
-   key to every device holder.
-2. **Dealing.** At least one server also deals (`refresh_deal`), the same way. A server MUST check
-   that the holders are exactly the current members minus those removed, and that the plan's epoch
-   is its own plus one.
-3. **Pending.** Each holder checks every delta against **its own dealer's** commitments
+1. **Plan.** The device sends `refresh_plan` (§3.4) to every server: the next epoch `{n, id}`, the
+   holders (current members minus any removed now), the **dealers** (itself and one named server),
+   and its own **dealing**: a random degree-3 polynomial with zero constant term, its commitments,
+   and for every holder index a delta sealed to that holder. It also seals a new release key to
+   every device and server holder, and a new data key to every device holder. A server MUST check,
+   on receipt, that the holders are exactly the current members minus those removed (with a
+   valid `remove` or gate for each), and that the plan's epoch is its own plus one.
+2. **Dealing.** The named server deals (`refresh_deal`), the same way. No one else deals, and every
+   holder sums exactly the named dealers' deltas, so everyone computes the same
+   `C' = C + Σ dealers' commitments` (`C'0 = C0`).
+3. **Pending.** Each holder checks each delta against **its dealer's** commitments
    (`δ·G == Σ D_k·i^k`). A bad delta is refused with `error bad_delta` naming the dealer, to the
-   plan's sender and every server, and shown (§1.1); that holder joins again after the commit. A
-   holder adds the good deltas to its share, keeps the result as **pending**, and checks it against
-   `C' = C + Σ dealers' commitments` (`C'0 = C0`). It goes on signing in the current epoch.
-   It sends `pending_ok {plan}`, signed by its member key, to every server.
-4. **Backup.** With pending shares, the device and a server compute the new backup contributions
-   (§7.5) and store them at every server.
-5. **Check and commit.** Once every server holder has sent `pending_ok` and the backup
-   contributions are stored, the device drafts the next record with `C'`, carrying those
-   `pending_ok`s, and gets it signed by one server with **pending** shares. That signature proves
-   the new shares work and authenticates the record. The signed record is the commit; the device
-   sends it to every member (`record`).
+   plan's sender and every server, and shown (§1.1); the plan is then withdrawn. A holder adds the
+   good deltas to its share, keeps the result as **pending**, checks it against `C'`, and sends
+   `pending_ok {plan}` with a detached signature to every server. It goes on signing in the current
+   epoch.
+4. **Backup.** With pending shares, the device and the named server compute the new backup
+   contributions and wrapped data keys (§7.5) and store them at every server. Servers check that
+   the contributions' `sigma·G` sum to each backup index's `P_b` under `C'`.
+5. **Check and commit.** Once the named server and at least one other server have sent
+   `pending_ok` (or, after 24 hours, the named server alone) and the backup contributions are
+   stored, the device drafts the next record with `C'` and gets it signed by the named server with
+   **pending** shares. That signature proves the new shares work and authenticates the record. The
+   signed record is the commit; the device sends it to every member (`record`). Members that had
+   not yet said `pending_ok` catch up from deliveries (§7.3).
 6. **Adopt.** A member adopts the signed record once its pending share verifies against it, then
-   destroys its old share (§7.4). A member that learns of a signed next record while missing its
-   deltas fetches them (§7.3).
-7. **Drop.** A server drops a pending plan if no signed record for it arrives within 48 hours, and
-   tells the plan's sender (`error refresh_dropped`).
+   destroys its old share (§7.4).
+7. **Drop.** A server drops a pending plan if no signed record for it arrives within 48 hours, or
+   on `withdraw`, and tells the plan's sender (`error refresh_dropped`).
 8. **Removal wins.** A plan that removes members replaces any pending periodic plan (§3.4); every
    server that drops a plan for this reason says so to its sender. A removal never looks finished
    when it is not.
@@ -643,17 +667,18 @@ repair sigmas, the welcome) is a **delivery**. Every server of the account MUST 
 for every member, other servers included, until that member sends `ack` for it or is removed, and
 MUST hand it over when asked (§8.2). A server MAY cap deliveries at 12 epochs per member
 (reference); a member further behind joins again. This closes the stranded-server gap (live
-finding #13): a server away for a week catches up from its peers.
+finding #13): a server away for a week catches up from its peers. A server that was offline MUST
+fetch its deliveries from its peers before it co-signs again, so it never misses a `remove`,
+`cancel` or `withdraw` (which are deliveries to every server).
 
 Deliveries travel **only through server inboxes**, never as copies on relays: anything that carries
 a share must not sit in public archives.
 
 ### 7.4 Destroying old shares, and storage at rest
 
-- A member MUST destroy its old-epoch share once it adopts the new record, and its receive key once
-  the delivery sealed to it is used. A removed or wiped member MUST destroy everything it holds,
+- A member MUST destroy its old-epoch share once it adopts the new record. A removed or wiped member MUST destroy everything it holds,
   member key included, with no snapshot, backup, version history or log line that keeps it.
-- On phones and desktops, shares, receive keys and the member key at rest MUST be encrypted under
+- On phones and desktops, shares and the member key at rest MUST be encrypted under
   a key specific to this membership, kept in platform secure storage (Keychain "this device only",
   Android Keystore, an OS keyring), and shares additionally under a per-epoch key. Destroying means
   **deleting that key** (closes #7 where the platform can delete keys), not only the ciphertext.
@@ -674,7 +699,8 @@ a share must not sit in public archives.
 At setup and at every refresh (§7.2 step 4), a device and a server compute the backup's shares by
 repair, at the backup's indices, for the new epoch. Each contributing member wraps **only its own
 sigmas** twice: first NIP-44 to the backup key, then with XChaCha20-Poly1305 under the new epoch's
-release key, and stores them at every server with each `sigma·G` in the clear. Servers keep only
+release key, and stores them at every server with each `sigma·G` in the clear. The device also
+stores the account's data keys, wrapped the same two ways, so a recovery loses no data. Servers keep only
 the current epoch's contributions and delete older ones at adoption. No online member can open
 them, and helpers and backups do not hold the release key.
 
@@ -745,11 +771,9 @@ Every member message is a **kind 24301 rumor** whose content is JSON
 sealed (kind 13) by the sender's member key and gift-wrapped (NIP-59). The seal's key is the
 sender: there is no other sender field.
 
-- **What it is wrapped to.** Anything that carries a share, a release key or a data key (welcome,
-  `repair_sigma`, refresh deltas and keys, `release`, `take_out` answers) is wrapped to the
-  recipient's current **receive key**: from its `join_hello`, then from its latest `ack` or
-  `pending_ok`, which carry the next one, signed by its member key. Everything else is wrapped to
-  the member key.
+- **Never on relays.** Anything that carries a share, a release key or a data key (welcome,
+  `repair_sigma`, refresh deltas and keys, `release`, `take_out` answers) travels live or through
+  server inboxes only, so it never sits in a public archive waiting for a member key to leak.
 - **Live** (towards servers, and towards members known to be awake): kind 21059, re-sent until
   answered.
 - **Stored** (towards a member that may be asleep): the server's inbox (§8.2). Messages that carry
@@ -762,8 +786,9 @@ sender: there is no other sender field.
 ### 9.2 Relays and HTTPS
 
 - **Relays MUST** work for everything. Members subscribe on the record's `relays` (SHOULD be 3 or
-  more, from different operators) to kinds 1059 and 21059 with `#p` = their member key and receive
-  key. A server also listens on the relays in its own announcement.
+  more, from different operators) to kinds 1059 and 21059 with `#p` = their member key. A server also listens on the relays in its own announcement, and
+  devices always also use each server's announced relays (and HTTPS), whatever the record's
+  `relays` say, so a bad relay change cannot cut a server off.
 - **HTTPS SHOULD** be offered by servers that can. `POST <https>/keykin/v1` with a JSON array of
   gift wraps addressed to the server; the answer is a JSON array of gift wraps. Same format, so a
   member can switch between the two at any message. An iPhone's notification extension uses HTTPS
@@ -793,7 +818,7 @@ request size (512 KB). An open server MAY ask for proof of work (NIP-13) on enro
 | `remove` | device → servers and members | 6.5 |
 | `challenge` / `release_request` / `release` | server ↔ backup holder | 6.2, 6.6 |
 | `take_out` / `released` | device → servers / back (children only) | 6.7 |
-| `refresh_plan` / `refresh_deal` / `pending_ok` | device → servers / server → members / holder → servers | 7.2 |
+| `refresh_plan` / `refresh_deal` / `pending_ok` / `withdraw` | device → servers / server → members / holder → servers | 7.2 |
 | `record` | any member → members (a signed record, the commit) | 7.2 |
 | `ack` | member → servers and dealers | 4.2, 7.3 |
 | `notice` | server → members | 6.2, 8.2 |
@@ -815,8 +840,8 @@ not here belongs to a module or goes (§11.3).
   (decryption answers are useless without a device's own points), and cannot fake a push.
 - A joining member trusts only its scan, the group key and the check on both screens (#17).
 - A lock is a signature servers check, not a device's word (#4).
-- Shares, receive keys and member keys are destroyed with their keys, and nothing that carries a
-  share is published to relays (#7, where the platform can delete keys).
+- Shares and member keys are destroyed with their keys, and nothing that carries a share is
+  published to relays (#7, where the platform can delete keys).
 - A gate met at one server is visible to all: a lock, two vouches, or waited statements from two
   servers.
 - A stolen paper needs two servers that each waited, with every device and channel told, and the
@@ -869,7 +894,7 @@ not here belongs to a module or goes (§11.3).
 | #17 joining phone trusts any welcome | §4 (group-signed record, inviter's sigma, the check always shown) |
 | #4 lock taken on trust | §6.1, and gate evidence in the record (§6.3) |
 | #1 injected member can act | §3 (only kind 30242 records signed by `g`, kinds pinned), §11.2 |
-| #7 wipe leaves shares recoverable | §7.4, §9.1 receive keys (browsers: see §10) |
+| #7 wipe leaves shares recoverable | §7.4, §9.1 (browsers: see §10) |
 | #2 paper added with any key | §6.3, plus the paper's cancel and the freeze (§6.2) |
 | #3 report-lost race | §6.5, §6.2 |
 | #8, #9 server archive and ECDH oracle | §2 (no history), §5.5 (devices only, weighted) |
@@ -904,7 +929,7 @@ member has moved.
    knows them.
 3. The first record is always `role: master`, and is gated by `W` with waited statements from two
    servers, with every device and channel told. Then a refresh follows at once: new release key,
-   data key, backup contributions, receive keys, and lock keys for devices that have them.
+   data key, backup contributions, and lock keys for devices that have them.
 4. Do it first on a throwaway account, with the paper checked, before the main npub.
 
 Accounts that never migrate keep working with servers that still speak Cosign 0.12.
@@ -981,14 +1006,15 @@ fuzzed parser has run against every message. Files, each with positive and negat
    30 s ahead; an event 11 minutes ahead refused; a 6-day-old staged draft accepted under `member`.
 9. **Stateless destructive rule**: each listed shape, with and without approval or hold.
 10. **Refresh**: two dealers; a plan with an extra or missing holder; a second plan refused `busy`;
-    a bad delta named; a commit without every server's `pending_ok` refused; a pending drop after
+    a bad delta named; a commit with only one `pending_ok` before 24 h refused; a dealing by an
+    unnamed member ignored; two plans (lower id wins); a pending drop after
     48 h; a removal replacing a periodic plan; a member catching up from deliveries after 3 epochs.
 11. **Backup**: double wrap and unwrap; helper plus paper refused without release; recovery session
     limits; recovery join; old contributions deleted at adoption.
 12. **Push**: payload padding and size limit; signature check; per-class addresses; addresses
     dropped on removal; `deposit` from a non-member refused.
 13. **Transport**: chunking and reassembly per sender; a 513 KB message refused; an expired part
-    dropped; share-bearing messages only to receive keys and never to relays.
+    dropped; share-bearing messages never on relays.
 14. **Migration**: a Cosign 0.12 group with an injected member is migrated without it; a migration
     record with `role: child` refused.
 
@@ -1020,3 +1046,25 @@ From red team 1 (all findings taken):
   recovery, the secret never kept (§3.2, §4.4, §7.5). **L5** push details (§8). **L6** parts per
   sender, commitment coverage, classes per type (§5.1, §5.6, §9.1). **L7** §10 claims corrected.
   **L8** security displays named (§1.1).
+
+## Changes in draft 3
+
+From red team 2 (`keykin-core-redteam-2.md`), each judged against the bar (an nsec in a password
+manager, on security and on ease of use):
+
+- **Dropped:** receive keys (they stranded sleeping devices for almost no gain; share-bearing
+  messages simply stay off relays), and the `a`-target deletion clause (it gated deleting one
+  article and stopped nothing).
+- **Simplified:** waits run on changes, not records, so several can run at once and a wait no
+  longer blocks everything else for 3 days (§3.4, §6.2); a refresh names its two dealers and
+  commits after two servers' `pending_ok`, or one after 24 hours, so a dead server no longer
+  blocks it (§7.2); lock-gated changes need one server's short-wait statement (§6.3); forks re-apply
+  the losing change instead of rejoining (§3.4).
+- **Fixed:** mutual removal cannot be used against a recovery (§6.5); a `recovery` gate (§6.3);
+  the recovery freeze covers every lockless action (§6.2); detached signatures for vouches,
+  removals and `pending_ok` (§6.3); vouching asks the person (§1.1, §6.4); a removed device still
+  hears for 7 days (§6.5); `remove`/`cancel`/`withdraw` are deliveries (§6.5, §7.3); data keys
+  survive a recovery (§7.5); a lone lockless device skips periodic refresh and backup parts are
+  checked (§7.2); wait length checked (§6.2); `after` in the two-call round (§5.1); lower plan id
+  wins (§3.4); servers' own relays always used (§9.2); both screens confirm a join, removals checked
+  at plan time, backup shares destroyed after recovery.

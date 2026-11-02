@@ -128,3 +128,4 @@ because it describes the code during the freeze.
 - 2026-11-02 · User: a removed device cannot cancel waits during its 7-day window (Q4).
 - 2026-11-02 · User: joining always shows the 6-digit compare on both screens, even after a camera scan (Q5).
 - 2026-11-02 · Review, not yet questioned: the paper may cancel waits started without a lock; a running recovery wait freezes lockless changes; optional email/webhook notice channels are a core wire item; migrated accounts are always masters.
+- 2026-11-02 · Review (red team 2, judged against the nsec bar): receive keys dropped (shares simply never go on relays); waits run on changes, several at once; a refresh names two dealers and commits after two servers, or one after 24 h; mutual removal cannot target a recovery; data keys survive a recovery; vouching always asks the person.
