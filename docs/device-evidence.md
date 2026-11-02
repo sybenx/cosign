@@ -1,5 +1,9 @@
 # When one of your devices may believe in another — proposal, first draft
 
+> **Superseded by [`pinned-members.md`](pinned-members.md) (draft 2).** §1's rule and §4's
+> recommendation carry over unchanged; the evidence scheme below does not. Read this one for
+> the statement of the problem and the review's verdict, and that one for what to build.
+
 > **Status after an independent red team (`~/igloo/cosign-device-evidence-redteam.md`): the
 > problem below is real and verified, but this answer to it cannot be built.** Four criticals.
 > The one that matters most is that **evidence (b) is forgeable, and the reviewer demonstrated
