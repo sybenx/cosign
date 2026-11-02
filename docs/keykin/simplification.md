@@ -192,3 +192,73 @@ a face or fingerprint; a passcode-only owner has the paper.
 
 If all three are yes: draft 6, round 6 under the same rule, then the test vectors and the optional
 "Refresh now" module (its own red team).
+
+---
+
+# After round 6 (draft 6)
+
+Round 6 found **1 critical, 6 high, 4 medium, 4 low** (`keykin-core-redteam-6.md`). The second
+cut held where it aimed: nobody found a lockless takeover. But two things surfaced that are
+structural, not slips, so patching stops again.
+
+## Plain summary for the user
+
+Two problems are now clear:
+
+1. **Without re-dealing, a server can never be safely replaced.** The old server's piece still fits
+   the key. Swap one server and the server side holds 4 points, which is the key. Today one person
+   runs every server. So replacing a dead server must re-deal, which is your "Refresh now".
+2. **The machinery for ordering account changes keeps breaking.** That is the numbered chain of
+   member lists, drafts, and "majority of servers holds the draft". It has produced a serious
+   finding in every round: forks, deadlocks, devices that fall behind and never catch up. It exists
+   only because changes can happen at the same time from different places.
+
+The proposal splits account changes in two.
+
+- **Everyday, instant changes stay in the core:** add a device, report a device lost, and paper
+  recovery. These are safe to happen in any order. Each is its own signed approval, members keep the
+  whole set, and a device that was off for a month simply catches up. There is no chain, no drafts
+  and no forks.
+- **Structural changes move into "Refresh now":** adding, swapping or removing a server, adding a
+  helper, and replacing the paper. This is the ceremony you asked for. Every member that stays is
+  online together, everyone confirms, the paper is reprinted and checked, and the shares are re-dealt
+  so the old pieces stop working. It runs one at a time by nature, so it needs no ordering machinery,
+  and it fixes problem 1.
+
+## Round 6's critical and high findings
+
+| ID | What | Proposal |
+|---|---|---|
+| C1 | The paper-recovery approval can be copied by a thief's device in the account and reused for its own changes. | Fix: during recovery, the backup key signs **each** change, and only the backup holder may submit it. |
+| H1 | One interrupted change can freeze all changes for good (`draft_held` once per number). | **Cut:** no chain and no drafts. Everyday changes form a set (order doesn't matter); structural ones happen only in "Refresh now". |
+| H2 | A device off for more than 7 days never catches up and may co-sign with a reported thief. | **Cut:** members keep the whole set of signed changes, which never expire and are small. Catching up means fetching the set. |
+| H3 | Swapping a server without re-dealing gives the server side 4 points. | **Move:** server changes only in "Refresh now", which re-deals. |
+| H4 | Replacing the paper can never finish (circular hash). | **Move:** paper replacement only in "Refresh now". Drop the hash; the backup key's signature is enough. |
+| H5 | A "lock" can be a passcode (WebAuthn user verification and the Android default accept a PIN). | Fix: a lock is **biometric-only** and dies when enrollment changes: Android `BIOMETRIC_STRONG` with enrollment invalidation, and iOS `biometryCurrentSet`. A browser passkey can't promise that, so it doesn't count as a lock. |
+| H6 | Two-device approvals other than adds are one tap each. | Fix: every two-device approval has the person type a 6-digit code from one device into the other. |
+
+The mediums (lockless holds during recovery, inbox addressing, migration order, the draft id) are
+fixed or disappear with the cut. In particular, recovery ends lockless holds, and deliveries name
+their recipient in the gift wrap's `p` tag.
+
+## What the core would keep
+
+Joining, signing, decryption, the record's commitment and the check on it, the invariants, report
+lost, recovery with its wait and freeze, the paper's double wrap, push and inbox, transport and
+migration. Five reviews found these sound.
+
+## Questions for the user
+
+1. **Server changes, adding a helper, and replacing the paper happen only in "Refresh now"** (every
+   staying device and server online together, paper reprinted). The reason: without re-dealing,
+   swapping a server would hand the server side the whole key. Adding a device and reporting one lost
+   stay instant. Recommended: yes.
+2. **A face/fingerprint lock must be biometric-only.** If it falls back to a passcode, it doesn't
+   count. Browser passkeys don't count as locks, because they can fall back to a PIN. Recommended:
+   yes.
+3. **Every two-device approval asks you to type a 6-digit code** shown on one device into the other,
+   not just tap Yes. It is rare (adding a device without a lock, reporting a device lost from two
+   lockless devices). Recommended: yes.
+
+If yes: draft 7 (core) plus `refresh.md` (the ceremony) together, then round 7 over both under the
+same rule, then the test vectors.
