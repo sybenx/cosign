@@ -57,7 +57,7 @@ this log says otherwise.
 - 2026-10-24 · User: a 7-day escape hatch: if no server answered for 7 days, device + paper (or two devices) may rebuild the key after the lock and a plain warning.
 - 2026-10-24 · User: monthly silent refresh while a device is online; dead servers swapped in it; never a deadline; nothing shown.
 - 2026-10-24 · User: a server never deletes a finished account's share for inactivity; only a guarded forget does.
-- 2026-10-25 · User: never silently drop a server the user added, nor one on a two-server account; say once, calmly, after a week quiet.
+- 2026-10-25 · User: never silently drop a server the user added, nor one on a two-server account; say once, calmly, after a week quiet. *(Updated 2026-11-02: no server is ever swapped silently; see below.)*
 - 2026-10-26 · User: any one live device can vouch for a new one; its fresh lock is "the second gate past just stealing a phone".
 - 2026-10-26 · User (live finding #3, shipped 0.12.6): a removed member may, for 7 days, report its remover; then both are removed. *(This is the "contest"; reconciled below.)*
 - 2026-11-02 · User: a passcode alone counts as no lock, so the 3-day wait applies to whatever that device starts.
@@ -146,3 +146,10 @@ because it describes the code during the freeze.
 - 2026-11-02 · User: **the private-data key stays the same** when a device is reported lost; changing it comes with the optional refresh module.
 - 2026-11-02 · User: **accounts must have at least 3 servers.** The app adds public ones automatically, alongside a user's private server.
 - 2026-11-02 · Process: red-team round 6 (draft 6) found 1 critical, 6 high. Stopped again; `simplification.md` part 3 proposes moving server changes, helpers and paper replacement into the "Refresh now" ceremony, replacing the record chain with a set of independent signed changes, biometric-only locks, and typed codes for two-device approvals. Waiting on the user.
+
+## Third simplification (user, 2026-11-02, after red-team round 6)
+
+- 2026-11-02 · User: **adding, swapping or removing a server, adding a helper, and replacing the paper happen only in "Refresh now"** (every staying member online together, shares re-dealt, paper reprinted and checked). Everyday changes (add a device, report one lost, paper recovery) stay instant, as independent signed approvals.
+- 2026-11-02 · User: **a lock is biometric-only**: no passcode fallback; browser passkeys don't count as locks.
+- 2026-11-02 · User: **a two-device approval means typing a 6-digit code** from one device into the other, not a tap.
+- 2026-11-02 · User: **a dead server, public or private, is replaced only in a refresh with a reprint, never by a silent swap.** After a week quiet, the app says so once, calmly, and offers "Refresh now". *(Updates the 2026-10-25 quiet-servers line and the 2026-10-24 "silent auto-swap for public servers".)*
