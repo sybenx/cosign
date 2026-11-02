@@ -3,38 +3,38 @@ package cc.aaro.cosign
 import android.content.Context
 import android.net.Uri
 import cc.aaro.cosign.core.Clock
-import cc.aaro.cosign.core.CodeCheck
-import cc.aaro.cosign.core.Event
+import cc.aaro.qrst.core.CodeCheck
+import cc.aaro.qrst.core.Event
 import cc.aaro.cosign.core.Frost
 import cc.aaro.cosign.core.FrostNative
 import cc.aaro.cosign.core.Dkg
-import cc.aaro.cosign.core.Nip19
-import cc.aaro.cosign.core.Json
-import cc.aaro.cosign.core.Mode
-import cc.aaro.cosign.core.Nip44
-import cc.aaro.cosign.core.Outcome
-import cc.aaro.cosign.core.PairingParams
-import cc.aaro.cosign.core.PairingUri
-import cc.aaro.cosign.core.Phase
+import cc.aaro.qrst.core.Nip19
+import cc.aaro.qrst.core.Json
+import cc.aaro.qrst.core.Mode
+import cc.aaro.qrst.core.Nip44
+import cc.aaro.qrst.core.Outcome
+import cc.aaro.qrst.core.PairingParams
+import cc.aaro.qrst.core.PairingUri
+import cc.aaro.qrst.core.Phase
 import cc.aaro.cosign.core.Policy
-import cc.aaro.cosign.core.SignerTicket
-import cc.aaro.cosign.core.SignerTicketProfile
+import cc.aaro.qrst.core.SignerTicket
+import cc.aaro.qrst.core.SignerTicketProfile
 import cc.aaro.cosign.core.CosignMemberProfile
 import cc.aaro.cosign.core.MemberMove
 import cc.aaro.cosign.core.Refresh
 import cc.aaro.cosign.core.Backup
-import cc.aaro.cosign.core.SystemEnv
-import cc.aaro.cosign.core.generateSecretKey
-import cc.aaro.cosign.core.hexToBytes
-import cc.aaro.cosign.core.isHex32
-import cc.aaro.cosign.core.publicKeyHex
-import cc.aaro.cosign.core.toHex
-import cc.aaro.cosign.net.KeyValue
+import cc.aaro.qrst.core.SystemEnv
+import cc.aaro.qrst.core.generateSecretKey
+import cc.aaro.qrst.core.hexToBytes
+import cc.aaro.qrst.core.isHex32
+import cc.aaro.qrst.core.publicKeyHex
+import cc.aaro.qrst.core.toHex
+import cc.aaro.qrst.net.KeyValue
 import cc.aaro.cosign.net.Relays
-import cc.aaro.cosign.net.Store
-import cc.aaro.cosign.net.Transfer
-import cc.aaro.cosign.net.TransferDeps
-import cc.aaro.cosign.net.TransferView
+import cc.aaro.qrst.net.Store
+import cc.aaro.qrst.net.Transfer
+import cc.aaro.qrst.net.TransferDeps
+import cc.aaro.qrst.net.TransferView
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import fr.acinq.secp256k1.Secp256k1
@@ -884,7 +884,7 @@ class Signer(private val context: Context, val slot: String = "0") {
             when {
                 t.size == 64 && t.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' } ->
                     ByteArray(32) { ((Character.digit(t[2 * it], 16) shl 4) or Character.digit(t[2 * it + 1], 16)).toByte() }
-                else -> cc.aaro.cosign.core.Bech32.decodeNsec(t)
+                else -> cc.aaro.qrst.core.Bech32.decodeNsec(t)
             }
         } finally { t.fill(' ') }
     } finally { chars.fill(' ') }
@@ -940,7 +940,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.WAITING, text = "Giving ${if (picked.size == 1) "your server" else "${picked.size} servers"} their part…")) }
 
         val idxs = IntArray(3 + picked.size) { it + 1 }
-        val mirrored = cc.aaro.cosign.core.Secp.oddY(secret)
+        val mirrored = cc.aaro.qrst.core.Secp.oddY(secret)
         val dealt = Json.parse(FrostNative.dealFromSecret(secret, idxs, 4)) as Map<*, *>
         secret.fill(0)
         val shares = (dealt["shares"] as List<*>).map { it as Map<*, *> }.map { Triple((it["idx"] as Long).toInt(), it["secret"] as String, it["sharePub"] as String) }
@@ -1039,7 +1039,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         val key = try { FrostNative.reconstruct(groupJson(m), Json.stringify(shares.map { listOf(it.first, it.second) })) } catch (e: Exception) {
             return ui.update { it.copy(takeOut = TakeOut(TakeOut.Stage.FAILED, "Couldn't put the key together: ${e.message}")) }
         }
-        val out = if (m.mirrored == true) cc.aaro.cosign.core.Secp.negate(key).also { key.fill(0) } else key
+        val out = if (m.mirrored == true) cc.aaro.qrst.core.Secp.negate(key).also { key.fill(0) } else key
         val nsec = Nip19.nsec(out)
         out.fill(0)
         takeOutId = null
@@ -1168,8 +1168,9 @@ class Signer(private val context: Context, val slot: String = "0") {
         var kept = false
         t.onChange = {
             val v = t.view()
+            val got = v.value
             when {
-                v.value != null && !kept -> { kept = true; keepMoved(v.value) }
+                got != null && !kept -> { kept = true; keepMoved(got) }
                 v.session.phase == Phase.ACCEPT -> ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.ACCEPT, v.session.code, v.session.rendering)) }
                 v.session.phase == Phase.CODE && v.session.code != null -> ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.CODE, v.session.code)) }
                 v.stage == TransferView.Stage.ENDED && !kept -> ui.update { it.copy(moveIn = MoveIn(MoveIn.Stage.FAILED, text = when (v.session.outcome) {

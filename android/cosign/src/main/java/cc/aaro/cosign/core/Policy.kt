@@ -1,5 +1,8 @@
 package cc.aaro.cosign.core
 
+import cc.aaro.qrst.core.Event
+import cc.aaro.qrst.core.Json
+
 /**
  * What has to wait for you: the phone's own copy of server/policy.ts, line for line.
  *

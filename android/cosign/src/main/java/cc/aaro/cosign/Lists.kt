@@ -1,8 +1,8 @@
 package cc.aaro.cosign
 
 import android.content.Context
-import cc.aaro.cosign.core.Event
-import cc.aaro.cosign.core.Json
+import cc.aaro.qrst.core.Event
+import cc.aaro.qrst.core.Json
 import cc.aaro.cosign.core.Clock
 import cc.aaro.cosign.core.Policy
 import java.io.File

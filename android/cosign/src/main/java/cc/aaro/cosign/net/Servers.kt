@@ -1,7 +1,8 @@
 package cc.aaro.cosign.net
 
-import cc.aaro.cosign.core.Event
-import cc.aaro.cosign.core.Json
+import cc.aaro.qrst.core.Event
+import cc.aaro.qrst.core.Json
+import cc.aaro.qrst.net.SEEDS
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket

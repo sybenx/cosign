@@ -19,6 +19,8 @@ pieces sites use, and the Android library apps build on. It has no app of its ow
 - `site/`: what a site uses to sign people in (and cosign.aaro.cc/servers); `link/`: cosign.aaro.cc.
 - `android/cosign`: the Android library. `android/nip55tester`: a stand-in for another
   app, for testing NIP-55 on an emulator.
+- `qr-secret-transfer/` (a submodule): QRST, whose Kotlin library (`cc.aaro.qrst:qrst`)
+  the Android library builds on for the QRST core and relay layer.
 
 ## Apps
 
@@ -60,7 +62,9 @@ a share.
     The library's `Nip55Provider` answers connected apps in the background.
 - **Using it:** no Maven package yet. Add this repository as a git submodule and
   `includeBuild("<submodule>/android")` in your `settings.gradle.kts`; Gradle then
-  resolves `implementation("cc.aaro.cosign:cosign")` from it. Marble does exactly this.
+  resolves `implementation("cc.aaro.cosign:cosign")` from it, and the QRST library it
+  brings (`cc.aaro.qrst:qrst`, its types included). Cosign has a submodule of its own, so
+  check it out with `git submodule update --init --recursive`. Marble does exactly this.
 
 ## Servers
 
@@ -110,7 +114,7 @@ public address, and a phone needs nothing but a connection.
 - **Moving a key in** (`site/src/import.ts`, `site/src/member.ts`,
   `core/CosignMember.kt`): a web app holding an nsec deals it, enrolls each server, and
   hands the phone its shares by QRST (`cosign-member`, checked at `type`).
-- **Sign-in** (`site/src/pair.ts`, `site/src/ticket.ts`, `core/SignerTicket.kt`): QRST
+- **Sign-in** (`site/src/pair.ts`, `site/src/ticket.ts`, QRST's `SignerTicket.kt`): QRST
   profile [`signer-ticket`](https://github.com/sybenx/qr-secret-transfer/pull/14). The
   site shows a code; the phone hands over a one-time ticket that the site redeems as its
   NIP-46 `connect` secret. A combined code also carries a `nostrconnect://` fallback
@@ -155,6 +159,7 @@ End-to-end tests are in `site/test/` (each starts what it needs; see the comment
 top of each file), unit tests in `server/test/` and `android/cosign/src/test/`:
 
 ```sh
+git submodule update --init                             # the QRST library the Android build includes
 cd server && node test/vectors.ts && node test/policy-vectors.ts
 cd frost && cargo build --release --features android   # the desktop FROST the Android tests load
 cd android && ./gradlew :cosign:testDebugUnitTest
@@ -164,5 +169,5 @@ cd site && node test/paper.e2e.ts       # paper backup through a refresh; cancel
 
 ## License
 
-MIT. The QRST code in `site/vendor` and `android/.../core` is MIT too
+MIT. The QRST code in `site/vendor` and `qr-secret-transfer/` is MIT too
 (`site/vendor/QRST-LICENSE`).

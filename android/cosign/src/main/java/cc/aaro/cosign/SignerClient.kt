@@ -6,8 +6,8 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
 import android.util.Log
-import cc.aaro.cosign.core.Event
-import cc.aaro.cosign.core.Json
+import cc.aaro.qrst.core.Event
+import cc.aaro.qrst.core.Json
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 

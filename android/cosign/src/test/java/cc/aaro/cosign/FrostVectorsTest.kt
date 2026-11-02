@@ -1,10 +1,10 @@
 package cc.aaro.cosign
 
 import cc.aaro.cosign.core.Frost
-import cc.aaro.cosign.core.Secp
-import cc.aaro.cosign.core.SystemEnv
-import cc.aaro.cosign.core.hexToBytes
-import cc.aaro.cosign.core.toHex
+import cc.aaro.qrst.core.Secp
+import cc.aaro.qrst.core.SystemEnv
+import cc.aaro.qrst.core.hexToBytes
+import cc.aaro.qrst.core.toHex
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

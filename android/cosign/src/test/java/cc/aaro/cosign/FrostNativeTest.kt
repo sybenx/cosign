@@ -1,7 +1,7 @@
 package cc.aaro.cosign
 
 import cc.aaro.cosign.core.FrostNative
-import cc.aaro.cosign.core.hexToBytes
+import cc.aaro.qrst.core.hexToBytes
 import fr.acinq.secp256k1.Secp256k1
 import org.json.JSONArray
 import org.json.JSONObject

@@ -33,6 +33,9 @@ android {
 }
 
 dependencies {
+    // The QRST core and relay layer (cc.aaro.qrst.core, .net), from the submodule. api, so an
+    // app built on Cosign sees the QRST types its API hands out (Event, Json, Store, ...).
+    api("cc.aaro.qrst:qrst")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-android:0.19.0")
