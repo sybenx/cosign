@@ -1,5 +1,7 @@
 package cc.aaro.cosign.core
 
+import cc.aaro.qrst.core.Json
+
 /**
  * Making a key with nobody ever holding it (DKG), for a weighted group: this phone runs 3
  * of the shares, each server 1, and it takes the threshold (4) to sign. The same steps

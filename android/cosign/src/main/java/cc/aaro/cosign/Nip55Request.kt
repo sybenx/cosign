@@ -2,7 +2,7 @@ package cc.aaro.cosign
 
 import android.app.Activity
 import android.content.Intent
-import cc.aaro.cosign.core.Event
+import cc.aaro.qrst.core.Event
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.net.URLDecoder

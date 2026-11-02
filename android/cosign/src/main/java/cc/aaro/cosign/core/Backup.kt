@@ -1,5 +1,9 @@
 package cc.aaro.cosign.core
 
+import cc.aaro.qrst.core.Json
+import cc.aaro.qrst.core.Nip44
+import cc.aaro.qrst.core.hexToBytes
+
 /**
  * Reading a paper backup back (COSIGN.md §8.3), as server/backup.ts does: with the
  * paper's key, open every piece the servers kept for it, add each share's sigmas up

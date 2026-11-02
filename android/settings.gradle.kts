@@ -15,3 +15,5 @@ dependencyResolutionManagement {
 rootProject.name = "cosign"
 include(":cosign")
 include(":nip55tester")
+// The QRST core and relay layer, shared with QRST Signer: the submodule, at the commit recorded here.
+includeBuild("../qr-secret-transfer/kotlin")

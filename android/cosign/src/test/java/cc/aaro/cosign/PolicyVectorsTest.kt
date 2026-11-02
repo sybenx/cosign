@@ -1,6 +1,6 @@
 package cc.aaro.cosign
 
-import cc.aaro.cosign.core.Event
+import cc.aaro.qrst.core.Event
 import cc.aaro.cosign.core.Policy
 import org.json.JSONArray
 import org.json.JSONObject

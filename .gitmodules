@@ -1,0 +1,3 @@
+[submodule "qr-secret-transfer"]
+	path = qr-secret-transfer
+	url = https://github.com/sybenx/qr-secret-transfer.git
