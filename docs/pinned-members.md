@@ -1,6 +1,34 @@
 # When one of your devices may believe in another — draft 2
 
-**Status: proposal, for review. Nothing here is built.** It replaces
+> **Status after its own independent red team (`~/igloo/cosign-pinned-members-redteam.md`,
+> 2026-11-02): not buildable as written — buildable with three changes.** The shape is right
+> (derive the point, prove the scalar, pin the kind first-hand) and **§2.2's share proof is safe**:
+> the reviewer could not get a chosen value into `e`, could not reuse `R`, and could not combine
+> proofs across indices — and executed the control, which is that the *same* construction with
+> `idx` and `P_idx` removed from the challenge **does** forge a group signature. The per-index
+> binding is load-bearing, and §2.2 should say so beside the challenge.
+>
+> What breaks is underneath it. **§2.1 never names what it derives from**, and the only anchor it
+> cites — 0.12.8's `sound()` — is forgeable by the author of the list: `vss_commitment` constrains
+> a weighted *sum* of the first `threshold` points, so an attacker holding three of four solves the
+> fourth and the check passes (executed, full chain). Anchored on the device's **own** `s·G` points
+> the same attack is refused 200 times out of 200 — but `onMembers` overwrites the phone's own
+> points from the server's list today. **Two own points are enough to re-enable the forgery**, and
+> the path that has two is a paper recovery, not a corner case; every co-signer and server holds
+> one and can never anchor §2.1 at all, so §2.1 is device-only and its claim to be "0.12.8's fix
+> applied where it was left undone" is backwards. And **§2.3's handoff channel is not authenticated
+> by the user's scan** — see live finding 17, which is a critical hole in the join handshake in its
+> own right, found under this document and not caused by it.
+>
+> **The change to make instead of §2.1's candidate search: pin the polynomial commitment, not
+> points.** It is first-hand at DKG, at dealing and at every refresh, needs no anchor and no
+> candidate search, works for a member holding one share, and deletes the §9.1 open question
+> outright. It is the useful half of §6's epoch record without the signing round. Draft 3 is that.
+>
+> §7 — remove the `site_key` receiver — is verified and still right, so site-dms stays parked
+> whatever else changes.
+
+**Status: proposal, for review — superseded in part, see above.** It replaces
 [`device-evidence.md`](device-evidence.md), whose mechanism was rejected by its red team
 (`~/igloo/cosign-device-evidence-redteam.md`, 2026-10-28) — not the problem, which is real and
 was found three times in one week, and not §1's rule, which survives word for word. What was
