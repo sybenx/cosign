@@ -1,8 +1,9 @@
 # Keykin interop test plan
 
-Plan only, nothing built. This is the plan for the last item of Phase 1's finish line: "nak,
-Grimoire, nostr-tools, NDK and Amethyst pass a scripted sign-in, post, held delete and NIP-44
-test against a prototype." It says what the script does, against what, and what counts as a
+Plan only, nothing built. This is the plan for the last item of Phase 1's finish line: the
+plan doc's "nak, Grimoire, nostr-tools, NDK and Amethyst pass a scripted sign-in, post, held delete
+and NIP-44 test against a prototype", with the client list replaced by the ranked set below
+(user, 2026-11-02). It says what the script does, against what, and what counts as a
 pass, so whoever builds the Keykin prototype can write it in a day.
 
 The bar comes from the user (2026-10-27): an account that only works in our own apps is not a
@@ -34,14 +35,16 @@ a search on 2026-11-02 found no first-party statement for Damus, Nostur or Olas.
 | must | `nak` (pinned) | CLI | NIP-46 `bunker://` | the user's bar; scriptable |
 | 1 | Primal | iOS, Android, web | NIP-46 (iOS, web), NIP-55 (Android), NIP-07 (web) | most active users |
 | 2 | Amethyst | Android | NIP-55, NIP-46 | second by activity; the main NIP-55 client |
-| 3 | nostr-tools `BunkerSigner` and NDK `NDKNip46Signer` | libraries | NIP-46 both directions | what Jumble, Coracle, noStrudel, Grimoire and most web clients use; passing these covers the long tail |
+| 3 | nostr-tools `BunkerSigner` and NDK `NDKNip46Signer` | libraries | NIP-46 both directions | what Jumble, Coracle, noStrudel and most web clients use; passing these covers the long tail |
 | 4 | Damus | iOS | NIP-46 (support reported as partial) | the oldest iOS client; iPhone is a full platform |
 | 5 | Jumble, Coracle, noStrudel | web | NIP-07 (extension), NIP-46 | the most used web clients after Primal |
-| 6 | Grimoire (grimoire.rocks) | web | NIP-07, NIP-46 | the user uses it |
-| 7 | Nostur, Olas, YakiHonne | iOS / Android | NIP-46 | second-tier mobile clients; check support first |
+| 6 | Nostur, Olas, YakiHonne | iOS / Android | NIP-46 | second-tier mobile clients; check support first |
 
 The **top set** that must pass before Phase 1 is done: nak, Primal (one platform per door), Amethyst,
-the two libraries, and Damus. Ranks 5–7 run before each Phase 4 step reaches the user's account;
+the two libraries, and Damus. Why these: nak is the user's bar; Primal and Amethyst have the most
+active users and between them cover all three doors (NIP-46, NIP-55, NIP-07); the two libraries
+stand in for the long tail of web clients built on them; Damus keeps iPhone a full platform. Grimoire
+is not in the set (the user doesn't use it); it is covered by the libraries like any other web client. Ranks 5–6 run before each Phase 4 step reaches the user's account;
 a failure there is a bug to file, not a blocker.
 
 ## How each is driven
@@ -50,7 +53,7 @@ a failure there is a bug to file, not a blocker.
 |---|---|---|
 | `nak` | shell: `nak event --sec bunker://… -k 1 -c …`, `nak encrypt`/`decrypt --sec bunker://…` | needs the device to hand out a `bunker://` (Doors module) |
 | nostr-tools, NDK | Node scripts | both directions |
-| Primal web, Jumble, Coracle, noStrudel, Grimoire | Playwright, with the extension loaded (NIP-07) and with a pasted `bunker://` (NIP-46) | one scripted login + post per client; brittle UI scripts are fine, they are smoke tests |
+| Primal web, Jumble, Coracle, noStrudel | Playwright, with the extension loaded (NIP-07) and with a pasted `bunker://` (NIP-46) | one scripted login + post per client; brittle UI scripts are fine, they are smoke tests |
 | Primal Android, Amethyst | Android emulator, UI Automator | NIP-55 first, NIP-46 as fallback; one emulator at a time |
 | Primal iOS, Damus, Nostur, Olas | iOS Simulator for the client, the Keykin device on a real iPhone or a headless member | NIP-46 only; the iPhone wake path is tested on a real device |
 
