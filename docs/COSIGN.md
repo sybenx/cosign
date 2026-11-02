@@ -117,6 +117,12 @@ What the user does:
   decryption and never holds a mailbox key. Replaces what 0.2 called a **server**. Usually
   run by someone else; a user MAY run one in their own group (§9.1). The same software may
   be a device for its owner's account and a co-signer for everyone else's.
+  - **What a person is shown: "helper".** This document says *co-signer* because it has to
+    be precise about who holds what. **Anything a person reads — an app's screens, a
+    co-signer's own web page, settings, notices — SHOULD say "helper"**, and "your
+    helpers" for the set of them. The same applies to the other words here that are about
+    the mechanism rather than the experience: a person is shown their *devices* and their
+    *helpers*, not members, pieces, shares or points.
 - **Operator** — whoever runs a co-signer. The user MAY be the operator of a co-signer in
   their own group, and then counts as **one operator** under §3's distinct-operator rule,
   like anyone else.
@@ -164,7 +170,8 @@ What the user does:
 - **A co-signer holds exactly one share.** No co-signer may hold more.
 - **Co-signers SHOULD have different operators.** Clients prefer three co-signers from
   three operators. When fewer operators exist, a client fills the remaining places from
-  one operator's co-signers and says so plainly in setup and settings. *(Planned, not yet
+  one operator's co-signers and says so plainly in setup and settings, in the words of §2
+  ("helpers"). *(Planned, not yet
   specified: swapping them out automatically by refresh as other operators appear;
   today a device adds a co-signer by hand, §9.5.)*
   - **What it costs:** one operator's co-signers together are at most 3 points and can
@@ -744,7 +751,7 @@ The list of co-signers lives on Nostr, not on one website.
 - **Picking co-signers:** one ping round trip per candidate at setup, then a rolling record
   of answer times and failures from real signing (§5.1). Three co-signers, preferring
   **three distinct operator pubkeys**; when fewer operators exist, the rest come from
-  one operator's co-signers, shown as such (§3). Settings show each co-signer's operator
+  one operator's co-signers, shown as such (§3). Settings show each helper's operator
   by name, the user included where they run one (§9.1). A machine the user runs as a
   **device** is preferred as the second signer when awake (§5.1); one they run as a
   co-signer is an ordinary co-signer and gets no preference.
@@ -828,9 +835,8 @@ will be assigned before 1.0:
 ## 13. Open questions
 
 1. **Kind numbers** and a name for this specification.
-2. **What a person should call a co-signer.** "Co-signer" is accurate and close enough to
-   "Cosign" to be confusing in an interface. The intent is that the spec says co-signer
-   and the apps say something plainer; the word is the author's to choose.
+2. ~~**What a person should call a co-signer.**~~ — **answered: "helper"** (2026-11-01).
+   The spec says *co-signer*; apps and anything a person reads say *helper*. §2.
 3. ~~**Whether a user may run a co-signer of their own**~~ — **answered: yes**
    (2026-11-01). A machine the user runs may be a device (3 shares) or a co-signer (1),
    and the choice is how much weight it should carry; the user is then one operator under
@@ -852,7 +858,8 @@ the preferred second signer when awake, so routine signing is 3 + 3 and no co-si
 the event. It cannot approve, vouch, report a device lost or cancel a wait, because it
 cannot tell who is at it, and `attended` is self-asserted so no other member can grant or
 remove that. A user may still run a **co-signer** of their own where a machine should help
-sign without a device's weight (§9.1); they then count as one operator. Sites and doors moved to [Companion A](doors.md), keeping versions and Undo to
+sign without a device's weight (§9.1); they then count as one operator. A person is shown
+*devices* and *helpers*, never co-signers (§2). Sites and doors moved to [Companion A](doors.md), keeping versions and Undo to
 [Companion B](undo.md). Notes and app data are out of scope (§1).
 
 0.2-draft, 2026-10-24. 0.1 (2026-10-23) used equal pieces with threshold 2 and one
