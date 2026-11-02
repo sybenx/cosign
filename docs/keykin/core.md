@@ -12,6 +12,11 @@ work together and keep the account safe. Everything a person sees, and every opt
 lives in a module (§12). Sites change nothing: they keep using NIP-07, NIP-46, NIP-55 and the QRST
 signer-ticket, which the Doors module covers.
 
+**The bar.** An nsec kept in a password manager. Every rule here must beat it on security *and*
+on how it feels to use; a rule that costs a person effort without beating it does not belong. So
+nothing here puts a face or fingerprint in front of everyday or background signing, or opening the
+stored shares.
+
 **How to read it.** MUST, SHOULD and MAY apply to wire behaviour and to what a member stores. The
 only exceptions are the few **security displays** in §1.1, which are part of the protocol's
 security. Everything else a person sees is up to the app. "Reference" numbers are defaults an
@@ -415,8 +420,10 @@ Before giving a partial, a co-signer MUST check that:
 2. `signers` is exactly the sender's indices plus this co-signer's (plus, in the two-call form,
    the other co-signers'), is worth at least 4, and the commitments cover it exactly (§5.1);
 3. the request is fresh and not a replay (§5.6);
-4. `event.pubkey` is `g` and the event's `created_at` is no more than **10 minutes** ahead of its
-   own clock; a later one is refused, whatever the kind;
+4. `event.pubkey` is `g`, and, for a **replaceable or addressable** kind (0, 3, 10000–19999,
+   30000–39999), the event's `created_at` is no more than 10 minutes ahead of its own clock: a
+   version dated ahead would block every later change until that date. Other kinds may be dated
+   ahead, so a person can schedule a post;
 5. if the event is **kind 30242, whatever its `d` tag**, it is a record: it MUST be a valid change
    with its gate met (§3.3, §6.3) and the draft this server holds (§3.4). A device MUST never sign a
    kind 30242 on a site's request;
@@ -434,7 +441,11 @@ events that are destructive on their face, and for these a server MUST require *
 `(g, epoch.id, "sign", event id)`, valid for that event at any co-signer and any retry), **or** a
 passed wait (`hold`):
 
-- every request to vanish (kind 62) and every deletion (kind 5);
+- every request to vanish (kind 62);
+- a **mass deletion**: a kind 5 with 5 or more `e`/`a` targets, or any `a` target whose kind is 0,
+  3, 10000–19999 or 30000–39999, or a kind 5 that would take this account past 5 deletion targets
+  co-signed by this server without approval in the last 10 minutes (a burst; reference numbers,
+  counted per account, no history kept);
 - kind 0 whose content is `{}` or has no non-empty `name`, `display_name`, `about` or `picture`;
 - kind 3, 10000–10030 or 30000–30030 with no tags other than `d`;
 - kind 10002 with no `r` tags.
@@ -442,6 +453,9 @@ passed wait (`hold`):
 **Holding** works like any wait: the device sends `hold {event}` (`member` class); servers start a
 wait (§6.2) and tell every member and channel; after `W` the device sends `sign` with `hold: <wait
 id>` and a server co-signs if its own wait passed and nobody cancelled.
+
+A single deletion needs neither: the device holds it for 10 seconds with Undo (Device policy
+module) and then signs it like any event.
 
 This is a backstop, and it is easy to step around for lists: a follow list cut to one junk entry is
 not empty. The device is the real gate, and its policy (Device policy module) holds far more. What
@@ -639,16 +653,21 @@ a share must not sit in public archives.
 - A member MUST destroy its old-epoch share once it adopts the new record, and its receive key once
   the delivery sealed to it is used. A removed or wiped member MUST destroy everything it holds,
   member key included, with no snapshot, backup, version history or log line that keeps it.
-- Shares, receive keys and the member key at rest MUST be encrypted under a key specific to this
-  membership, kept in platform secure storage (Keychain "this device only", Android Keystore, an
-  OS keyring), and shares additionally under a per-epoch key. Destroying means **deleting that
-  key** (closes #7 where the platform can delete keys), not only the ciphertext.
+- On phones and desktops, shares, receive keys and the member key at rest MUST be encrypted under
+  a key specific to this membership, kept in platform secure storage (Keychain "this device only",
+  Android Keystore, an OS keyring), and shares additionally under a per-epoch key. Destroying means
+  **deleting that key** (closes #7 where the platform can delete keys), not only the ciphertext.
+- That storage key MUST NOT require the person's face, fingerprint or passcode to use, and signing
+  MUST NOT be limited to while the device is unlocked: background signing works as it does with an
+  nsec today. (iPhone keeps keys sealed between a restart and the first unlock; that is the
+  platform, not a rule.) The lock (§6.1) is a separate key, used only for the guarded actions.
 - Where storage keeps history that cannot be turned off (for example 30-day point-in-time
   recovery), only such ciphertext may be stored there, with the key kept outside it.
 - On iPhone, shares and keys MUST be excluded from iCloud and restorable backups.
-- A browser member that cannot keep its key out of plain profile storage MUST NOT register a lock.
-  (A WebAuthn PRF output can encrypt at rest, but cannot be deleted: a copied profile plus the
-  authenticator still opens old data. §10.)
+- A browser extension SHOULD encrypt what it stores where that costs no extra prompt (for example
+  a key the browser or OS keeps for it), and otherwise stores it plainly in the extension's own
+  storage. That is still better than an nsec kept the same way: a copied profile gives 3 points,
+  not the key. It MUST NOT register a lock it cannot keep out of that storage.
 
 ### 7.5 The backup and the release key
 
@@ -817,7 +836,8 @@ not here belongs to a module or goes (§11.3).
   it at every honest server.
 - **A stolen device with no lock plus one honest server** can still overwrite lists and the
   profile: the server's rule (§5.8) catches only events that are destructive on their face, and the
-  thief is the person as far as the device's policy knows. Deletions and vanishing wait.
+  thief is the person as far as the device's policy knows. Mass deletions and vanishing wait;
+  single deletions go through after the device's 10-second hold.
 - **A single-device account whose phone is stolen without a lock**: the thief can sign everyday
   events until the owner acts, and can complete lockless changes if nobody notices for 3 days. The
   owner's protections are the paper (start a recovery, which freezes lockless changes, or cancel
@@ -826,8 +846,9 @@ not here belongs to a module or goes (§11.3).
 - **Locks are unattested.** Servers cannot tell a hardware key from a software one, and a tampered
   app can make its own "lock". A passkey that syncs to a cloud account is only as strong as that
   account; implementations SHOULD use device-bound credentials.
-- **Browser profiles.** An extension without platform secure storage keeps shares a copied profile
-  can carry away (live finding #5, not closed by this document). It never counts as locked.
+- **Browser profiles.** An extension without prompt-free secure storage keeps shares a copied
+  profile can carry away (live finding #5). That is 3 points, not the key: better than an nsec in
+  the same storage, which is the bar. It never counts as locked.
 - **Old epochs.** A removed member keeps whatever old shares and release key it had. Servers delete
   old backup contributions, but if one kept a copy, that plus a removed device's old shares plus a
   later-stolen paper of that epoch would give the key. Paper rotation after removals limits this.
@@ -855,7 +876,7 @@ not here belongs to a module or goes (§11.3).
 | #12 paper promotes itself | §3.3 (kinds never change) |
 | #13 stranded server, #14 removal dropped in a pending refresh | §7.3, §3.4, §7.2 step 8 |
 | #16a/b optional or partial proofs | §5.5 |
-| #5 extension shares unencrypted | not closed: described in §10 |
+| #5 extension shares unencrypted | encrypted where it costs no prompt (§7.4); otherwise 3 points, not the key, which beats the bar (§10) |
 | #10, #11, #15 | Doors and Device policy modules (grants live on devices) |
 
 ## 11. Versions, migration, the rename
@@ -917,18 +938,10 @@ Each is a short document of its own, and none may weaken anything above.
 
 ## 13. Open questions
 
-For the user (plain words, batched in the report):
-
-1. **Q1.** A phone with only a passcode can't cancel a wait. Otherwise a thief holding it could
-   block your paper recovery for ever. Your paper can still cancel a thief's lockless changes.
-2. **Q2.** Events dated more than 10 minutes ahead are refused, all kinds. Scheduled posts would
-   need another way.
-3. **Q3.** Every deletion and "delete my account" needs a face/fingerprint, or waits 3 days.
-   Passcode-only phones would wait to delete even one post.
-4. **Q4.** A removed device can no longer cancel waits during its 7 days; it can still report the
-   device that removed it.
-5. **Q5.** Joining always shows a 6-digit number on both screens to compare, even after a camera
-   scan (anyone who sees the QR could otherwise slip in first).
+Answered by the user on 2026-11-02 (decision log): passcode-only phones can't cancel a recovery
+wait; only replaceable and addressable events may not be dated ahead; single deletions get a
+10-second Undo, only mass deletions and wipes are gated; removed devices can't cancel waits; the
+6-digit join check is always shown.
 
 For reviewers:
 

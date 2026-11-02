@@ -118,12 +118,13 @@ because it describes the code during the freeze.
 - 2026-11-02 · User: live findings #17, #4, #5, #7 and #1 are not patched during the freeze (the user is the only user and the nsec is in Bitwarden). Keykin Core closes them, and they MUST be closed before a second user.
 - 2026-11-02 · User: spec in layers (core, modules, freeze), each red-teamed independently, before code.
 
-## Keykin Core draft 2 (proposed 2026-11-02, from red team 1; the user has not yet agreed)
+## Keykin Core draft 2 (red team 1 fixes; user answers 2026-11-02)
 
-- 2026-11-02 · Proposed: the paper (backup key) may cancel waits started without a lock, and a running recovery wait freezes lockless changes.
-- 2026-11-02 · Proposed: optional email/webhook notice channels are a core wire item, so a single-device owner hears about waits after a theft.
-- 2026-11-02 · Proposed: every deletion (kind 5) and request to vanish (kind 62) needs a lock or the 3-day wait at the server. *(Open, Q3.)*
-- 2026-11-02 · Proposed: joining always shows a 6-digit check on both screens, even after a camera scan. *(Open, Q5.)*
-- 2026-11-02 · Proposed: a passcode-only device cannot cancel waits. *(Open, Q1.)*
-- 2026-11-02 · Proposed: events more than 10 minutes in the future are refused, every kind. *(Open, Q2.)*
-- 2026-11-02 · Proposed: master key export does not exist at all on the wire; migrated accounts are always masters.
+- 2026-11-02 · User: **the bar is an nsec in a password manager.** Every measure must beat it on security *and* on user experience, or it goes. So no fingerprint gate on opening stored shares or on background signing, and no "only while unlocked" rule.
+- 2026-11-02 · User: extension shares (#5) are encrypted at rest only where that costs no extra prompt (SHOULD). Plain-stored shares already beat a whole nsec in nos2x-style storage.
+- 2026-11-02 · User: a passcode-only phone cannot cancel a recovery wait (Q1).
+- 2026-11-02 · User: far-future `created_at` is refused only for replaceable and addressable kinds (0, 3, 10002 and the rest); a deliberately scheduled ordinary post is allowed (Q2).
+- 2026-11-02 · User: a single deletion is a 10-second Undo hold on the device, no lock, no wait. Only mass deletions (5 or more targets, or a burst) and list wipes need the lock or the 3-day wait; the server's stateless rule matches (Q3).
+- 2026-11-02 · User: a removed device cannot cancel waits during its 7-day window (Q4).
+- 2026-11-02 · User: joining always shows the 6-digit compare on both screens, even after a camera scan (Q5).
+- 2026-11-02 · Review, not yet questioned: the paper may cancel waits started without a lock; a running recovery wait freezes lockless changes; optional email/webhook notice channels are a core wire item; migrated accounts are always masters.
