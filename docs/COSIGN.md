@@ -1,8 +1,9 @@
 # Cosign — Specification
 
 Version 0.3-draft
-Applies to: a user's own devices — attended or always on — and one or more co-signers run
-by other people, which together hold a Nostr key that none of them holds alone
+Applies to: a user's own devices — attended or always on — and one or more co-signers,
+usually run by other people, which together hold a Nostr key that none of them holds
+alone
 
 Key words MUST, MUST NOT, SHOULD, MAY are normative.
 
@@ -29,8 +30,10 @@ Key words MUST, MUST NOT, SHOULD, MAY are normative.
 - **A device is any machine the user owns**: a phone, a browser extension, a laptop, a
   home co-signer. Some are **attended** (a person unlocks them and answers prompts) and some
   are **unattended** (always on, nobody at the screen). Both hold 3.
-- **A co-signer is run by someone else**, for many users. It adds the missing point after
-  checking the event, and it never reads, coordinates or holds a mailbox key.
+- **A co-signer holds one point and nothing else**: it adds the missing point after
+  checking the event, and never reads, coordinates or holds a mailbox key. Usually it is
+  run by someone else, for many users. The user MAY run one of their own, which is the
+  choice to make when a machine should help sign without being trusted with a device's 3.
 - So the everyday pair is **the device in use plus another of the user's devices**, or,
   when none is awake, **plus any one co-signer**. **All the co-signers together (3) can
   never sign**, and neither can one device alone (3).
@@ -110,11 +113,13 @@ What the user does:
 - **Unattended device** — a device with nobody at the screen, normally always on. It
   holds 3 shares, coordinates routine rounds and decryptions, and holds NIP-46 signer
   keys. It cannot approve, vouch, report or cancel.
-- **Co-signer** — a member run by someone other than the user, holding exactly 1 share.
-  Replaces the earlier "co-signer". The same software may be a device for its owner's
-  account and a co-signer for everyone else's.
-- **Operator** — whoever runs a co-signer. The user is never the operator of a co-signer
-  in their own group; a machine they run for their own account is a device (§4.1).
+- **Co-signer** — a member holding exactly **1** share, which never coordinates a
+  decryption and never holds a mailbox key. Replaces what 0.2 called a **server**. Usually
+  run by someone else; a user MAY run one in their own group (§9.1). The same software may
+  be a device for its owner's account and a co-signer for everyone else's.
+- **Operator** — whoever runs a co-signer. The user MAY be the operator of a co-signer in
+  their own group, and then counts as **one operator** under §3's distinct-operator rule,
+  like anyone else.
 - **Epoch** — one version of the set of pieces. A refresh (§7.3) starts a new epoch; a
   piece from an old epoch does not combine with one from a new epoch.
 - **Coordinator** — the member that runs a signing or decryption round and finishes
@@ -163,9 +168,11 @@ What the user does:
   specified: swapping them out automatically by refresh as other operators appear;
   today a device adds a co-signer by hand, §9.5.)*
   - **What it costs:** one operator's co-signers together are at most 3 points and can
-    never sign. Its exposure is that operator plus a stolen paper backup: 2 + 2 = 4
-    points, with the wait (§7.4) in that operator's hands — the same as two colluding
-    operators. Accepted at launch, and shown to the user.
+    never sign. The exposure is **an operator other than the user** plus a stolen paper
+    backup: 2 + 2 = 4 points, with the wait (§7.4) in that operator's hands — the same as
+    two colluding operators. Accepted at launch, and shown to the user. Where the user is
+    one of the operators (§9.1), that pairing is the user with their own paper, which is
+    not an attack.
   - **Why it is better than one co-signer:** one losing its data, or vanishing, no longer
     strands an account that has one device and no paper backup; that device and another
     co-signer still make 4.
@@ -243,8 +250,8 @@ injected member in every round. *(The general rule is drafted on the unmerged
 
 ### 4.2 Co-signers
 
-A co-signer is an always-on member run by someone other than the user, reachable over
-relays. It needs no public address: it connects out to relays like any client. HTTPS is
+A co-signer is an always-on member holding one share, reachable over relays — usually run
+by someone else, and optionally by the user (§9.1). It needs no public address: it connects out to relays like any client. HTTPS is
 an optional fast path.
 
 A co-signer MAY hold pieces for many users (§9). For each user it holds exactly one
@@ -647,13 +654,20 @@ pieces in different places.
 
 ### 9.1 What a co-signer is
 
-A co-signer is run by **someone else**, for many users. An operator MAY accept anyone, or
-only people it invites; how invitations work is up to the operator.
+A co-signer holds **one share** and never coordinates a decryption. It is usually run by
+**someone else**, for many users, and an operator MAY accept anyone or only people it
+invites; how invitations work is up to the operator.
 
-A machine the **user** runs for their own account is not a co-signer: it is a device
-(§4.1), unattended if nobody is at it, and it holds 3 shares like any device. The same
-software MAY serve both roles at once — a device for its owner's account, a co-signer for
-the accounts it lets in — which is what a home box or an Umbrel app does.
+**A machine the user runs can be either, and the difference is how much it is trusted.**
+As a **device** (§4.1) it holds 3 shares and, unattended, signs routine events with
+another device so no co-signer sees them — the right choice for a box at home. As a
+**co-signer** it holds 1, coordinates nothing and reads nothing — the right choice for a
+VPS the user would rather not give a device's weight to. A user-run co-signer obeys every
+co-signer rule without exception, and its operator is the user, counted as one operator
+under §3.
+
+The same software MAY serve several roles at once — a device for its owner's account, a
+co-signer for the accounts it lets in — which is what a home box or an Umbrel app does.
 
 **A co-signer belongs beside a relay, or inside one** (non-normative). A relay is already
 always on, already speaks Nostr to the user's devices, and already has an operator and
@@ -703,7 +717,7 @@ them answering is enough (§5.1), so a co-signer being down, slow or gone change
 the user can see, and no co-signer is central. Clients SHOULD keep a list of co-signers known
 to be reliable and suggest three from different operators at setup, filling from one
 operator's co-signers only when no others exist, and saying so (§3). The user may replace
-any of them with their own.
+any of them with one of their own, as a device (§4.1) or as a co-signer (§9.1).
 
 ### 9.4 Load (non-normative)
 
@@ -731,8 +745,9 @@ The list of co-signers lives on Nostr, not on one website.
   of answer times and failures from real signing (§5.1). Three co-signers, preferring
   **three distinct operator pubkeys**; when fewer operators exist, the rest come from
   one operator's co-signers, shown as such (§3). Settings show each co-signer's operator
-  by name. A machine the user runs for their own account is not a co-signer at all; it is
-  an unattended device (§4.1), and it is preferred as the second signer when awake (§5.1).
+  by name, the user included where they run one (§9.1). A machine the user runs as a
+  **device** is preferred as the second signer when awake (§5.1); one they run as a
+  co-signer is an ordinary co-signer and gets no preference.
 - **Adding a co-signer** to an existing account: a device and an existing co-signer make
   the new co-signer's share by repair (§7.1 step 1), started by the user (**Add a
   co-signer**). *(Planned, not yet specified: swapping a dead or slow co-signer out
@@ -816,10 +831,10 @@ will be assigned before 1.0:
 2. **What a person should call a co-signer.** "Co-signer" is accurate and close enough to
    "Cosign" to be confusing in an interface. The intent is that the spec says co-signer
    and the apps say something plainer; the word is the author's to choose.
-3. **Whether a user may run a co-signer of their own** rather than an unattended device.
-   This draft says no: a machine you run is a device (§4.1, §9.1). The one argument for
-   allowing it is a VPS the user does not trust with 3 points, which would be "a co-signer
-   whose operator is the user", counted against the distinct-operator rule of §3. Open.
+3. ~~**Whether a user may run a co-signer of their own**~~ — **answered: yes**
+   (2026-11-01). A machine the user runs may be a device (3 shares) or a co-signer (1),
+   and the choice is how much weight it should carry; the user is then one operator under
+   §3's distinct-operator rule. §9.1.
 
 ## Status
 
@@ -836,7 +851,8 @@ treating the user's own machine as a device apart from its weight. An unattended
 the preferred second signer when awake, so routine signing is 3 + 3 and no co-signer sees
 the event. It cannot approve, vouch, report a device lost or cancel a wait, because it
 cannot tell who is at it, and `attended` is self-asserted so no other member can grant or
-remove that. Sites and doors moved to [Companion A](doors.md), keeping versions and Undo to
+remove that. A user may still run a **co-signer** of their own where a machine should help
+sign without a device's weight (§9.1); they then count as one operator. Sites and doors moved to [Companion A](doors.md), keeping versions and Undo to
 [Companion B](undo.md). Notes and app data are out of scope (§1).
 
 0.2-draft, 2026-10-24. 0.1 (2026-10-23) used equal pieces with threshold 2 and one
