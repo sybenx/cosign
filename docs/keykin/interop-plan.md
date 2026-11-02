@@ -19,16 +19,40 @@ real Nostr account. Sites change nothing (Core, introduction); this test is how 
   spec-written NIP-46 client and `nak`, and checks every standard method. The Keykin version keeps
   its shape and swaps the account under it.
 
-## Clients and how each is driven
+## Which clients, ranked
 
-| Client | Door | Driven by | Notes |
-|---|---|---|---|
-| `nak` (pinned version) | NIP-46, `bunker://` | shell: `nak event --sec bunker://… -k 1 -c …`, `nak decrypt`/`encrypt --sec bunker://…` | needs the device to hand out a `bunker://` (Doors module) |
-| nostr-tools `BunkerSigner` | NIP-46, both `bunker://` and `nostrconnect://` | a Node script | what most web clients are built on |
-| NDK `NDKNip46Signer` | NIP-46 | a Node script | second web library |
-| Grimoire | NIP-46 | **to identify** | the 2026-10-26 audit could not find a NIP-46 tool by that name. Ask the user which Grimoire is meant (open question below); until then, run `nkcli` in its place and say so |
-| Amethyst (pinned APK) | NIP-55 on Android, NIP-46 as fallback | an Android emulator, UI Automator script | the one GUI client; run on its own emulator, one emulator at a time |
-| A browser site | NIP-07 | Playwright with the extension loaded | the extension is the device |
+**nak is the must-pass tool** (the user's bar, 2026-10-27). Beyond it, the aim is smooth
+compatibility with the clients people actually use, across NIP-46 (`bunker://` and
+`nostrconnect://`), NIP-07 and NIP-55. The ranking below is rough. It uses public weekly-activity
+counts from the Nostr Recap newsletter (late July 2026: Primal iOS, Amethyst and Primal Android
+led by active users), community client lists, and the fact that most web clients sit on nostr-tools
+or NDK. Re-check it when the prototype exists, and confirm each client's actual NIP-46 support then:
+a search on 2026-11-02 found no first-party statement for Damus, Nostur or Olas.
+
+| Rank | Client | Platform | Doors to test | Why it is here |
+|---|---|---|---|---|
+| must | `nak` (pinned) | CLI | NIP-46 `bunker://` | the user's bar; scriptable |
+| 1 | Primal | iOS, Android, web | NIP-46 (iOS, web), NIP-55 (Android), NIP-07 (web) | most active users |
+| 2 | Amethyst | Android | NIP-55, NIP-46 | second by activity; the main NIP-55 client |
+| 3 | nostr-tools `BunkerSigner` and NDK `NDKNip46Signer` | libraries | NIP-46 both directions | what Jumble, Coracle, noStrudel, Grimoire and most web clients use; passing these covers the long tail |
+| 4 | Damus | iOS | NIP-46 (support reported as partial) | the oldest iOS client; iPhone is a full platform |
+| 5 | Jumble, Coracle, noStrudel | web | NIP-07 (extension), NIP-46 | the most used web clients after Primal |
+| 6 | Grimoire (grimoire.rocks) | web | NIP-07, NIP-46 | the user uses it |
+| 7 | Nostur, Olas, YakiHonne | iOS / Android | NIP-46 | second-tier mobile clients; check support first |
+
+The **top set** that must pass before Phase 1 is done: nak, Primal (one platform per door), Amethyst,
+the two libraries, and Damus. Ranks 5–7 run before each Phase 4 step reaches the user's account;
+a failure there is a bug to file, not a blocker.
+
+## How each is driven
+
+| Client | Driven by | Notes |
+|---|---|---|
+| `nak` | shell: `nak event --sec bunker://… -k 1 -c …`, `nak encrypt`/`decrypt --sec bunker://…` | needs the device to hand out a `bunker://` (Doors module) |
+| nostr-tools, NDK | Node scripts | both directions |
+| Primal web, Jumble, Coracle, noStrudel, Grimoire | Playwright, with the extension loaded (NIP-07) and with a pasted `bunker://` (NIP-46) | one scripted login + post per client; brittle UI scripts are fine, they are smoke tests |
+| Primal Android, Amethyst | Android emulator, UI Automator | NIP-55 first, NIP-46 as fallback; one emulator at a time |
+| Primal iOS, Damus, Nostur, Olas | iOS Simulator for the client, the Keykin device on a real iPhone or a headless member | NIP-46 only; the iPhone wake path is tested on a real device |
 
 ## The four checks, for every client
 
@@ -69,6 +93,6 @@ for a client that cannot do a check at all (for example nak has no held-event UI
 
 ## Open
 
-- Which "Grimoire" the user means.
+- Sources for the ranking: Nostr Recap #86 (njump.me/4a49af9d61d96fc6fad0cde5465164e8bd76944f59d60fc1b9e32a65a111fb9c) and the awesome-nostr list (github.com/aljazceru/awesome-nostr). Re-rank when the prototype exists.
 - `bunker://` from the device and `auth_url` belong to the Doors module; this plan assumes they
   exist. Without them, nak can only be tested through a hand-built URL, as in the 0.12 audit.
