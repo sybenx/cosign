@@ -115,3 +115,80 @@ ever.
 
 If both are yes, draft 5 is the cut above, then round 5 of the red team, then the test-vectors
 file. The interop test plan (`interop-plan.md`) is already written and does not depend on this.
+
+---
+
+# After round 5 (draft 5)
+
+Round 5 found **0 critical, 4 high, 9 medium, 5 low** (`keykin-core-redteam-5.md`). The cut worked
+on what it targeted: nothing in refresh or report-lost came back. Patching stops again under the
+rule, so this section maps the four high findings and proposes the cut.
+
+## Plain summary for the user
+
+One feature is still producing serious problems: **letting a phone with no face or fingerprint make
+account changes by waiting 3 days**. If your only phone is stolen and you don't act within those 3
+days, the thief can add their own device and keep the account for good. The thief also gets 3 days
+of cover, because nothing reliably tells a one-phone owner. That has come up in every round.
+
+The proposal: **account changes need a face or fingerprint, a second device of yours, or your
+paper.** No "wait 3 days instead". The 3-day wait stays only where it protects you: when someone
+uses the paper to recover, and before a mass deletion from a phone without a lock.
+
+The other three high findings are slips with one-line fixes, not new machinery.
+
+## Round 5's high findings
+
+| ID | What | Kind | Proposal |
+|---|---|---|---|
+| F2 | One stolen phone, nobody acts for 3 days: the thief's waited "add device" or "register lock" goes through, and the account is theirs for good. | The same mechanism as rounds 1–4: lockless account changes by waiting | **Cut** (below) |
+| F1 | In the join-code direction, the inviter never checks that the hello comes from the key in the code it scanned, so a watcher can grind both checks. | Slip | Fix: the hello must be sealed by the code's `n`, and that key is the one added. |
+| F3 | Nothing authenticates the backup material, so any member could swap in junk and the paper would fail only at recovery. | Slip | Fix: the backup key signs the material when the paper is made; members pin its hash and refuse any other copy. |
+| F4 | On a 2-server account, one dead server blocks every change and recovery. | Slip in the minimums | Fix: accounts MUST have at least 3 servers; replacing a dead server is one record (remove + add). |
+
+## The cut
+
+**Every account change needs one of: the asking device's lock, two devices together, or the paper.**
+That covers adding a device, server, helper or backup, registering or replacing a lock, removing a
+server or the backup, removing or replacing a notice channel, and replacing the paper. Two devices
+(6 points) or a device plus the paper (5) already hold the key, so asking them for more adds nothing
+(round 5 F9).
+
+**Removed:** the "else `W` waited" column for every change, waited statements for changes, the
+cancel table except for recoveries, and most of the freeze. Waits remain only for:
+
+- **paper recovery** (`W`, cancelled by a locked device or two devices), which is what stops a stolen
+  paper; and
+- **held mass deletions and vanishing** from a device without a lock (§5.8), which only delay one
+  event.
+
+**What it costs:** a phone with only a passcode cannot, by itself, add a new device or a server,
+or turn on a face lock after the fact. Its owner uses a second device or the paper. Most phones have
+a face or fingerprint; a passcode-only owner has the paper.
+
+**What it fixes:** round 5 F2 (the 3-day takeover), F12 (wait spam), F15 (an uncancellable `w`), F16
+(missed cancels), and most of rounds 1–4's wait findings, by removing the thing they attacked.
+
+## Smaller changes alongside the cut
+
+- **The data key never changes in the core.** A lost device could read private data written later.
+  That is the same as a stolen nsec, which is the bar. Re-keying moves to the optional refresh module.
+  This also makes the paper's copy of the data key complete (F7).
+- The mediums and lows that are slips (F5 one `draft_held` per record number, F6 one
+  `replace_backup` change, F8 the person re-enters the paper before its secret is forgotten, F10 the
+  release key rotation tied to the record, F11 devices act on `remove` too, F13 0.12 traffic stops
+  once migrated, F14, F17, F18 text) are fixed in the same draft.
+
+## Questions for the user
+
+1. **Account changes need your face or fingerprint, a second device, or your paper. No "wait 3 days
+   instead".** A passcode-only phone can't add a new device by itself. Recommended: yes, because it
+   closes the "thief waits out 3 days" takeover.
+2. **The private-data key doesn't change when you report a device lost.** The lost device could
+   still read private notes written later, the same as a stolen nsec. Re-keying would come with the
+   optional refresh. Recommended: yes.
+3. **Accounts must have at least 3 servers**, so one dead server never blocks you. You have 3 today.
+   Recommended: yes.
+
+If all three are yes: draft 6, round 6 under the same rule, then the test vectors and the optional
+"Refresh now" module (its own red team).
