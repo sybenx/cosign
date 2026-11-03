@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.14 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.14 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -39,8 +39,8 @@ a request needs by looking at what it is.
 
 | Scope | Lets the site | Asked |
 |---|---|---|
-| `sign-in` | `get_public_key`; relay auth (kind 22242); NIP-98 auth for a URL on the calling origin (NIP-07) or any URL (other doors) with `GET`/`POST`; Blossom upload and list auth (24242) | at connect |
-| `post` | ordinary events: notes, reactions, reposts, zap requests, deletions (judged by Device policy), articles, app data (kind 30078) except the `keykin-` prefix; **encrypting** to the account's own key; Blossom `t=delete` and NIP-98 `DELETE`/`PUT` tokens, judged as deletions | at connect (default on) |
+| `sign-in` | `get_public_key`; relay auth (kind 22242); NIP-98 (`GET`, `POST`) and Blossom (`upload`, `list`, `get`, `media`) tokens for the site's **own host**; for any other host, once per host: "Let *site* sign in to *nostr.build* as you?" | at connect |
+| `post` | ordinary events: notes, reactions, reposts, zap requests, deletions (judged by Device policy), articles, app data (kind 30078) except the `keykin-` prefix; **encrypting** to the account's own key; Blossom `t=delete` and NIP-98 `DELETE`/`PUT`/`PATCH` tokens, judged as deletions | at connect (default on) |
 | `lists` | the profile (0); follows, mutes and other lists (3, 10000–10030 except 10019, 10063, 30000–30030, 39089); relay lists (10002, 10050); and decrypting the private items of those lists | the first time it tries |
 | `dms` | NIP-04/NIP-44 encrypt and decrypt **with other people's keys**, NIP-59 unwrap, the person's own sent NIP-17 copies (below), and NIP-55 `decrypt_zap_event` | the first time: "Let *site* read and send your messages?" |
 | `wallet` | NIP-60/61 wallet events (17375, 37375, 7375, 7376, 7374), payment targets (10019), and decrypting them | the first time: "Let *site* use your ecash wallet?" |
@@ -49,20 +49,27 @@ a request needs by looking at what it is.
 - **Which scope a decrypt needs.** The device parses the peer key as a 32-byte x-coordinate and compares
   bytes to tell a decrypt-to-self from a message.
   - For a decrypt-to-self it **decodes** the payload (refusing non-canonical base64) and matches the
-    decoded bytes against the account's own events. An event counts as evidence only if the device made
-    that ciphertext itself, or its metadata (Device policy §1) records it as signed for **another** site
-    or the member app. So a site can't plant a copy in one of its own lists.
+    decoded bytes against the account's own events. An event counts as evidence only if its ciphertext
+    was **encrypted for the same grant, or the member app, that signed it** (encrypt records are part of
+    the signed metadata, Device policy §1). So no site, alone or with a second site, can plant a copy.
+    At import and at join, the device records every list ciphertext it fetches as the member app's. With
+    no metadata to hand, a list kind's ciphertext that matches no wallet or private-data event needs
+    `lists`.
   - If the bytes match events of several kinds, **the most private one wins** (`private-data`, then
     `wallet`, then `lists`). Bytes it can't match need `private-data` (live finding #10).
-  - **NIP-17 sent copies.** The device decrypts a decrypt-to-self locally. Under `dms` it releases the
-    plaintext only if it parses as a NIP-17 rumor: an unsigned event with `pubkey == g` and a DM kind (14,
-    15, or a reaction or deletion of one). Wallet and list plaintexts are tag arrays, never rumors, so they
-    still need their own scopes.
+  - **NIP-17 sent copies and notes to self.** Bytes it can't match are decrypted locally. Under `dms` the
+    plaintext is released only if it parses as a rumor with `pubkey == g` and kind 14, 15, 7 or 5;
+    otherwise it needs `private-data`. A matched kind 4 or 14 to self is `dms`. Wallet and list plaintexts
+    are tag arrays, never rumors.
 - **Deletions under `post`** may name any ordinary event of the account; Device policy judges them,
   silently only for the site's own events.
 - **Decrypts in bulk.** Site decrypts arriving within about 50 ms go in one `ecdh` request with many
-  points (core §5.5). A conversation key MAY be cached **in memory only**, for at most 10 minutes, and is
-  never written to storage.
+  points (core §5.5). On a site's first NIP-59 unwrap under `dms`, the device fetches the account's kind
+  1059 wraps from its 10050 relays and sends all their ephemeral keys in a few large `ecdh` batches; NIP-04
+  peers seen in kind 4 events likewise. A conversation key MAY be cached **in memory only**, for at most 10
+  minutes, and is never written to storage. Later decrypts answer locally.
+- **Permissions at connect.** A client's decrypt `perms` grant nothing at connect; each scope is asked the
+  first time it is needed.
 - Destructive events are judged by the Device policy module, whatever the scopes.
 - Relay auth, NIP-98 and Blossom tokens a site gets signed are never accepted as authority by any Keykin
   endpoint.
@@ -84,11 +91,17 @@ connection, the whole site everywhere, or **every site at once**.
   with `d = "keykin-grants:" ‖ hex(first 16 bytes of HMAC-SHA256(HKDF-SHA256(base data key,
   "keykin-grants-d/1"), member key))`, so relays can't link the event to a member key. It carries a
   `["state", <state hash>]` tag naming the state whose data key encrypts it. Its content is
-  XChaCha20-Poly1305 under `HKDF-SHA256(ikm = dk(S), info = "keykin-grants/1")`, with a random nonce, so it
-  has no NIP-44 size limit. Expired entries are pruned from it.
+  XChaCha20-Poly1305 under `HKDF-SHA256(salt = empty, ikm = dk(S), info = "keykin-grants/1", L = 32)` for
+  the **current** state (re-encrypted after each redeal), with associated data `g ‖ d ‖ state hash`, as
+  `base64(24-byte nonce ‖ ciphertext)`. Expired entries are pruned from it, and past 64 KB it is split into
+  `d ‖ ":1"`, `":2"`, …. Inside, `maker_sig` is the maker's member-key signature over `"keykin-grant-set/1"
+  ‖ g ‖ d ‖ created_at ‖ SHA-256(entries ‖ tombstones)`. The maker publishes at `created_at = max(now,
+  last + 1)`.
 - **Only each device's newest event counts.** For each maker, a device uses only the newest event (highest
-  `created_at` that verifies). An entry missing from it is gone, so a stale relay copy can't bring one
-  back. The grant set is the union across makers.
+  `created_at`) whose `maker_sig` verifies for the member whose `d` it is, so no other member can hide or
+  bring back a device's entries. An entry missing from it is gone, and a device keeps the highest `v` seen
+  per `(by, id)` and refuses lower ones. A home never re-adds an entry it ended, whatever relays say. The
+  grant set is the union across makers.
 - **Every entry is signed by its maker** (`by_sig`). A device accepts an entry only if:
   - the event is account-signed and decrypts under the data key of the state it names;
   - `by` is a current device in its own view;
@@ -97,17 +110,20 @@ connection, the whole site everywhere, or **every site at once**.
   could plant grants while it was a member. The person sees the list, with what to do for each NIP-46
   site homed there: "Grants made by *Laptop* were signed out. Sign out of *Coracle* on that site too, then
   sign in again."
-  - The one exception is a `self` remove (core §4.6): the app that takes over re-signs the extension's
-    grants under its own key before the remove, so the browser's sites stay signed in.
+  - The one exception is a `self` remove (core §4.6) or a handover: the machine's app takes the grants
+    over (its signer keys over native messaging, §3.3), re-signs them under its own key before the remove
+    (the one way a grant is made without a human act), and sends its `watch_set`. Other devices show no
+    sign-out screen for it.
 - **Ends made by another device** are tombstones `(by, id)`, published in the ending device's event and
-  **also sent to every device as deliveries** (core §7.1) with an `ask` push, so the home drops the entry
-  at once. A tombstone is dropped once the maker's newest event no longer has the entry.
+  **also sent as deliveries** (core §7.1) with an `ask` push: one delivery per home per action, carrying
+  every tombstone of that action for that home, so the home drops the entries at once. A tombstone is dropped once the maker's newest event no longer has the entry.
 - **Only a human act** makes a new grant (live finding #15): a scanned code, a pasted link, or an explicit
   "Allow *app*" on the device the app is on. For NIP-55, the same app (same package and certificate) can
   be allowed again on that phone.
-- **Before answering any site request**, on any door, a device must have fetched its inbox within the
-  last 30 seconds (reference), skipping a server that takes more than 2 seconds. So "Sign out everywhere"
-  and End take effect within seconds everywhere.
+- **Before answering any site request**, on any door, a device must have fetched its inbox, or had any
+  answered exchange with a server (a co-sign, an `ecdh`), within the last 30 seconds (reference), skipping
+  a server that takes more than 2 seconds. If no server answers, it answers only requests that need no
+  round. So "Sign out everywhere" and End take effect within seconds everywhere.
 - **New devices.** This module adds a `grants` field (every current entry and tombstone) to the welcome
   and the handover (core §4.2, §4.6; core §11.1 ignores unknown fields). A new device that got none reads
   the grant events from relays, checks them as above, and answers for no grant until it has.
@@ -134,7 +150,8 @@ digest. Android apps on the phone share the one member (core §4.6).
 
 - **Per-site signer keys.** For each NIP-46 site, the device that connected it (its **home**) makes a fresh
   signer key: a mailbox address, not the account key, that can sign nothing.
-  - **The signer secret key never leaves its home**, whatever the scopes. Only the home answers. So a
+  - **The signer secret key never leaves its home**, whatever the scopes, except to the same machine's
+    app over native messaging in a handover or a `self` remove (core §4.6). Only the home answers. So a
     removed or stolen other device can never read a site's requests or replies, or answer in the home's
     place.
   - It never goes to any server, `own` or not, and is kept like a share: encrypted at rest, excluded from
@@ -152,8 +169,9 @@ digest. Android apps on the phone share the one member (core §4.6).
   - The QRST signer-ticket (§3.4).
   - A client's `perms` are mapped to scopes and asked in one question. Connecting shows a quiet
     "Connected to *site*".
-  - **"Is this your computer?"** (§4) is asked at the first `connect` of every NIP-46 grant, scanned or
-    pasted.
+  - **"Is this your computer?"** (§4) is asked at the first `connect` of a NIP-46 grant whose link or code
+    left the device (scanned, pasted from elsewhere, or a QRST ticket). It isn't asked for a same-device
+    hand-off (§3.5) or the second-browser pairing (§3.6).
 - **Answering.** The home answers. It coordinates the signing round itself (core §5.1), refuses requests
   from any client key other than the grant's, accepts NIP-44 and NIP-04 encrypted requests, and answers
   `switch_relays`.
@@ -164,20 +182,26 @@ digest. Android apps on the phone share the one member (core §4.6).
   - There is no `auth_url`. A link from whoever answers first could be phishing.
 - **When the home is asleep: watching.** A server the person opts in for **watching** (core §2) holds, for
   each watched grant, the signer pubkey, the client pubkey, the relays and the home's member key. The home
-  sends them with `watch_set {grants: [ … ]}`, a live request the server answers; each `watch_set`
-  replaces that home's whole set, an empty one stops it, and a home's set is dropped when the home is
-  removed. The server then:
+  sends them with `watch_set {grants: [ … ]}` (class `ask`), a live request the server answers only from a
+  current device, about grants whose home is that device; each `watch_set` replaces that home's whole set,
+  an empty one stops it, and a home's set is dropped when the home is removed. While a minted `bunker://`
+  link or QRST ticket is live (up to 10 minutes), its entry has `client: null`, and the server forwards
+  only the first kind 24133 to that signer key, until the home names the bound client. The server then:
   - forwards to the home's inbox only kind 24133 events whose signature verifies, from the grant's client
     key, addressed to its signer key, with `created_at` within 2 minutes, each event id once, sealed to
     the home as the item `{type: "nip46", event}` (core §8.2);
-  - skips the push if it sees the signer key's reply on the relays within 3 seconds;
-  - sends at most 30 pushes per signer key per hour.
+  - skips the push if it sees a reply from the signer key, whose signature verifies, on the relays within
+    3 seconds;
+  - sends **one push per burst**: no new push while an earlier one for that signer key is unanswered and
+    under about 20 seconds old, and at most 60 pushes per signer key per hour. The inbox holds the rest.
+
+  Each wake **drains every pending item** for that signer key, then stays subscribed on the grant's relays
+  and answers new requests until its time runs out.
 
   Watching uses **one** server per account, the person's choice (by default the first server), and moves
   with that seat when the server is replaced: the home sends `watch_set` to the new holder. Without a
   watching server, a NIP-46 site is answered only while its home is awake.
-- **On iPhone**, where NIP-46 is how other apps and borrowed computers reach the member, the app offers
-  watching once at the first NIP-46 connect: "Let your server wake this phone when a site asks? It will
+- **On a phone** (iPhone and Android), the app offers watching once at the first NIP-46 connect: "Let your server wake this phone when a site asks? It will
   see when sites ask, not what they ask."
 - **Methods.** `connect`, `get_public_key`, `sign_event`, `nip04_*`, `nip44_*` (subject to scopes),
   `ping`, `switch_relays`, and `get_relays` where a client still calls it. A `logout` (where a client
@@ -208,9 +232,16 @@ app's member through the app's keychain group and signs directly (core §4.6).
 ### 3.6 A second browser on the same machine
 
 With no desktop app, a second browser's extension holds no pieces (core §4.6). It is a NIP-07 provider
-that is itself a NIP-46 client of the machine's member, with **one client key per origin**. The first call
-from an origin asks the person on the member, which makes an ordinary NIP-46 grant for that origin's
-client key. So each site has its own grant, scopes, history and Undo, exactly as on the member.
+that is itself a NIP-46 client of the machine's member.
+
+- **Pairing, once.** The person pastes a `bunker://` link from the member into the second extension. That
+  makes a **pairing** grant, with no scopes of its own, whose client key is the extension's pairing key.
+- **Per origin.** The first call from an origin sends a `connect` over the pairing channel, naming the
+  origin and a fresh client key for it. The member asks "Allow *origin*?", which is the human act, and
+  makes an ordinary NIP-46 grant for that client key. So each site has its own grant, scopes, history and
+  Undo, exactly as on the member. Per-origin connects are accepted only this way.
+- Pairing and its grants are this machine, so they skip the borrowed question. Ending the pairing ends
+  every grant under it.
 
 ## 4. Borrowed computers
 
@@ -225,6 +256,9 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 - The phone keeps an **End** button visible on its home screen while a borrowed session is live.
 
 ## 5. Appendix: iPhone push (guidance, not normative)
+
+- Handling a watched request without a visible notification needs Apple's notification filtering
+  entitlement; without it, the collapse id keeps one notification per site.
 
 - Servers send Web Push to the app maker's gateway (core §8.3), which turns it into APNs:
   - `sign` and `ask` at APNs priority 10, with `mutable-content: 1` and a generic alert ("Keykin"), which
@@ -249,6 +283,10 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 - **A stolen home** receives what its NIP-46 sites still send (requests, and the text of messages the
   person types there) until each site is signed out on the site itself. It can't answer them, because its
   rounds are refused once it is reported.
+- **The grant events' `d`** comes from the base data key, which never rotates, so a removed device can
+  link every member's grant event and its timing for ever.
+- **A second browser's sites work only while the first browser** (the member, with no desktop app) is
+  running.
 - **Site names are self-claimed.** A site can relay another site's code. The device shows "says it is"
   and the person decides.
 - **Scopes are only as good as the person's yes.**
@@ -257,6 +295,22 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 5**, from its fourth red team (0 critical, 3 high):
+  - NIP-98 and Blossom tokens silent for the site's own host, asked once per other host (H1);
+  - the second browser pairs once, and per-origin grants go through the pairing (H2);
+  - watched wakes drain everything pending, one push per burst, watching offered on every phone (H3).
+
+  The mediums and lows:
+  - signer keys move only to the same machine's app, in a handover or `self` remove (M1, L10);
+  - evidence only for ciphertexts encrypted for the grant that signed the list, and imported lists count
+    as the member app's (M2);
+  - inbox-wide unwrap batches (M3);
+  - fresh links watched before their first connect (M4);
+  - one tombstone delivery per home per action (M5);
+  - no borrowed question for same-device hand-offs (M6);
+  - `maker_sig` on grant events, highest `v` kept, ended entries never re-added (M7);
+  - the XChaCha20 encoding, the current state, `watch_set` checks, NIP-17 kinds, notes to self, perms,
+    the 30-second rule, `created_at` ordering, event splitting, token types, and two limits (lows).
 - **Draft 4**, from its third red team (1 critical, 4 high):
   - signer secret keys never leave their home, whatever the scopes (C1, H1, M2);
   - a list is evidence for a ciphertext only if the site didn't write it (H2);
