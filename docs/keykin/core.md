@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.5 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.6 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -100,7 +100,7 @@ depends on a person seeing them:
    second device; for adding a device, the code is the join check shown on the new device, typed on
    the second device (§6.2);
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
-   scanning it back or re-entering it (§4.3);
+   scanning it back or re-entering it (§4.3), unless they declined a paper;
 7. a new paper: "Keep your old paper until this app says the new one is ready", and only after the
    conflict check, "You can destroy the old paper" (§6.7.6 F7);
 8. a device restoring its pieces or catching up seeds by `rerepair`, `need_repair` or `need_seeds`
@@ -373,7 +373,8 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
    refuse any other copy. A `paper` change commits only together with its material.
 4. The device keeps the backup secret, encrypted at rest (§7.3), until the person has printed or saved
    it **and shown it is readable** by scanning it back or re-entering it (§1.1), then destroys it and
-   the shares. Until then that device alone is worth 5 points, the same as an nsec on it; it SHOULD
+   the shares. If the person declines, or leaves the flow unfinished for 24 hours, the device destroys
+   them anyway and the account has no paper until a later F7 (Account admin module). Until then that device alone is worth 5 points, the same as an nsec on it; it SHOULD
    prompt to finish the backup.
 
 After that, each redeal appends a **paper delta** for it (§7.2), so a paper reaches every later state
@@ -1500,9 +1501,8 @@ provisional until upstream assigns them.
 
 Each is a short document of its own, and none may weaken anything above.
 
-- **Account admin**: creating a key (DKG, import), adding and removing devices on screen, retire, delete
-  (NIP-62 plus destroying shares and forgetting push addresses), the take-out bundle, the passkey page on
-  servers for reporting a device lost.
+- **Account admin**: creating a key (DKG, import), adding and removing devices on screen, a device
+  leaving, delete (NIP-62 plus destroying shares and forgetting push addresses), taking data out.
 - **Server profile**: the duties as an operator sees them, abuse defaults, the 30-day shutdown notice,
   telling the person calmly after a week that a server is quiet and offering to move its piece (§6.7.6
   F1), the signed public server list (§6.7.7),
@@ -1709,9 +1709,9 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
 
-## Changes in drafts 13.2 to 13.5
+## Changes in drafts 13.2 to 13.6
 
 Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
-and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5).
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6).
