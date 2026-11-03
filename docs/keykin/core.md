@@ -13,7 +13,7 @@ helper and the paper, which the user requires to work. Everything a person sees,
 optional feature, lives in a module (§12). Sites change nothing: they keep using NIP-07, NIP-46, NIP-55 and
 the QRST signer-ticket, which the Doors module covers.
 
-**Focus:** a Google account on Nostr. One key for life, sign in anywhere, trusted devices ask less, and no single website, server, app or company can stop you. About 90% of what a Google account does, without fighting the platforms for the rest.
+**Focus:** one Nostr account for life. Sign in anywhere, trusted devices ask less, and no single website, server, app or company can stop you. Cover what people actually need from an account, without fighting the platforms for the last few percent.
 
 **The bar.** An nsec kept in a password manager. Every rule here must beat it on security *and* on
 how it feels to use; a rule that costs a person effort without beating it does not belong. So

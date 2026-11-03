@@ -2,7 +2,7 @@
 
 2026-11-03 · branch `claude/keykin-spec-0b883d` · docs only, nothing built, nothing pushed
 
-**Focus:** a Google account on Nostr. One key for life, sign in anywhere, trusted devices ask less, and no single website, server, app or company can stop you. About 90% of what a Google account does, without fighting the platforms for the rest.
+**Focus:** one Nostr account for life. Sign in anywhere, trusted devices ask less, and no single website, server, app or company can stop you. Cover what people actually need from an account, without fighting the platforms for the last few percent.
 
 **The bar:** an nsec kept in a password manager. Every rule must beat it on security *and* ease of use.
 
