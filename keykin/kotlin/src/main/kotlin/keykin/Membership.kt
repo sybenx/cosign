@@ -136,7 +136,7 @@ object Approvals {
     }
 }
 
-data class MembershipView(val devices: List<String>, val removed: List<String>, val seats: Map<String, String?>, val backup: String?, val refused: List<String>, val invariant: Boolean)
+data class MembershipView(val devices: List<String>, val removed: List<String>, val seats: Map<String, String?>, val backup: String?, val refused: List<String>, val invariant: Boolean, val locks: Map<String, String?>)
 
 /** §3.2, §6.7.2: the membership as a function of the record and the *set* of changes. */
 object Membership {
@@ -256,6 +256,15 @@ object Membership {
         for ((k, l) in adds) { if (l.size > 1 || k in recordKeys) { voidAdds += k; continue }
             if (l[0].second.any { (claims[it]?.size ?: 0) > 1 } || l[0].second.toSet().size != 3) voidAdds += k }
         removed += voidAdds
+        // Locks: each device's lock followed along lock changes; two for one lock void it.
+        val locks = HashMap<String, String?>()
+        val lockFirst = recDevices.associate { it.key to it.lock } + adds.filter { it.key !in voidAdds }.mapValues { (k, _) ->
+            accepted.first { it.type == "add" && it.change.getJSONObject("add").getString("key") == k }.change.getJSONObject("add").optJSONObject("lock") }
+        for ((k, l0) in lockFirst) {
+            val cands = accepted.filter { it.type == "lock" && it.change.getJSONObject("lock").getString("member") == k }.map { val l = it.change.getJSONObject("lock")
+                Cand(it.listHash, if (l.isNull("replaces")) null else l.getString("replaces"), l.getJSONObject("new").getString("pub"), l.getJSONObject("new")) }
+            locks[k] = follow(l0?.getString("pub"), l0, cands, { a, b -> a.newId == b.newId }, false) { }.first
+        }
         // The membership: one key, one member.
         val entries = ArrayList<Member>()
         recDevices.filter { it.key !in removed }.forEach { entries += it }
@@ -266,6 +275,6 @@ object Membership {
         try { Record.invariants(g, entries, rec.getJSONObject("seats"), removed) } catch (_: KeykinException) { invariant = true }
         if (entries.map { it.key }.toSet().size != entries.size) invariant = true
         return MembershipView(entries.filter { it.kind == "device" }.map { it.key }.distinct().sorted(), removed.sorted(),
-            seats.mapValues { (_, v) -> if (v != null && v in removed) null else v }, backupKey, refused.sorted(), invariant)
+            seats.mapValues { (_, v) -> if (v != null && v in removed) null else v }, backupKey, refused.sorted(), invariant, locks)
     }
 }

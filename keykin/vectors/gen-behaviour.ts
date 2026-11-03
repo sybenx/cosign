@@ -56,6 +56,35 @@ out.cases.membership = [
   { name: 'seat replaced', changes: seat, expect: view(seat) },
 ];
 out.cases.membership[4].expect = view(out.cases.membership[4].changes);
+// Lock chains: two lock changes replacing one lock are both void; same new counts once.
+const lockEv = (pub: any, replaces: string) => { const l: Change[] = [{ lock: { member: A.kp.pub, replaces, new: pub } }]; return F.change(l[0], l, approvePair(F.g, F.epochId, l, EXP, A.kp, B, 'ee'.repeat(16))); };
+const nl1 = softLock().pub, nl2 = softLock().pub;
+const lv = (evs: any[]) => ({ ...view(evs), locks: Object.fromEntries([...computeMembership(F.rec, evs).locks].map(([k, l]) => [k, l?.pub ?? null])) });
+out.cases.membership.push(
+  { name: 'two lock changes for one lock: both void', changes: [addB, lockEv(nl1, A.lock!.pub.pub), lockEv(nl2, A.lock!.pub.pub)], expect: null },
+  { name: 'two lock changes with the same new lock: one', changes: [addB, lockEv(nl1, A.lock!.pub.pub), lockEv(nl1, A.lock!.pub.pub)], expect: null },
+);
+for (const c of out.cases.membership.slice(-2)) c.expect = lv(c.changes);
+// Seats: same new counts once; different new voids both; one host in two seats within 24 hours voids both.
+const seatEvsX = (idx: number, replaces: string | null, entry: any, expiry = EXP) => { const l: Change[] = [{ seat: { seat: `server:${idx}`, new: entry, replaces } }, { redeal: { dealer: A.kp.pub } }];
+  return listEvs(l, approveLock(F.g, F.epochId, l, expiry, A.kp.pub, A.lock!)); };
+const z1 = { key: newKey().pub, kind: 'server', shares: [8], host: newKey().pub }, z2 = { key: newKey().pub, kind: 'server', shares: [8], host: newKey().pub };
+const hh = newKey().pub;
+const two = [...seatEvsX(4, F.servers[0].kp.pub, { key: newKey().pub, kind: 'server', shares: [4], host: hh }), ...seatEvsX(7, F.servers[1].kp.pub, { key: newKey().pub, kind: 'server', shares: [7], host: hh })];
+const apart = [...seatEvsX(4, F.servers[0].kp.pub, { key: newKey().pub, kind: 'server', shares: [4], host: hh }), ...seatEvsX(7, F.servers[1].kp.pub, { key: newKey().pub, kind: 'server', shares: [7], host: hh }, EXP + 3 * 86400)];
+const twin = seatEvsX(8, F.servers[2].kp.pub, z1), twin2 = seatEvsX(8, F.servers[2].kp.pub, z1), other = seatEvsX(8, F.servers[2].kp.pub, z2);
+out.cases.membership.push(
+  { name: 'seat: same new twice counts once', changes: [...twin, ...twin2], expect: view([...twin, ...twin2]) },
+  { name: 'seat: different new voids both', changes: [...twin, ...other], expect: view([...twin, ...other]) },
+  { name: 'one host in two seats, approved within 24 hours: both void', changes: two, expect: view(two) },
+  { name: 'one host in two seats, approved days apart: not void, but the view breaks I2 (adopters refuse it)', changes: apart, expect: view(apart) },
+);
+// Papers: the lowest list hash wins; the loser's key is removed.
+const paperEvs = () => { const K = newKey(); const l: Change[] = [{ paper: { key: K.pub, replaces: F.backup.kp.pub } }, { redeal: { dealer: A.kp.pub } }];
+  const a = approveLock(F.g, F.epochId, l, EXP, A.kp.pub, A.lock!); const d = dealRedeal(F.g, A.kp, [], new Map(), K.pub, [5, 6]);
+  return [F.change({ paper: { key: K.pub, replaces: F.backup.kp.pub, inner: 'aa'.repeat(32), state: [] } }, l, a), F.change({ redeal: d.redeal }, l, a)]; };
+const pp = [...paperEvs(), ...paperEvs()];
+out.cases.membership.push({ name: 'two papers: lowest hash wins', changes: pp, expect: view(pp) });
 
 // --- case 5: lock assertions ---------------------------------------------------------------
 const L = A.lock!, ev = 'ab'.repeat(32);

@@ -27,6 +27,7 @@ class BehaviourTest {
             assertEquals(strs(e.getJSONArray("refused")), m.refused, "$name: refused")
             assertEquals(e.optString("backup"), m.backup ?: "", "$name: backup")
             assertEquals(e.getBoolean("invariant"), m.invariant, "$name: invariant")
+            e.optJSONObject("locks")?.let { el -> for (d in el.keySet()) assertEquals(if (el.isNull(d)) null else el.getString(d), m.locks[d], "$name: lock of ${d.take(8)}") }
             val es = e.getJSONObject("seats"); for (sid in es.keySet()) assertEquals(if (es.isNull(sid)) null else es.getString(sid), m.seats[sid], "$name: $sid")
         }
     }
