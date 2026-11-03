@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.15 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.16 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -215,7 +215,7 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
 
 ```jsonc
 { "v": 1, "g": "<group key>", "epoch": "<epoch id>",
-  "change": { "add": { "key": "<member key>", "kind": "device", "lock": { … } | null, "salt": 0 } },
+    "change": { "add": { "key": "<member key>", "kind": "device", "lock": { … } | null, "salt": 0 } },  // lock always present
             // or { "remove": "<member key>" }
             // or { "lock": { "member": "<device key>", "replaces": "<old lock pub, or null>", "new": { "pub": "…", "rp": "…" } } }
             // or { "seat": … }, { "paper": … }, { "redeal": … }   (§6.7.2)
@@ -1570,8 +1570,8 @@ Keykin's own events, and every event a member is asked to co-sign.
   the bytes received, with two exceptions fixed by other standards: a lock assertion is checked over the
   `clientData` bytes as the authenticator made them (WebAuthn, §6.1), and an event id is over NIP-01's
   serialization. Wherever Core compares values ("an identical add", "the same `new`", "matches one entry
-  of the list"), they are the same when their JCS bytes are equal, an add's absent `lock` counting as
-  `"lock": null`.
+  of the list"), they are the same when their JCS bytes are equal. An add always carries `lock` (`null` when the device has none); an add without
+  it is not a change.
 - **A change names one change.** A change's `change` object, and every entry of an approved list (§6.7.2),
   has exactly one of `add`, `remove`, `lock`, `seat`, `paper` or `redeal`, plus `to` (a member key) with a
   `remove` only (§6.4); a key counts as present whatever its value, `null` included. Anything else there
@@ -1603,8 +1603,7 @@ key, a BOM) is held for `W` like a blank one, and a name of invisible characters
 as a name of `"."` does: a face-value test cannot judge content, and Device policy judges profiles on the
 device.
 
-Hostile inputs that every implementation must decide the same way are to become shared negative vectors
-(§14), including U+2028 in a note, a signpost target in uppercase hex, and integer-like keys (`"10"` sorts
+Hostile inputs that every implementation must decide the same way are the shared negative vectors (§14), including U+2028 in a note, a signpost target in uppercase hex, and integer-like keys (`"10"` sorts
 before `"9"` in JCS, unlike a JavaScript object's own key order).
 
 ## 10. Security properties, and their limits
@@ -1811,9 +1810,8 @@ Each is a short document of its own, and none may weaken anything above.
 
 The vectors are in `docs/keykin/vectors/` (`vectors.md` describes them; `vectors.json` is generated
 by `gen_vectors.py`). Done when the TypeScript and Kotlin implementations both
-pass it and a fuzzed parser has run against every message. The reference implementation's 161
-differential JSON probes (`keykin/vectors/diff/` in its branch) are to become a shared negative-vector
-file for §9.5, copied into `docs/keykin/vectors/` before 1.0. The interop plan is
+pass it and a fuzzed parser has run against every message. `vectors/negative.json` holds 300 negative and edge cases (§9.5's reader, JCS, UTF-8, base64, §5.8, §3.4,
+membership and more), each agreed by the TypeScript and Kotlin implementations in a differential run. The interop plan is
 `docs/keykin/interop-plan.md`.
 
 ## Changes in draft 7
@@ -2134,3 +2132,9 @@ JSON profile for bodies and events: fatal UTF-8, no repeated keys, no lone surro
 characters, depth 32, integers spelled one way, JCS, a change naming exactly one change, hex and base64,
 the event shape and a site's event, §5.8's tag counting, and the kind 0 whitespace set. Five red-team rounds (3, 2, 1 and 1 high, then clean; no critical) are folded in, with the last
 round's mediums: how a kind 5 targets a signpost (§6.7.5), and what an empty `content` is (§5.8).
+
+## Changes in draft 14.16
+
+From the reference implementation's batch 6 follow-up (item 46): an add always carries `lock`, `null` when
+there is none, as both implementations already require; the "absent `lock` counts as null" line is gone.
+`vectors/negative.json` (300 cases) joins the vectors.
