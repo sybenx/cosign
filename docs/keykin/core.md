@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.13 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.14 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -769,7 +769,7 @@ second device or the paper. A helper never approves anything.
   it. It is never delayed, and never waits for its redeal.
 - **Removal notice.** The remove (or a reseat) is also delivered to the removed member, kept 7 days,
   with one visible push before its push addresses are dropped (§8.1). A member that verifies a
-  group-signed change removing it destroys everything it holds for the account.
+  group-signed change removing it destroys everything it holds for the account under that key.
 - **Removal is final.** Nobody is put back; a device removed by mistake joins again.
 - **What the redeal does, and doesn't.** Every honest member applies the redeal and destroys its old
   share, so the removed device's pieces no longer combine with any honest member's, and the data and
@@ -1056,8 +1056,9 @@ servers answer.
 - A device that gets a wait notice or a push from a retired server answers with the removal notice and a
   `cancel`.
 - Peers keep the change that removed each key for ever, so `changes_get` always returns it.
-- A server that verifies a group-signed change removing it destroys everything for the account except
-  its forwarding note.
+- A server that verifies a group-signed change removing it destroys everything it holds under that member
+  key except its forwarding note. (The same host may hold another, current seat of the account under a
+  fresh key, I7; that stays.)
 - Before it starts a wait or releases anything, a server runs `changes_get` against every peer it
   knows.
 - A server that was offline for more than 7 days stays **passive** for the account (no waits, no
@@ -1749,9 +1750,9 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
 
-## Changes in drafts 13.2 to 13.13
+## Changes in drafts 13.2 to 13.14
 
 Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
-and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11); encodings and rules pinned from the reference implementation's first batch: the approval `expiry` field, the `pair`, `paper`, `recovery` and `release_request` signatures, `ecdh_partial`, `rs`/`dk` as seed hashes, the hedge stream, a list in every change event, lifetime classes, approvers, duplicate-key adds, kind 5 skew, list-hash ordering, and recovery changes co-signed only by the holder (13.12); heir waits in `inbox_get` and §2's table, and heir lookups (13.13).
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11); encodings and rules pinned from the reference implementation's first batch: the approval `expiry` field, the `pair`, `paper`, `recovery` and `release_request` signatures, `ecdh_partial`, `rs`/`dk` as seed hashes, the hedge stream, a list in every change event, lifetime classes, approvers, duplicate-key adds, kind 5 skew, list-hash ordering, and recovery changes co-signed only by the holder (13.12); heir waits in `inbox_get` and §2's table, and heir lookups (13.13); a removed key's holder destroys what it holds under that key (13.14).

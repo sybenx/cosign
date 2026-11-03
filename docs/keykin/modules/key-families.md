@@ -1,6 +1,6 @@
 # Keykin module: Key families
 
-Draft 1 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.13 · not built · off the 1.0 path
+Draft 1 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.14 · not built · off the 1.0 path
 
 A **key family** links a **master** key to **child** keys in public, so other people's clients can show
 them as one person and, if a child's key leaks, move followers to the master. It is the core's answer to a

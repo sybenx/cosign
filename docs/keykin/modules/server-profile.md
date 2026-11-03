@@ -1,6 +1,6 @@
 # Keykin module: Server profile
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.13 · not built
+Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.14 · not built
 
 This module covers running a Keykin server and being listed as one: the duties as an operator sees them,
 abuse defaults, how a server enrols and announces itself, the signed public list, closing and moving,
@@ -61,9 +61,10 @@ A conforming server, for every account it serves:
     is kept **per member key**, not per account, since one host can hold an old and a new seat for the
     same account. When it verifies the change that retired a member key, it destroys everything for that
     key, its stored member and VAPID keys included, except the forwarding note, which it keeps for as
-    long as it runs. It serves that note to the account's backup and device keys and to the account's
-    other seat servers. If a dedupe (core §6.7.2) makes the loser a key on this same host, it moves the
-    share, which has the same value, to the winner's key;
+    long as it runs. It serves that note to the account's backup and device keys, and to the account's
+    other seat servers by their host keys. If a dedupe (core §6.7.2) makes the loser a key on this same
+    host, it first opens the loser key's pending deliveries, then moves the share, which has the same
+    value, to the winner's key, and only then destroys the loser key;
 11. never deletes a finished account's share for inactivity. A share goes only by a seat change, by an
     account delete (Account admin module), or by a 0.12 `forget`.
 
@@ -133,28 +134,32 @@ admin §1.1).
     later (core I7). A test vector is to be added to `vectors/`.
   - The reply is signed with BIP-340 by the **host key** over `SHA-256("keykin-enroll/1" ‖ JCS(reply))`.
     The seat change's `new` entry carries it.
-  - **The reply's age is checked once, when the change is approved.** The device fetches the reply when
-    the person approves (not when the card first appears). The co-signer refuses a reply more than **30
-    days** past `issued`, or more than 10 minutes ahead of its clock. For a list no seat holder co-signs
+  - **The reply's age is checked once, when the change is approved.** A reply is **unexpired** while it
+    is at most **30 days** past `issued` and not more than 10 minutes ahead. The device fetches the reply,
+    checks it, and only then shows the card and asks the person to approve. The co-signer refuses a reply
+    that isn't unexpired at its co-sign. For a list no seat holder co-signs
     (F3), the device makes the same check at approval. Repair helpers and the server itself check only the
     host signature, so a group-signed seat change never becomes unfillable because time passed.
   - **A server MUST accept a valid, group-signed seat change carrying one of its replies**, closing or
     not, and fill the seat. It derives the keys from the named enrol secret and **stores them per member
     key** at the first verified upload (below) or seat change naming the reply, so it needs the enrol
-    secret only until then. On retirement (duty 10) it deletes them.
+    secret only until then. On retirement (duty 10) it deletes them, and if the upload expires with no
+    seat change, it deletes them then.
   - An enrol secret is destroyed **13 months** after it was made. After that, logged traffic to a seat
     that has since retired can't be opened again, even if the host is later compromised. A seat change
-    that arrives with no earlier upload after its secret is gone (a server offline for a year) is
-    answered with a host-signed `refused: expired`, and the device replaces the seat again (F1/F4).
+    that arrives with no stored keys after its secret is gone (a server offline for a year) is the one
+    case it can't fill: it answers with a host-signed `refused: expired`, and the device replaces the seat
+    again (F1/F4). That refusal never delists the server.
   - The host secret and enrol secrets are **never in a backup** (core §7.3). Only a live transfer (§5)
     copies them.
 - **Incoming holders before the seat change.** Core §6.7.3 has the dealer upload deliveries to incoming
   holders before the co-sign. A server accepts an `upload` naming one of its own unexpired replies only
   if it carries the epoch record and the change set, which it verifies from `g`, with an approval that
-  checks (core §6.2). It keeps only the **newest upload per dealer and approval** (a retry replaces the
-  last), inert, for 7 days or until the seat change arrives, and counts as a live post-change holder for
-  `upload_held` (core §6.7.1). Past a server-wide byte budget for such uploads, it asks for proof of work
-  instead of refusing.
+  checks (core §6.2). It keeps the **newest upload per dealer and approval** (a retry replaces the
+  last, unless the last was already vouched for with `upload_held`, which is never dropped), inert, for 7
+  days or until the seat change arrives, and counts as a live post-change holder for `upload_held` (core
+  §6.7.1). It keeps at most 8 such uploads per `g` (safe, since a real account needs few), asks for proof
+  of work past a server-wide byte budget, and refuses past a hard server-wide cap.
 - **A seat's member key and VAPID key never change in place.** To rotate them, the server is moved to a
   new seat by a seat change with a fresh enrol reply (core §6.7.2). Endpoint changes are announced
   (below) and sent as a `notice {endpoints}` signed by the host key, to the account's members and to the
@@ -172,8 +177,8 @@ admin §1.1).
   uses to find today's servers (§6.7.5).
   - It is a kind 30078 event with `d = "keykin-server-list"`, published by the list key, an ordinary Nostr
     key that is pinned in the app. Its content is `{"version": <integer>, "issued": <unix>, "key_next":
-    <optional next list key>, "servers": [ {host, operator, https, relays, versions}, … ]}`, with
-    `servers` sorted by host key. The event's own signature is the list's signature.
+    <optional next list key>, "servers": [ {host, operator, https, relays, versions, closing}, … ]}`,
+    with `servers` sorted by host key and `version` below 2^53. The event's own signature is the list's signature.
   - The list key is pinned in the app **and in each server's configuration**, so servers verify the list
     the same way.
   - Apps fetch newer versions from the app maker's site and from relays. A newer version is accepted only
@@ -184,7 +189,8 @@ admin §1.1).
     else can.
   - **Listed servers** are `enroll: open`, HTTPS, with a working verified `seated?`, an operator list
     naming them, and support for the current Core major version. A **closing** server stays listed with
-    `closing: true` until it ends: picks skip it, and lookups still ask it. A listed server that refuses a
+    `closing: true` until it ends: it is left out before the list is dealt into seat slices, so picks
+    skip it, and lookups still ask it. A listed server that refuses a
     seat for which it signed an enrol reply is removed from the list.
   - Servers keep only the newest list they have verified (core §2).
   - The list never decides anything an account has already decided. It only proposes candidates and
@@ -192,13 +198,19 @@ admin §1.1).
 - **Picking, and falling through.** The server that sends the `ask` names the list version and its
   candidate (core §6.7.7). If the device doesn't have that version, it tries to fetch it for a minute, then
   decides on the newest version it has. It never decides on a version older than its newest, and accepts
-  the candidate only if it is the pick, or a later one reached by the fall-through below.
+  the candidate only if it is the pick, or a later one reached by the fall-through below; when the `ask`
+  names another, the device uses its own pick. The pick is
+  `SHA-256(g ‖ dead key ‖ seat index (4 bytes) ‖ version (8 bytes))` taken mod the slice's length.
   - Before picking, the device runs `changes_get` against every server, and skips any host that holds a
     seat in that view (core I2, I7).
   - The device asks the pick for an enrol reply. It moves to the next server in that seat's slice, in
-    list order, if the pick answers with a **host-signed refusal** or doesn't answer within a minute.
-  - If a co-signer refuses citing I2 or I7, the device fetches the named conflicting change. It falls
-    through only if that change exists and checks; otherwise it uses another co-signer.
+    list order, if the pick answers with a **host-signed refusal**, doesn't answer within a minute, or
+    answers with a reply the device can't use (a bad signature, the wrong `g`, not unexpired, or a member
+    key that isn't fresh by core I7).
+  - If a co-signer refuses citing I2 or I7, the device fetches the named conflicting change. If it is a
+    change replacing the **same key in the same seat** (another device's F1), the device stops: that
+    change is the replacement. Otherwise it falls through only if the change exists and checks, and uses
+    another co-signer if it doesn't.
   - When the slice is used up, it continues through the whole list in order, still never putting two
     seats on one operator while another eligible one exists. When the whole list is used up, the seat
     stays where it is and the device says: "No replacement server is available. You can add your own."
@@ -206,6 +218,10 @@ admin §1.1).
   - **Off-list servers.** The `operator` in an off-list server's reply counts only if that operator's
     kind 10243 list names the host. Otherwise the operator is "unknown", which never counts as different
     from another for the two-seats rule or the "All your servers are run by X" line.
+- **Proof of work.** A server that may ask for it says so in its announcement (`"pow": <NIP-13
+  difficulty>`), and answers a request that needs it with `error {pow: <difficulty>}`. Over relays, where
+  it can't ask before decrypting, senders read the announcement. A `cancel` refused this way is resent over
+  HTTPS.
 - **`seated?` is verified.** The request carries a signature by the key it asks about, over the server's
   challenge. A server answers only if that signature verifies, so seeing a member key on relays isn't
   enough to learn which servers serve it.
@@ -277,13 +293,29 @@ Every listed server publishes this on its HTTPS page and links it from its annou
 - **A compelled server** can do everything in §1's "if compelled" list. It cannot sign on its own.
 - **Forwarding notes end with the server.** Once a closed server is finally switched off, a paper that
   printed it can't follow its note. The public list and the signpost still work.
-- **Logged traffic** to a seat can be opened by a host compromised within 13 months of the enrol reply
-  (§4). After that, it can't.
-- **A closed server is gone after its year.** An account nobody opened in that time has one dead seat,
-  which the next device to open replaces.
+- **Logged traffic** to a seat that has retired can be opened by a host compromised within 13 months of
+  the enrol reply (§4); after that, it can't. While the seat is current, a compromised host opens
+  everything anyway.
+- **A closed server is gone after its year.** An account nobody opened in that time has a dead seat,
+  which the next device to open replaces. If the **only operator winds down**, that is all three seats,
+  and a paper alone can then never recover the account.
 
 ## Changes
 
+- **Draft 6**, from its fifth red team (0 critical, 1 high):
+  - any reply the device can't use counts as a refusal, and the device checks the reply before the card
+    (H1).
+
+  The mediums and lows:
+  - a vouched upload is never dropped (M1);
+  - core 13.14: a retired server destroys what belongs to that seat's key (M2);
+  - the pick's bytes, closing servers left out before slicing, the device's own pick (M3);
+  - proof of work on the wire (M4);
+  - two devices replacing the same key stop at one (M5);
+  - keys dropped with expired uploads, caps per `g` and server-wide (M6);
+  - a single operator winding down, said plainly (M7);
+  - "unexpired" defined, `refused: expired` only without stored keys, dedupe order, the logged-traffic
+    limit, a `closing` field, a bound on `version`, one upload rule, peers by host key (lows).
 - **Draft 5**, from its fourth red team (0 critical, 2 high):
   - an enrol reply's age is checked once, at approval; afterwards only its signature, and keys are stored
     at the first upload, so a signed seat change never becomes unfillable (H1);
