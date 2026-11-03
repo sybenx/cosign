@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createByDkg, create, invite } from '../sim/account.ts';
-import { verifyEvent } from '../src/event.ts';
+import { verifyEvent, newKey } from '../src/event.ts';
+import { bytesToHex } from '../src/bytes.ts';
 import { msg } from '../sim/nodes.ts';
 
 test('§1.1 creation by DKG: three servers, provisional until confirmed, then everyday use', async () => {
@@ -62,4 +63,33 @@ test('§3 a peer\'s deleted, host-signed by a current seat holder, reaches a ser
   const ans = await acc.bus.send(acc.servers[0].kp, acc.servers[2].kp.pub, { ...(acc.servers[0].deletedAnswer()) });
   assert.equal(ans.type, 'deleted');
   assert.ok(acc.servers[2].tombstone && acc.servers[2].co!.state.shares.size === 0);
+});
+
+test('§1.1 step 5 / core §4.3 step 4: a lockless account keeps its backup secret, every lockless device holds it, and kept_done ends it', async () => {
+  const acc = await create({ lockless: true });
+  assert.ok(acc.A.keptSecret, 'the kept secret approves what a paper would');
+  const B = await invite(acc, acc.A, (l) => acc.A.approveWithKept(l));
+  assert.ok(B.keptSecret && B.keptSecret.pub === acc.paper.pub, 'B holds a copy');
+  // A is lost: B, alone and lockless, can still add a device with its copy.
+  acc.bus.kill(acc.A.kp.pub);
+  const C = await invite(acc, B, (l) => B.approveWithKept(l), { lock: true });
+  assert.equal(B.keptSecret, null, 'C joined with a lock: kept_done destroyed the copies');
+  assert.equal(C.keptSecret, null);
+  // kept_done from a stranger, or naming a change that registered no lock, is refused.
+  const D = await invite(acc, C, (l) => C.approveLock(l));
+  const r = await acc.bus.send(newKey(), D.kp.pub, { type: 'kept_done', change: '00'.repeat(32) });
+  assert.ok(r === null || r.code === 'not_device' || r.code === 'internal' || r.type === 'error');
+});
+
+test('core §4.3 step 4: after an F7 on a lockless account, kept_new gives every lockless device the new key', async () => {
+  const acc = await create({ lockless: true });
+  const B = await invite(acc, acc.A, (l) => acc.A.approveWithKept(l));
+  // F7 needs a co-signed approval: the kept secret approves it as a paper would.
+  const ch = await acc.bus.send(acc.paper, acc.servers[0].kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'));
+  const { approvePaper } = await import('../src/approval.ts');
+  const K = await acc.A.newPaper((l) => approvePaper(acc.g, acc.epochId, l, acc.bus.now + 3600, acc.A.kp, acc.paper, ch.challenge, acc.servers[0].host.pub));
+  assert.equal(acc.A.keptSecret!.pub, K.pub);
+  assert.equal(B.keptSecret!.pub, K.pub, 'B replaced its copy with the current backup key\'s secret');
+  // A kept_new whose secret isn't the current backup key is refused.
+  assert.equal((await acc.bus.send(acc.A.kp, B.kp.pub, { type: 'kept_new', secret: bytesToHex(newKey().sk) })).code, 'not_current_backup');
 });

@@ -19,9 +19,9 @@ import { repairShare } from '../src/frost.ts';
 import { Inbox } from '../src/inbox.ts';
 import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
-import { approveRecovery, approveLock, placeholderList } from '../src/approval.ts';
+import { approveRecovery, approveLock, approvePaper, placeholderList } from '../src/approval.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
-import { newKey, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
+import { newKey, pubOf, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import type { SoftLock } from '../src/lock.ts';
 import type { Transport, Node } from './bus.ts';
@@ -434,6 +434,22 @@ export class DeviceNode implements Node {
   joiner: Joiner | null = null; inviter: Inviter | null = null;
   pendingSigmas: { from: string; index: number; sigma: string; state: string }[] = [];
   wiped = false;
+  /** Core §4.3 step 4: on a lockless account, the backup secret kept sealed (5 points), approving what a
+   *  paper would, until any device has a lock or a paper is read back. */
+  keptSecret: KeyPair | null = null;
+  /** A `paper` approval from the kept secret, with a challenge the server bound to the backup key. */
+  async approveWithKept(list: Change[]): Promise<Approval> {
+    if (!this.keptSecret) refuse('no_kept_secret');
+    const s = this.servers().find((x) => this.bus.alive(x.key))!;
+    const ch = await this.bus.send(this.keptSecret!, s.key, msg('challenge', this.g, this.epochId, 'ask'));
+    const host = [...this.m!.members.values()].find((x) => x.key === s.key)!.host!;
+    return approvePaper(this.g, this.epochId, approvalListOf(list), this.now + 3600, this.kp, this.keptSecret!, ch.challenge, host);
+  }
+  /** Tell every device the kept copies may go (`kept_done`), naming the change that registered a lock. */
+  async keptDone(changeId: string) {
+    for (const d of [...this.m!.members.values()].filter((x) => x.kind === 'device' && x.key !== this.kp.pub)) await this.bus.send(this.kp, d.key, { type: 'kept_done', change: changeId });
+    this.keptSecret = null;
+  }
   /** A device, or the opt-in helper (F6): same node, different rules in the co-signer. */
   role: 'device' | 'helper' = 'device';
   /** Security displays this device owes its person (§1.1 item 8). */
@@ -665,6 +681,12 @@ export class DeviceNode implements Node {
       return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: repairedAt, ...(heir ? { heir: heir.recordHash } : {}) } }, { redeal: dealt.redeal }], material: base };
     } });
     await this.reissueMissing();
+    if (this.keptSecret) {
+      // A lockless account keeps the new key's secret the same way, and every lockless device gets it.
+      this.keptSecret = K;
+      for (const d of [...this.m!.members.values()].filter((x) => x.kind === 'device' && x.key !== this.kp.pub && !x.lock))
+        await this.bus.send(this.kp, d.key, { type: 'kept_new', secret: bytesToHex(K.sk) });
+    }
     return K;
   }
 
@@ -730,6 +752,23 @@ export class DeviceNode implements Node {
         case 'repair_finish': return this.co!.repairFinish(from, body);
         case 'change': this.takeChanges(body.events); return { type: 'ack' };
         case 'delta_push': this.takeDelivery(body.wrap); this.applyAll(); return { type: 'ack' };
+        case 'kept_done': {
+          // Only from a current device, and only once the named change registered a lock (§4.3 step 4).
+          if (!this.m!.devices.has(from)) return { type: 'error', code: 'not_device' };
+          const p = this.m!.accepted.find((x) => x.ev.id === body.change);
+          const ok = p && ((p.type === 'lock') || (p.type === 'add' && (p.c.change as any).add.lock));
+          if (!ok) return { type: 'error', code: 'no_lock_change' };
+          this.keptSecret = null;
+          return { type: 'ack' };
+        }
+        case 'kept_new': {
+          // After an F7: the current backup key's secret, from a current device (§4.3 step 4).
+          if (!this.m!.devices.has(from)) return { type: 'error', code: 'not_device' };
+          const sk = hexToBytes(body.secret);
+          if (pubOf(sk) !== this.m!.backupKey) return { type: 'error', code: 'not_current_backup' };
+          this.keptSecret = { sk, pub: pubOf(sk) };
+          return { type: 'ack' };
+        }
         case 'need_seeds': {
           // §6.7.4: data-key and release seeds to a current device; release seeds only to a current
           // seat server; never to a helper, the backup or a removed key. Every answer is a notice

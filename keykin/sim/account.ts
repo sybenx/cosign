@@ -46,6 +46,7 @@ export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise
     Uint8Array.from(Buffer.from(scalarHex(d.secret), 'hex'))) as NostrEvent;
   A.adopt(recEv, [], { ids: new Set(), C: d.commitment, shares: new Map([1, 2, 3].map((i) => [i, d.shares.get(i)!])) });
   A.seeds.set('base', baseSeed); A.base = base; A.baseDk = baseDk;
+  if (!A.lock) A.keptSecret = paper;       // "Not now" on a lockless device keeps the backup sealed (§4.3 step 4)
   for (const [k, s] of servers.entries()) {
     const a = await bus.send(A.kp, s.kp.pub, { type: 'seat_welcome', w: { recEv, changes: [], state: [], share: [[4, 7, 8][k], scalarHex(d.shares.get([4, 7, 8][k])!)], seeds: [['base', baseSeed]], items: [], base } });
     if (a?.type !== 'ack') refuse(a?.code ?? 'welcome_failed', a?.detail);
@@ -55,7 +56,7 @@ export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise
 }
 
 /** Invite a new device (§4.2), invite direction. `approve` makes the add's approval. Returns the joined device. */
-export async function invite(acc: Account, inviter: DeviceNode, approve: (list: Change[]) => Approval, o: { lock?: boolean; via?: number; racer?: boolean } = {}): Promise<DeviceNode> {
+export async function invite(acc: Account, inviter: DeviceNode, approve: (list: Change[]) => Approval | Promise<Approval>, o: { lock?: boolean; via?: number; racer?: boolean } = {}): Promise<DeviceNode> {
   const { bus } = acc;
   const B = bus.add(new DeviceNode(bus, `D${++seq}`, o.lock ? softLock() : null)) as DeviceNode;
   inviter.inviter = new Inviter({ g: inviter.g, m: inviter.kp.pub, now: bus.now });
@@ -68,7 +69,7 @@ export async function invite(acc: Account, inviter: DeviceNode, approve: (list: 
   if (!inviter.inviter.typed(B.joiner.check)) refuse('check_mismatch');
   const { salt, indices } = pickSalt(inviter.g, inviter.epochId, B.kp.pub, takenIndices(inviter.m!));
   const add: Change = { add: { key: B.kp.pub, kind: 'device', lock: B.lock?.pub ?? null, salt } };
-  await inviter.submit([add], approve([add]));
+  await inviter.submit([add], await approve([add]));
   const server = inviter.servers().filter((s) => bus.alive(s.key))[o.via ?? 0];
   const sigmas: any[] = [];
   for (const i of indices) for (const w of await inviter.repairFor([{ key: inviter.kp.pub, indices: [...inviter.state!.shares.keys()] }, { key: server.key, indices: server.shares }], i, B.kp.pub, 'add'))
@@ -80,6 +81,14 @@ export async function invite(acc: Account, inviter: DeviceNode, approve: (list: 
   B.adopt(inviter.recEv!, inviter.changes, { ids: new Set(inviter.state!.ids), C: r.C, shares: r.shares });
   for (const [k, v] of inviter.seeds) B.seeds.set(k, v);
   B.base = inviter.base; B.items = [...inviter.items]; B.baseDk = inviter.baseDk; B.dkSeeds = [...inviter.dkSeeds];
+  // The welcome carries the kept secret while no device has a lock (§4.3 step 4).
+  if (inviter.keptSecret) B.keptSecret = inviter.keptSecret;
+  // A device added with a lock, its add co-signed and its welcome acknowledged: the kept copies go.
+  if (B.lock && inviter.keptSecret) {
+    const addEv = inviter.changes.find((e) => JSON.parse(e.content).change?.add?.key === B.kp.pub)!;
+    await inviter.keptDone(addEv.id);
+    B.keptSecret = null;
+  }
   return B;
 }
 
@@ -267,6 +276,7 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net } = {}): Pr
   }
   A.adopt(recEv, [], { ids: new Set(), C, shares: new Map([1, 2, 3].map((i) => [i, shares.get(i)!])) });
   A.seeds.set('base', baseSeed); A.base = base; A.baseDk = baseDk;
+  if (!A.lock) A.keptSecret = paper;
   for (const s of servers) { const a = await bus.send(A.kp, s.kp.pub, { type: 'confirm', epoch: epochId }); if (a?.type !== 'ack') refuse(a?.code ?? 'confirm_failed'); }
   // The backup seat's shares were only ever in this device (5 points until "Write it down" or "Not now").
   shares.clear();
