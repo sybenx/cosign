@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.5 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.6 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -395,9 +395,15 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
    been read back, so a lockless account can always add a device. While neither exists, **every** lockless
    device holds a sealed copy: the welcome of each new device carries it (step 4 of §4.2), so losing one
    lockless device never traps the other. Each holder is worth 5 points, like an nsec kept in it, and the
-   kept secret approves what a `paper` approval would. When a lock is registered (an add with a lock, or a
-   lock change) or a paper is read back, the device that sees it sends `kept_done {}` to every device as a
-   delivery, and every holder destroys its copy. It SHOULD prompt, quietly, to finish the backup.
+   kept secret approves what a `paper` approval would. It is always the **current** backup key's secret: an
+   F7 on such an account (friends' pieces with no paper, say) keeps the new key's secret the same way.
+   A lock counts as registered once a lock change is co-signed, or once a device added with a lock has had
+   its add co-signed **and** acknowledged its welcome (§4.2 step 5). Then, or when a paper is read back,
+   the device that sees it sends `kept_done {}` (naming that change, or the read-back) to every device as a
+   delivery; holders take it only from a current device and, for a lock, only after checking the named
+   change, and destroy their copies. The app then suggests, quietly, a new paper, since a copy taken
+   earlier keeps paper power until the backup key is replaced. It SHOULD prompt, quietly, to finish the
+   backup.
 
 After that, each redeal appends a **paper delta** for it (§7.2), so a paper reaches every later state
 without being reprinted.
@@ -1908,3 +1914,9 @@ it; a resume clears only lower-numbered stops; devices show "Stopped" once a ser
 Q7 (hub, on the user's Q6 reasoning): a lockless account's kept backup secret lasts until any device has a
 lock or a paper is read back, every lockless device holds a sealed copy meanwhile (carried in welcomes),
 and `kept_done` destroys every copy.
+
+## Changes in draft 14.6
+
+From Account admin's fifth red team: a lock counts as registered only once its device has finished joining
+(welcome acknowledged); the kept secret always follows the current backup key; `kept_done` names its
+trigger and comes only from a current device; a new paper is suggested afterwards.

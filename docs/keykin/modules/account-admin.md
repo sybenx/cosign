@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.5 · not built
+Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.6 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -55,9 +55,12 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    every server has adopted the epoch record first-hand (core §3.4) and stored its seat keys (Server
    profile §4). Until then each server holds the account **provisionally**. As soon as every server has
    adopted, the device publishes the signpost (core §6.7.5) and delivers its event id to every server
-   (core §6.7.10); that delivery **confirms** the account, and it registers push (core §8.1), all before
-   the backup question. A server drops a provisional account it hasn't seen confirmed within an hour,
-   keeping no record, so a failed attempt never bars a retry of the same imported npub and no message can
+   (core §6.7.10), and only after every server acknowledges does it publish the signpost; that delivery
+   **confirms** the account, and it registers push (core §8.1), all before the backup question. A server
+   that hasn't seen the confirmation within an hour asks its peers first, and drops the provisional
+   account only if none has seen it, keeping no record. A provisional account never counts for `refused:
+   exists`, and a newer group-signed epoch record for the same `g` replaces it. A device that finds a seat
+   answering "unknown account" treats it as dead (F1). Dropping keeps no record, so a failed attempt never bars a retry of the same imported npub and no message can
    wipe a live account. Restarts count towards the three of step 2; after the third, the app says
    "Couldn't reach enough servers. Try again later." 
 5. **The backup.** The device asks once, quietly: "Write down a backup now? If you lose this phone, it gets
@@ -96,7 +99,8 @@ For someone who already has an nsec, and for moving a Cosign 0.12 account (core 
    answer to an unauthenticated enrol, which would tell anyone which servers serve an npub), and the device
    picks another. With one operator today, every listed server may already hold the old account; then
    the app says plainly: "Your old account's servers still hold it. Recover it with its paper, or delete
-   it from a device you still have." A server that answers `deleted` for this `g` is skipped the same way.
+   it from a device you still have. Otherwise you can keep using your nsec as before; Keykin can host it
+   only on a server you run." A server that answers `deleted` for this `g` is skipped the same way.
 3. The device picks and enrols servers as in §1.1 steps 1 and 3 (`g` is the nsec's public key), then
    deals: if the key's point has odd y, it negates the nsec (the npub is the same), then makes a random
    polynomial `f` of degree 3 with `f(0) = nsec`, with shares for its own three indices, the backup seat's
@@ -190,7 +194,8 @@ An extension retiring in favour of the machine's desktop app uses the core's `se
    - For a `paper` approval the device first gets a fresh challenge from every server and has the backup
      sign for each, so every server can check it itself.
    - The device sends it to every server, as a delivery, and keeps everything until **two** servers have
-     answered `deleted`; only then does it destroy the account, keeping only the request, the first
+     answered `deleted` (or every server that answers has, after 7 days; meanwhile it shows "Deleting…");
+     it sends the friends' and heir's notice first, and only then destroys the account, keeping only the request, the first
      `deleted` it received and the servers' endpoints, and sending until each answers.
    - A server accepts it with an approval it checks itself (fresh, with its own challenge for `paper`, every
      approver a current device in its own view, core §3.2), or with a host-signed `deleted` from a peer that
@@ -201,8 +206,8 @@ An extension retiring in favour of the machine's desktop app uses the core's `se
      never seats or creates `g` again. Servers that never held the account aren't bound by it.
    - Every device that verifies it destroys everything for the account. Friends and the heir get one
      notice ("*Name* deleted their account") carrying a host-signed `deleted` with the request and the
-     changes that prove its approval; their apps check those against the account card's `g` and only then
-     drop their pieces (Backup module §1.1 step 8).
+     changes that prove its approval; their apps check those against the account card's `g` and epoch id
+     and only then drop their pieces (Backup module §1.1 step 8).
 
 After a delete, a paper can no longer be used with any honest server. Pieces a dishonest member kept
 still combine as core §10 says.
@@ -238,8 +243,9 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 - **An imported key is only as safe as every old copy.** Keykin can't delete the nsec from a password
   manager, a 0.12 app or a screenshot.
-- **"Not now" on a device with no lock** leaves that device alone worth 5 points until a phone joins or a
-  paper is made: whoever copies that browser profile has the whole key, as with an nsec kept in it.
+- **"Not now" on a device with no lock** leaves every lockless device worth 5 points until any device has
+  a lock or a paper is read back: whoever copies one of those browser profiles has the whole key, as with
+  an nsec kept in it, and keeps paper power until a new paper replaces the backup key.
 - **"Not now" means no backup.** If that device is lost and no other exists, the account is lost (Backup
   module §6).
 - **A thief with a device's lock, or a second device, or the paper, can destroy the key.** That is the
@@ -253,6 +259,16 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 ## Changes
 
+- **Draft 7**, from its fifth red team (0 critical, 1 high):
+  - the kept secret survives until a locked device has finished joining (H1, core 14.6).
+
+  The mediums and lows:
+  - servers ask peers before dropping a provisional account, and unknown seats count as dead (M1);
+  - an F7 on a lockless account keeps the new key's secret (M2, core 14.6);
+  - a new paper suggested after `kept_done` (M3, core 14.6);
+  - the signpost published after confirmation, provisional accounts and `exists`, Import anyway wording,
+    the epoch id in delete proofs, `kept_done` senders, deletes with one live server, notice order
+    (L1 to L8).
 - **Draft 6** (Q7): the kept secret lasts until a lock or a read-back paper exists, and every lockless
   device holds a copy meanwhile (core 14.5).
 - **Draft 5**, from its fourth red team (0 critical, 1 high):
