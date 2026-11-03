@@ -1,6 +1,6 @@
 # Keykin module: Server profile
 
-Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
+Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
 
 This module covers running a Keykin server and being listed as one: the duties as an operator sees them,
 abuse defaults, how a server enrols and announces itself, the signed public list, closing and moving,
@@ -39,7 +39,8 @@ A conforming server, for every account it serves:
 3. checks every approval by core §6.2 before co-signing an account change, and accepts backup-key
    requests only from the current backup key. For a seat change it also checks the `new` entry's enrol
    reply (host signature, and its age at this co-sign, §4) and the I2 and I7 host rules, and refuses with
-   the rule's name (`refused: I2`, `refused: I7`) and the conflicting change's id;
+   the rule's name (`refused: I2`, `refused: I6`, `refused: I7`) and the conflicting change's id, or
+   `refused: replaced` when the seat's `replaces` is no longer its current holder;
 4. follows Upkeep (§6.7):
    - applies redeals before an Upkeep co-sign, and fetches from its peers before any wait, release or
      Upkeep co-sign;
@@ -64,7 +65,8 @@ A conforming server, for every account it serves:
     long as it runs. It serves that note to the account's backup and device keys, and to the account's
     other seat servers by their host keys. If a dedupe (core §6.7.2) makes the loser a key on this same
     host, it first opens the loser key's pending deliveries, then moves the share, which has the same
-    value, to the winner's key, and only then destroys the loser key;
+    value, to the winner's key, and only then destroys the loser key. Devices that apply the dedupe
+    re-register push with the winner key's VAPID key;
 11. never deletes a finished account's share for inactivity. A share goes only by a seat change, by an
     account delete (Account admin module), or by a 0.12 `forget`.
 
@@ -84,7 +86,8 @@ core requires a server to answer.**
   - `enroll {g}`;
   - an incoming holder's uploads and welcome (§4);
   - `changes_get` from a removed key (core §3.2);
-  - the `challenge` before a `seated?` or `forward_get`.
+  - the `challenge` before a `seated?` or `forward_get`, and the `challenge` a paper asks of a server
+    being seated in F3.
 - **Everything else** is counted per sender key, only after the sender is verified as a current member,
   the account's backup key, or a peer server. This replaces core §9.3's per-account reference figure on
   purpose: counting per key means a thief's device can't use up the owner's allowance.
@@ -155,11 +158,15 @@ admin §1.1).
 - **Incoming holders before the seat change.** Core §6.7.3 has the dealer upload deliveries to incoming
   holders before the co-sign. A server accepts an `upload` naming one of its own unexpired replies only
   if it carries the epoch record and the change set, which it verifies from `g`, with an approval that
-  checks (core §6.2). It keeps the **newest upload per dealer and approval** (a retry replaces the
+  checks (core §6.2). Uploads count only when they come over HTTPS or sealed by the account's members,
+  never from an unauthenticated relay message. It keeps the **newest upload per dealer and approval** (a retry replaces the
   last, unless the last was already vouched for with `upload_held`, which is never dropped), inert, for 7
   days or until the seat change arrives, and counts as a live post-change holder for `upload_held` (core
-  §6.7.1). It keeps at most 8 such uploads per `g` (safe, since a real account needs few), asks for proof
-  of work past a server-wide byte budget, and refuses past a hard server-wide cap.
+  §6.7.1). It keeps at most 8 such uploads per `g` (safe, since a real account needs few) and asks for
+  proof of work past a server-wide byte budget. At a hard server-wide cap it refuses **new enrol requests**
+  with a host-signed refusal, so picks fall through before anyone approves, and keeps accepting uploads for
+  replies it has already issued. A co-signer that counted an incoming server's upload as one of the two
+  holders sends that server the co-signed list, so the vouched upload never expires.
 - **A seat's member key and VAPID key never change in place.** To rotate them, the server is moved to a
   new seat by a seat change with a fresh enrol reply (core §6.7.2). Endpoint changes are announced
   (below) and sent as a `notice {endpoints}` signed by the host key, to the account's members and to the
@@ -168,7 +175,8 @@ admin §1.1).
   entry, its relays, or what the signpost `h` covers.
 - **Announcement.** A server publishes a kind 30243 event, `d = "keykin-server"` (readers also accept
   `cosign-server`), signed by its host key. Its content is `{"relays": [...], "https": "<url>" | null,
-  "enroll": "open" | "invite", "versions": [<Keykin Core major versions it speaks>]}`, with tags
+  "enroll": "open" | "invite", "versions": [<Keykin Core major versions it speaks>], "pow": <optional
+  NIP-13 difficulty>}`, with tags
   `["p", <operator pubkey>, "", "operator"]` and optionally `["nip05", "<name@domain>"]`. `invite` means
   new accounts need an invite code from the operator. Seats never do.
 - **Operator list.** The operator publishes a kind 10243 event listing its servers' host keys with
@@ -200,28 +208,36 @@ admin §1.1).
   decides on the newest version it has. It never decides on a version older than its newest, and accepts
   the candidate only if it is the pick, or a later one reached by the fall-through below; when the `ask`
   names another, the device uses its own pick. The pick is
-  `SHA-256(g ‖ dead key ‖ seat index (4 bytes) ‖ version (8 bytes))` taken mod the slice's length.
-  - Before picking, the device runs `changes_get` against every server, and skips any host that holds a
-    seat in that view (core I2, I7).
+  `int(SHA-256(g ‖ dead key ‖ seat index (4 bytes) ‖ version (8 bytes)), big-endian) mod` the slice's
+  length, all integers big-endian. Slices: the open servers, in list order, dealt round-robin to the three
+  server seats sorted by index.
+  - Before picking, the device runs `changes_get` against every server. It stops if the dead key is no
+    longer that seat's holder (another device already replaced it), and skips any host that holds a seat,
+    or is the helper's host, in that view (core I2, I6, I7).
   - The device asks the pick for an enrol reply. It moves to the next server in that seat's slice, in
     list order, if the pick answers with a **host-signed refusal**, doesn't answer within a minute, or
-    answers with a reply the device can't use (a bad signature, the wrong `g`, not unexpired, or a member
-    key that isn't fresh by core I7).
-  - If a co-signer refuses citing I2 or I7, the device fetches the named conflicting change. If it is a
+    answers, over HTTPS or sealed by its own key, with a reply the device can't use (a bad signature, the
+    wrong `g`, more than 30 days old with a day's slack, or a member key that isn't fresh by core I7).
+    Unauthenticated relay replies are ignored, never counted as refusals. The device doesn't check the
+    "ahead" bound; the co-signer does, on its own clock.
+  - If a co-signer refuses citing I2, I6 or I7, the device fetches the named conflicting change. If it is a
     change replacing the **same key in the same seat** (another device's F1), the device stops: that
     change is the replacement. Otherwise it falls through only if the change exists and checks, and uses
     another co-signer if it doesn't.
   - When the slice is used up, it continues through the whole list in order, still never putting two
     seats on one operator while another eligible one exists. When the whole list is used up, the seat
     stays where it is and the device says: "No replacement server is available. You can add your own."
-  - The device shows the card for the server it got an enrol reply from.
+  - The device shows the card for the server it got an enrol reply from. If the reply is more than 7 days
+    old when the person opens the card, it fetches a fresh one first.
+  - A host-signed `refused: expired` counts like a shutdown notice for the F1 card.
   - **Off-list servers.** The `operator` in an off-list server's reply counts only if that operator's
     kind 10243 list names the host. Otherwise the operator is "unknown", which never counts as different
     from another for the two-seats rule or the "All your servers are run by X" line.
 - **Proof of work.** A server that may ask for it says so in its announcement (`"pow": <NIP-13
-  difficulty>`), and answers a request that needs it with `error {pow: <difficulty>}`. Over relays, where
-  it can't ask before decrypting, senders read the announcement. A `cancel` refused this way is resent over
-  HTTPS.
+  difficulty>`), and answers an HTTPS request that needs it with `error {pow: <difficulty>}`. Over relays,
+  where it can't ask before decrypting, senders attach proof of work at the announced difficulty; under a
+  flood, relay messages without it may be dropped unread, which is why devices repeat cancels and also use
+  HTTPS (core §6.3, §9.2).
 - **`seated?` is verified.** The request carries a signature by the key it asks about, over the server's
   challenge. A server answers only if that signature verifies, so seeing a member key on relays isn't
   enough to learn which servers serve it.
@@ -236,7 +252,7 @@ admin §1.1).
     the card calmly, then a quiet dot on Backup until the seat has moved.
   - A **closing** server refuses only **new accounts and new enrol replies**, with a host-signed refusal.
     It keeps everything else: co-signing, recovery waits, holds and heir waits (new and running),
-    cancels, catch-up, seat changes carrying its unexpired replies, and seat moves away. A person with
+    cancels, catch-up, seat changes carrying its replies (§4), and seat moves away. A person with
     only the paper can always recover through a closing server.
   - An operator that runs several of one account's servers MUST stagger their closing dates at least 30
     days apart.
@@ -302,6 +318,14 @@ Every listed server publishes this on its HTTPS page and links it from its annou
 
 ## Changes
 
+- **Draft 7**, from its sixth red team (0 critical, 0 high), its mediums and lows:
+  - two devices replacing the same server stop at the first, and `refused: replaced` (M1);
+  - at the hard cap, new enrol requests are refused before approval (M2);
+  - vouched uploads get the co-signed list (M3);
+  - only authenticated replies count as refusals (M4);
+  - closing servers honour all their replies, proof of work on the wire, I6 and the helper's host, the
+    pick to the byte, `refused: expired` brings the card, stale cards refetch, no device "ahead" check,
+    push after a dedupe, the F3 challenge bucket (L1 to L9).
 - **Draft 6**, from its fifth red team (0 critical, 1 high):
   - any reply the device can't use counts as a refusal, and the device checks the reply before the card
     (H1).
