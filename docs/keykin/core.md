@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 8.2 · 2026-11-02 · `draft` `optional` · not built
+Draft 8.3 · 2026-11-02 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -367,6 +367,38 @@ iCloud Keychain or a restorable backup). Helpers, servers and backups never get 
 is in the backup material, so a recovery loses no data (§7.2). It changes only at a refresh; devices
 keep older ones so they can read older data, and data services re-encrypt lazily.
 
+### 4.6 One member per machine
+
+A machine should be **one** member, however many apps and browsers on it sign. Two members on one
+laptop would be 6 points: that laptop alone would be the key. This is a SHOULD on member apps, not a
+wire change.
+
+- **With a desktop member app installed**, browser extensions on that machine hold no pieces. They pass
+  NIP-07 requests to the app over the browser's native messaging, and the app is the member. This is
+  how NIP-55 apps on Android share one member, and how the iPhone's Safari extension relays to its app.
+  Every browser on the machine reaches the same app, so several browsers share one member.
+- **With no desktop app**, one extension is the member itself, as today. A second browser on the same
+  machine SHOULD NOT join as a second member. It connects to the account the way a site does (a grant
+  through the member, Doors module), or the person installs the desktop app.
+- **The app registers a native-messaging host.** An extension checks for it before acting as a member.
+  If it finds the app, it does not join; if it already is the member, it **hands its membership over**:
+  - it passes its member key and shares to the app over native messaging;
+  - the app confirms it holds them and signs a test round;
+  - the extension destroys its copy and becomes a relay.
+
+  The membership doesn't change: same member key, same indices. So nothing in the account changes and
+  no approval is needed. A copy that survives the handover is the same 3 shares twice, not 6 points.
+- **If the app joined separately** while an extension on the same machine was already a member (two
+  members on one machine), the extension retires itself as soon as it finds the app: a `remove` naming
+  its own key (§6.4). The laptop ends up as one member.
+- A lock belongs to the member app (Touch ID through the Secure Enclave). A handed-over membership has
+  no lock until the app registers one by a lock change (§3.2).
+
+Native messaging is not authenticated against other local software: a program running as the person
+could register a fake host and receive the extension's shares at handover, or see the requests it
+relays. Such a program can already read the extension's own storage (§7.3), so this adds nothing a
+local thief doesn't already have; §10 says so.
+
 ## 5. Signing
 
 ### 5.1 The round
@@ -597,6 +629,7 @@ second device or the paper. A helper never approves anything.
 | Add a `device` (§3.2) | `lock`, `pair` or `paper`; or `recovery` |
 | Re-register a device's lock (§3.2) | `pair` or `paper`; or `recovery` |
 | Report a `device` or `helper` lost (§6.4) | `lock`, `pair` or `paper`; or `recovery` |
+| A device removes itself (§6.4) | its own member key's signature |
 | "Refresh now" (servers, helper, paper, locks, relays, data and release keys) | `lock`, `pair` or `paper`; or `recovery` (`refresh.md`) |
 | Export a child key (§6.6) | `lock`, `pair` or `paper` |
 | Remove or replace a notice channel (§8.1) | `lock`, `pair` or `paper` |
@@ -629,6 +662,9 @@ second device or the paper. A helper never approves anything.
 
 - A change `{"remove": <key>}` names a `device` or a `helper`, with its approval (§6.2). A lockless
   single device cannot report another; the person uses a second device or the paper.
+- **A device may always remove itself**: a `remove` naming its own key, approved by its own member key's
+  detached signature, needs nothing else. It is how an extension retires in favour of its machine's
+  app (§4.6), and a thief gains nothing by it.
 - The change goes to every server and every device as a delivery (§7.1). From the moment a member has
   it, servers MUST refuse every round with the removed member and drop its push addresses, and devices
   MUST refuse to co-sign with it. It is never delayed.
@@ -887,10 +923,14 @@ server MAY ask for proof of work (NIP-13) on enrollment.
   device.
 - **One operator today.** All three live servers are run by one person, so "two servers' waits" and
   "every server refuses" are one party's word until other operators exist.
-- **Two stolen devices** (6 points) sign without any server and skip every server rule. **Two apps on
-  one machine are two devices**: a desktop app and a browser extension on one laptop are 6 points, so
-  that laptop alone is the key. Apps on one machine SHOULD share one member (as NIP-55 apps on Android
-  do) rather than each join.
+- **Two stolen devices** (6 points) sign without any server and skip every server rule. On one
+  machine, the one-member rule (§4.6) means a laptop with the desktop app and its browsers is one
+  member, 3 points. The limit remains where the rule can't apply: two browsers on one machine that each
+  joined separately with no desktop app, or apps that ignore the SHOULD.
+- **Local software on a member's machine** that runs as the person can read an extension's stored
+  shares, fake the native-messaging host at a handover, and see the requests an extension relays. That
+  is 3 points and the account's traffic on that machine, the same as for an nsec stored there, which
+  is the bar.
 - **A stolen device plus one dishonest server** is 4 points: if the device's shares can be extracted,
   that is the key itself, offline and for good.
 - **A stolen device with no lock plus one honest server** can sign everyday events, and overwrite lists
@@ -1050,3 +1090,11 @@ one machine are two devices, stated (M7); the paper carries `g`, server host key
 read-back checks them (M8); shares may travel as live 21059 but never stored 1059 (M9); 32-byte index
 encoding (L3); leaving servers rejoin with a new key (L4); "at least 3 servers" (L5); any enrolled
 biometric (L6); cancels go to every server until each answers (L9).
+
+## Changes in draft 8.3
+
+The user's one-member-per-machine rule (2026-11-02): §4.6 (a desktop app is the machine's member and
+extensions relay to it; with no app one extension is the member; handover moves the membership without
+changing it; a separately joined extension removes itself); a device may remove itself (§6.4); §10's
+"two apps on one laptop" limit narrowed to the cases the rule can't cover, and the local-software limit
+stated.
