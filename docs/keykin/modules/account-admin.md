@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.9 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.9 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -54,19 +54,21 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
 4. **Live only when adopted.** The account goes live (the npub is shown, anything is published) only after
    every server has adopted the epoch record first-hand (core §3.4) and stored its seat keys (Server
    profile §4). Until then each server holds the account **provisionally**. As soon as every server has
-   adopted, the device publishes the signpost (core §6.7.5) and delivers its event id to every server
-   (core §6.7.10), and only after every server acknowledges does it publish the signpost; that delivery
-   **confirms** the account, and it registers push (core §8.1), all before the backup question. A server
+   adopted, the device signs the signpost (core §6.7.5) and delivers its event id and the epoch id to every
+   server (core §6.7.10), and only after every server acknowledges does it publish the signpost; that
+   delivery **confirms** the account (a server confirms only the epoch record it adopted), and it registers push (core §8.1), all before the backup question. A server
    that hasn't seen the confirmation within an hour asks its peers first, and drops the provisional
    account only if none has seen it, keeping no record. A provisional account never counts for `refused:
-   exists`, and a newer group-signed epoch record for the same `g` replaces it. A device that finds a seat
-   answering "unknown account" treats it as dead (F1). Dropping keeps no record, so a failed attempt never bars a retry of the same imported npub and no message can
+   exists`, and a newer group-signed epoch record for the same `g` replaces it. A seat answering "unknown
+   account" before the account is live restarts the creation; after, the core's dead check applies (F1). Dropping keeps no record, so a failed attempt never bars a retry of the same imported npub and no message can
    wipe a live account. Restarts count towards the three of step 2; after the third, the app says
    "Couldn't reach enough servers. Try again later." 
 5. **The backup.** The device asks once, quietly: "Write down a backup now? If you lose this phone, it gets
    your account back." — **Write it down**, **Add another device instead**, or **Not now**.
-   - **Write it down** makes a **paper** of **this** backup key (no new key or `paper` change: the epoch
-     record already pins it), with the read-back; then the secret is destroyed. Friends' pieces and an heir
+   - **Write it down**, during creation, makes a **paper** of **this** backup key (no new key or `paper`
+     change: the epoch record already pins it), with the read-back; then the secret is destroyed, with no
+     new-paper suggestion. Later, from a kept secret, Write it down runs as an F7, so the paper is of a
+     fresh key. Friends' pieces and an heir
      always go through a new set (F7, Backup module §1.1), which the kept secret may approve as a paper
      would.
    - **Add another device instead**: while the device still holds the backup secret, it can approve adding
@@ -79,7 +81,9 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    - **Not now**, on a device with **no lock** (every browser extension), keeps them sealed (core §7.3)
      until any device of the account has a lock or a paper has been read back. Every lockless device that
      joins meanwhile gets a sealed copy in its welcome, so losing one never traps the other; all copies are
-     destroyed together (`kept_done`, core §4.3 step 4). Meanwhile the quiet dot on Backup suggests, once, "Add your phone to keep your account safe if
+     destroyed together (`kept_done`, core §4.3 step 4; re-sent to any device that joined in the day before,
+     so a copy can't outlive it). After an F7 on such an account, `kept_new` gives every lockless device the
+     new key's secret. Meanwhile the quiet dot on Backup suggests, once, "Add your phone to keep your account safe if
      this browser is lost." No banner, no push.
    - If the flow is left unfinished, the device treats it as Not now after 24 hours and says: "No backup
      yet. If you wrote one down, scan it in Backup to check it."
@@ -194,8 +198,9 @@ An extension retiring in favour of the machine's desktop app uses the core's `se
    - For a `paper` approval the device first gets a fresh challenge from every server and has the backup
      sign for each, so every server can check it itself.
    - The device sends it to every server, as a delivery, and keeps everything until **two** servers have
-     answered `deleted` (or every server that answers has, after 7 days; meanwhile it shows "Deleting…");
-     it sends the friends' and heir's notice first, and only then destroys the account, keeping only the request, the first
+     answered `deleted` (or, after 7 days, every server that answers has, and at least one did; meanwhile it
+     shows "Deleting…");
+     it sends the friends', heir's and helper's notice first (the helper destroys its shares on it), and only then destroys the account, keeping only the request, the first
      `deleted` it received and the servers' endpoints, and sending until each answers.
    - A server accepts it with an approval it checks itself (fresh, with its own challenge for `paper`, every
      approver a current device in its own view, core §3.2), or with a host-signed `deleted` from a peer that
@@ -259,6 +264,15 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 ## Changes
 
+- **Draft 8**, from its sixth red team (0 critical, 0 high), its mediums and lows:
+  - `kept_new` after an F7 on a lockless account (M1, core 14.9);
+  - a delete's 7-day fallback needs at least one `deleted` (M2);
+  - confirmations name the epoch id (M3);
+  - the tombstone keeps the epoch record (M4, core 14.9);
+  - "unknown account" before and after going live (M5);
+  - no new-paper suggestion at creation; later papers from a kept secret are F7s (M6);
+  - "signs" then "publishes", `kept_done` re-sent to recent joiners, the helper told of a delete, `deleted`
+    only to authenticated requests (lows).
 - **Draft 7**, from its fifth red team (0 critical, 1 high):
   - the kept secret survives until a locked device has finished joining (H1, core 14.6).
 

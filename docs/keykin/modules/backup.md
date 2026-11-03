@@ -48,13 +48,15 @@ renews your heir and the pieces your 3 friends hold."
      a co-signed `paper` change naming its hash. So nobody can install or swap an heir outside an F7.
 
    Both fields are part of the approved list (core §6.7.2).
-6. The device destroys K once the change is co-signed; it isn't needed afterwards.
+6. The device destroys K once the change is co-signed, except on a lockless account with no lock and no
+   read-back paper, where K becomes the kept secret and goes to every lockless device (core §4.3 step 4,
+   `kept_new`).
 7. **The commit proof is the co-signed `paper` change itself.** After F7 step 5's check (core §1.1 item 7),
    devices forward it to every holder, and again each time a holder's still-holding note names another set
    (§3), until each holder acknowledges. A holder checks `g`'s signature and `paper.key`.
 8. **Holders never delete on a timer.** A holder deletes a set's piece only when it sees a co-signed
-   `paper` change that `replaces` that set, or the `paper` change **of that same set** (`paper.key` = its
-   set id) whose `holders` doesn't list it.
+   `paper` change that `replaces` that set, the `paper` change **of that same set** (`paper.key` = its
+   set id) whose `holders` doesn't list it, or a checked delete proof for the account (Account admin §3).
 9. **Any device can renew.** The pinned holder keys and the heir's are kept in the synced device metadata
    (Device policy §1, encrypted under the data key), so a renewal from another device, or after a recovery
    through friends, keeps every holder.
