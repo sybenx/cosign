@@ -3,7 +3,8 @@
 // app would run. Nothing here is a second implementation of a rule: every check is in src/.
 
 import { bytesToHex, randomBytes, hexToBytes, sha, refuse, KeykinError } from '../src/bytes.ts';
-import { stateHash, pickSalt, detachedDigest, recoveryWaitId } from '../src/codes.ts';
+import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest } from '../src/codes.ts';
+import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
@@ -147,11 +148,21 @@ export class ServerNode implements Node {
     }
   }
 
+  /** After retirement, all a server keeps for the account (§6.7.5): the change that retired it, and
+   *  the hashes of the keys allowed to fetch it (backup keys, devices, and peer servers). */
+  forwarding: { events: NostrEvent[]; allowed: Set<string> } | null = null;
   retire() {
-    // Destroy everything for the account except the forwarding note (§6.7.5).
+    if (this.retired) return;
     this.retired = true;
-    if (this.co) this.co.setState({ ids: new Set(), C: this.co.state.C, shares: new Map() });
-    this.seeds.clear(); this.items = []; this.uploads.clear();
+    const m = this.m;
+    const mine = m.accepted.filter((p) => p.c.list.some((x: any) => x.seat?.replaces === this.kp.pub));
+    const hashes = new Set(mine.map((p) => p.listHash));
+    const events = m.accepted.filter((p) => hashes.has(p.listHash)).map((p) => p.ev);
+    const allowed = new Set([...m.backupKeys, ...m.authority.devices, ...[...m.members.values()].filter((x) => x.kind === 'server').map((x) => x.key)].map((k) => bytesToHex(sha(hexToBytes(k)))));
+    this.forwarding = { events, allowed };
+    // Destroy everything else for the account.
+    if (this.co) { this.co.setState({ ids: new Set(), C: this.co.state.C, shares: new Map() }); this.co.changes = []; }
+    this.seeds.clear(); this.items = []; this.uploads.clear(); this.base = null; this.inbox = new Inbox();
   }
 
   async handle(from: string, body: any, sentAt: number): Promise<any> {
@@ -161,6 +172,12 @@ export class ServerNode implements Node {
   private async dispatch(from: string, body: any, sentAt: number): Promise<any> {
     if (body.type === 'seat_welcome') { this.welcome(body.w); return { type: 'ack' }; }
     if (!this.co) return { type: 'error', code: 'unknown_account' };
+    if (this.retired) {
+      // A forwarding note, served to a request sealed by one of the allowed keys (§6.7.5 route 2).
+      if ((body.type === 'forward_get' || body.type === 'changes_get') && this.forwarding!.allowed.has(bytesToHex(sha(hexToBytes(from)))))
+        return { type: 'forward', changes: this.forwarding!.events };
+      return { type: 'error', code: 'retired' };
+    }
     const m = this.m;
     switch (body.type) {
       case 'change': {
@@ -169,9 +186,16 @@ export class ServerNode implements Node {
         if (body.material && this.m.accepted.some((p) => p.type === 'paper' && (p.c.change as any).paper.inner === itemHash(body.material) && (p.c.change as any).paper.key === this.m.backupKey)) this.base = body.material;
         return { type: 'ack' };
       }
-      case 'changes_get':
-        if (this.retired) return { type: 'changes', changes: this.co.changes.filter((e) => JSON.parse(e.content).change?.seat?.replaces === this.kp.pub || true) };
-        return { type: 'changes', record: this.recEv, changes: this.co.changes };
+      case 'changes_get': return { type: 'changes', record: this.recEv, changes: this.co.changes };
+      case 'seated?': {
+        // §6.7.5 route 1: if `H(key)` is the current backup key or a current device, a reply sealed to
+        // that key, with the host signature outside the seal over SHA-256("keykin-seated/1" ‖ H ‖ challenge ‖ ct).
+        const key = [m.backupKey, ...m.devices].find((k) => k && bytesToHex(sha(hexToBytes(k))) === body.h);
+        if (!key) return { type: 'error', code: 'not_seated' };
+        const servers = [...m.seats.values()].filter((x) => x.holder?.kind === 'server').map((x) => ({ host: x.holder!.host, https: x.holder!.https, relays: x.holder!.relays ?? [] }));
+        const ct = nip44.v2.encrypt(JSON.stringify({ g: m.g, epoch: m.epochId, servers }), nip44.v2.utils.getConversationKey(this.host.sk, key));
+        return { type: 'seated', ct, host: this.host.pub, sig: schnorrSign(seatedDigest(body.h, hexToBytes(body.challenge), new TextEncoder().encode(ct)), this.host.sk) };
+      }
       case 'upload': {
         if (this.retired) refuse('retired');
         const u = acceptUpload(m, from, body, this.now, this.uploads.get(body.redeal));

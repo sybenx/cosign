@@ -197,6 +197,32 @@ test('need_seeds: a device gives seeds to a current device (data key too) or a s
   assert.equal((await acc.bus.send(acc.paper, acc.A.kp.pub, { type: 'need_seeds' })).code, 'not_member');
   assert.equal(acc.A.notices.filter((n) => n.kind === 'need_seeds').length, 2);
 });
+test('§6.7.5: after every printed server is replaced, the paper finds today\'s servers by forwarding notes and seated?', async () => {
+  const acc = await create();
+  const printed = acc.servers.map((x) => x.kp.pub);
+  const Ys = [];
+  for (const [k, i] of [4, 7, 8].entries()) { acc.bus.kill(printed[k]); Ys.push(await replaceServer(acc, acc.A, i, (l) => acc.A.approveLock(l))); acc.bus.revive(printed[k]); }
+  for (const p of printed) await acc.bus.send(acc.A.kp, p, { type: 'change', events: acc.A.changes });   // removal notices reach them
+  assert.ok(acc.servers.every((x) => x.retired));
+  // Route 2: a printed server serves only its forwarding note, only to an allowed key.
+  const fw = await acc.bus.send(acc.paper, printed[0], msg('forward_get', acc.g, acc.epochId, 'ask'));
+  assert.equal(fw.type, 'forward');
+  const named = fw.changes.map((e: any) => JSON.parse(e.content).change.seat?.new?.key).filter(Boolean);
+  assert.ok(named.includes(Ys[0].kp.pub));
+  assert.equal((await acc.bus.send(newKey(), printed[0], msg('forward_get', acc.g, acc.epochId, 'ask'))).code, 'retired');
+  assert.equal(acc.servers[0].seeds.size + acc.servers[0].items.length, 0, 'nothing else kept');
+  // Route 1: seated? at today's server, reply sealed to the asker with the host's signature outside.
+  const { sha, bytesToHex: hx, hexToBytes: hb } = await import('../src/bytes.ts');
+  const { seatedDigest } = codesMod;
+  const { schnorrVerify } = await import('../src/event.ts');
+  const nip44 = await import('nostr-tools/nip44');
+  const h = hx(sha(hb(acc.paper.pub))), challenge = hx(randomBytes(16));
+  const r = await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge });
+  assert.ok(schnorrVerify(r.sig, seatedDigest(h, hb(challenge), new TextEncoder().encode(r.ct)), r.host));
+  const body = JSON.parse(nip44.v2.decrypt(r.ct, nip44.v2.utils.getConversationKey(acc.paper.sk, r.host)));
+  assert.deepEqual(body.servers.map((x: any) => x.host).sort(), Ys.map((y) => y.host.pub).sort());
+  assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h: hx(sha(hb(newKey().pub))), challenge })).code, 'not_seated');
+});
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';

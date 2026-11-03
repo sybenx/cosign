@@ -46,6 +46,6 @@ made here are interim and marked in the code where they appear.
 
 ## Not done
 
-Paper re-issue, the helper, publishing the signpost, forwarding notes and `seated?`, passive servers, Web Push
+Paper re-issue, the helper, publishing the signpost, passive servers, Web Push
 encryption (RFC 8291) and gateways, durable storage (`CoSigner.snapshot()`/`restore()` covers what
 §5.6 requires a server to keep across restarts, but nothing writes it to disk yet), and the Kotlin build.
