@@ -533,3 +533,52 @@ Neither fix needs anything from you.
   - small text fixes.
 
 No questions for the user.
+
+---
+
+# After round 11 (core draft 11)
+
+Round 11 found **0 critical, 1 high, 8 medium, 10 low** (`keykin-core-redteam-11.md`). Highs per round
+since Upkeep went in: 6, 2, 1. Its proofs confirm the weight arithmetic. Patching stops under the rule.
+
+## Plain summary for the user
+
+**One thing left:** after a few years, every server printed on your paper will have been replaced. A
+paper recovery then depends entirely on finding the signpost on relays, which can lose it.
+
+**Proposed fix (small, no new idea):**
+
+- A retired server keeps one thing after it destroys everything else: the signed change that retired
+  it, as a forwarding note ("this seat moved to Y").
+- The paper app may also ask the servers on the app maker's signed public list whether they hold a seat
+  for its paper.
+
+A paper can then always walk from its printed servers to today's.
+
+None of this needs a decision from you. Two items in the list below restate things you already decided.
+
+## Round 11's findings and the proposed fixes
+
+- **H1** above: forwarding notes on retired servers, and a lookup through the signed public list.
+- **M2** An unexplained `self` remove of a phone raises the normal "report it lost" card, not a quiet
+  offer. A thief who copied a phone's pieces and then removed it "by itself" would otherwise skip the
+  redeal.
+- **M3** A replaced paper key goes into `removed`, so it can no longer approve anything or start a
+  recovery.
+- **M4** Stranded redeals get a defined base state and an "abandoned" marker. `rerepair` may drop an
+  abandoned redeal, and the deadlock case is stated.
+- **M5** Retired servers refuse recovery waits and releases once they hold their forwarding note. A server
+  that never got it is in §10.
+- **M6** Simplify: any device can re-issue a missing paper item to the current paper key, since it knows
+  `δ`. A reprint is needed only when no device can.
+- **M7** State in §10 what you already decided: a lone phone without a working face or fingerprint lock
+  needs the paper in hand to add a device, make a paper, re-lock or replace a server.
+- **M8** Define the missing messages: the upload, asking a member's state, the `rerepair` challenge, and
+  what an incoming holder fetches.
+- **M1, L1–L10** Signpost guards that servers can actually enforce (by address, not event id), and a
+  monotone `n`; when a co-signer applies a redeal; seeds for servers repaired forward; the `cosig` rule;
+  one list encoding; "once per K" enforced by the approving device; the replacement pick fixed to the
+  newest list version; verified bits for late joiners; and §10 stating that a stolen current device plus
+  a dishonest retired server from its time is the key.
+
+No questions for the user.
