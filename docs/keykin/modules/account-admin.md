@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 2 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.15 · not built
+Draft 3 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.15 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -32,12 +32,13 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    `keys::dkg`, the ciphersuite of core §5.1), threshold 4, with one participant per index. The indices are
    fixed: the device's 1, 2, 3; the backup seat's 5, 6, run by the device; the servers' 4, 7, 8 (core
    §3.1).
-   - The device relays every message. After round 1, each server returns the hash of every round-1
-     package it received; the device continues only if they all match its own. So a server can't show
-     different commitments to different participants.
-   - Every participant checks its round-2 packages. Any failure aborts. The device restarts at most three
-     times, each time with a new key and without the server it can't rule out; a server that aborts is
-     dropped for this creation.
+   - The device relays every message (`dkg_1`, `dkg_2`, sealed to each server's throwaway key), so every
+     participant sees the same round 1.
+   - Every participant checks its round-2 packages. Any failure aborts. A server that aborts is dropped
+     for this creation; for a disputed round-2 package, both servers in it are dropped. The device
+     restarts at most three times in all; each restart makes new picks, since the device's member key is
+     new.
+   - Every participant destroys its round-1 and round-2 secret packages when the DKG ends.
    - The group key is brought to even y as `frost-secp256k1-tr` does, for every share and the commitment.
    - A server that took part in a DKG that never reached its epoch record drops everything for it after
      one hour.
@@ -47,19 +48,24 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    Then it builds the epoch record (core §3.1, `origin: dkg`, `role: master`): `g`, the summed commitment,
    the members (the device with its lock if it has one; the servers with their enrol replies; the backup
    key), the seats, the relays (the servers' relays plus the app's defaults) and the base item's pin. The
-   device and one server sign it, and the device sends it to each server sealed, as its welcome.
+   device signs it alone with its own 3 points and the backup seat's 2 (no co-signer knows the account
+   yet), and sends it to each server sealed, as its welcome. Each server checks the enrol replies in it,
+   as a co-signer would.
 4. **Live only when adopted.** The account goes live (the npub is shown, anything is published) only after
    every server has adopted the epoch record first-hand (core §3.4) and stored its seat keys (Server
-   profile §4). Otherwise it starts again from step 1.
+   profile §4). Otherwise, before starting again from step 1, the device sends `account_delete` (§3),
+   approved with the backup secret it still holds, to every server that adopted, so none keeps an orphan.
 5. **The backup.** The device asks once, quietly: "Write down a backup now? If you lose this phone, it gets
    your account back." — **Write it down**, **Add another device instead**, or **Not now**.
    - **Write it down** makes the backup set (Backup module §1), with its read-back.
    - **Add another device instead**: while the device still holds the backup secret, it can approve adding
      a device with it (a `paper` approval, core §6.2). This is the way out for a device with no lock.
+   - **Add another device instead** can be used for **one** add, started from this screen; then the
+     secret and the backup seat's shares are destroyed. It is never an approval for anything else.
    - **Not now** destroys the backup secret and the backup seat's shares at once (core §4.3 step 4). On a
-     device with **no lock**, it first says once: "Without a lock or a backup, this account can't add a
-     device or replace a server later. Add a phone with Face ID, or write down a backup." The person may
-     still choose Not now.
+     device with **no lock** (every browser extension), the screen leads with **Add your phone now**, and
+     Not now says plainly: "This browser can't add your phone or replace a server later. Add your phone
+     now, or write down a backup." The person may still choose Not now.
    - If the flow is left unfinished, the device destroys the secret after 24 hours and says: "No backup
      yet. If you wrote one down, scan it in Backup to check it."
 6. **The signpost** is published (core §6.7.5), and the device registers push with each server (core §8.1).
@@ -75,7 +81,9 @@ For someone who already has an nsec, and for moving a Cosign 0.12 account (core 
    npub it belongs to for the person to confirm.
 2. **Already a Keykin account?** The device looks on relays for any Keykin event signed by that key (a
    signpost or grant event). If it finds one: "This key is already a Keykin account. Sign in to it
-   instead." Importing it again would make a second account for one npub.
+   instead." with **Import anyway**, for someone who lost that account and has only the nsec. A server
+   that already serves this `g` refuses to enrol it again (`refused: exists`), and the device picks
+   another.
 3. The device picks and enrols servers as in §1.1 steps 1 and 3 (`g` is the nsec's public key), then
    deals: if the key's point has odd y, it negates the nsec (the npub is the same), then makes a random
    polynomial `f` of degree 3 with `f(0) = nsec`, with shares for its own three indices, the backup seat's
@@ -104,8 +112,8 @@ One list, in plain words:
 - the **helper**, if any (Helper module), and whether there is a **backup** (Backup module).
 
 **Names.** A device names **itself**: it suggests its model at join, and the person can rename it later on
-that device. Names are kept in an account-signed kind 30078 event, with `d` made as Doors and grants does
-for grant events (`"keykin-labels:" ‖` an HMAC under the base data key), encrypted under
+that device. Names are kept in one account-signed kind 30078 event **per device**, with `d` made as Doors and grants
+does for grant events (`"keykin-labels:" ‖` an HMAC of the member key under the base data key), encrypted under
 `HKDF-SHA256(dk(S), "keykin-labels/1")`, with each name signed by the named device's own member key.
 Devices show only names signed by the device they name, so a stolen device can't rename the others to
 trick the owner into reporting the wrong one. The `keykin-` guard (Doors and grants §2) keeps sites away.
@@ -151,17 +159,23 @@ An extension retiring in favour of the machine's desktop app uses the core's `se
 **Delete my account** is in the account settings, never on a main screen. It is two separate acts.
 
 1. **Erase my posts** (optional, offered first): a request to vanish (NIP-62, kind 62, `["relay",
-   "ALL_RELAYS"]`), Held like any vanish (core §5.8): the lock, or a 3-day hold. It erases posts on relays
-   that honour it and leaves the key alone, so a person can erase their posts and keep their npub.
-2. **Destroy my key**: the card says "This destroys every piece of your key. Your npub can never be used
-   again. This can't be undone." It is an approved request, `account_delete {id}`, with a lock, a second
-   device (`pair`) or the paper (core §6.2), encoded as core §6.1's generic request. There is no hold path:
-   a thief with an unlocked lockless phone can't destroy the key.
-   - The device sends it to every server, as a delivery.
-   - A server that verifies the approval destroys everything for the account (its share, seeds, material,
-     waits, push addresses, notice channels, heir record), keeps only `SHA-256(g)` and the approved
-     request (core §2), and answers every later request for `g` with `deleted` and that request, which
-     devices check. It never seats or creates `g` again.
+   "ALL_RELAYS"]`), Held like any vanish (core §5.8): the lock, or a 3-day hold. It erases everything the
+   account published on relays that honour it, the profile, follows and lists included, and leaves the
+   key alone, so a person can erase their posts and keep their npub. Afterwards the device republishes the
+   signpost and its grant and labels events.
+2. **Destroy my key**: the card says "This destroys every piece of your key. Keykin can never use this
+   npub again. This can't be undone." For an imported key it adds: "Old copies of your nsec still work."
+   It is an approved request, `account_delete {id}`, with a lock, a second device (`pair`) or the paper
+   (core §6.2), encoded as core §6.1's generic request (for `paper`, the backup signs `{"what":
+   hex(what), "challenge"}`, core 13.15). There is no hold path: a thief with an unlocked lockless phone
+   can't destroy the key. If the person chose Erase my posts, this waits until that is signed.
+   - The device sends it to every server, as a delivery, and keeps sending until each answers `deleted`.
+   - A server accepts it with an approval it checks itself (fresh, with its own challenge for `paper`), or
+     with a peer's host-signed `deleted` carrying the request. It then destroys everything for the
+     account (its share, seeds, material, waits, push addresses, notice channels, heir record), keeps only
+     `SHA-256(g)`, the approved request and the changes that make its approver a device (core §2), and
+     answers every later request for `g` with a host-signed `deleted` and those, which devices check. It
+     never seats or creates `g` again. Servers that never held the account aren't bound by it.
    - Every device that verifies it destroys everything for the account. Friends and the heir get one
      notice ("*Name* deleted their account"), and their apps drop their pieces.
 
@@ -184,12 +198,23 @@ In settings, **Also tell me by email** adds a notice channel (core §8.1) at eac
 Any device may add one; removing or replacing one needs an approval (a lock, two devices, or the paper),
 and the old channel is told. The channel only ever gets the core's fixed words.
 
-## 6. Limits, said plainly
+## 6. Messages
+
+This module's messages, sealed as core §9.1, with the core's lifetime classes (§5.6):
+
+| `type` | From → to | `cls` |
+|---|---|---|
+| `create` / `create_ok {dkg_key, host_sig}` | device → server / back | `ask` |
+| `dkg_1`, `dkg_2` | device ↔ server (relayed) | `ask` |
+| `account_delete {id, approval}` / `deleted {request, changes, host_sig}` | device → servers, server → server / back | `member` |
+
+## 7. Limits, said plainly
 
 - **An imported key is only as safe as every old copy.** Keykin can't delete the nsec from a password
   manager, a 0.12 app or a screenshot.
 - **"Not now" on a device with no lock** leaves an account that can sign but can never add a device, make
-  a paper or replace a server. When its last server dies, it stops.
+  a paper or replace a server. It lives and dies with that browser profile, and when its last server dies,
+  it stops. That is worse than an nsec in a password manager.
 - **"Not now" means no backup.** If that device is lost and no other exists, the account is lost (Backup
   module §6).
 - **A thief with a device's lock, or a second device, or the paper, can destroy the key.** That is the
@@ -203,6 +228,21 @@ and the old channel is told. The channel only ever gets the core's fixed words.
 
 ## Changes
 
+- **Draft 3**, from its second red team (0 critical, 1 high):
+  - lockless devices lead with **Add your phone now**, and Not now says plainly what it costs (H1; the
+    alternative, keeping the secret on a lockless device, is open for the user).
+
+  The mediums and lows:
+  - the creation secret approves one add from that screen only (M1);
+  - a `paper` approval of `account_delete`, late copies by a peer's `deleted` (M2, core 13.15);
+  - the tombstone keeps the approver's changes (M3, core 13.15);
+  - destroy waits for a chosen erase (M4);
+  - honest wording for imported keys and other servers (M5);
+  - **Import anyway**, and `refused: exists` (M6);
+  - the module's messages (M7);
+  - the device signs the epoch record alone, no round-1 cross-check, orphans deleted, restarts capped and
+    worded, secret packages destroyed, labels per device, what a vanish erases, delete resent until
+    answered (L1 to L8).
 - **Draft 2**, from its first red team (0 critical, 4 high):
   - destroying the key is its own approved request, with no hold path (H1, H2; core 13.11);
   - erasing posts is a separate vanish, Held as before (H2);
