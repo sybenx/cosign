@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.1 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -234,7 +234,7 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
 - **Indices without coordination.** An added device's three indices are
   `2^16 + (int(SHA-256("keykin-index/1" ‖ g ‖ epoch id ‖ key ‖ salt ‖ j)[0..4], big-endian) mod 2^30)`
   for `j = 0, 1, 2` (`salt` and `j` as 4-byte big-endian integers). The inviting device picks the lowest `salt` whose indices collide with nothing it
-  knows, the seats included. If two changes of the epoch ever claim the same index, or add the same key with different salts, every such add is void (an identical add twice counts once) and the new
+  knows, the seats included. If two changes of the epoch ever claim the same index, or add the same key with different salts, every such add is void (an identical add twice counts once), its key goes into `removed`, and the new
   devices join again. Every index, here and in epoch records, is a FROST identifier given as a 32-byte
   big-endian scalar (`frost-core`'s `Identifier::deserialize`), not the 16-bit constructor.
 - **Order does not matter.** The membership is the epoch record's members, plus every valid add,
@@ -252,6 +252,10 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
   signature, the approver's membership and the structure. (The co-signer's signature is the evidence
   that the check was made.) The window between an approver's removal and the news reaching a server
   is a stated limit (§10).
+- **Requests with no co-signer** (`account_delete`, `take_out`, removing a notice channel) have no such
+  evidence, so **every** receiver checks them itself: a server or device accepts one only if each
+  approver is a current device in its own view, after fetching changes from its peers; and a server takes a
+  peer's `deleted` only from a current seat holder.
 - Changes never expire. Every server keeps the whole set for ever (about 10 KB a year) and gives it out
   (`changes_get` → `changes`). A member catching up asks **every** server and takes the union, so one
   server leaving out a removal changes nothing. `changes_get` from a removed key always returns the
@@ -388,8 +392,7 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
    lock**: there it keeps them sealed (§7.3) until a second device has joined, a paper has been read
    back, or the device has registered a lock, so a lockless account can still add a device. Until then
    that device alone is worth 5 points, like an nsec kept in it, and the kept secret approves what a
-   `paper` approval would. Until then that device alone is worth 5 points, the same as an nsec on it; it SHOULD
-   prompt to finish the backup.
+   `paper` approval would. It SHOULD prompt, quietly, to finish the backup.
 
 After that, each redeal appends a **paper delta** for it (§7.2), so a paper reaches every later state
 without being reprinted.
@@ -578,7 +581,7 @@ Every request carries `cls`. Each message type allows only some classes:
 
 Types not in the table: deliveries and requests a sender repeats until answered (`cancel`, `withdraw`,
 `upload`, `upload_held`, `push_register`, `push_unregister`, `notify_register`, `paper_reissue`,
-`helper_stop`) are
+`helper_stop`, `account_delete`) are
 `member`; every other request (`changes_get`, `inbox_get`, `need_repair`, `rerepair`, `need_seeds`,
 `state_get`, `seated?`, `forward_get`, `take_out`) is `ask`.
 
@@ -616,10 +619,12 @@ Before giving a partial, a co-signer MUST check that:
 7. the stateless destructive rule (§5.8);
 8. if the coordinator is the **helper**: the helper is not stopped (below), and the event is one of kind 1
    (notes and replies), 1111 (comments), 7 (reactions), 6 and 16 (reposts), 9734 (zap requests), 20, 21
-   and 22 (media posts) or 22242 (relay auth). Anything else is refused. A helper never co-signs, and a
+   and 22 (media posts) or 22242 (relay auth, only for a relay in the account's own relay lists or the
+   helper grant's relays). Anything else is refused. A helper never co-signs, and a
    device never co-signs a round the helper coordinates, so every helper round has a server in it.
 
-**Stopping the helper.** Any current device may send `helper_stop {key}`, naming the helper's member key,
+**Stopping the helper.** Any current device may send `helper_stop {key, by}`, naming the helper's member
+key and the stopping device,
 with no approval, as a delivery to every server: it only takes power away. A server that has it refuses
 every round that key coordinates or takes part in. Only a seat change whose `replaces` is that key, or
 `helper_resume {key}` with an approval (`lock`, `pair` or `paper`), clears it. Every device is told.
@@ -1516,7 +1521,8 @@ The signpost (kind 30078) is the one Core event published on relays (§6.7.5); m
   offers prompt-free secure storage (live finding #5). That is 3 points, not the key: better than an nsec
   in the same storage, which is the bar. An extension never has a lock.
 - **Until the paper is printed**, the device that made it holds 5 points (§4.3). On a lockless device
-  whose person declined a paper, that lasts until a second device joins.
+  whose person declined a paper, that lasts until a second device joins: whoever copies that browser
+  profile has the whole key **and** every approval a paper gives, deleting the account included.
 - **iPhone push.** Waking an iPhone needs Apple and the app maker's gateway. The gateway sees when each
   phone is woken and by which servers, not why. If it is down, signing still works when the app is
   opened, from other devices, or through any other Keykin app; notices are what suffer.
@@ -1810,3 +1816,15 @@ From the user's answers on the Helper and Key families modules (2026-11-03):
 - An imported 0.12 account may be a child of a new master (§6.8).
 - On a device with no lock, a declined paper keeps the backup secret sealed until a second device joins
   or a paper is read back (§4.3 step 4; the user's answer).
+
+## Changes in draft 14.1
+
+From the red team of every core change since 13.1 (0 critical, 1 high):
+
+- Requests with no co-signer (`account_delete`, `take_out`, notice-channel removal) are checked by every
+  receiver against its own view of current devices, and a peer's `deleted` counts only from a current seat
+  holder (H1).
+- Void adds' keys go into `removed` (M3).
+- `helper_stop` names the stopping device; relay auth by the helper only for the account's own relays
+  (M2, M4).
+- §10 says what a lockless kept backup secret exposes, and a repeated sentence goes (M5).

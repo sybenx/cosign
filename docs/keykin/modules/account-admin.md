@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
+Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.1 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -180,7 +180,8 @@ An extension retiring in favour of the machine's desktop app uses the core's `se
    It is an approved request, `account_delete {id}`, with a lock, a second device (`pair`) or the paper
    (core §6.2), encoded as core §6.1's generic request (for `paper`, the backup signs `{"what":
    hex(what), "challenge"}`, core 13.15). There is no hold path: a thief with an unlocked lockless phone
-   can't destroy the key. If the person chose Erase my posts, the delete's approval is asked for only
+   can't destroy the key, unless that phone still keeps its backup secret (§1.1 step 5), which approves
+   as a paper would. If the person chose Erase my posts, the delete's approval is asked for only
    after the vanish is signed, and the device republishes the signed vanish to every relay it knows first.
    - The device sends it to every server, as a delivery, and keeps sending until each answers `deleted`,
      keeping only the request and the servers' endpoints until then.
