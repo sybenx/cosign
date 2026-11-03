@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.8 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.10 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -76,7 +76,8 @@ and the user cut them (decision log, 2026-11-02; reasoning in `simplification.md
 - **Approval**: what an account change needs: a lock, two devices with a typed code, a device with
   the paper, or a paper recovery (§6.2).
 - **Wait**: a delay, 3 days by default (`W`), that servers apply on their own clocks to exactly two
-  things: a paper recovery (§6.5) and a held mass deletion (§5.8).
+  things in the core: a paper recovery (§6.5) and a held mass deletion (§5.8). The Backup module adds an
+  heir wait (§6.3).
 - **Release seeds**: random 32-byte keys held by devices and seated servers, never by helpers or
   backups, that wrap the backup material's items a second time (§7.2). Every redeal adds one.
 - **Data key**: a random 32-byte key held whole by devices only, for reading the account's own
@@ -117,7 +118,8 @@ would.
 2. the epoch record and the set of changes, for ever (§3), the current signpost's event id, and after it
    is retired only the change that retired it plus the hashes of the keys allowed to fetch it (§6.7.5);
 3. every release seed of its state, and the backup material (§7.2);
-4. running waits (recoveries and holds) with their notices, and recovery sessions (§6);
+4. running waits (recoveries, holds and heir waits, with an heir's 30-day cooldown) with their notices,
+   and recovery sessions (§6);
 5. push addresses and notice channels (§8.1), and the inbox, including deliveries kept until
    acknowledged (§7.1);
 6. answered request ids until each expires (§5.6), and its own counters for §5.8.
@@ -1335,7 +1337,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `seated?` / `seated` / `forward_get` / `forward` | paper app or device → servers / back | 6.7.5 |
 | `part`, `error` | anyone | 9.1 |
 
-The signpost (kind 30078) is the one Keykin event published on relays (§6.7.5). That is the whole of Core. Cosign 0.12 has 55 message types in
+The signpost (kind 30078) is the one Core event published on relays (§6.7.5); modules may publish their own (Doors and grants: grant events). That is the whole of Core. Cosign 0.12 has 55 message types in
 `server/core/group.ts`; everything not here belongs to a module or goes.
 
 ## 10. Security properties, and their limits
@@ -1498,8 +1500,8 @@ user's account.
 ### 11.3 The rename
 
 Readers MUST accept the old names for ever: the record `d` tag `frost` and `cosign`, the server
-announcement `d` tag `cosign-server`, `cosign:` codes, and Cosign paper backups (same key format, same
-meaning). Writers use the `keykin` names. Kind numbers 24301, 24302, 30242, 30243 and 10243 stay
+announcement `d` tag `cosign-server`, `cosign:` codes, and Cosign paper QR codes, which they recognise and explain: a
+0.12 paper belongs to the 0.12 account, which moves only by import (§11.2). Writers use the `keykin` names. Kind numbers 24301, 24302, 30242, 30243 and 10243 stay
 provisional until upstream assigns them.
 
 ## 12. Modules (not part of Core)
@@ -1714,9 +1716,9 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
 
-## Changes in drafts 13.2 to 13.8
+## Changes in drafts 13.2 to 13.10
 
 Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
-and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8).
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10).
