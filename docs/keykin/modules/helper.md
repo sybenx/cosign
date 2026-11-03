@@ -1,6 +1,6 @@
 # Keykin module: Helper
 
-Draft 3 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.2 · not built
+Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.2 · not built
 
 A **helper** is a family member's or friend's always-on box that holds the helper seat (3 shares, core
 §3.1, I6). With one server it can post for the account while every one of the person's devices sleeps.
@@ -34,7 +34,8 @@ What the core lets a helper do, and nothing more (core §5.7 item 8):
 
 **Scheduled posts** need no helper: a device signs a future-dated note with the person present (core
 §5.7 item 4 allows it for these kinds) and hands the signed event to any always-on publisher, the helper
-included, to publish at its time.
+included, to publish at its time. Whoever holds it can read it before then, and a stop doesn't stop it
+being published, because it is already signed; **Unschedule** asks the publisher to drop it.
 
 ## 2. Sites the helper answers
 
@@ -43,6 +44,10 @@ included, to publish at its time.
   grants §3.3), or, for a `nostrconnect://` code the device scanned, passes the code to the helper, which
   connects. Either way the helper is the grant's **home**: it holds the signer key and answers, and no
   device does. The connect questions are asked on the device.
+- **Every helper grant is also an entry in the grant list of the device that asked for it** (Doors and
+  grants §2, `by` = that device, marked `helper`). So removing that device ends it, by the core's rule
+  that a removed device's grants are revoked, and the tombstone is delivered to the helper. A grant in a
+  helper report that no current device's list names gets the warning of §4.
 - A helper grant has only the kinds of §1. It never widens: for more, the person connects the site to a
   phone instead, which is a new grant.
 - Requests outside those kinds get `declined: ask on your phone`. Encrypt and decrypt requests get
@@ -57,15 +62,17 @@ included, to publish at its time.
 ### 3.1 Adding
 
 1. The friend installs a Keykin app on an always-on machine (a desktop app left running, or a home-server
-   package) and picks **Be a helper**. It refuses if a Keykin member of this account is already on that
-   machine. It shows a join code (core §4.1) carrying its host key, and tells the friend: "Your npub will
-   be listed in *name*'s account." Later, a Keykin app on that machine refuses to join this account as a
-   device.
+   package) and picks **Be a helper**. It shows a join code (core §4.1) carrying its host key, and tells
+   the friend: "Your npub will be listed in *name*'s account." Once its welcome names the account, it
+   checks the machine and leaves at once if a Keykin member of that account is on it. Afterwards any
+   Keykin app **or browser extension** on that machine (extensions ask the helper app over native
+   messaging) refuses to join this account as a device.
 2. On a device, the person picks **Add a helper**. The opt-in screen says, once and plainly: "*Name*'s
    box will be able to post notes, replies, reactions, reposts and media as you, together with one of your
    servers, for the sites you choose. It can't change your profile, lists or wallet, read your messages or
    delete anything, unless it and one of your servers work against you together: then they hold your whole
-   key. Any of your devices can stop it at once."
+   key. It can sign in to your relays as you, which can show it posts in private relay groups and who
+   writes to you. Any of your devices can stop it at once."
 3. The typed join check (core §4.1), then the approval (a lock, a second device, or the paper), then
    `[seat helper→H, redeal]`. The device and one server repair the helper seat (core §6.7.6 F6).
 
@@ -96,13 +103,16 @@ approval (a lock, two devices, or the paper).
 
 - **Reports.** The helper keeps **one cumulative report per device**, `helper_report {event ids, grants,
   last_used, logouts}`, at most 64 KB, sealed, as a delivery that replaces its earlier one, updated once an
-  hour or every 50 events. A device fetches the events by id from relays, checks each (`pubkey == g`, the
+  hour or every 50 events. When it is full, the oldest event ids give way to a count and a time span
+  (`dropped {count, from, to}`). A device fetches the events by id from relays, checks each (`pubkey == g`, the
   signature) and writes Device policy's metadata for them (Device policy §1), marking the attribution as
   the helper's. Devices show it quietly: "*Helper* signed 12 notes for *Bot*."
 - **Signing nobody reported.** A device that fetches account events no device's metadata and no helper
   report accounts for, after two hours' grace, shows one quiet line: "Posts you didn't make from any device
   appeared." It offers **Stop helper** (§3.2) when those events are of the helper's kinds, and **Report a
-  device lost** in any case, since a stolen phone can post too.
+  device lost** in any case, since a stolen phone can post too. Events of the helper's kinds inside a
+  report's `dropped` span show as "*Helper* signed many posts while your devices were off" instead. On an
+  imported account it adds: "Your old key may still be in use somewhere." 
 - After an heir takes over (Backup module §4), the app offers to remove the helper. Helper rounds never
   count as a sign of life for an heir wait.
 
@@ -140,6 +150,19 @@ They can't read messages, private lists or wallet content. The opt-in screen lin
 
 ## Changes
 
+- **Draft 4**, from its third red team (0 critical, 1 high):
+  - every helper grant is in the asking device's grant list, so removing that device ends it, and
+    unclaimed grants are flagged (H1).
+
+  The mediums and lows:
+  - a stopped helper still gets redeals; only removal cuts it off (M1, stated in core 14.2);
+  - stop and resume ordered by a counter (M2, core 14.2);
+  - picks skip the helper's stated operator; the check is only as good as that statement (M3);
+  - full reports keep a count and span, with no false warning (M4);
+  - helper relay sign-in only to the account's own relays (M5, core 14.2);
+  - extensions on the helper's machine refuse to join too (M6);
+  - relay sign-in on the opt-in screen, scheduled posts readable and not stopped, the machine check after
+    the welcome, the old key on imported accounts (lows).
 - **Draft 3**, from its second red team (0 critical, 2 high):
   - the stop travels to new servers and is fetched before helper rounds (H1, core 14);
   - the helper's operator never runs a server, and the helper plus one dishonest server is said plainly

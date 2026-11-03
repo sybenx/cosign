@@ -213,7 +213,8 @@ admin §1.1).
   server seats sorted by index.
   - Before picking, the device runs `changes_get` against every server. It stops if the dead key is no
     longer that seat's holder (another device already replaced it), and skips any host that holds a seat,
-    or is the helper's host, in that view (core I2, I6, I7).
+    or is the helper's host, in that view (core I2, I6, I7), and never picks a server of the helper's
+    stated operator.
   - The device asks the pick for an enrol reply. It moves to the next server in that seat's slice, in
     list order, if the pick answers with a **host-signed refusal**, doesn't answer within a minute, or
     answers, over HTTPS or sealed by its own key, with a reply the device can't use (a bad signature, the

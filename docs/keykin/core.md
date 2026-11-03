@@ -619,15 +619,18 @@ Before giving a partial, a co-signer MUST check that:
 7. the stateless destructive rule (§5.8);
 8. if the coordinator is the **helper**: the helper is not stopped (below), and the event is one of kind 1
    (notes and replies), 1111 (comments), 7 (reactions), 6 and 16 (reposts), 9734 (zap requests), 20, 21
-   and 22 (media posts) or 22242 (relay auth, only for a relay in the account's own relay lists or the
-   helper grant's relays). Anything else is refused. A helper never co-signs, and a
+   and 22 (media posts) or 22242 (relay auth, only for a relay in the account's own relay lists, kinds
+   10002 and 10050). Anything else is refused. A helper never co-signs, and a
    device never co-signs a round the helper coordinates, so every helper round has a server in it.
 
-**Stopping the helper.** Any current device may send `helper_stop {key, by}`, naming the helper's member
-key and the stopping device,
+**Stopping the helper.** Any current device may send `helper_stop {key, by, n}`, naming the helper's member
+key, the stopping device and a counter,
 with no approval, as a delivery to every server: it only takes power away. A server that has it refuses
 every round that key coordinates or takes part in. Only a seat change whose `replaces` is that key, or
-`helper_resume {key}` with an approval (`lock`, `pair` or `paper`), clears it. Every device is told.
+`helper_resume {key, n}` with an approval (`lock`, `pair` or `paper`), clears it. Each carries the next
+`n` for that key (one more than the highest the device has seen); a server applies only a higher `n`, and
+passes both to its peers as deliveries, so a late message can't undo a newer one. Every device is told. A
+stopped helper still receives redeals; only removing it cuts its pieces off.
 - A seat holder's welcome carries any stop in force, and devices re-send it to every incoming seat holder.
 - Before co-signing a helper round, a server fetches its peers' deliveries (at most every 10 minutes), so a
   stop sent to one server reaches the others.
