@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.1 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.2 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -822,7 +822,9 @@ stuck. Two ideas make that safe:
 They are changes of §3.2 (kind 24302, group-signed, valid in any order).
 
 - **`seat`**: `{"seat": {"seat": "server:<idx>" | "helper", "new": <member entry> | null, "replaces":
-  <key | null | "void:<id>">}}`.
+  <key | null | "void:<id>">}}`. A new server's member entry carries its `enroll` reply, signed by its
+  host key and binding its member key, VAPID key and endpoints to it (Server profile module). Co-signers
+  and repair helpers verify that reply before co-signing or repairing.
   - A seat's current holder follows the epoch record's holder along valid seat changes, exactly as a
     lock does (§3.2). `new: null` empties the seat (removing a server or the helper without replacing
     it).
@@ -1079,7 +1081,9 @@ current device can re-issue.
   pick `hash(g ‖ dead key ‖ seat ‖ version)` over the **newest list version the device knows** (at least
   the pin), taken from that seat's own slice of the list (the list's servers dealt round-robin to the
   three server seats), never putting two seats on one
-  `operator` while another eligible one exists. It checks for itself that the server is dead before it
+  `operator` while another eligible one exists. If that pick refuses the seat or doesn't answer within a
+  minute, the device takes the next server in the slice, in list order, and the `ask` names which one.
+  It checks for itself that the server is dead (or has sent a host-signed shutdown notice) before it
   shows the card. When there is no other operator, the card says "All your servers are run by X".
 
 #### 6.7.8 Failure handling
