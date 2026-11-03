@@ -2,6 +2,10 @@
 
 2026-11-03 · branch `claude/keykin-spec-0b883d` · docs only, nothing built, nothing pushed
 
+**Focus:** a Google account on Nostr. One key for life, sign in anywhere, trusted devices ask less, and no single website, server, app or company can stop you. About 90% of what a Google account does, without fighting the platforms for the rest.
+
+**The bar:** an nsec kept in a password manager. Every rule must beat it on security *and* ease of use.
+
 Keykin is the new working name of the Cosign protocol: one Nostr key for life, split with FROST so that
 no device, server or company holds it. The bar every rule is held to is an nsec kept in a password
 manager. Every rule must beat that on security **and** on ease of use.
