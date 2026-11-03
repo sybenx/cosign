@@ -9,7 +9,7 @@ import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
-import { checkDelivery, verifyPaperItem, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
+import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
@@ -203,6 +203,15 @@ export class ServerNode implements Node {
         if (!m.devices.has(from)) refuse('not_device');
         if (!this.co.takeSignpost(body.event)) refuse('not_a_signpost');
         return { type: 'ack' };
+      case 'paper_reissue': {
+        const r = m.redeals.get(body.item?.redeal)?.r;
+        if (!r || !m.devices.has(from) || body.item.by !== from) refuse('not_device');
+        const e = checkReissue(r!, body.item, m.backupKey!, (k) => m.devices.has(k), m.record.seats.backup);
+        if (e) refuse(e);
+        // Every distinct valid one, at most one per device and redeal.
+        if (!this.items.some((x) => x.kind === "reissue" && x.redeal === r!.id && x.by === from)) this.items.push(body.item);
+        return { type: 'ack' };
+      }
       case 'repair_ok': {
         const owner = [...m.members.values()].find((x) => x.shares.includes(body.participant));
         if (owner?.key === from) this.co.repairSucceeded(from, body.participant);
@@ -362,6 +371,9 @@ export class DeviceNode implements Node {
     this.applyAll();
   }
   pendingDeltas = new Map<string, any>();
+  /** Paper values kept per redeal (§6.7.1 step 3), encrypted at rest in a real app. */
+  kept = new Map<string, { b: number[]; d: bigint[]; dk: string; release: string }>();
+  f7 = false;
   /** "Paper item verified" bits, per backup key and redeal (§6.7.6, 14.12). */
   paperVerified = new Map<string, boolean>();
   lastDetail: string | undefined;
@@ -390,8 +402,12 @@ export class DeviceNode implements Node {
           if (!ok) this.notices.push({ kind: 'bad_paper_item', member: r.dealer });
         }
         const deltas = new Map<number, bigint>(d.deltas.map(([i, x]: [number, string]) => [i, scalarFrom(x)]));
-        const { state } = applyRedeal(m.g, this.state!, r, deltas, true, m.record.seats.backup, m.abandoned);
+        const { state, paperValues } = applyRedeal(m.g, this.state!, r, deltas, true, m.record.seats.backup, m.abandoned);
         this.state = state; this.pendingDeltas.delete(r.id);
+        // §6.7.1 step 3: keep δ(b) and the data-key seed until the current paper's item is verified, or,
+        // on the device running an F7, until its paper change commits (14.12).
+        const verified = this.paperVerified.get(`${m.backupKey}:${r.id}`) === true;
+        if (paperValues && (!verified || this.f7)) this.kept.set(r.id, { b: m.record.seats.backup, d: paperValues, dk: d.dk, release: d.release });
         if (d.release) this.seeds.set(r.id, d.release);
         if (d.dk) this.dkSeeds.push(d.dk);
         again = true;
@@ -470,7 +486,12 @@ export class DeviceNode implements Node {
   /** F7, a new paper (§6.7.6, §4.3): approve `[paper K, redeal]`, repair the backup seat towards K
    *  with one server, wrap and sign the base under the redeal's release seed, then commit. Returns K
    *  (in real life, printed and read back before step 4). */
-  async newPaper(approve: (list: Change[]) => Approval): Promise<KeyPair> {
+  async newPaper(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void> } = {}): Promise<KeyPair> {
+    this.f7 = true;
+    try { return await this.newPaperInner(approve, o); }
+    finally { this.f7 = false; }
+  }
+  private async newPaperInner(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void> }): Promise<KeyPair> {
     const K = newKey();
     const list: Change[] = [{ paper: { key: K.pub, replaces: this.m!.backupKey! } }, { redeal: { dealer: this.kp.pub } }];
     const approval = approve(list);
@@ -482,11 +503,32 @@ export class DeviceNode implements Node {
         const ws = await this.repairFor(helpers, b, K.pub, 'paper', { list: approvalListOf(list), approval });
         shares.set(b, repairShare(this.state!.C, ws.map((w) => unwrap(K.sk, w).body.sigma), b));
       }
-      const base = baseItem(K, dealt.releaseSeed, shares, this.baseDk, [...this.state!.ids]);
-      shares.clear();                                        // the device keeps K only until the read-back
-      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: [...this.state!.ids].sort() } }, { redeal: dealt.redeal }], material: base };
+      const repairedAt = [...this.state!.ids].sort();
+      const base = baseItem(K, dealt.releaseSeed, shares, this.baseDk, repairedAt);
+      shares.clear();
+      await o.duringF7?.();                                  // the person prints and reads back; others go on                                        // the device keeps K only until the read-back
+      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: repairedAt } }, { redeal: dealt.redeal }], material: base };
     } });
+    await this.reissueMissing();
     return K;
+  }
+
+  /** §6.7.6: for each redeal this device applied that the current paper's state lacks and that has no
+   *  verified item for the current K, re-issue the item from the kept values; then destroy them. */
+  async reissueMissing() {
+    const m = this.m!, K = m.backupKey!;
+    const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === K);
+    const paperState = new Set<string>(pc ? (pc.c.change as any).paper.state : []);
+    const own = pc ? [...m.redeals.values()].find((x) => x.listHash === pc.listHash)?.r.id : undefined;
+    for (const id of this.state!.ids) {
+      if (paperState.has(id) || id === own || this.paperVerified.get(`${K}:${id}`)) { this.kept.delete(id); continue; }
+      const v = this.kept.get(id), r = m.redeals.get(id)?.r;
+      if (!v || !r) continue;                                     // nothing to re-issue from: a new paper (quiet dot)
+      const item = reissueItem(r, K, v.release, v, this.kp);
+      for (const s of this.servers()) await this.bus.send(this.kp, s.key, msg('paper_reissue', this.g, this.epochId, 'member', { item }));
+      this.paperVerified.set(`${K}:${id}`, true);
+      this.kept.delete(id);
+    }
   }
 
   /** Run a repair for `participant` with helper members (this device and others), sealing every

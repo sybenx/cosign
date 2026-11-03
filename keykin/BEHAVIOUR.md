@@ -91,6 +91,7 @@ refuse result. The codes are proposals until the spec pins them.
 | 12 | A replaced server that slept through its removal | learns it from peers before any wait and refuses `retired`, destroying its share | `sim.test.ts` |
 | 12 | F6, the helper: seated by `[seat helper→H, redeal]`, repaired by a device and a server | signs kinds 1, 1111, 7, 6, 16, 9734, 20–22, 22242 with a server; other kinds `helper_kind`, dated ahead `dated_ahead`; a device co-signer `helper_round`; as co-signer `helper_never_cosigns`; stopped `helper_stopped` until a lock-approved `helper_resume`; leaves by `[seat helper→null, redeal]` | `sim.test.ts` |
 | 12 | A server idle over 7 days | passive: a `release_request` gets `passive` until a live current peer confirms its seat | `sim.test.ts` |
+| 12 | Paper re-issue (§6.7.6): a redeal applied during an F7 that the new paper's state lacks | the F7 device re-issues it to K from its kept δ(b); servers keep it (one per device); forged clear values `bad_clear`; recovery with K sums base, re-issued and own items | `sim.test.ts` |
 
-Not yet covered: paper re-issue,  and a
+Not yet covered: a
 recovery whose state includes a stranded redeal.

@@ -7,7 +7,7 @@ import { sha, shaHex, bytesToHex, hexToBytes, randomBytes, jcs, concatBytes, utf
 import { stateHash, detachedDigest } from './codes.ts';
 import { type Commitment, mul, mod, N, addRedeal, deriveDelta, derivePoint, interpolate, pointFrom, compHex, scalarHex, scalarFrom, liftX } from './curve.ts';
 import { checkOwnShares } from './record.ts';
-import { schnorrSign, newKey, pubOf, type KeyPair } from './event.ts';
+import { schnorrSign, schnorrVerify, newKey, pubOf, type KeyPair } from './event.ts';
 import type { Redeal } from './types.ts';
 
 const rand = () => mod(BigInt('0x' + bytesToHex(randomBytes(32))));
@@ -134,4 +134,23 @@ export function verifyPaperItem(r: Redeal, item: Item, releaseSeed: string, ck: 
     if (!backupSeat.every((b, k) => mul(scalarFrom(v.d[k])).equals(deriveDelta(D, BigInt(b))))) return false;
     return shaHex(hexToBytes(v.dk_seed)) === r.dk;
   } catch { return false; }
+}
+
+/** §6.7.6 re-issue: a device seals the paper values it kept for a redeal to the current backup key K, as
+ *  a supplementary item under that redeal's release seed, with the `δ(b)·G` values in the clear, signed
+ *  by its member key. K learns only what devices already know. */
+export function reissueItem(r: Redeal, K: string, releaseSeed: string, values: { b: number[]; d: bigint[]; dk: string }, by: KeyPair): Item {
+  const { item } = sealItem('reissue', r.id, K, releaseSeed, { redeal: r.id, d: values.d.map(scalarHex), b: values.b, dk_seed: values.dk });
+  const full: Item = { ...item, clear: values.d.map((x) => compHex(mul(x))), by: by.pub };
+  return { ...full, sig: schnorrSign(sha(itemHash(full)), by.sk) };
+}
+/** What a server (and any device) checks before keeping a re-issued item: for the current K, from a
+ *  current device that signed it, and clear values on the redeal's commitments. */
+export function checkReissue(r: Redeal, item: Item, K: string, isDevice: (k: string) => boolean, backupSeat: number[]): string | null {
+  if (item.kind !== 'reissue' || item.redeal !== r.id) return 'bad_item';
+  if (item.to !== K) return 'not_current_backup';
+  if (!item.by || !isDevice(item.by)) return 'not_device';
+  if (!schnorrVerify(item.sig, sha(itemHash(item)), item.by)) return 'bad_signature';
+  if (!item.clear || !reissueClearOk(r, backupSeat, item.clear)) return 'bad_clear';
+  return null;
 }

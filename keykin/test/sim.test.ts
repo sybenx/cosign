@@ -322,6 +322,29 @@ test('§6.7.5: a server offline over 7 days stays passive until a current peer c
   S1.quiet.clear();
   assert.equal((await ask()).kind, 'recovery', 'a live current peer confirmed');
 });
+test('§6.7.6 re-issue: a redeal applied during an F7 reaches the new paper by a re-issued item; recovery works', async () => {
+  const acc = await create();
+  const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l), { lock: true });
+  const C = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
+  // During A's F7 (after its repair, before its commit), B reports C lost: that redeal's item goes to the old paper.
+  const K = await acc.A.newPaper((l) => acc.A.approveLock(l), { duringF7: async () => {
+    const l: Change[] = [{ remove: C.kp.pub }, { redeal: { dealer: B.kp.pub } }];
+    await B.submit(l, B.approveLock(l));
+  } });
+  const missed = [...acc.A.m!.redeals.values()].find((x) => x.r.dealer === B.kp.pub)!.r;
+  assert.notEqual(missed.paper_to, K.pub, 'dealt to the old paper');
+  const items = acc.servers[0].items.filter((x) => x.kind === 'reissue' && x.redeal === missed.id);
+  assert.equal(items.length, 1, 'A re-issued it to K, and the server kept it');
+  assert.equal(acc.A.kept.size, 0, 'the kept paper values are destroyed');
+  // A forged re-issue (clear values off the commitments) is refused.
+  const { reissueItem } = await import('../src/redeal.ts');
+  const bad = reissueItem(missed, K.pub, acc.A.seeds.get(missed.id)!, { b: [5, 6], d: [1n, 2n], dk: '00'.repeat(32) }, B.kp);
+  assert.equal((await acc.bus.send(B.kp, acc.servers[0].kp.pub, msg('paper_reissue', acc.g, acc.epochId, 'member', { item: bad }))).code, 'bad_clear');
+  // Recovery with K sums the base, the re-issued item and the F7 redeal's own item.
+  acc.bus.kill(acc.A.kp.pub); acc.bus.kill(B.kp.pub);
+  const { D } = await recover(acc, [acc.A, B], K);
+  assert.ok(verifyEvent(await D.sign({ content: 'recovered through a re-issued item' })));
+});
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';

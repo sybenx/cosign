@@ -46,6 +46,6 @@ made here are interim and marked in the code where they appear.
 
 ## Not done
 
-Paper re-issue, helper resumes by paper, Web Push
+Helper resumes by paper, Web Push
 encryption (RFC 8291) and gateways, durable storage (`CoSigner.snapshot()`/`restore()` covers what
 §5.6 requires a server to keep across restarts, but nothing writes it to disk yet), and the Kotlin build.

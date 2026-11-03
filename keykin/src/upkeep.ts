@@ -109,10 +109,20 @@ export function openMaterial(o: { g: string; backup: KeyPair; pin: string; base:
   const later = o.redeals.filter((r) => o.state.has(r.id) && !baseState.has(r.id));
   const dkSeeds: string[] = [];
   for (const r of later) {
-    const it = o.items.find((x) => x.redeal === r.id && x.to === o.backup.pub && itemHash(x) === r.paper_item) ?? o.items.find((x) => x.redeal === r.id && x.kind === 'reissue' && x.to === o.backup.pub);
     const seed = o.seeds.get(r.id);
-    if (!it || !seed) refuse('missing_item', r.id);
-    const v = openItem(it!, seed!, { backupSk: o.backup.sk });
+    if (!seed) refuse('missing_item', r.id);
+    // The dealt item, or a re-issued one (§6.7.6) whose contents match its clear values.
+    const cands = [o.items.find((x) => x.redeal === r.id && x.to === o.backup.pub && itemHash(x) === r.paper_item),
+      ...o.items.filter((x) => x.redeal === r.id && x.kind === 'reissue' && x.to === o.backup.pub)].filter(Boolean) as Item[];
+    let v: any = null;
+    for (const it of cands) {
+      try {
+        const x = openItem(it, seed!, { backupSk: o.backup.sk });
+        if (it.kind === 'reissue' && !x.d.every((d: string, k: number) => compHex(mul(scalarFrom(d))) === it.clear![k])) continue;
+        v = x; break;
+      } catch { /* try the next */ }
+    }
+    if (!v) refuse('missing_item', r.id);
     v.b.forEach((b: number, k: number) => shares.set(b, mod(shares.get(b)! + scalarFrom(v.d[k]))));
     // The data-key seed rides in the item, so a recovery loses no data (§4.5); checked against `dk`.
     if (typeof v.dk_seed === 'string' && shaHex(hexToBytes(v.dk_seed)) === r.dk) dkSeeds.push(v.dk_seed);
