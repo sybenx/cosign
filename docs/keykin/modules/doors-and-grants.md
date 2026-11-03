@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.2 · not built
+Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.2 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -39,7 +39,7 @@ a request needs by looking at what it is.
 
 | Scope | Lets the site | Asked |
 |---|---|---|
-| `sign-in` | `get_public_key`; relay auth (kind 22242); NIP-98 (`GET`, `POST`) and Blossom (`upload`, `list`, `get`, `media`) tokens for the site's **own host**; for any other host, once per host: "Let *site* sign in to *nostr.build* as you?". A Blossom token with no `server` tag counts as another host and is asked each time | at connect |
+| `sign-in` | `get_public_key`; relay auth (kind 22242); NIP-98 (`GET`, `POST`) and Blossom (`upload`, `list`, `get`, `media`) tokens for the site's **own host**; for any other host, once per host: "Let *site* sign in to *nostr.build* as you?". A Blossom `upload`, `media` or `get` token bound to one blob by an `x` tag is silent, `server` tag or not; a `list` token, or one with no `x` tag, counts as another host | at connect |
 | `post` | ordinary events: notes, reactions, reposts, zap requests, deletions (judged by Device policy), articles, app data (kind 30078) except the `keykin-` prefix; **encrypting** to the account's own key; Blossom `t=delete` and NIP-98 `DELETE`/`PUT`/`PATCH` tokens, judged as deletions | at connect (default on) |
 | `lists` | the profile (0); follows, mutes and other lists (3, 10000, and the other list and set kinds Device policy §2 lists exactly); relay lists (10002, 10050); and decrypting the private items of those lists | the first time it tries |
 | `dms` | NIP-04/NIP-44 encrypt and decrypt **with other people's keys**, NIP-59 unwrap, the person's own sent NIP-17 copies (below), and NIP-55 `decrypt_zap_event` | the first time: "Let *site* read and send your messages?" |
@@ -56,8 +56,9 @@ a request needs by looking at what it is.
     no metadata to hand, a list kind's ciphertext that matches no wallet or private-data event needs
     `lists`.
   - **Whatever the evidence, a release under `lists` checks the plaintext first**: the device decrypts
-    locally and releases it only if it is a tag array of that list kind's items, with no `privkey`,
-    `mint`, `proofs` or other wallet fields. Anything else needs the scope it looks like, or
+    locally and releases it only if it is a tag array whose tag names are all ones that list kind's spec
+    allows (for example `p`, `e`, `a`, `t`, `r`, `word`, `emoji`, `group`, `relay`), with no `privkey`,
+    `mint`, `proofs`, `direction`, `amount` or other wallet fields. Anything else needs the scope it looks like, or
     `private-data`.
   - If the bytes match events of several kinds, **the most private one wins** (`private-data`, then
     `wallet`, then `lists`). Bytes it can't match need `private-data` (live finding #10).
@@ -70,7 +71,8 @@ a request needs by looking at what it is.
 - **Decrypts in bulk.** Site decrypts arriving within about 50 ms go in one `ecdh` request with many
   points (core §5.5). On a site's first NIP-59 unwrap under `dms`, the device fetches the account's kind
   1059 wraps from its 10050 relays and sends all their ephemeral keys in a few large `ecdh` batches; NIP-04
-  peers seen in kind 4 events likewise, at most 2,000 keys per session, from the last 90 days, newest
+  peers seen in kind 4 events likewise, at most 2,000 keys per site connection per 10 minutes,
+  only wraps whose `p` tag is the account, from the last 90 days, newest
   first, so spam wraps can't use up the account's message budget. A conversation key MAY be cached **in memory only**, for at most 10
   minutes, and is never written to storage. Later decrypts answer locally.
 - **Permissions at connect.** A client's decrypt `perms` grant nothing at connect; each scope is asked the
@@ -89,7 +91,9 @@ a request needs by looking at what it is.
 **Listing and signing out.** Grants are grouped by site, with each connection listed inside it ("Chrome
 on *Work PC*", "*Laptop* extension", "*Phone*") and when it was last used. The person can sign out one
 connection, the whole site everywhere, or **every site at once**; before that last one, the device fetches
-every maker's newest grant event, so it ends every grant, not only those it had seen.
+every maker's newest grant event, and also sends each home a **wildcard tombstone** `{by, "*", before:
+<unix>}` that ends every grant that home made before then, the helper's included and any not yet
+published.
 
 ## 2. Keeping and syncing grants
 
@@ -99,12 +103,17 @@ every maker's newest grant event, so it ends every grant, not only those it had 
   `["state", <state hash>]` tag naming the state whose data key encrypts it. Its content is
   XChaCha20-Poly1305 under `HKDF-SHA256(salt = empty, ikm = dk(S), info = "keykin-grants/1", L = 32)` for
   the **current** state (re-encrypted after each redeal), with associated data `g ‖ d ‖ state hash`, as
-  `base64(24-byte nonce ‖ ciphertext)`. Expired entries are pruned from it, and past 64 KB it is split into
-  `d ‖ ":1"`, `":2"`, …, all with the same `created_at` and a `["parts", n]` tag; the parts count as one
+  `base64(24-byte nonce ‖ ciphertext)`. Expired entries are pruned from it, and past 48 KB (under common relays'
+  64 KB event limit) it is split into `d ‖ ":1"`, `":2"`, …, each part its own encrypted chunk of the
+  JCS-encoded set, all with the same `created_at` and a `["parts", n]` tag; the parts count as one
   event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `"keykin-grant-set/1"
   ‖ g ‖ d ‖ created_at ‖ SHA-256(entries ‖ tombstones)`. The maker publishes at `created_at = max(now,
-  last + 1)`. A device restored from a backup first fetches its own newest grant event from relays, and
-  never publishes one older than it, or one that re-adds an entry that event ended.
+  last + 1)`.
+- **Every home adopts its own newest event**: at start, at each 5-minute inbox fetch, before each publish
+  and before any takeover, it fetches its own newest grant event from relays and takes it over: entries
+  missing from it are dropped, and for each entry the higher `v` wins. So a restored or copied home stops
+  answering an ended grant within minutes, never republishes it, and a rolled-back scope can't come back.
+  Tombstones are kept at least 30 days.
 - **Only each device's newest event counts.** For each maker, a device uses only the newest event (highest
   `created_at`) whose `maker_sig` verifies for the member whose `d` it is, so no other member can hide or
   bring back a device's entries. An entry missing from it is gone, and a device keeps the highest `v` seen
@@ -122,7 +131,8 @@ every maker's newest grant event, so it ends every grant, not only those it had 
     and applies every tombstone; then the machine's app takes the grants over (its signer keys over
     native messaging, §3.3), re-signs them under its own key with `"was": [by, id]` naming the old entry
     (the one way a grant is made without a human act), and sends its `watch_set`. A tombstone for the old
-    name also ends the new entry. Other devices show no sign-out screen for it.
+    name also ends the new entry, and old-name tombstones are kept and mapped through `was` after the
+    takeover, so a grant ended during it stays ended. Device policy follows `was` for its metadata. Other devices show no sign-out screen for it.
 - **Ends made by another device** are tombstones `(by, id)`, published in the ending device's event and
   **also sent as deliveries** (core §7.1) with an `ask` push: one delivery per home per action, carrying
   every tombstone of that action for that home, so the home drops the entries at once. A tombstone is dropped once the maker's newest event no longer has the entry.
@@ -133,7 +143,8 @@ every maker's newest grant event, so it ends every grant, not only those it had 
   answered exchange with a server (a co-sign, an `ecdh`), within the last 30 seconds (reference), and a
   real inbox fetch within the last 5 minutes, skipping a server that takes more than 2 seconds. A tombstone
   delivery's `ask` push makes it fetch at once. If no server answers, it answers only requests that need no
-  round. So "Sign out everywhere" and End take effect within seconds everywhere.
+  round. So "Sign out everywhere" and End take effect within seconds where the push arrives, and within 5
+  minutes everywhere.
 - **New devices.** This module adds a `grants` field (every current entry and tombstone) to the welcome
   and the handover (core §4.2, §4.6; core §11.1 ignores unknown fields). A new device that got none reads
   the grant events from relays, checks them as above, and answers for no grant until it has.
@@ -184,7 +195,8 @@ digest. Android apps on the phone share the one member (core §4.6).
     "Connected to *site*".
   - **"Is this your computer?"** (§4) is asked at the first `connect` of a NIP-46 grant whose link or code
     left the device (scanned, pasted from elsewhere, or a QRST ticket). It isn't asked for a same-device
-    hand-off (§3.5) or the second-browser pairing (§3.6).
+    hand-off (§3.5) or for a helper's link (Helper module §2); for the second-browser pairing it is asked
+    once, at pairing (§3.6).
 - **Answering.** The home answers. It coordinates the signing round itself (core §5.1), refuses requests
   from any client key other than the grant's, accepts NIP-44 and NIP-04 encrypted requests, and answers
   `switch_relays`.
@@ -291,6 +303,8 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## 6. Limits, said plainly
 
+- **A helper signs no upload tokens** (Helper module §1): sites the helper answers upload media with their
+  own hosts' sign-in, not the account's.
 - **A NIP-46 site is answered only by its home.** If that device sleeps and no server watches, the site
   waits. A watching server sees when sites talk to the account, though not what they say.
 - **A stolen home** receives what its NIP-46 sites still send (requests, and the text of messages the
@@ -308,6 +322,19 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 7**, from its sixth red team (0 critical, 2 high):
+  - every home adopts its own newest relay event at start, every 5 minutes, before publishing and before a
+    takeover (H1);
+  - Blossom tokens bound to one blob are silent (H2).
+
+  The mediums and lows:
+  - old-name tombstones kept through a takeover (M1);
+  - the borrowed question at pairing, not at the helper's links (M2);
+  - allowed tag names for `lists` (M3);
+  - a wildcard tombstone for "sign out every site" (M4);
+  - unwrap batches per connection, only the account's wraps (M5);
+  - the helper's upload limit stated (M6);
+  - timing wording, 48 KB parts, Device policy and `was` (lows).
 - **Draft 6**, from its fifth red team (0 critical, 2 high):
   - a release under `lists` checks the plaintext is a list, never wallet or key material (H1);
   - a takeover applies tombstones first, and re-signed entries carry `was` (H2).
