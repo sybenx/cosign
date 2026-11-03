@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 10 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 11 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -115,25 +115,33 @@ for listing and re-sending. The wildcard is also published in the ending device'
   ‖ g ‖ d ‖ created_at ‖ SHA-256(entries ‖ tombstones)`. The maker publishes at `created_at = max(now,
   last + 1)`.
 - **Every home adopts its own newest event**: at start, at each 5-minute inbox fetch, before each publish
-  and before any takeover, it fetches its own newest grant event from the account's **current relays** (its
-  recorded relays plus its write relays; it publishes to all of them). A fetch is good only when more than
-  half answer. Until the first good fetch it answers grants made since its own last publish, and gives
-  other requests `try-later:`, retrying the fetch every 10 seconds; it never publishes after a failed one. It takes it over **only if it is newer than the home's own last publish**, and
+  and before any takeover, it fetches its own newest grant event. It publishes to the account's recorded
+  relays plus its write relays, and **records which relays accepted** each publish (an `OK`); a fetch is
+  good only when more than half of the relays that accepted its last publish answer, leaving out relays
+  silent for 24 hours, and at least two. If none can be had, the device shows one quiet line: "Your relays
+  can't be reached; sites signed in here may be asked again." Until the first good fetch it waits up to 3
+  seconds for it, then answers grants made since its own last publish and gives other requests
+  `try-later:`, retrying every 10 seconds; a restart of an extension's background worker within 5 minutes
+  of a good fetch doesn't count as a start. It never publishes after a failed fetch. It takes it over **only if it is newer than the home's own last publish**, and
   then drops only entries **made before** that event that are missing from it; for each entry the higher
   `v` wins (ties as below). So a restored or copied home stops answering an ended
   grant within minutes and never republishes it, a stale relay copy changes nothing, and a grant made a
   moment ago is never dropped.
-- **A grant that left its maker's event never comes back.** Every device remembers the names `(by, id)`
-  (and, for NIP-46, the signer key's hash) of grants it has seen dropped, for as long as the maker is a
-  member. Any reappearance is treated as a resurrection: ignored in listings, and the maker is sent a
-  tombstone, at most once a day per grant.
+- **A grant that left its maker's event never comes back.** Each device's grant event keeps a compact
+  **ended list** (the 16-byte ids of its grants that ended) for as long as the device is a member, and the
+  welcome carries every device's ended list. Any entry whose id is on its maker's ended list is a
+  resurrection: ignored everywhere, and the maker is sent a tombstone. Re-sends are batched: at most one
+  delivery per maker per day, carrying them all. (A handover keeps the ids, so moved grants are no
+  resurrection.)
 - **Tombstones** are kept until the maker's newest event no longer has the entry, and at least 30 days;
   for helper grants, until the helper's report no longer lists them. Each device also applies, for its own
   grants, any tombstone it finds in other devices' events. A home answers `revoked:` for 30 days for a
-  NIP-46 grant it dropped (so its signer key tells the site); NIP-07 and NIP-55 sites can sign in again at
-  once. For equal `v`, the narrower scopes win, and if scopes are equal, the later event's copy.
-- A tombstone sent because a device was removed skips helper grants kept for the staying device (they carry
-  `was`).
+  NIP-46 grant it dropped (so its signer key tells the site); NIP-07 and NIP-55 sites, and second-browser
+  origins (which make a fresh key on the next sign-in), can sign in again at once. For equal `v`, the
+  narrower scopes win (the scope set that is a subset of the other's), and otherwise the later event's
+  copy.
+- No tombstone is sent to the helper because of a device's removal; the helper ends those grants itself
+  (Helper module §2), so kept ones survive.
 - **Only each device's newest event counts.** For each maker, a device uses only the newest event (highest
   `created_at`) whose `maker_sig` verifies for the member whose `d` it is, so no other member can hide or
   bring back a device's entries. An entry missing from it is gone, and a device keeps the highest `v` seen
@@ -333,8 +341,8 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
   conversation key.
 - **A helper signs no upload tokens** (Helper module §1): sites the helper answers upload media with their
   own hosts' sign-in, not the account's.
-- **A device that can't reach more than half the account's relays** answers only its newest grants and
-  publishes nothing until it can.
+- **A device that can't reach the relays it published to** answers only its newest grants and publishes
+  nothing until it can, and says so.
 - **A NIP-46 site is answered only by its home.** If that device sleeps and no server watches, the site
   waits. A watching server sees when sites talk to the account, though not what they say.
 - **A stolen home** receives what its NIP-46 sites still send (requests, and the text of messages the
@@ -352,6 +360,18 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 11**, from its tenth red team (0 critical, 2 high):
+  - ended ids kept in each device's own grant event and in welcomes, and a good fetch counted against the
+    relays that accepted the last publish (H1);
+  - silent relays drop out of the count, with a quiet line (H2).
+
+  The mediums and lows:
+  - a handover keeps ended ids, so moved grants aren't resurrections (M1);
+  - no removal tombstones to the helper (M2);
+  - batched re-sends (M3);
+  - a 3-second wait before `try-later:`, and worker restarts (M4);
+  - second-browser origins sign in again with a fresh key (M5);
+  - the tie rule, and wording (lows).
 - **Draft 10**, from its ninth red team (0 critical, 1 high):
   - a dropped grant's name is remembered while its maker is a member, any reappearance is ignored and
     answered with a tombstone, devices apply others' tombstones for their own grants, and a good fetch
