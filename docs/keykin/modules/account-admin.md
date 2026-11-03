@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.4 · not built
+Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.5 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -69,13 +69,14 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    - **Add another device instead**: while the device still holds the backup secret, it can approve adding
      a device with it (a `paper` approval, core §6.2). This is the way out for a device with no lock.
    - **A kept secret** approves whatever a paper would (adding a device, registering a lock, replacing a
-     server, deleting the account), retried freely until the change is co-signed. It is destroyed once a
-     second device has joined, a paper has been read back, or the device has registered a lock.
+     server, deleting the account), retried freely until the change is co-signed. It is destroyed once any
+     device has a lock or a paper has been read back.
    - **Not now**, on a device with a lock, destroys the backup secret and the backup seat's shares at once
      (core §4.3 step 4).
    - **Not now**, on a device with **no lock** (every browser extension), keeps them sealed (core §7.3)
-     until a second device has joined, a paper has been read back, or a lock is registered, then destroys
-     them (core §4.3 step 4). Meanwhile the quiet dot on Backup suggests, once, "Add your phone to keep your account safe if
+     until any device of the account has a lock or a paper has been read back. Every lockless device that
+     joins meanwhile gets a sealed copy in its welcome, so losing one never traps the other; all copies are
+     destroyed together (`kept_done`, core §4.3 step 4). Meanwhile the quiet dot on Backup suggests, once, "Add your phone to keep your account safe if
      this browser is lost." No banner, no push.
    - If the flow is left unfinished, the device treats it as Not now after 24 hours and says: "No backup
      yet. If you wrote one down, scan it in Backup to check it."
@@ -252,6 +253,8 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 ## Changes
 
+- **Draft 6** (Q7): the kept secret lasts until a lock or a read-back paper exists, and every lockless
+  device holds a copy meanwhile (core 14.5).
 - **Draft 5**, from its fourth red team (0 critical, 1 high):
   - `create_abort` is gone: servers hold a new account provisionally until the device confirms it, and
     drop it after an hour, so no message can wipe a live account (H1).

@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.4 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.5 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -100,7 +100,7 @@ depends on a person seeing them:
    the second device (§6.2);
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
    scanning it back or re-entering it (§4.3), unless they declined a paper (on a lockless device it is kept
-   until a second device joins, a paper is read back or a lock is registered, §4.3);
+   until a lock is registered or a paper is read back, §4.3);
 7. a new paper: "Keep your old paper until this app says the new one is ready", and only after the
    conflict check, "You can destroy the old paper" (§6.7.6 F7);
 8. a device restoring its pieces or catching up seeds by `rerepair`, `need_repair` or `need_seeds`
@@ -358,7 +358,7 @@ whose number matches.
    that a valid change assigns to that new device. No member ever sees the new share.
 4. **Welcome.** The inviting device seals to the new device (`welcome`): the epoch record, the set of
    changes, the relays, the state, every release seed of the state, the backup material (every item,
-   §7.2), the base data key and every data-key seed (§4.5).
+   §7.2), the base data key and every data-key seed (§4.5), and any kept backup secret (§4.3 step 4).
 5. **Checks.** The new device MUST refuse to finish unless:
    - the `welcome` is sealed by `m`;
    - the epoch record passes §3.4 against `g` (the invite's, or the offer's, which the device then
@@ -391,11 +391,13 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
    it **and shown it is readable** by scanning it back or re-entering it (§1.1), then destroys it and
    the shares. If the person declines, or leaves the flow unfinished for 24 hours, the device destroys
    them and the account has no paper until a later F7 (Account admin module), **except on a device with no
-   lock**: there it keeps them sealed (§7.3) until a second device has joined (its add co-signed and its
-   welcome acknowledged, §4.2 step 5), a paper has been read
-   back, or the device has registered a lock, so a lockless account can still add a device. Until then
-   that device alone is worth 5 points, like an nsec kept in it, and the kept secret approves what a
-   `paper` approval would. It SHOULD prompt, quietly, to finish the backup.
+   lock**: there it keeps them sealed (§7.3) until **any device of the account has a lock** or a paper has
+   been read back, so a lockless account can always add a device. While neither exists, **every** lockless
+   device holds a sealed copy: the welcome of each new device carries it (step 4 of §4.2), so losing one
+   lockless device never traps the other. Each holder is worth 5 points, like an nsec kept in it, and the
+   kept secret approves what a `paper` approval would. When a lock is registered (an add with a lock, or a
+   lock change) or a paper is read back, the device that sees it sends `kept_done {}` to every device as a
+   delivery, and every holder destroys its copy. It SHOULD prompt, quietly, to finish the backup.
 
 After that, each redeal appends a **paper delta** for it (§7.2), so a paper reaches every later state
 without being reprinted.
@@ -1568,8 +1570,8 @@ The signpost (kind 30078) is the one Core event published on relays (§6.7.5); m
   offers prompt-free secure storage (live finding #5). That is 3 points, not the key: better than an nsec
   in the same storage, which is the bar. An extension never has a lock.
 - **Until the paper is printed**, the device that made it holds 5 points (§4.3). On a lockless device
-  whose person declined a paper, that lasts until a second device joins: whoever copies that browser
-  profile in that time has the whole key **and** every approval a paper gives, deleting the account
+  whose person declined a paper, that lasts until a lock is registered or a paper is read back, and every
+  lockless device holds it meanwhile: whoever copies any of those browser profiles in that time has the whole key **and** every approval a paper gives, deleting the account
   included, and keeps that paper power until a new paper replaces the backup key.
 - **iPhone push.** Waking an iPhone needs Apple and the app maker's gateway. The gateway sees when each
   phone is woken and by which servers, not why. If it is down, signing still works when the app is
@@ -1862,8 +1864,8 @@ From the user's answers on the Helper and Key families modules (2026-11-03):
   before helper rounds; `helper_resume` with an approval; devices never co-sign helper rounds; §10 says a
   helper plus one dishonest server is the key; key-family releases and leaked events are in §5.8.
 - An imported 0.12 account may be a child of a new master (§6.8).
-- On a device with no lock, a declined paper keeps the backup secret sealed until a second device joins
-  or a paper is read back (§4.3 step 4; the user's answer).
+- On a device with no lock, a declined paper keeps the backup secret sealed until a lock or a read-back
+  paper exists, held by every lockless device meanwhile (§4.3 step 4; the user's answers to Q6 and Q7).
 
 ## Changes in draft 14.1
 
@@ -1900,3 +1902,9 @@ From the red team of 14 to 14.2 (0 critical, 1 high):
 
 From the Helper module's fourth red team: a stop always applies and stops the helper seat, whoever holds
 it; a resume clears only lower-numbered stops; devices show "Stopped" once a server confirms.
+
+## Changes in draft 14.5
+
+Q7 (hub, on the user's Q6 reasoning): a lockless account's kept backup secret lasts until any device has a
+lock or a paper is read back, every lockless device holds a sealed copy meanwhile (carried in welcomes),
+and `kept_done` destroys every copy.
