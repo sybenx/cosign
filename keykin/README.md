@@ -46,6 +46,6 @@ made here are interim and marked in the code where they appear.
 
 ## Not done
 
-Paper re-issue, the helper, passive servers' 7-day rule (servers do check peers before any wait or release), Web Push
+Paper re-issue, helper resumes by paper, passive servers' 7-day rule (servers do check peers before any wait or release), Web Push
 encryption (RFC 8291) and gateways, durable storage (`CoSigner.snapshot()`/`restore()` covers what
 §5.6 requires a server to keep across restarts, but nothing writes it to disk yet), and the Kotlin build.

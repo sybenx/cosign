@@ -265,6 +265,41 @@ test('the signpost: published by a device, read by the paper and a device, never
   const stale = new OneCall(acc.A.ctx(), acc.A.me(), { key: s0.key, indices: s0.shares }, { ...first, created_at: acc.bus.now, id: undefined, sig: undefined } as any);
   assert.equal((await acc.bus.send(acc.A.kp, s0.key, stale.request)).code, 'signpost_n');
 });
+test('F6, the helper: seated and repaired; signs everyday posts with a server; never with a device, never other kinds; stops', async () => {
+  const acc = await create();
+  const { addHelper } = await import('../sim/account.ts');
+  const H = await addHelper(acc, acc.A, (l) => acc.A.approveLock(l));
+  assert.equal(H.m!.seats.get('helper')!.holder!.key, H.kp.pub);
+  assert.ok(verifyEvent(await H.sign({ content: 'gm from the helper' })), 'helper (3) + server (1) signs, by design');
+  assert.ok(verifyEvent(await H.sign({ kind: 7, content: '+', tags: [['e', '00'.repeat(32)]] })));
+  await assert.rejects(H.sign({ kind: 0, content: '{"name":"x"}' }), /helper_kind/);
+  await assert.rejects(H.sign({ content: 'later', created_at: acc.bus.now + 3600 }), /dated_ahead/);
+  // A device never co-signs a helper round, and a helper never co-signs.
+  const { OneCall } = await import('../src/coordinator.ts');
+  const r = new OneCall(H.ctx(), H.me(), { key: acc.A.kp.pub, indices: [1, 2, 3] }, { pubkey: acc.g, created_at: acc.bus.now, kind: 1, tags: [], content: 'x' });
+  assert.equal((await acc.bus.send(H.kp, acc.A.kp.pub, r.request)).code, 'helper_round');
+  const r2 = new OneCall(acc.A.ctx(), acc.A.me(), { key: H.kp.pub, indices: [...H.state!.shares.keys()] }, { pubkey: acc.g, created_at: acc.bus.now, kind: 1, tags: [], content: 'y' });
+  assert.equal((await acc.bus.send(acc.A.kp, H.kp.pub, r2.request)).code, 'helper_never_cosigns');
+  // A device stops the helper at every server; then resumes with its lock.
+  const stop = bytesToHex(randomBytes(16));
+  for (const s of acc.servers) await acc.bus.send(acc.A.kp, s.kp.pub, msg('helper_stop', acc.g, acc.epochId, 'member', { stop, by: acc.A.kp.pub }));
+  await assert.rejects(H.sign({ content: 'stopped?' }), /helper_stopped/);
+  const inbox = await acc.bus.send(acc.A.kp, acc.servers[0].kp.pub, msg('inbox_get', acc.g, acc.epochId, 'ask'));
+  assert.deepEqual(inbox.stops, [stop], 'any device sees the stops in force');
+  for (const s of acc.servers) {
+    const body = msg('helper_resume', acc.g, acc.epochId, 'member', { ids: [stop] });
+    const w = codesMod.what.request('helper_resume', body.id, body);
+    const ans = await acc.bus.send(acc.A.kp, s.kp.pub, { ...body, approval: { lock: { member: acc.A.kp.pub, assertion: acc.A.lock!.assert(acc.g, w) } } });
+    assert.deepEqual(ans.stops, []);
+  }
+  assert.ok(verifyEvent(await H.sign({ content: 'resumed' })));
+  // A helper gets no data key; and it leaves only by a seat change.
+  assert.equal(H.baseDk, '');
+  const rm: Change[] = [{ seat: { seat: 'helper', new: null, replaces: H.kp.pub } }, { redeal: { dealer: acc.A.kp.pub } }];
+  await acc.A.submit(rm, acc.A.approveLock(rm));
+  assert.ok(acc.A.m!.removed.has(H.kp.pub));
+  await assert.rejects(H.sign({ content: 'gone' }), /removed|stale/);
+});
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';

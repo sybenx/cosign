@@ -168,3 +168,27 @@ export async function replaceAllServers(acc: Account, A: DeviceNode, B: DeviceNo
   }
   return Ys;
 }
+
+/** F6, the helper (§6.7.6): `[seat helper→H, redeal]` with one approval, then the device and one
+ *  server repair the helper's three seat indices, sealed to H. (The typed join check is §4.1's.) */
+export async function addHelper(acc: Account, dev: DeviceNode, approve: (list: Change[]) => Approval): Promise<DeviceNode> {
+  const { bus } = acc;
+  const H = bus.add(new DeviceNode(bus, `H${++seq}`, null)) as DeviceNode;
+  H.role = 'helper';
+  const seat = dev.m!.record.seats.helper;
+  const entry: MemberEntry = { key: H.kp.pub, kind: 'helper', shares: seat, host: newKey().pub };
+  const list: Change[] = [{ seat: { seat: 'helper', new: entry, replaces: dev.m!.seats.get('helper')?.holder?.key ?? null } }, { redeal: { dealer: dev.kp.pub } }];
+  await dev.submit(list, approve(list));
+  const server = dev.servers().find((x) => bus.alive(x.key))!;
+  const shares = new Map<number, bigint>();
+  const sigmaFrom: string[] = [];
+  for (const i of seat) {
+    const ws = await dev.repairFor([{ key: dev.kp.pub, indices: [...dev.state!.shares.keys()] }, { key: server.key, indices: server.shares }], i, H.kp.pub, 'seat');
+    shares.set(i, (await import('../src/frost.ts')).repairShare(dev.state!.C, ws.map((w) => unwrap(H.kp.sk, w).body.sigma), i));
+    for (const w of ws) sigmaFrom.push(unwrap(H.kp.sk, w).from);
+  }
+  H.adopt(dev.recEv!, dev.changes, { ids: new Set(dev.state!.ids), C: dev.state!.C, shares });
+  for (const i of seat) for (const k of new Set(sigmaFrom)) await bus.send(H.kp, k, { type: 'repair_ok', participant: i });
+  for (const [k, v] of dev.seeds) H.seeds.set(k, v);       // release seeds only: a helper never gets the data key
+  return H;
+}

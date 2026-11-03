@@ -23,6 +23,9 @@ import { jcs } from './bytes.ts';
 import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Waited } from './types.ts';
 
 export const NONCE_TTL_S = 120;
+/** §5.7 item 8: what the helper may coordinate. */
+export const HELPER_KINDS = new Set([1, 1111, 7, 6, 16, 9734, 20, 21, 22, 22242]);
+export const MAX_STOPS_PER_MEMBER = 3;
 export const SESSION_S = 7 * 86400;
 export const MAX_HOLDS = 10;
 export const STATEMENT_MAX_AGE_S = 7 * 86400;
@@ -72,6 +75,8 @@ export class CoSigner {
     // are retried with every later batch, so the view depends only on the set held.
     const r = adopt(this.o.record, this.changes, [...evs, ...this.refusedChanges.map((x) => x.ev)], this.W);
     this.changes = r.changes; this.m = r.m; this.refusedChanges = r.refused;
+    // A helper seat change clears only the stops it names (§5.7).
+    for (const p of this.m.accepted) { const ch: any = p.c.change; if (ch.seat?.seat === 'helper' && Array.isArray(ch.seat.clears_stops)) this.clearStops(ch.seat.clears_stops, this.o.now()); }
     return !r.refused.some((x) => evs.includes(x.ev));
   }
   refusedChanges: { ev: NostrEvent; why: string }[] = [];
@@ -213,7 +218,7 @@ export class CoSigner {
    *  Never nonces: a restart loses every round in flight (§5.2). Shares are the host's to store. */
   snapshot() {
     return JSON.stringify({ replay: this.replay.dump(), holds: [...this.holds.values()], recoveries: [...this.recoveries.values()],
-      cancels: this.cancels, challenges: [...this.challenges], signposts: [...this.signpostIds] });
+      cancels: this.cancels, challenges: [...this.challenges], signposts: [...this.signpostIds], stops: [...this.stops], cleared: [...this.clearedStops] });
   }
   restore(json: string) {
     const x = JSON.parse(json);
@@ -222,6 +227,7 @@ export class CoSigner {
     this.recoveries = new Map(x.recoveries.map((r: Recovery) => [r.wait, r]));
     this.cancels = x.cancels; this.cancelledWaits = new Set(x.cancels.map((c: any) => c.wait));
     this.challenges = new Map(x.challenges); this.signpostIds = new Set(x.signposts);
+    this.stops = new Map(x.stops ?? []); this.clearedStops = new Map(x.cleared ?? []);
   }
 
   /** A recovery session for the current backup key: open from the end of its wait for 7 days. */
@@ -265,7 +271,43 @@ export class CoSigner {
     return s!;
   }
 
+  /** Helper stops (§5.7): account state. In force by id → who sent it; cleared ids never return. */
+  stops = new Map<string, { by: string; at: number }>();
+  clearedStops = new Map<string, number>();
+  takeStop(from: string, msg: { id?: string; stop?: string; by: string }, now: number) {
+    const id = msg.stop ?? msg.id!;
+    hexN(id, 16, 'stop id');
+    if (!this.m.devices.has(from) || msg.by !== from) refuse('not_device', 'any current device stops the helper, naming itself');
+    if (this.clearedStops.has(id) || this.stops.has(id)) return;
+    if ([...this.stops.values()].filter((x) => x.by === from).length >= MAX_STOPS_PER_MEMBER) refuse('already_stopped');
+    this.stops.set(id, { by: from, at: now });
+  }
+  clearStops(ids: string[], now: number) { for (const id of ids) { this.stops.delete(id); this.clearedStops.set(id, now); } }
+
   handlers = {
+    helper_stop(this: CoSigner, from: string, msg: any, now: number) {
+      this.takeStop(from, { stop: msg.stop, by: msg.by }, now);
+      return { v: 1, type: 'notice', re: msg.id, kind: 'helper_stopped', stops: [...this.stops.keys()] };
+    },
+    helper_resume(this: CoSigner, from: string, msg: any, now: number) {
+      // An approval over the request (§6.1: type ‖ id ‖ SHA-256(JCS(body without the approval))).
+      const { approval, ...body } = msg;
+      const w = what.request('helper_resume', msg.id, body);
+      const dev = this.sender(from);
+      if (dev.kind !== 'device') refuse('not_device');
+      if (approval?.lock) {
+        if (approval.lock.member !== from || !dev.lock) refuse('needs_approval');
+        const e = checkAssertion(this.g, dev.lock!, w, approval.lock.assertion); if (e) refuse(e);
+      } else if (approval?.pair) {
+        const [x, y] = approval.pair;
+        if (x.member === y.member || !this.m.devices.has(x.member) || !this.m.devices.has(y.member)) refuse('approver_not_device');
+        const d = detachedDigest('pair', this.g, { what: bytesToHex(w), r: x.r });
+        if (!schnorrVerify(x.sig, d, x.member) || !schnorrVerify(y.code_sig, d, y.member)) refuse('bad_signature');
+      } else refuse('needs_approval', 'a resume needs lock or pair (paper resumes need every server\'s challenge)');
+      if (!Array.isArray(msg.ids)) refuse('malformed');
+      this.clearStops(msg.ids, now);
+      return { v: 1, type: 'notice', re: msg.id, kind: 'helper_resumed', stops: [...this.stops.keys()] };
+    },
     sign(this: CoSigner, from: string, msg: any, now: number) { return this.sign(from, msg, now); },
     commit(this: CoSigner, from: string, msg: any, now: number) { return this.commitTwoCall(from, msg, now); },
     ecdh(this: CoSigner, from: string, msg: any, now: number) { return this.ecdh(from, msg, now); },
@@ -284,6 +326,13 @@ export class CoSigner {
   /** §5.7 item 1 and the I4 rule: who may coordinate this round. */
   private coordinator(from: string, participants: MemberEntry[], now: number): 'everyday' | 'recovery' {
     const s = this.sender(from);
+    // §5.7 item 8: a helper never co-signs; a device never co-signs a helper round; a stop in force
+    // refuses every round the helper coordinates or takes part in.
+    if (this.o.kind === 'helper') refuse('helper_never_cosigns');
+    if (participants.some((p) => p.kind === 'helper')) {
+      if (this.o.kind === 'device') refuse('helper_round', 'a device never co-signs a round the helper coordinates');
+      if (this.stops.size) refuse('helper_stopped');
+    }
     const deviceClass = participants.some((p) => p.kind === 'device' || p.kind === 'helper');
     if (s.kind === 'device' || s.kind === 'helper') return 'everyday';
     if (s.kind === 'backup' && !deviceClass) {
@@ -337,6 +386,10 @@ export class CoSigner {
     if (ev.kind === KIND_SIGNPOST && signpostDs.has(tag(ev, 'd') ?? '')) { this.checkSignpost(from, ev); return { evId, lockApproved: false, signpost: true }; }
     if (ev.kind === KIND_CHANGE) { this.checkListToSign(from, [ev], mode, now, msg); return { evId, lockApproved: false }; }
     if (mode === 'recovery') refuse('recovery_session', 'only recovery-approved changes in a session');
+    if (this.m.members.get(from)?.kind === 'helper') {
+      if (!HELPER_KINDS.has(ev.kind)) refuse('helper_kind', 'the helper signs only everyday posts and reactions');
+      if (ev.created_at - now > 600) refuse('dated_ahead');
+    }
     // The stateless destructive rule (item 7).
     let lockApproved = false;
     if (destructive(ev as Ev, this.burst.recent(now))) {

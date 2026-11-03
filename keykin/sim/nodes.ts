@@ -198,7 +198,8 @@ export class ServerNode implements Node {
       case 'deliver':
         this.inbox.deliver({ from, to: body.to, wrap: body.wrap, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey });
         return { type: 'ack' };
-      case 'inbox_get': if (m.removed.has(from)) refuse('removed'); return { type: 'inbox', items: this.inbox.get(from, this.now) };
+      case 'inbox_get': if (m.removed.has(from)) refuse('removed');
+        return { type: 'inbox', items: this.inbox.get(from, this.now), ...(m.devices.has(from) ? { stops: [...this.co.stops.keys()] } : {}) };
       case 'inbox_ack': this.inbox.ack(from, body.iids); return { type: 'ack' };
       case 'repair_start': return this.repairStart(from, body);
       case 'repair_finish': return this.co.repairFinish(from, body);
@@ -259,6 +260,8 @@ export class DeviceNode implements Node {
   joiner: Joiner | null = null; inviter: Inviter | null = null;
   pendingSigmas: { from: string; index: number; sigma: string; state: string }[] = [];
   wiped = false;
+  /** A device, or the opt-in helper (F6): same node, different rules in the co-signer. */
+  role: 'device' | 'helper' = 'device';
   /** Security displays this device owes its person (§1.1 item 8). */
   notices: { kind: string; member: string }[] = [];
   /** A device's own destructive policy (Device policy module): here, always yes. */
@@ -279,7 +282,7 @@ export class DeviceNode implements Node {
   }
   recompute() {
     this.m = computeMembership(this.rec!, this.changes);
-    this.co = new CoSigner({ me: this.kp, kind: 'device', now: () => this.now, record: this.rec!, changes: this.changes, state: this.state!, policy: (e, f) => this.policy(e, f) });
+    this.co = new CoSigner({ me: this.kp, kind: this.role, now: () => this.now, record: this.rec!, changes: this.changes, state: this.state!, policy: (e, f) => this.policy(e, f) });
     if (this.m.removed.has(this.kp.pub)) this.wipe();
   }
   wipe() { this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() }; this.seeds.clear(); this.items = []; this.baseDk = ''; }
