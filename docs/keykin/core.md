@@ -99,7 +99,8 @@ depends on a person seeing them:
    second device; for adding a device, the code is the join check shown on the new device, typed on
    the second device (§6.2);
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
-   scanning it back or re-entering it (§4.3), unless they declined a paper;
+   scanning it back or re-entering it (§4.3), unless they declined a paper (on a lockless device it is kept
+   until a second device joins, §4.3);
 7. a new paper: "Keep your old paper until this app says the new one is ready", and only after the
    conflict check, "You can destroy the old paper" (§6.7.6 F7);
 8. a device restoring its pieces or catching up seeds by `rerepair`, `need_repair` or `need_seeds`
@@ -382,7 +383,10 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
 4. The device keeps the backup secret, encrypted at rest (§7.3), until the person has printed or saved
    it **and shown it is readable** by scanning it back or re-entering it (§1.1), then destroys it and
    the shares. If the person declines, or leaves the flow unfinished for 24 hours, the device destroys
-   them anyway and the account has no paper until a later F7 (Account admin module). Until then that device alone is worth 5 points, the same as an nsec on it; it SHOULD
+   them and the account has no paper until a later F7 (Account admin module), **except on a device with no
+   lock**: there it keeps them sealed (§7.3) until a second device has joined or a paper has been read
+   back, so a lockless account can still add a device. Until then that device alone is worth 5 points, like
+   an nsec kept in it. Until then that device alone is worth 5 points, the same as an nsec on it; it SHOULD
    prompt to finish the backup.
 
 After that, each redeal appends a **paper delta** for it (§7.2), so a paper reaches every later state
@@ -1498,7 +1502,8 @@ The signpost (kind 30078) is the one Core event published on relays (§6.7.5); m
 - **Browser profiles.** An extension keeps shares a copied profile can carry away unless the browser
   offers prompt-free secure storage (live finding #5). That is 3 points, not the key: better than an nsec
   in the same storage, which is the bar. An extension never has a lock.
-- **Until the paper is printed**, the device that made it holds 5 points (§4.3).
+- **Until the paper is printed**, the device that made it holds 5 points (§4.3). On a lockless device
+  whose person declined a paper, that lasts until a second device joins.
 - **iPhone push.** Waking an iPhone needs Apple and the app maker's gateway. The gateway sees when each
   phone is woken and by which servers, not why. If it is down, signing still works when the app is
   opened, from other devices, or through any other Keykin app; notices are what suffer.
@@ -1787,3 +1792,5 @@ From the user's answers on the Helper and Key families modules (2026-11-03):
 - A helper never co-signs for others (§2 table).
 - §10 and F10 say plainly what key families do and don't do.
 - An imported 0.12 account may be a child of a new master (§6.8).
+- On a device with no lock, a declined paper keeps the backup secret sealed until a second device joins
+  or a paper is read back (§4.3 step 4; the user's answer).

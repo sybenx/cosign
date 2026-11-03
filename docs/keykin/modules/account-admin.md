@@ -60,13 +60,16 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    - **Write it down** makes the backup set (Backup module §1), with its read-back.
    - **Add another device instead**: while the device still holds the backup secret, it can approve adding
      a device with it (a `paper` approval, core §6.2). This is the way out for a device with no lock.
-   - **Add another device instead** can be used for **one** add, started from this screen; then the
-     secret and the backup seat's shares are destroyed. It is never an approval for anything else.
-   - **Not now** destroys the backup secret and the backup seat's shares at once (core §4.3 step 4). On a
-     device with **no lock** (every browser extension), the screen leads with **Add your phone now**, and
-     Not now says plainly: "This browser can't add your phone or replace a server later. Add your phone
-     now, or write down a backup." The person may still choose Not now.
-   - If the flow is left unfinished, the device destroys the secret after 24 hours and says: "No backup
+   - **Add another device instead** can be used for **one** add, started from this screen (or, on a
+     lockless device that chose Not now, from Add a device later); then the secret and the backup seat's
+     shares are destroyed. It is never an approval for anything else.
+   - **Not now**, on a device with a lock, destroys the backup secret and the backup seat's shares at once
+     (core §4.3 step 4).
+   - **Not now**, on a device with **no lock** (every browser extension), keeps them sealed (core §7.3)
+     until a second device has joined or a paper has been read back, then destroys them (core §4.3 step
+     4). Meanwhile the quiet dot on Backup suggests, once, "Add your phone to keep your account safe if
+     this browser is lost." No banner, no push.
+   - If the flow is left unfinished, the device treats it as Not now after 24 hours and says: "No backup
      yet. If you wrote one down, scan it in Backup to check it."
 6. **The signpost** is published (core §6.7.5), and the device registers push with each server (core §8.1).
 
@@ -212,9 +215,8 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 - **An imported key is only as safe as every old copy.** Keykin can't delete the nsec from a password
   manager, a 0.12 app or a screenshot.
-- **"Not now" on a device with no lock** leaves an account that can sign but can never add a device, make
-  a paper or replace a server. It lives and dies with that browser profile, and when its last server dies,
-  it stops. That is worse than an nsec in a password manager.
+- **"Not now" on a device with no lock** leaves that device alone worth 5 points until a phone joins or a
+  paper is made: whoever copies that browser profile has the whole key, as with an nsec kept in it.
 - **"Not now" means no backup.** If that device is lost and no other exists, the account is lost (Backup
   module §6).
 - **A thief with a device's lock, or a second device, or the paper, can destroy the key.** That is the
@@ -228,7 +230,8 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 ## Changes
 
-- **Draft 3**, from its second red team (0 critical, 1 high):
+- **Draft 3** (and the user's answer on lockless "Not now": keep the secret sealed until a second device
+  or a paper, core 14), from its second red team (0 critical, 1 high):
   - lockless devices lead with **Add your phone now**, and Not now says plainly what it costs (H1; the
     alternative, keeping the secret on a lockless device, is open for the user).
 
