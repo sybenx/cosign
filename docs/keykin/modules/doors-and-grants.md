@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.6 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.6 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -71,9 +71,9 @@ a request needs by looking at what it is.
 - **Decrypts in bulk.** Site decrypts arriving within about 50 ms go in one `ecdh` request with many
   points (core §5.5). On a site's first NIP-59 unwrap under `dms`, the device fetches the account's kind
   1059 wraps from its 10050 relays and sends all their ephemeral keys in a few large `ecdh` batches; NIP-04
-  peers seen in kind 4 events likewise, at most 2,000 keys per site connection per 10 minutes,
-  only wraps whose `p` tag is the account, from the last 90 days, newest
-  first, so spam wraps can't use up the account's message budget. A conversation key MAY be cached **in memory only**, for at most 10
+  peers seen in kind 4 events likewise: at most 2,000 keys per site connection per 10 minutes, from the
+  last 90 days, newest first, so spam wraps can't use up the account's message budget. This cap is for the
+  prefetch only; the site's own decrypt requests are answered first and aren't counted in it. A conversation key MAY be cached **in memory only**, for at most 10
   minutes, and is never written to storage. Later decrypts answer locally.
 - **Permissions at connect.** A client's decrypt `perms` grant nothing at connect; each scope is asked the
   first time it is needed.
@@ -91,9 +91,9 @@ a request needs by looking at what it is.
 **Listing and signing out.** Grants are grouped by site, with each connection listed inside it ("Chrome
 on *Work PC*", "*Laptop* extension", "*Phone*") and when it was last used. The person can sign out one
 connection, the whole site everywhere, or **every site at once**; before that last one, the device fetches
-every maker's newest grant event, and also sends each home a **wildcard tombstone** `{by, "*", before:
-<unix>}` that ends every grant that home made before then, the helper's included and any not yet
-published.
+every maker's newest grant event, and also sends each home, the helper included, a **wildcard tombstone**
+`{home, all: true, before: <unix>}` that ends every grant whose `made` is before then, any not yet
+published included.
 
 ## 2. Keeping and syncing grants
 
@@ -109,11 +109,14 @@ published.
   event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `"keykin-grant-set/1"
   ‖ g ‖ d ‖ created_at ‖ SHA-256(entries ‖ tombstones)`. The maker publishes at `created_at = max(now,
   last + 1)`.
-- **Every home adopts its own newest event**: at start, at each 5-minute inbox fetch, before each publish
-  and before any takeover, it fetches its own newest grant event from relays and takes it over: entries
-  missing from it are dropped, and for each entry the higher `v` wins. So a restored or copied home stops
-  answering an ended grant within minutes, never republishes it, and a rolled-back scope can't come back.
-  Tombstones are kept at least 30 days.
+- **Every home adopts its own newest event**: at start (answering nothing until then, or for 5 seconds),
+  at each 5-minute inbox fetch, before each publish and before any takeover, it fetches its own newest
+  grant event from relays. It takes it over **only if it is newer than the home's own last publish**, and
+  then drops only entries **made before** that event that are missing from it; for each entry the higher
+  `v` wins (for equal `v`, the later event's copy). So a restored or copied home stops answering an ended
+  grant within minutes and never republishes it, a stale relay copy changes nothing, and a grant made a
+  moment ago is never dropped.
+- **Tombstones** are kept until the maker's newest event no longer has the entry, and at least 30 days.
 - **Only each device's newest event counts.** For each maker, a device uses only the newest event (highest
   `created_at`) whose `maker_sig` verifies for the member whose `d` it is, so no other member can hide or
   bring back a device's entries. An entry missing from it is gone, and a device keeps the highest `v` seen
@@ -135,7 +138,9 @@ published.
     takeover, so a grant ended during it stays ended. Device policy follows `was` for its metadata. Other devices show no sign-out screen for it.
 - **Ends made by another device** are tombstones `(by, id)`, published in the ending device's event and
   **also sent as deliveries** (core §7.1) with an `ask` push: one delivery per home per action, carrying
-  every tombstone of that action for that home, so the home drops the entries at once. A tombstone is dropped once the maker's newest event no longer has the entry.
+  every tombstone of that action for that home, so the home drops the entries at once. For a helper-homed
+  grant, the tombstone names the grant by the helper's own id (as in its report), and is re-sent whenever
+  an ended grant shows up again in a `helper_report`.
 - **Only a human act** makes a new grant (live finding #15): a scanned code, a pasted link, or an explicit
   "Allow *app*" on the device the app is on. For NIP-55, the same app (same package and certificate) can
   be allowed again on that phone.
@@ -304,6 +309,10 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## 6. Limits, said plainly
 
+- **A Blossom token bound to one blob** may be silent for any host the site names; it uploads only that
+  blob, as the person.
+- **Grant changes reach a home within 5 minutes**, or up to 10 for a decrypt answered from a cached
+  conversation key.
 - **A helper signs no upload tokens** (Helper module §1): sites the helper answers upload media with their
   own hosts' sign-in, not the account's.
 - **A NIP-46 site is answered only by its home.** If that device sleeps and no server watches, the site
@@ -323,6 +332,15 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 8**, from its seventh red team (0 critical, 1 high):
+  - a home adopts its relay event only if newer than its own last publish, and drops only entries made
+    before it (H1, M3).
+
+  The mediums and lows:
+  - tombstones re-sent when an ended helper grant reappears in a report (M1);
+  - helper grants ended by the helper's own ids, and a wildcard by `made` (M2);
+  - the unwrap cap is for the prefetch only (M4);
+  - one tombstone-retention rule, ties on `v`, nothing answered before the first adopt, two limits (lows).
 - **Draft 7**, from its sixth red team (0 critical, 2 high):
   - every home adopts its own newest relay event at start, every 5 minutes, before publishing and before a
     takeover (H1);
