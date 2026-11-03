@@ -4,8 +4,8 @@
 // Run: node gen.ts > probes.json   (from this directory)
 const K = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
 const { fixture } = await import(`${K}/test/helpers.ts`);
-const { eventId, schnorrVerify, newKey } = await import(`${K}/src/event.ts`);
-const { jcs, KeykinError, sha, bytesToHex, hexToBytes, concatBytes, utf8ToBytes } = await import(`${K}/src/bytes.ts`);
+const { eventId, eventShape, schnorrVerify, newKey } = await import(`${K}/src/event.ts`);
+const { jcs, KeykinError, sha, bytesToHex, hexToBytes, concatBytes, utf8ToBytes, strictJson, utf8Strict, fromB64u, fromB64 } = await import(`${K}/src/bytes.ts`);
 const { checkAssertion, softLock } = await import(`${K}/src/lock.ts`);
 const { lockChallenge } = await import(`${K}/src/codes.ts`);
 const { destructive } = await import(`${K}/src/destructive.ts`);
@@ -28,12 +28,47 @@ const contents: Record<string, string> = {
   ascii: 'hello', controls: '\u0000\u0001\u001f\u007f\b\f\n\r\t', quote_bs: '"\\/', u2028: '  ', emoji: '😀',
   lone_high: 'a\ud800b', lone_low: '\udc00', nonchar: '￿﻿', c1: '\u0085\u009f', en_dash: '– €',
 };
-for (const [n, c] of Object.entries(contents)) { const e = { ...base, content: c }; P('event_id', `content ${n}`, JSON.stringify(e), eventId(e)); }
-{ const e = { ...base, tags: [['p', '\ud800']] }; P('event_id', 'tag lone surrogate', JSON.stringify(e), eventId(e)); }
-{ const e = { ...base, created_at: 1.5 }; P('event_id', 'created_at 1.5', JSON.stringify(e), eventId(e as any)); }
-{ const e = { ...base, created_at: '1800000000' }; P('event_id', 'created_at as a string', JSON.stringify(e), eventId(e as any)); }
-{ const e = { ...base, created_at: 2 ** 53 + 2 }; P('event_id', 'created_at 2^53+2', JSON.stringify(e), eventId(e as any)); }
-{ const e = { ...base, kind: 1.0 }; P('event_id', 'kind 1.0 (same as 1 in JS)', JSON.stringify(e).replace('"kind":1', '"kind":1.0'), eventId(e as any)); }
+// §9.5: the text through the profile, the rumor shape, then the id.
+const EID = (name: string, text: string) => P('event_id', name, text, res(() => { const o = strictJson(text); eventShape({ ...o, id: '0'.repeat(64) }, 'rumor'); return eventId(o); }));
+for (const [n, c] of Object.entries(contents)) EID(`content ${n}`, JSON.stringify({ ...base, content: c }));
+EID('tag lone surrogate', JSON.stringify({ ...base, tags: [['p', '\ud800']] }));
+EID('created_at 1.5', JSON.stringify({ ...base, created_at: 1.5 }));
+EID('created_at as a string', JSON.stringify({ ...base, created_at: '1800000000' }));
+EID('created_at 2^53+2', JSON.stringify({ ...base, created_at: 2 ** 53 + 2 }));
+EID('kind 1.0', JSON.stringify(base).replace('"kind":1', '"kind":1.0'));
+EID('content U+000B (Word line break)', JSON.stringify({ ...base, content: 'a\u000bb' }));
+EID('content escaped U+0001', JSON.stringify(base).replace('"content":""', '"content":"\\u0001"'));
+EID('content U+2028 in a note', JSON.stringify({ ...base, content: 'a\u2028b' }));
+EID('kind 65536', JSON.stringify({ ...base, kind: 65536 }));
+EID('created_at -1', JSON.stringify({ ...base, created_at: -1 }));
+EID('uppercase pubkey', JSON.stringify({ ...base, pubkey: 'AB'.repeat(32) }));
+EID('an extra field', JSON.stringify({ ...base, relays: [] }));
+EID('tags with a number', JSON.stringify({ ...base, tags: [['p', 1]] }));
+EID('content twice', JSON.stringify(base).replace('"content":""', '"content":"","content":"x"'));
+EID('pubkey missing', JSON.stringify({ ...base, pubkey: undefined }));
+
+// §9.5's reader on its own: every text both sides must decide alike.
+const RD = (name: string, text: string) => P('jcs', `read: ${name}`, text, res(() => jcs(strictJson(text))));
+for (const [n, t] of Object.entries({
+  bom: '\ufeff[]', trailing_comma: '[1,]', single_quote: "['a']", nan: '[NaN]', comment: '/*x*/[]', nbsp_around: '\u00a0[]', tab_around: '\t[]\r\n',
+  raw_tab_in_string: '["a\tb"]', escaped_tab: '["a\\tb"]', escaped_u000b: '["\\u000b"]', escaped_u0000: '["\\u0000"]', escaped_lone_low: '["\\udc00"]',
+  escaped_pair: '["\\ud83d\\ude00"]', escaped_slash: '["a\\/b"]', dup_escaped: '{"a":1,"\\u0061":2}', dup_deep: '[{"x":{"y":1,"y":1}}]',
+  int_max: '[9007199254740991]', int_min: '[-9007199254740991]', int_over: '[9007199254740992]', leading_zero: '[01]', plus: '[+1]', e0: '[1e0]', minus_zero: '[-0]',
+  tiny: '[1e-400]', near_one: '[1.0000000000000001]', depth_32: '['.repeat(32) + ']'.repeat(32), depth_33: '['.repeat(33) + ']'.repeat(33),
+  depth_33_scalar: '['.repeat(32) + '1' + ']'.repeat(32), proto_key: '{"__proto__":{"x":1}}', int_keys: '{"10":1,"9":2,"1":3}',
+  empty_key: '{"":1}', u007f_u2029: '["\u007f\u2029"]', two_values: '[] []', bare_string: '"x"', bare_int: '7', empty: '', ws_only: ' ',
+})) RD(n, t);
+
+// §9.5 fatal UTF-8 (hex bytes in, then the reader).
+for (const [n, h] of Object.entries({ ok: '5b2278225d', overlong_slash: '5b22c0af225d', surrogate: '5b22eda080225d', beyond: '5b22f4908080225d', truncated: '5b22e282225d',
+  bom: 'efbbbf5b5d', lone_ff: '5bff5d', nul_escape: '5b225c7530303030225d' }))
+  P('utf8', n, h, res(() => jcs(strictJson(utf8Strict(hexToBytes(h))))));
+
+// §9.5 base64url and standard base64.
+for (const s of ['', 'AA', 'AB', 'A', 'AAA', 'AAB', 'AA==', 'A A', 'AA\n', '+/', '_-', 'AAAA', '____', '___'])
+  P('b64u', JSON.stringify(s), s, res(() => bytesToHex(fromB64u(s))));
+for (const s of ['', 'AA==', 'AB==', 'AA', 'AAA=', 'AAB=', 'A===', 'AA=A', '-_==', '+/+/', 'AAAA', ' AA==', 'AA==\n'])
+  P('b64', JSON.stringify(s), s, res(() => bytesToHex(fromB64(s))));
 
 // ---------------- JCS ----------------
 const jcsIn: Record<string, string> = {
@@ -41,7 +76,7 @@ const jcsIn: Record<string, string> = {
   lone: '["\\ud800"]', float: '[1.5]', exp: '[1e21]', big: '[12345678901234567890]', neg0: '[-0]', one_point_0: '[1.0]',
   keys_utf16: '{"\\ud83d\\ude00":1,"\\uffff":2,"a":3,"B":4}', nested: '{"b":{"d":1,"c":[true,null]},"a":"x"}',
 };
-for (const [n, t] of Object.entries(jcsIn)) P('jcs', n, t, res(() => jcs(JSON.parse(t))));
+for (const [n, t] of Object.entries(jcsIn)) P('jcs', n, t, res(() => jcs(strictJson(t))));
 
 // ---------------- BIP-340 ----------------
 const Pt = secp256k1.Point, N = Pt.Fn.ORDER;
@@ -137,6 +172,39 @@ D('kind 3 empty tag', 3, '', [[]]);
 D('kind 5 empty tag', 5, '', [[]]);
 D('kind 10002 empty tag', 10002, '', [[]]);
 D('kind 10002 "r" without a URL', 10002, '', [['r']]);
+// §5.8 with §9.5 (14.15): counting, targets, empty content, the whitespace set, kind 0 numbers.
+{
+  const t = 'a'.repeat(64);
+  D('kind 3 ["p"] is no tag', 3, '', [['p']]);
+  D('kind 3 ["p",""] counts', 3, '', [['p', '']]);
+  D('kind 3 content " "', 3, ' ');
+  D('kind 3 content "{}"', 3, '{}');
+  D('kind 30000 only d', 30000, '', [['d', 'x']]);
+  D('kind 5 one target six times', 5, '', Array.from({ length: 6 }, () => ['e', t]));
+  D('kind 5 e and a same value', 5, '', [['e', t], ['a', t], ['e', t], ['a', t], ['e', 'b'.repeat(64)]]);
+  D('kind 5 five distinct', 5, '', Array.from({ length: 5 }, (_, k) => ['e', String(k)]));
+  D('kind 5 one-element e tags', 5, '', Array.from({ length: 6 }, () => ['e']));
+  D('kind 5 burst with duplicates', 5, '', [['e', t], ['e', t]], 4);
+  D('kind 10002 WSS:// upper case', 10002, '', [['r', 'WSS://relay.example']]);
+  D('kind 10002 ws://', 10002, '', [['r', 'ws://relay.example']]);
+  for (const [n, c] of Object.entries({
+    'numbers by grammar only': '{"name":"x","n":1e999,"m":-0,"f":1.5,"b":123456789012345678901234567890}',
+    'bad number grammar': '{"name":"x","n":01}',
+    'escaped control character': '{"name":"\\u0001x"}',
+    'escaped lone surrogate elsewhere': '{"name":"x","about":"\\ud800"}',
+    'depth 33 elsewhere': '{"name":"x","deep":' + '['.repeat(32) + ']'.repeat(32) + '}',
+    'depth 32 elsewhere': '{"name":"x","deep":' + '['.repeat(31) + ']'.repeat(31) + '}',
+    'name of U+3000 U+00A0 U+FEFF U+2028': '{"name":"　 ﻿ "}',
+    'name of U+000B (escaped)': '{"name":"\\u000b"}',
+    'name of U+200B': '{"name":"​"}',
+    'name of U+3164': '{"name":"ㅤ"}',
+    'name of U+180E': '{"name":"᠎"}',
+    'name of U+0085': '{"name":"\u0085"}',
+    'name "."': '{"name":"."}',
+    'BOM before': '﻿{"name":"x"}',
+    'an array': '[{"name":"x"}]',
+  })) D(`kind 0 ${n}`, 0, c);
+}
 
 // ---------------- lifetimes ----------------
 for (const t of ['delta', 'paper_ck', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack', 'pair_request', 'cancel', 'unknown_x'])

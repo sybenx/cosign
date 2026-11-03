@@ -93,14 +93,20 @@ object Approvals {
         val c = list.getJSONObject(k)
         when {
             c.has("redeal") -> JSONObject().put("redeal", JSONObject().put("dealer", c.getJSONObject("redeal").getString("dealer")))
-            c.has("paper") -> { val p = c.getJSONObject("paper"); val o = JSONObject().put("key", p.getString("key")).put("replaces", p.getString("replaces"))
-                // JavaScript truthiness, as the reference: null, false, 0 and "" are dropped.
-                fun truthy(v: Any?) = v != null && v != JSONObject.NULL && v != false && v != "" && !(v is Number && v.toDouble() == 0.0)
-                if (truthy(p.opt("holders"))) o.put("holders", p.get("holders")); if (truthy(p.opt("heir"))) o.put("heir", p.get("heir")); JSONObject().put("paper", o) }
+            // A paper is approved without `inner` and `state`; every other field stays (§6.7.2).
+            c.opt("paper") is JSONObject -> { val p = c.getJSONObject("paper"); val o = JSONObject()
+                for (k in p.keySet()) if (k != "inner" && k != "state") o.put(k, p.get(k)); JSONObject().put("paper", o) }
             else -> c
         }
     })
     fun hash(list: JSONArray) = Codes.listHash(Jcs.of(placeholder(list)))
+    /** §9.5's comparison form: JCS bytes, an add's absent `lock` counting as `"lock": null`. */
+    fun key(c: Any?): String {
+        val a = (c as? JSONObject)?.opt("add") as? JSONObject
+        if (a == null || a.has("lock")) return Jcs.of(c)
+        val a2 = JSONObject(); for (k in a.keySet()) a2.put(k, a.get(k)); a2.put("lock", JSONObject.NULL)
+        val c2 = JSONObject(); for (k in (c as JSONObject).keySet()) c2.put(k, if (k == "add") a2 else c.get(k)); return Jcs.of(c2)
+    }
     fun detached(type: String, g: String, body: Any) = sha(utf8("keykin-$type/1"), unhex(g), utf8(Jcs.of(body)))
     fun shape(list: JSONArray) {
         need(list.length() > 0, "bad_list", "empty")
@@ -187,8 +193,8 @@ object Membership {
         val list = c.optJSONArray("list") ?: refuse("bad_list", "empty"); Approvals.shape(list)
         need(Jcs.of(Approvals.placeholder(list)) == Jcs.of(list), "bad_list", "the list is carried in its placeholder form")
         val ch = c.getJSONObject("change")
-        val ph = Jcs.of(Approvals.placeholder(JSONArray().put(ch)).getJSONObject(0))
-        need((0 until list.length()).any { Jcs.of(list.get(it)) == ph }, "bad_list", "the change is not in its list")
+        val ph = Approvals.key(Approvals.placeholder(JSONArray().put(ch)).getJSONObject(0))
+        need((0 until list.length()).any { Approvals.key(list.get(it)) == ph }, "bad_list", "the change is not in its list")
         val type = Approvals.type(ch)
         need(type != "unknown", "bad_change", "exactly one change")
         fun k32(v: Any?) = need(isHex(v, 32), "malformed")
@@ -202,7 +208,7 @@ object Membership {
             "lock" -> { val l = ch.getJSONObject("lock"); k32(l.opt("member")); need(isLock(l.opt("new")), "bad_change", "lock")
                 need(l.has("replaces") && (l.isNull("replaces") || l.get("replaces") is String), "bad_change", "replaces") }
             "seat" -> { val st = ch.getJSONObject("seat"); val id = st.opt("seat") as? String ?: refuse("bad_change", "no such seat")
-                val m = Regex("^server:(\\d+)$").matchEntire(id); val servers = ints(seats.getJSONArray("servers"))
+                val m = Regex("^server:(0|[1-9][0-9]*)$").matchEntire(id); val servers = ints(seats.getJSONArray("servers"))
                 need((m != null && m.groupValues[1].toLong() in servers) || id == "helper", "bad_change", "no such seat")
                 if (st.has("new") && !st.isNull("new")) { val e = st.getJSONObject("new"); k32(e.opt("key"))
                     val sh = e.optJSONArray("shares")
@@ -266,8 +272,8 @@ object Membership {
         pending.forEach { refused += safeCheck(authority(), it) ?: "malformed" }
         // A list takes effect only whole (core 14.3).
         for ((_, ps) in accepted.filter { it.list.length() > 1 }.groupBy { it.listHash }) {
-            val got = ps.map { Jcs.of(Approvals.placeholder(JSONArray().put(it.change)).getJSONObject(0)) }.toSet()
-            if ((0 until ps[0].list.length()).all { Jcs.of(ps[0].list.get(it)) in got }) continue
+            val got = ps.map { Approvals.key(Approvals.placeholder(JSONArray().put(it.change)).getJSONObject(0)) }.toSet()
+            if ((0 until ps[0].list.length()).all { Approvals.key(ps[0].list.get(it)) in got }) continue
             ps.forEach { accepted.remove(it); refused += "list_incomplete" }
         }
         // A fresh redeal never abandons one that travelled with a remove (§6.7.1).
@@ -307,8 +313,9 @@ object Membership {
         val adds = LinkedHashMap<String, MutableList<Pair<Long, List<Long>>>>(); val addLocks = HashMap<String, String>()
         for (p in accepted.filter { it.type == "add" }) {
             val a = p.change.getJSONObject("add"); val k = a.getString("key"); val salt = a.getLong("salt"); val idx = Codes.deviceIndices(g, epoch, k, salt)
-            val lockJ = Jcs.of(a.opt("lock")); val prev = adds.getOrPut(k) { mutableListOf() }
-            if (prev.none { it.first == salt && addLocks["$k:$salt"] == lockJ }) { prev += salt to idx; addLocks["$k:$salt"] = lockJ }
+            // The same add is JCS-equal as a whole (§9.5); two different adds of one key void it.
+            val same = Approvals.key(JSONObject().put("add", a)); val prev = adds.getOrPut(k) { mutableListOf() }
+            if (prev.indices.none { addLocks["$k:$it"] == same }) { addLocks["$k:${prev.size}"] = same; prev += salt to idx }
             idx.forEach { claim(it, k) }
         }
         val voidAdds = HashSet<String>()

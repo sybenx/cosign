@@ -15,8 +15,11 @@ fun main(args: Array<String>) {
     for (k in 0 until probes.length()) {
         val p = probes.getJSONObject(k); val i = p.get("input")
         val r: Any = when (p.getString("area")) {
-            "event_id" -> res { eventId(Event.of(JSONObject(i as String))) }
-            "jcs" -> res { Jcs.of(JSONTokener(i as String).nextValue()) }
+            "event_id" -> res { val o = Json.obj(i as String); eventId(Event.shape(o.put("id", "0".repeat(64)), "rumor")) }
+            "jcs" -> res { Jcs.of(Json.parse(i as String)) }
+            "utf8" -> res { Jcs.of(Json.parse(Json.utf8Strict(unhex(i as String)))) }
+            "b64u" -> res { hex(b64d(i as String)) }
+            "b64" -> res { hex(b64std(i as String)) }
             "schnorr" -> { val o = i as JSONObject; res { schnorrVerify(o.getString("sig"), unhex(o.getString("msg")), o.getString("pub")) } }
             "lock" -> { val o = i as JSONObject; res { checkAssertion(o.getString("g"), o.getString("pub"), o.getString("rp"), unhex(o.getString("what")), o.getJSONObject("assertion")) } }
             "destructive" -> { val o = i as JSONObject; val t = o.getJSONArray("tags"); res { Rules.destructive(o.getInt("kind"), o.getString("content"), (0 until t.length()).map { strsOf(t.getJSONArray(it)) }, o.getInt("recent")) } }

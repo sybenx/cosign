@@ -55,15 +55,13 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
         if ((0 until cs.length()).map { cs.getJSONObject(it).getLong("i") }.sorted() != s.shares.sorted()) refuse("bad_commitments")
         (0 until cs.length()).forEach { point(cs.getJSONObject(it).getString("D")); point(cs.getJSONObject(it).getString("E")) }
         // §5.7 items 4, 5, 7.
-        val ev = msg.getJSONObject("event")
-        if (ev.optString("pubkey") != g) refuse("wrong_pubkey")
-        val kind = ev.getInt("kind"); val createdAt = ev.getLong("created_at")
-        val tags = ev.getJSONArray("tags").let { t -> (0 until t.length()).map { k -> val a = t.getJSONArray(k); (0 until a.length()).map { a.getString(it) } } }
+        val e = wire(msg)
+        val kind = e.kind; val createdAt = e.createdAt; val tags = e.tags; val ev = msg.getJSONObject("event")
         if (!Rules.futureOk(kind, createdAt - now())) refuse("dated_ahead")
         if (kind == 30242) refuse("machinery")
         if (kind == 24302) { val c = try { Json.obj(ev.getString("content")) } catch (_: Exception) { refuse("not_a_change") }
             if ((c.optJSONArray("list")?.length() ?: 0) > 1) refuse("list_in_one_request"); refuse("unsupported_change") }
-        val evId = eventId(Event("", g, createdAt, kind, tags, ev.getString("content"), ""))
+        val evId = e.id
         if (Rules.destructive(kind, ev.getString("content"), tags)) {
             val l = msg.optJSONObject("approval")?.optJSONObject("lock") ?: refuse("needs_approval")
             val lock = s.lock ?: refuse("needs_approval")
@@ -77,11 +75,17 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
         return JSONObject().put("v", 1).put("type", "partial").put("re", msg.getString("id"))
             .put("commitments", JSONArray().put(JSONObject().put("i", index).put("D", mine.d).put("E", mine.e))).put("z", JSONArray().put(JSONObject().put("i", index).put("z", z)))
     }
+    /** §9.5: exactly the six fields, `id` included and recomputed. */
+    private fun wire(msg: JSONObject): Event {
+        val e = Event.shape(msg.opt("event") as? JSONObject ?: refuse("malformed", "event"), "cosign")
+        if (e.pubkey != g) refuse("wrong_pubkey")
+        if (eventId(e) != e.id) refuse("malformed", "the event id differs from its fields")
+        return e
+    }
     private fun ecdh(from: String, msg: JSONObject): JSONObject { if (sender(from).kind != "device") refuse("not_device"); refuse("unsupported") }
     private fun hold(from: String, msg: JSONObject): JSONObject {
         if (sender(from).kind != "device") refuse("not_device")
-        val ev = msg.getJSONObject("event"); if (ev.optString("pubkey") != g) refuse("wrong_pubkey")
-        val wait = Codes.holdWaitId(eventId(Event.of(ev.put("id", "").put("sig", ""))))
+        val wait = Codes.holdWaitId(wire(msg).id)
         val end = holds.getOrPut(wait) { now() + 3 * 86400 }
         return JSONObject().put("v", 1).put("type", "notice").put("re", msg.getString("id")).put("kind", "hold").put("wait", wait).put("end", end)
     }

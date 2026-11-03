@@ -8,7 +8,7 @@ import { approveLock } from '../src/approval.ts';
 import { what, stateHash } from '../src/codes.ts';
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
 import { scalarHex } from '../src/curve.ts';
-import { newKey } from '../src/event.ts';
+import { newKey, wireEvent } from '../src/event.ts';
 import type { Change } from '../src/types.ts';
 
 const F = fixture();
@@ -21,7 +21,8 @@ const S = new CoSigner({ me: F.servers[0].kp, host: F.servers[0].host, kind: 'se
   state: { ids: new Set(), C: F.commitment, shares: new Map([[4, F.servers[0].share]]) } });
 const ctx = { g: F.g, epochId: F.epochId, state: stateHash([]), C: F.commitment };
 const dev = { indices: [1, 2, 3], shares: A.shares };
-const note = (x: any = {}) => ({ pubkey: F.g, created_at: now, kind: 1, tags: [], content: 'hi', ...x });
+// Events as a coordinator sends them (§9.5): the six fields, id included.
+const note = (x: any = {}) => wireEvent({ pubkey: F.g, created_at: now, kind: 1, tags: [], content: 'hi', ...x });
 const req = (ev: any, extra: any = {}) => new OneCall(ctx, dev, { key: F.servers[0].kp.pub, indices: [4] }, ev, extra).request;
 const steps: { name: string; from: string; sent_at: number; request: any; expect: string }[] = [];
 const run = (name: string, from: string, request: any, sentAt = now) => {
@@ -42,7 +43,7 @@ run('signers not the participants', A.kp.pub, { ...req(note()), signers: [1, 2, 
 run('a third participant', A.kp.pub, { ...req(note()), signers: [1, 2, 3, 4, 7] });
 const rc = req(note()); run('a commitment missing', A.kp.pub, { ...rc, commitments: rc.commitments.slice(1) });
 run('stale state', A.kp.pub, { ...req(note()), state: stateHash([bytesToHex(randomBytes(16))]) });
-run('wrong pubkey', A.kp.pub, { ...req(note()), event: { ...note(), pubkey: newKey().pub } });
+run('wrong pubkey', A.kp.pub, { ...req(note()), event: note({ pubkey: newKey().pub }) });
 run('replaceable dated ahead', A.kp.pub, req(note({ kind: 0, created_at: now + 601, content: '{"name":"x"}' })));
 run('note scheduled ahead', A.kp.pub, req(note({ created_at: now + 86400 })));
 run('epoch record is machinery', A.kp.pub, req(note({ kind: 30242, tags: [['d', 'keykin']] })));

@@ -463,6 +463,7 @@ export class CoSigner {
    *  recomputes the id. */
   private checkWire(ev: unknown) {
     eventShape(ev, 'cosign');
+    if ((ev as any).pubkey !== this.g) refuse('wrong_pubkey');
     if ((ev as any).id !== eventId(ev as Unsigned)) refuse('malformed', 'the event id differs from its fields');
   }
 
@@ -753,7 +754,7 @@ export class CoSigner {
     if (s.kind !== 'device') refuse('not_device');
     if (this.frozen(now)) refuse('frozen', 'a recovery is running');
     const ev: Unsigned = msg.event;
-    if (!ev || ev.pubkey !== this.g) refuse('wrong_pubkey');
+    this.checkWire(ev);
     const evId = eventId(ev), wait = holdWaitId(evId);
     const mine = [...this.holds.values()].filter((h) => h.device === from && !h.cancelled && h.end > now - SESSION_S);
     if (!this.holds.has(wait) && mine.length >= MAX_HOLDS) refuse('too_many_holds');

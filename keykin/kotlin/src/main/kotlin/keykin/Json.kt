@@ -1,31 +1,63 @@
-// The strict JSON profile (spec issue 45): RFC 8259 exactly, an object never names a key twice, and
-// strings and numbers serialised as JavaScript's JSON.stringify writes them (RFC 8785 for strings).
-// Parses into org.json values so the rest of the port can navigate them.
+// The JSON profile (core §9.5): RFC 8259 exactly, no key twice, integers spelled -?(0|[1-9][0-9]*) up to
+// 2^53 − 1, no lone surrogates or control characters but five (after escapes are undone), depth 32.
+// Parses into org.json values so the rest of the port can navigate them; writes by hand, never through
+// org.json (it writes `/` as `\/`).
 package keykin
 
 import org.json.JSONArray
 import org.json.JSONObject
-import java.math.BigDecimal
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 
 object Json {
-    fun parse(text: String): Any? { val p = P(text); p.ws(); val v = p.value(); p.ws(); if (p.i != text.length) refuse("malformed", "trailing text"); return v }
+    const val MAX_DEPTH = 32
+    private const val SAFE = 9007199254740991L
+
+    /** `grammar` is kind 0 content's reading: numbers are checked against the grammar only, never converted. */
+    fun parse(text: String, grammar: Boolean = false): Any? { val p = P(text, grammar); p.ws(); val v = p.value(1); p.ws(); if (p.i != text.length) refuse("malformed", "text after the value"); return v }
     fun obj(text: String): JSONObject = parse(text) as? JSONObject ?: refuse("malformed", "not an object")
 
-    private class P(val s: String) {
+    /** Fatal UTF-8: overlong forms, encoded surrogates and values past U+10FFFF are refused; a BOM is kept,
+     *  so the reader refuses it. */
+    fun utf8Strict(b: ByteArray): String = try {
+        Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(b)).toString()
+    } catch (_: CharacterCodingException) { refuse("malformed", "invalid UTF-8") }
+
+    /** Why a string breaks §9.5, or null. */
+    fun fault(s: String): String? {
+        var k = 0
+        while (k < s.length) {
+            val c = s[k]
+            if (c < ' ' && c != '\b' && c != '\t' && c != '\n' && c != '\u000c' && c != '\r') return "contains control character U+%04X".format(c.code)
+            if (Character.isHighSurrogate(c)) { if (k + 1 < s.length && Character.isLowSurrogate(s[k + 1])) { k += 2; continue }; return "contains a lone surrogate" }
+            if (Character.isLowSurrogate(c)) return "contains a lone surrogate"
+            k++
+        }
+        return null
+    }
+
+    private class P(val s: String, val grammar: Boolean) {
         var i = 0
         fun ws() { while (i < s.length && s[i] in " \t\n\r") i++ }
-        fun value(): Any? {
-            if (i >= s.length) refuse("malformed", "end")
+        fun value(depth: Int): Any {
+            if (depth > MAX_DEPTH) refuse("malformed", "nested deeper than $MAX_DEPTH")
+            if (i >= s.length) refuse("malformed", "unexpected end")
             return when (s[i]) {
-                '{' -> { i++; val o = JSONObject(); val seen = HashSet<String>(); ws()
+                '{' -> { i++; ws(); val o = JSONObject(); val seen = HashSet<String>()
                     if (s.getOrNull(i) == '}') { i++; return o }
-                    while (true) { ws(); if (s.getOrNull(i) != '"') refuse("malformed", "key"); val k = str(); if (!seen.add(k)) refuse("malformed", "duplicate key")
-                        ws(); if (s.getOrNull(i) != ':') refuse("malformed", ":"); i++; ws(); o.put(k, value() ?: JSONObject.NULL); ws()
-                        when (s.getOrNull(i)) { ',' -> i++; '}' -> { i++; return o }; else -> refuse("malformed", ",") } } ; @Suppress("UNREACHABLE_CODE") o }
-                '[' -> { i++; val a = JSONArray(); ws()
+                    while (true) {
+                        if (s.getOrNull(i) != '"') refuse("malformed", "a key")
+                        val k = str(); if (!seen.add(k)) refuse("malformed", "the key \"$k\" twice")
+                        ws(); if (s.getOrNull(i) != ':') refuse("malformed", "\":\""); i++; ws(); o.put(k, value(depth + 1)); ws()
+                        when (s.getOrNull(i)) { ',' -> { i++; ws() }; '}' -> { i++; return o }; else -> refuse("malformed", "\",\" or \"}\"") }
+                    }
+                    @Suppress("UNREACHABLE_CODE") o }
+                '[' -> { i++; ws(); val a = JSONArray()
                     if (s.getOrNull(i) == ']') { i++; return a }
-                    while (true) { ws(); a.put(value() ?: JSONObject.NULL); ws()
-                        when (s.getOrNull(i)) { ',' -> i++; ']' -> { i++; return a }; else -> refuse("malformed", ",") } } ; @Suppress("UNREACHABLE_CODE") a }
+                    while (true) { a.put(value(depth + 1)); ws()
+                        when (s.getOrNull(i)) { ',' -> { i++; ws() }; ']' -> { i++; return a }; else -> refuse("malformed", "\",\" or \"]\"") } }
+                    @Suppress("UNREACHABLE_CODE") a }
                 '"' -> str()
                 't' -> lit("true", true); 'f' -> lit("false", false); 'n' -> lit("null", JSONObject.NULL)
                 else -> num()
@@ -33,70 +65,59 @@ object Json {
         }
         fun lit(w: String, v: Any): Any { if (!s.startsWith(w, i)) refuse("malformed", "literal"); i += w.length; return v }
         fun num(): Any {
-            val m = Regex("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?").matchAt(s, i) ?: refuse("malformed", "number")
+            val m = NUM.matchAt(s, i) ?: refuse("malformed", "unexpected \"${s[i]}\"")
             i += m.value.length
-            val d = BigDecimal(m.value)
-            // An integral value is an integer, however it is written (1.0 is 1), as JavaScript sees it.
-            return try { d.toBigIntegerExact().let { if (it.bitLength() < 63) it.toLong() else d } } catch (_: ArithmeticException) { d }
+            // Kind 0 content: the grammar only; the text itself stands in for the number.
+            if (grammar) return Grammar(m.value)
+            if (m.groups[2] != null || m.groups[3] != null) refuse("malformed", "the number ${m.value} is not an integer spelled -?(0|[1-9][0-9]*)")
+            if (m.value == "-0") refuse("malformed", "-0")
+            val n = m.value.toBigInteger()
+            if (n.abs() > SAFE.toBigInteger()) refuse("malformed", "the number ${m.value} is beyond 2^53 - 1")
+            return n.toLong()
         }
         fun str(): String {
             i++; val b = StringBuilder()
             while (true) {
-                if (i >= s.length) refuse("malformed", "string")
+                if (i >= s.length) refuse("malformed", "a string")
                 val c = s[i++]
                 when {
-                    c == '"' -> return b.toString()
-                    c == '\\' -> { val e = s.getOrNull(i++) ?: refuse("malformed", "escape")
+                    c == '"' -> { val v = b.toString(); fault(v)?.let { refuse("malformed", it) }; return v }
+                    c == '\\' -> { val e = s.getOrNull(i++) ?: refuse("malformed", "a string")
                         when (e) { '"' -> b.append('"'); '\\' -> b.append('\\'); '/' -> b.append('/'); 'b' -> b.append('\b'); 'f' -> b.append('\u000c')
                             'n' -> b.append('\n'); 'r' -> b.append('\r'); 't' -> b.append('\t')
-                            'u' -> { val h = s.substring(i, minOf(i + 4, s.length)); if (!Regex("[0-9a-fA-F]{4}").matches(h)) refuse("malformed", "\\u"); b.append(h.toInt(16).toChar()); i += 4 }
-                            else -> refuse("malformed", "escape") } }
-                    c < ' ' -> refuse("malformed", "control character in a string")
+                            'u' -> { val h = s.substring(i, minOf(i + 4, s.length)); if (!HEX4.matches(h)) refuse("malformed", "a string"); b.append(h.toInt(16).toChar()); i += 4 }
+                            else -> refuse("malformed", "a string") } }
+                    c < ' ' -> refuse("malformed", "a string")
                     else -> b.append(c)
                 }
             }
         }
     }
+    private val NUM = Regex("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")
+    private val HEX4 = Regex("[0-9a-fA-F]{4}")
+    /** A number in kind 0 content, kept as its text. */
+    data class Grammar(val text: String)
 
-    /** A string as JSON.stringify writes it: `"` and `\` escaped, control characters as \b \f \n \r \t
-     *  or \u00xx, lone surrogates as \udxxx, everything else raw. */
-    fun str(v: String): String = buildString {
-        append('"')
-        var k = 0
-        while (k < v.length) {
-            val ch = v[k]
-            when {
-                ch == '"' -> append("\\\""); ch == '\\' -> append("\\\\")
-                ch == '\n' -> append("\\n"); ch == '\r' -> append("\\r"); ch == '\t' -> append("\\t")
-                ch == '\b' -> append("\\b"); ch == '\u000c' -> append("\\f")
-                ch < ' ' -> append("\\u%04x".format(ch.code))
-                Character.isHighSurrogate(ch) && k + 1 < v.length && Character.isLowSurrogate(v[k + 1]) -> { append(ch); append(v[k + 1]); k++ }
-                Character.isSurrogate(ch) -> append("\\u%04x".format(ch.code))
-                else -> append(ch)
+    /** A string as NIP-01 ids and JCS write it (§9.5): `"` and `\` escaped, the five as \b \t \n \f \r,
+     *  everything else raw. What the profile refuses is refused here too, never escaped. */
+    fun str(v: String): String {
+        fault(v)?.let { refuse("malformed", it) }
+        return buildString {
+            append('"')
+            for (ch in v) when (ch) {
+                '"' -> append("\\\""); '\\' -> append("\\\\"); '\n' -> append("\\n"); '\r' -> append("\\r"); '\t' -> append("\\t")
+                '\b' -> append("\\b"); '\u000c' -> append("\\f"); else -> append(ch)
             }
-            k++
+            append('"')
         }
-        append('"')
     }
-    /** An integer as JSON.stringify writes a safe integer; anything else is refused in a Keykin body. */
-    private const val SAFE = 9007199254740991L
+    /** A safe integer; anything else is refused in a Keykin body. */
     fun num(v: Any): String {
-        val n: Long = when (v) {
-            is Int -> v.toLong(); is Long -> v
-            is Double -> if (v == Math.rint(v) && Math.abs(v) <= SAFE) v.toLong() else refuse("malformed", "numbers are safe integers")
-            is BigDecimal -> try { v.toBigIntegerExact().longValueExact() } catch (_: ArithmeticException) { refuse("malformed", "numbers are safe integers") }
-            else -> refuse("malformed", "number")
-        }
+        val n: Long = when (v) { is Int -> v.toLong(); is Long -> v; else -> refuse("malformed", "numbers are safe integers") }
         if (Math.abs(n) > SAFE) refuse("malformed", "numbers are safe integers")
         return n.toString()
     }
-    /** An integer as JavaScript sees one: 1.0 is 1. Only safe integers count. */
     fun isInt(v: Any?) = intOrNull(v) != null
     fun long(v: Any?): Long = intOrNull(v) ?: refuse("malformed", "not an integer")
-    private fun intOrNull(v: Any?): Long? = when (v) {
-        is Int -> v.toLong(); is Long -> v.takeIf { Math.abs(it) <= SAFE }
-        is Double -> v.takeIf { it == Math.rint(it) && Math.abs(it) <= SAFE }?.toLong()
-        is BigDecimal -> try { v.toBigIntegerExact().longValueExact().takeIf { Math.abs(it) <= SAFE } } catch (_: ArithmeticException) { null }
-        else -> null
-    }
+    private fun intOrNull(v: Any?): Long? = when (v) { is Int -> v.toLong(); is Long -> v.takeIf { Math.abs(it) <= SAFE }; else -> null }
 }

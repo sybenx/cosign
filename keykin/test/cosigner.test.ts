@@ -7,7 +7,7 @@ import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ecdhRequest, ecdhFinish } from '../src/coordinator.ts';
 import { approveLock, approvePair } from '../src/approval.ts';
 import { what, stateHash, detachedDigest, holdWaitId } from '../src/codes.ts';
-import { newKey, schnorrSign, verifyEvent } from '../src/event.ts';
+import { newKey, schnorrSign, verifyEvent, wireEvent } from '../src/event.ts';
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
 import { mul, liftX, xOnly } from '../src/curve.ts';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -24,7 +24,7 @@ function server(F: Fixture, k = 0, changes: any[] = []) {
 }
 const ctx = (F: Fixture) => ({ g: F.g, epochId: F.epochId, state: S0, C: F.commitment });
 const dev = (F: Fixture) => ({ indices: [1, 2, 3], shares: F.devices[0].shares });
-const note = (F: Fixture, extra: any = {}) => ({ pubkey: F.g, created_at: clock, kind: 1, tags: [], content: 'hello', ...extra });
+const note = (F: Fixture, extra: any = {}) => wireEvent({ pubkey: F.g, created_at: clock, kind: 1, tags: [], content: 'hello', ...extra });
 const ask = (S: CoSigner, F: Fixture, from: string, req: any, sentAt = clock) => S.handle(from, req, sentAt);
 
 test('case 1: one-call round, device (3) + server (1); BIP-340 under g', () => {
