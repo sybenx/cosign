@@ -185,6 +185,18 @@ test('F3, every server dead: pair approval, co-signed by a second device, seats 
   assert.ok(verifyEvent(await acc.A.sign({ content: 'new servers' })));
   assert.ok(verifyEvent(await B.sign({ content: 'new servers, B' })));
 });
+test('need_seeds: a device gives seeds to a current device (data key too) or a seat server (release only), and says so', async () => {
+  const acc = await create();
+  const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
+  const { unwrap } = await import('../src/transport.ts');
+  const a = await acc.bus.send(B.kp, acc.A.kp.pub, { type: 'need_seeds' });
+  const o = unwrap(B.kp.sk, a.wrap).body;
+  assert.ok(o.release.length >= 1 && o.base_dk === acc.A.baseDk);
+  const s = await acc.bus.send(acc.servers[0].kp, acc.A.kp.pub, { type: 'need_seeds' });
+  assert.equal(unwrap(acc.servers[0].kp.sk, s.wrap).body.base_dk, undefined, 'a server never gets the data key');
+  assert.equal((await acc.bus.send(acc.paper, acc.A.kp.pub, { type: 'need_seeds' })).code, 'not_member');
+  assert.equal(acc.A.notices.filter((n) => n.kind === 'need_seeds').length, 2);
+});
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';

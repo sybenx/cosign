@@ -241,6 +241,8 @@ export class DeviceNode implements Node {
   joiner: Joiner | null = null; inviter: Inviter | null = null;
   pendingSigmas: { from: string; index: number; sigma: string; state: string }[] = [];
   wiped = false;
+  /** Security displays this device owes its person (§1.1 item 8). */
+  notices: { kind: string; member: string }[] = [];
   /** A device's own destructive policy (Device policy module): here, always yes. */
   policy = (_e: Unsigned, _f: string) => true;
   bus: Transport; name: string;
@@ -439,6 +441,16 @@ export class DeviceNode implements Node {
         case 'repair_finish': return this.repair.finish(this.kp, body, stateOf(this.state!), body.seal_to);
         case 'change': this.takeChanges(body.events); return { type: 'ack' };
         case 'delta_push': this.takeDelivery(body.wrap); this.applyAll(); return { type: 'ack' };
+        case 'need_seeds': {
+          // §6.7.4: data-key and release seeds to a current device; release seeds only to a current
+          // seat server; never to a helper, the backup or a removed key. Every answer is a notice
+          // ("*Laptop* caught up", with Report lost, §1.1 item 8).
+          const asker = this.m!.members.get(from);
+          if (!asker || this.m!.removed.has(from) || !['device', 'server'].includes(asker.kind)) return { type: 'error', code: 'not_member' };
+          const seeds = { release: [...this.seeds], ...(asker.kind === 'device' ? { dk: this.dkSeeds, base_dk: this.baseDk } : {}) };
+          this.notices.push({ kind: 'need_seeds', member: from });
+          return { type: 'seeds', wrap: wrap(this.kp.sk, from, { type: 'seeds', ...seeds }) };
+        }
         default: return this.co!.handle(from, body, sentAt);
       }
     } catch (e) { return { type: 'error', re: body?.id, code: e instanceof KeykinError ? e.code : 'internal', detail: String(e) }; }
