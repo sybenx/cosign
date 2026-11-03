@@ -476,3 +476,60 @@ The lows are text fixes. M3 and M4 vanish with the beacon cut.
    which is already a stated limit. The beacon stays as a signpost for your paper. Recommended: yes.
 2. **If a paper ever misses a piece, the fix is printing a new paper.** No silent repair of the same
    paper; the app shows the Backup dot. Recommended: yes.
+
+---
+
+# After round 10 (core draft 10)
+
+Round 10 found **0 critical, 2 high, 7 medium, 5 low** (`keykin-core-redteam-10.md`), down from 6 high.
+
+The reviewer checked these numerically and found them sound:
+
+- same-index seats keep servers at 3 points in any state;
+- pieces from different states don't combine;
+- knowing `δ` allows exactly what §10 says;
+- concurrent redeals add up;
+- a lockless thief can make no Upkeep change;
+- liveness holds for a dead dealer and for one, two or every server dead.
+
+Patching stops under the rule. Both highs are local slips; nothing structural recurs. The proposal is to
+fix them, simplify two mechanisms, and run round 11.
+
+## Plain summary for the user
+
+The replacement design is nearly there.
+
+1. **A stolen phone without a lock could rewrite or delete the signpost**, the public note that tells
+   your paper where today's servers are. That would send a paper recovery to the wrong place.
+   **Fix:** a recovery treats the signpost only as a hint. It starts from the servers printed on the
+   paper, follows the group-signed seat changes, and every server refuses to co-sign a delete of the
+   signpost.
+2. **The helper plus a stolen paper could get the paper's pieces repaired to them with no wait.**
+   **Fix:** nobody ever answers a request to repair the paper's seat. The paper gets its pieces only
+   when it is made.
+
+Neither fix needs anything from you.
+
+## Simplifications in the same draft
+
+- **Step-back goes** (M1). A member that got ahead on a stranded redeal is brought forward instead.
+  Where fewer than 4 points hold the newer state, the app asks for a fresh redeal.
+- **`rerepair` is allowed for any redeal a current member lacks** (M2). The "never addressed to it" rule
+  could not be checked and protected nothing.
+- **Servers no longer fetch from peers before everyday signing** (M7). `stale` already covers it.
+
+## Other fixes
+
+- Check each paper item before applying the redeal, and keep a "verified" bit (M3).
+- An unexpected `self` remove of a phone makes devices offer a redeal (M4).
+- The dealer sends deltas and seeds only to the members of the post-change view (M5).
+- The redeal's co-signer fetches its peers first. F7's "destroy the old paper" check includes items sent
+  to the old paper, and the paper change's own redeal is exempt from the pending rule (M6).
+- The lows:
+  - name the base item's release seed;
+  - a helper leaves only by a seat change;
+  - dedupe seat candidates by host;
+  - §10 states what the public signpost reveals;
+  - small text fixes.
+
+No questions for the user.

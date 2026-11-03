@@ -178,3 +178,4 @@ because it describes the code during the freeze.
 - 2026-11-02 · User: kept the three Upkeep UI defaults (7-day calm card offering to move all servers; quiet dot on Backup; the user signs the public server list for now).
 - 2026-11-02 · Hub, under the user's standing rules (the user can overrule): **servers stop checking the beacon**; it becomes a paper-only signpost, published at creation and never deletable through a site grant.
 - 2026-11-02 · Hub, same basis: **a paper missing a piece is fixed by printing a new paper** (quiet dot on Backup), never by a silent same-key repair.
+- 2026-11-02 · Process: red-team round 10 (core draft 10) found 0 critical, 2 high (signpost rewritable by a lockless thief; helper + paper repairing the backup seat). Stopped; `simplification.md` (round 10 part) proposes local fixes plus dropping step-back and simplifying `rerepair`. No user questions.
