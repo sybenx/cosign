@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
+Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -28,20 +28,20 @@ hold:
   A site's many small edits can't push the pre-site version out of reach.
 - **A removal log** for each site and list: every item that site removed, with when, kept while the grant
   exists and 90 days after. Counting comes from this log, never from the kept versions, so a site can't
-  push its removals out of reach with no-op edits. The log also keeps the private items of each version it
-  has seen, decrypted once (§2).
+  push its removals out of reach with no-op edits.
 - **Metadata**: which **grant** `(by, id)` each event was signed for (never the self-claimed site name),
-  which grant made each list version, the pre-site and last-approved versions, the removal logs and
-  deletion counts. Entries are kept while their grant exists and 90 days after, then pruned. Each device
-  publishes it as **one cumulative snapshot per month**, signed by its member key, with a sequence
-  number; a higher number replaces that writer's earlier snapshot for the month, and only the current
-  month changes. It publishes at most once a minute, and at once before a judgement that depends on it.
+  which grant made each list version, the pre-site and last-approved versions, the removal logs,
+  deletion counts, and the hashes of ciphertexts the device encrypted and for which grant (Doors and grants
+  §1). Entries are kept while their grant exists and 90 days after, then pruned. Each device publishes it
+  as **one cumulative snapshot per month**, signed by its member key, with a sequence number **per writer
+  and month**; a higher number replaces that writer's earlier snapshot for the same month, and only the
+  current month changes. It publishes at most once a minute, and at once before a judgement that depends on it.
   A device accepts a snapshot only from a key that is a current device, and never one with a lower
   number than it has seen from that writer. So a removed device or the sync service can't forge it or roll
   it back, and out-of-order sync loses nothing.
 - **A device leaving by its own choice** (Remove this device, or a `self` remove, core §4.6) first merges
-  its metadata into the snapshot of the device that takes over or approves, and only then sends the
-  remove. Only a report-lost drops a device's metadata.
+  its metadata into the snapshot of the device that takes over or approves (if there is one), and only
+  then sends the remove. Only a report-lost drops a device's metadata.
 - History and metadata are encrypted at rest with an AEAD under a key derived from the data key and bound
   to `g`, and never sent to Keykin servers. Devices MAY sync them through a data service, which stores
   them encrypted.
@@ -55,18 +55,21 @@ Kinds, explicitly:
 | Profile | 0 |
 | Relay lists | 10002, 10050 |
 | Follow and mute lists | 3, 10000 |
-| Other lists and sets (NIP-51 and similar) | 10001, 10003–10030 (10019 is under wallets), 10063, 30000–30030, 39089 |
+| Other lists and sets (NIP-51 and similar), listed exactly | 10001, 10003, 10004, 10005, 10006, 10007, 10009, 10012, 10015, 10020, 10030, 10063, 10101, 10102; sets 30000, 30002, 30003, 30004, 30005, 30007, 30015, 30030, 39089. Articles (30023, 30024), badges and marketplace kinds are ordinary events |
 | Wallets and payments (NIP-60/61) | 17375, 37375, 7375, 7376, 7374, 10019 |
 | Everything else | not judged by this table (articles 30023, marketplace kinds, app data 30078 and the rest are ordinary events) |
 
 **Items.** An item is a tag's name plus its first value, with relay URLs normalised (lowercase host, no
 trailing slash). Relay hints, petnames and other later values don't count, and `d`, `title`,
 `description`, `image`, `alt` and `client` tags are not items. A list's **private items** (NIP-51
-content encrypted to the account's own key) are items too. The device uses the private items it already
-knows: plaintext it encrypted itself (or another device did, per the synced metadata) or decrypted before.
-It does at most one decryption round (core §5.5), only for a version it has never seen. New content that
-is empty, that it can't account for this way, or that doesn't decrypt to a NIP-51 tag array removes every
-private item. Kind 3's legacy relay JSON is not private content.
+content encrypted to the account's own key) are items too. The self conversation key is the same for
+every such list, so the device gets it with one `ecdh` round for the account's own key (core §5.5), keeps
+it **in memory only** for at most 10 minutes (as Doors and grants does), and decrypts old and new versions
+locally. New content that is empty, or that doesn't decrypt to a NIP-51 tag array, removes every private
+item. Kind 3's legacy relay JSON is not private content.
+
+**Expiring lists.** A device never signs, for a site, a judged kind with a NIP-40 `expiration` tag: relays
+would drop the list a moment later. It answers `declined:`.
 
 When several rows match, **the strictest wins**, except where a row says otherwise; no row ever wins over
 the core §5.8 row.
@@ -88,13 +91,13 @@ in the member app, and other sites', never count against a site.
 | Event | Level |
 |---|---|
 | Anything in core §5.8 (vanishing; a deletion of 5 or more targets or a burst; an emptied profile or list; a relay list with no relays) | **Held** |
-| A site leaving a list, set or the profile with **no items**, public or private, by any route: a deletion of its current version (an `a` target naming it, or an `e` target that is the newest version the device knows of, or newer), or a version with nothing left | **Held**, on the coordinator (co-signing devices use the core's literal test, since they can't decrypt) |
-| A site's change that removes **every** item of the reference, however few | **Confirm** |
+| A site deleting a list, set or the profile: an `a` target naming its current version, or an `e` target that is the newest version the device knows of, or newer | **Held** |
+| A site leaving a list or set with **no items**, public or private, in a new version, or removing **every** item of the reference, however few (for the profile, only the profile rows and core §5.8 apply) | **Confirm** |
 | A deletion of one ordinary event of the account (not of a judged kind), that the site signed itself, within its daily budget | Silent, after the **10-second Undo** (§3) |
 | A deletion of one ordinary event another site or the member app signed | **Confirm** |
 | A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
 | A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
-| A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope, at most 4 targets | Silent while the site has made at most 3 such deletions in 10 minutes; beyond that the device answers `try-later:` quietly and signs nothing (a newer token event already supersedes them). This row wins over the stricter rows of this table, never over core §5.8 |
+| A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 4 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count stays under the core's; **anything else gets a quiet `try-later:`**, never a card, and nothing is signed (a newer token event already supersedes them). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
 | New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
 | Wallet and mint settings (17375, 37375) changed, or the payment pubkey or mints in 10019 changed, by a site | **Confirm** |
 | Profile: 2 or more filled fields emptied (a whitespace-only value counts as empty); or `lud16`, `lud06` or `nip05` changed by a site | **Confirm** |
@@ -221,6 +224,18 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 7**, from its sixth red team (0 critical, 3 high):
+  - no NIP-40 `expiration` on judged kinds for a site (DP6-1);
+  - a wallet deletion that can't be silent gets a quiet `try-later:`, never a card (DP6-2);
+  - list kinds listed exactly, so articles and products are ordinary (DP6-3, Doors aligned).
+
+  The mediums and lows:
+  - the profile judged only by its rows and the core (DP6-4);
+  - one in-memory self conversation key decrypts every version (DP6-5, and the plaintext store dropped);
+  - sequence numbers per writer and month (DP6-6);
+  - encrypt records in the metadata (DP6-7);
+  - a list emptied by a new version is Confirm; only deleting it is Held (DP6-8);
+  - merge only when there is a device to merge into, and budgets per site (lows).
 - **Draft 6**, from its fifth red team (0 critical, 2 high):
   - removing every item of a small list is Confirm (DP5-1);
   - a per-site removal log, so no-op edits can't reset the count (DP5-2).
