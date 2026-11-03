@@ -179,7 +179,9 @@ An extension retiring in favour of the machine's desktop app uses the core's `se
 
 ## 3. Deleting the account
 
-**Delete my account** is in the account settings, never on a main screen. It is two separate acts.
+**Delete my account** is in the account settings, never on a main screen. It is two separate acts. If the
+account is a key family's master, it first says "This also ends your key families" and offers to warn
+the children's followers (Key families module §7).
 
 1. **Erase my posts** (optional, offered first): a request to vanish (NIP-62, kind 62, `["relay",
    "ALL_RELAYS"]`), Held like any vanish (core §5.8): the lock, or a 3-day hold. It erases everything the

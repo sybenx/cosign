@@ -165,7 +165,7 @@ The wildcard is also published in the ending device's event.
   listing and signing out.
 - The `keykin-` app-data prefix is guarded: a device never signs, on a site's request, a kind 30078 with
   a `d` starting with `keykin-`, or a kind 5 that targets one by `e` or `a`; nor any key-family kind
-  (1244–1247, Key families module) or a kind 5 aimed at one.
+  (1244–1247, Key families module), or a kind 5 aimed at one or at any kind 1040 the account authored.
 
 ## 3. The doors
 
