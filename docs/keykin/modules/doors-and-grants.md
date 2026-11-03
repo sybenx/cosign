@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 3 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.7 · not built
+Draft 3 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.8 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -38,7 +38,7 @@ a request needs by looking at what it is.
 | Scope | Lets the site | Asked |
 |---|---|---|
 | `sign-in` | `get_public_key`; relay auth (kind 22242), NIP-98 HTTP auth and Blossom auth (24242) | at connect |
-| `post` | ordinary events: notes, reactions, reposts, zap requests, deletions of its own events, articles, app data (kind 30078) except the `keykin-` prefix; and **encrypting** to the account's own key | at connect (default on) |
+| `post` | ordinary events: notes, reactions, reposts, zap requests, deletions (judged by Device policy), articles, app data (kind 30078) except the `keykin-` prefix; and **encrypting** to the account's own key | at connect (default on) |
 | `lists` | the profile (0); follows, mutes and other lists (3, 10000–10030 except 10019, 30000–30030); relay lists (10002, 10050); and decrypting the private items of those lists | the first time it tries |
 | `dms` | NIP-04/NIP-44 encrypt and decrypt **with other people's keys**, and NIP-59 unwrap | the first time: "Let *site* read and send your messages?" |
 | `wallet` | NIP-60/61 wallet events (17375, 37375, 7375, 7376, 7374), payment targets (10019), and decrypting them | the first time: "Let *site* use your ecash wallet?" |
@@ -49,8 +49,8 @@ a request needs by looking at what it is.
   ciphertext against the account's own events in its history. If the same ciphertext appears in events of
   several kinds, **the most private one wins** (`private-data`, then `wallet`, then `lists`). A ciphertext
   it can't match needs `private-data` (live finding #10).
-- **Its own events**, for deletions under `post`, are those the device's history metadata records as
-  signed for this site (Device policy §1).
+- **Deletions under `post`** may name any ordinary event of the account; Device policy judges them, silently
+  only for the site's own events (those its metadata records as signed for this site).
 - Destructive events are judged by the Device policy module, whatever the scopes.
 - Relay auth, NIP-98 and Blossom tokens a site gets signed are never accepted as authority by any Keykin
   endpoint.
@@ -169,7 +169,7 @@ digest. Android apps on the phone share the one member (core §4.6).
 - **Methods.** `connect`, `get_public_key`, `sign_event`, `nip04_*`, `nip44_*` (subject to scopes),
   `ping`, `switch_relays`, and `get_relays` where a client still calls it. A `logout` (where a client
   sends it) revokes the grant. Errors start with a stable code: `not-connected:`, `revoked:`,
-  `declined:`, `held:`, `unsupported:`.
+  `declined:`, `held:`, `try-later:`, `unsupported:`.
 - **Clients that assume the signer key is the user's key** don't work, and are told so by
   `get_public_key`'s answer being different from the signer key.
 

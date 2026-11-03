@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.7 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.8 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -26,10 +26,12 @@ hold:
 - **List versions:** for each list and the profile, the last 25 versions, **plus the version from just
   before each site's session started**, kept for as long as that site's grant exists and 90 days after.
   A site's many small edits can't push the pre-site version out of reach.
-- **Metadata** (which site made a version, pre-site versions, removal counts) is kept as entries each
-  **signed by the writing device's member key**, with a per-writer sequence number. A device accepts an
-  entry only from a key that is a current device, and never one with a lower sequence number than it has
-  seen from that writer. So a removed device or the sync service can't forge it or roll it back.
+- **Metadata**: which site each event was signed for, which site made each list version, the pre-site
+  and last-approved versions, and removal and deletion counts. Each device publishes it as **one
+  cumulative snapshot**, signed by its member key, with a sequence number; a higher number replaces that
+  writer's earlier snapshot. A device accepts a snapshot only from a key that is a current device, and
+  never one with a lower number than it has seen from that writer. So a removed device or the sync service
+  can't forge it or roll it back, and out-of-order sync loses nothing.
 - History and metadata are encrypted at rest with an AEAD under a key derived from the data key and bound
   to `g`, and never sent to Keykin servers. Devices MAY sync them through a data service, which stores
   them encrypted.
@@ -43,37 +45,50 @@ Kinds, explicitly:
 | Profile | 0 |
 | Relay lists | 10002, 10050 |
 | Follow and mute lists | 3, 10000 |
-| Other lists and sets (NIP-51) | 10001, 10003–10030 except 10002, 30000–30030 |
-| Wallets and payments (NIP-60/61) | 17375, 37375, 7375, 7376, 10019 |
+| Other lists and sets (NIP-51 and similar) | 10001, 10003–10030 (10019 is under wallets), 10063, 30000–30030, 39089 |
+| Wallets and payments (NIP-60/61) | 17375, 37375, 7375, 7376, 7374, 10019 |
 | Everything else | not judged by this table (articles 30023, marketplace kinds, app data 30078 and the rest are ordinary events) |
 
-"Items" are the tags other than `d`. When several rows match, **the strictest wins**.
+**Items.** An item is a tag's name plus its first value, with relay URLs normalised (lowercase host, no
+trailing slash). Relay hints, petnames and other later values don't count, and `d`, `title`,
+`description`, `image`, `alt` and `client` tags are not items. A list's **private items** (NIP-51
+content encrypted to the account's own key) are items too: the device decrypts the old and new content
+before judging (one decryption round, core §5.5). Content that goes from non-empty to empty, or that no
+longer decrypts, removes every private item.
+
+When several rows match, **the strictest wins**, except where a row says otherwise.
+
+**Deletions** count **distinct events**: an `e` and an `a` naming the same event are one target. Before
+judging a deletion, the device fetches each target it doesn't have from the account's relays, by id
+(checking `pubkey == g` and the signature), and judges it by what it is.
 
 **A site's removals.** For each list, the device counts a site's **net removals**: the items in the
 reference version that are missing now and that this site removed. The reference is the newer of the
-pre-site version (§1) and the version from 7 days ago. So many small cuts add up within a week, a
-reconnect doesn't reset anything, and ordinary unfollows spread over weeks never bring up a card. The
-count also resets when the person approves a Confirm card for that site and list. The person's own edits
+pre-site version (§1), the version from 7 days ago, and the version the person last approved on a
+Confirm card for that site and list. So many small cuts add up within a week, a reconnect doesn't reset
+anything, and ordinary unfollows spread over weeks never bring up a card. The person's own edits
 in the member app, and other sites', never count against a site.
 
 | Event | Level |
 |---|---|
 | Anything in core §5.8 (vanishing; a deletion of 5 or more targets or a burst; an emptied profile or list; a relay list with no relays) | **Held** |
 | A deletion (kind 5) of a judged kind's **current** version: an `a` target naming a list, set or profile, or an `e` target that is its newest version | **Held** (it wipes the list as surely as emptying it) |
-| A deletion with exactly one `e` target that is a known ordinary event of the account in history, not of a judged kind, within the site's daily budget | Silent, after the **10-second Undo** (§3) |
-| A site's 21st and later single deletion in a day (reference) | **Confirm** |
-| A deletion with 2–4 targets, or an `a` target, or a target the device can't find in its history, or any other target of a judged kind (an older version, a wallet or token event) | **Confirm** |
-| A NIP-60 spend: a site with the `wallet` scope publishes a token event (7375) whose `del` tags name spent tokens, then deletes exactly those tokens | Silent (an ordinary spend); the wallet defers and batches these deletions so they stay under the burst limit, which is harmless because the `del` tags already supersede them |
-| New token (7375) and history (7376) events by a site with the `wallet` scope | Silent |
+| A deletion of one ordinary event of the account (not of a judged kind), that the site signed itself, within its daily budget | Silent, after the **10-second Undo** (§3) |
+| A deletion of one ordinary event another site or the member app signed | **Confirm** |
+| A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
+| A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
+| A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent while the account's wallet deletions in 10 minutes stay at 3 events or fewer; beyond that the device answers `try-later:` quietly and signs nothing (a newer token event already supersedes them). This row wins over the stricter ones. Wallet deletions don't count towards the device's own burst count |
+| New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
 | Wallet and mint settings (17375, 37375) changed, or the payment pubkey or mints in 10019 changed, by a site | **Confirm** |
 | Profile: 2 or more filled fields emptied (a whitespace-only value counts as empty); or `lud16`, `lud06` or `nip05` changed by a site | **Confirm** |
 | Profile: `name`, `picture` or `about` replaced (not emptied) | Silent |
-| Follow, mute and other lists: a site's net removals reach **10 items, or 20%** of the reference | **Confirm** |
+| Follow, mute and other lists: a site's net removals, public and private, reach **10 items, or 20% of the reference and at least 5 items** | **Confirm** |
 | Relay lists: any relay removed by a site, or switched from write to read only | **Confirm** |
 | An Undo that removes items against the current version | judged like any change (§3) |
 
-**Bursts** use the core's numbers (more than 5 deletion targets in 10 minutes), counted per account from
-every deletion the device knows of.
+**Bursts** use the core's numbers (more than 5 deletion targets in 10 minutes), counted as the core
+counts them: only targets deleted without an approval, per account, from every deletion the device knows
+of, wallet deletions left out.
 
 **Confirm** shows one card on the device that is signing, in plain words ("Remove 12 of your 430
 follows?"), with Allow and Decline. No lock is needed, because servers would co-sign it anyway. A thief
@@ -88,17 +103,20 @@ hold (core §6.3), even on a device without a lock.
 **When a server asks for an approval.** The device runs the core's stateless §5.8 checks itself before
 signing, so it already knows which events need one.
 
-- For a **kind 5**, the server's burst count is something the device can't see, so the device trusts it
-  and shows the Held card.
-- For **anything else** the device's own §5.8 check passes, the device never shows a Held card because a
-  server asked. It tries the event with the next server instead, and stops using a server that keeps
-  doing this (Server profile §5: replaced through F4).
+- When a server demands an approval the device's own check doesn't explain, the device tries the next
+  server. It shows the Held card only when its own check (its burst count included) says so, or when
+  **two servers** demand it for the same event. (Servers count bursts per server, and the core already
+  accepts that spreading gives about three times as much, so this costs no security.)
+- A server that keeps demanding approvals no other server does is replaced through F4 (Server profile
+  §5).
 - It never retries the same event unchanged at a server that refused it.
 
 **Co-signing for another device.** A device asked to co-sign (not the coordinator) never prompts anyone,
 because nobody may be looking at it. It enforces only **Held**: for an event this table rates Held, it
 co-signs only with the coordinator's lock assertion over `"sign" ‖ event id`, or the hold's waited
-statements from two servers (core §6.3), and otherwise refuses with `needs-approval`. Confirm is the
+statements from two servers, carried in the `sign` request as `"waited": [<statement>, <statement>]` and
+checked as core §6.3 does (wait id `SHA-256("hold" ‖ event id)`, `end − start ≥ W`, within 7 days). Otherwise
+it refuses with `needs-approval`. Confirm is the
 coordinator's own job, because any coordinator could claim a Confirm. The coordinator MUST show its card
 before asking any other co-signer for that event, and never drops a co-signer's refusal by going to a
 server instead. A helper co-signing applies the same rule; it has no screen and never shows a card.
@@ -157,6 +175,7 @@ rebased: §4 applies to it.
   button (a lock, or two devices, core §6.3).
 - **Background notices** collapse per site ("Signed 4 notes for *Primal*").
 - **Duplicate alerts** from several servers about one wait are merged by wait id (core §8.2).
+- **Errors to sites** use the Doors and grants codes, `try-later:` included.
 
 ## 7. What this module does not do
 
@@ -174,9 +193,32 @@ rebased: §4 applies to it.
 - **Single deletions are silent** up to a site's daily budget, so a site can quietly delete 20 posts a
   day before a card appears.
 - **A device that missed the newest version** judges against an older one.
+- **A reported device's metadata is dropped**, so Undo for what happened on a stolen phone has no
+  pre-site reference; its grants are revoked anyway (Doors and grants §2).
 - **The thresholds are guesses** that real use will tune.
 
 ## Changes
+
+- **Draft 5**, from its fourth red team (0 critical, 4 high):
+  - private list items are items, so emptying or re-encrypting the content counts (DP4-1);
+  - core 13.8: a list with private content isn't "emptied" (DP4-2);
+  - wallet deletions are Silent within a small count, then quietly `try-later:` (DP4-3);
+  - 20% only from 5 items (DP4-4).
+
+  The mediums and lows:
+  - every kind tries another server first; Held needs the device's own check or two servers (DP4-5);
+  - core 13.8: §5.8's tests made exact (DP4-6);
+  - items are name and first value, with normalised URLs (DP4-7);
+  - unknown targets are looked up (DP4-8);
+  - distinct events, and only the site's own events silently (DP4-9, DP4-10);
+  - one cumulative signed snapshot per writer (DP4-11);
+  - a `waited` field (DP4-12);
+  - the burst counted as the core counts it (DP4-13);
+  - `try-later:` in Doors (DP4-14);
+  - a last-approved reference (DP4-15);
+  - core 13.8 wording for co-signers and drafts (DP4-16, DP4-17);
+  - the kind table (DP4-18, DP4-19);
+  - limits stated (DP4-20); the daily budget counted across devices (DP4-21).
 
 - **Draft 4**, from its third red team (0 critical, 2 high):
   - the device runs the §5.8 checks itself, and trusts a server's demand only for kind 5 bursts (DP3-1);

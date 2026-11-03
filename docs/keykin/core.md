@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.7 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.8 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -559,8 +559,9 @@ Every request carries `cls`. Each message type allows only some classes:
   or from the inbox's `age` (§8.2) if that is larger. It MUST refuse a request older than its lifetime
   plus 30 s, or dated more than 30 s ahead.
 - The **event's** `created_at` (when the person wrote it) never decides whether a request is fresh. A
-  draft written offline waits in the device's outbox, keeps its time, and is signed with a fresh `sign`
-  request when the device is online again.
+  draft written offline waits in the device's outbox, keeps its time (except a replaceable draft that
+  Device policy rebases with a fresh time), and is signed with a fresh `sign` request when the device is
+  online again.
 - A receiver MUST remember `(sender, id)` until the request's lifetime has passed, and treat a second
   request with it by §5.3. Servers MUST keep these across restarts. A server MAY cap them per member
   (reference: 10,000), refusing new requests from that member when full rather than forgetting old ids.
@@ -588,7 +589,7 @@ Before giving a partial, a co-signer MUST check that:
 7. the stateless destructive rule (§5.8).
 
 A device co-signing for another device-class member also applies its own destructive policy (Device
-policy module) and asks the person when that says to.
+policy module) and refuses when that says to; it never prompts, because nobody may be looking at it.
 
 ### 5.8 The stateless destructive rule
 
@@ -602,9 +603,13 @@ co-signer and any retry), **or** a passed hold:
   past 5 deletion targets co-signed by this server without approval in the last 10 minutes (a burst;
   reference numbers, counted per account at each server, no history kept; a thief spreading deletions
   over three servers gets about three times that, still far less than a stolen nsec allows);
-- kind 0 whose content is `{}` or has no non-empty `name`, `display_name`, `about` or `picture`;
-- kind 3, 10000–10030 or 30000–30030 with no tags other than `d`;
-- kind 10002 with no `r` tags.
+- kind 0 whose content has no non-empty `name`, `display_name`, `about` or `picture`;
+- kind 3, 10000–10030 or 30000–30030 with no tags other than `d` **and an empty `content`**;
+- kind 10002 with no `r` tag whose value starts with `wss://` or `ws://`.
+
+These tests are exact: kind 0's content is parsed as a JSON object, and content that isn't one, or has a
+duplicate key, counts as empty; a field is non-empty only if it is a string with a non-whitespace
+character.
 
 **Holding** is a wait (§6.3) on `{"hold": <event id>}`: the device sends `hold {event}`; servers start a
 wait and tell every member and channel; after `W` the device sends `sign` with `hold: <wait id>` and a
@@ -1709,9 +1714,9 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
 
-## Changes in drafts 13.2 to 13.7
+## Changes in drafts 13.2 to 13.8
 
 Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
-and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7).
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8).
