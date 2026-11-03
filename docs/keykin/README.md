@@ -10,8 +10,8 @@ password manager. Every rule must beat that on security **and** on ease of use.
 
 | File | What it is | Status |
 |---|---|---|
-| [core.md](core.md) | Keykin Core, draft 8.4: the short core spec | **Passed red-team round 8** (no critical or high problems), but **not the deliverable without structural change** (user, 2026-11-02). |
-| [core.md §4.6](core.md) | One member per machine (a desktop app is the machine's member; extensions relay to it) | Reviewed: 0 critical, 2 high (handover gaps), verdict keep. Fixes applied in 8.4; quick re-check below. |
+| [core.md](core.md) | Keykin Core, draft 8.5: the short core spec | **Passed red-team round 8** (no critical or high problems), but **not the deliverable without structural change** (user, 2026-11-02). |
+| [core.md §4.6](core.md) | One member per machine (a desktop app is the machine's member; extensions relay to it) | Reviewed: 0 critical, 2 high (handover gaps), verdict keep. Fixes applied in 8.4; re-check clean, folded into 8.5. |
 | [refresh.md](refresh.md) | "Refresh now", the ceremony for changing servers, helper and paper | **Required; redesign in progress.** Draft 3's red team found 1 critical and 2 high problems. The user unparked it: structural change must work. The hub's design panel is choosing the approach. |
 | [vectors/](vectors/) | Test vectors: `gen_vectors.py` produces `vectors.json` (computed); `vectors.md` lists the behaviour cases | Computed vectors done. Behaviour cases need a reference implementation to fill in expected outputs. |
 | [interop-plan.md](interop-plan.md) | How to test compatibility: nak must pass, plus a top set chosen by use (Primal, Amethyst, nostr-tools/NDK, Damus) | Plan only. |
@@ -35,6 +35,7 @@ of sessions, not in the repo.
 | 8 | core 8 + refresh 2 | 0 | 0 in the core (3 in refresh) |
 | refresh only | refresh 3 | 1 | 2 → redesign |
 | machine rule | core 8.3 §4.6 | 0 | 2 → fixed in 8.4 |
+| machine re-check | core 8.4 §4.6 | 0 | 0 → passes (8.5) |
 
 ## Open by design
 

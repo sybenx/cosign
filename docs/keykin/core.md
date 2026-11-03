@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 8.4 · 2026-11-02 · `draft` `optional` · not built
+Draft 8.5 · 2026-11-02 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -199,7 +199,8 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
 - **A device's current lock** is the lock in the epoch record (or in the add that brought it in),
   followed along lock changes: a lock change applies when its `replaces` is the device's current lock
   (`null` when it has none). If two lock changes replace the same lock, both are void and the device
-  is lockless until it makes another lock change. Lock changes are approved only by `pair` or
+  is lockless until it makes another lock change, which names `replaces: "void:<id of one voided
+  change>"`. Two lock changes with the same `new` lock count as one. Lock changes are approved only by `pair` or
   `paper` (§6.2).
 - **Indices without coordination.** An added device's three indices are
   `2^16 + (int(SHA-256("keykin-index/1" ‖ g ‖ epoch id ‖ key ‖ salt ‖ j)[0..4], big-endian) mod 2^30)`
@@ -381,29 +382,36 @@ wire change.
   machine SHOULD NOT join as a second member. It connects to the account the way a site does (a grant
   through the member, Doors module), or the person installs the desktop app.
 - **The app registers a native-messaging host.** An extension checks for it before acting as a member.
-  If it finds the app, it does not join; if it already is the member, it **hands its membership over**:
+  If it finds the app, it does not join; if it already is the member, it **hands its membership over**,
+  after finishing or abandoning any round, join, pair session or hold it has in flight:
   1. It passes **everything a `welcome` carries** (§4.2 step 4) to the app over native messaging: the
      member key and shares, the epoch record and the set of changes, the release key, the backup
      material and the data key, plus its site grants and its history.
-  2. The app stores all of it durably, reloads it from storage, checks `s_i·G == P_i` for every share
-     against the epoch record, and only then confirms.
+  2. The app stores all of it durably, reloads it from storage, runs the full checks of §3.4 on the
+     epoch record and changes, checks that the member key is a current device holding exactly those
+     indices and that `s_i·G == P_i` for every share, registers its own push addresses (replacing the
+     extension's), and only then confirms.
   3. The extension then destroys its copy and becomes a relay.
 
   The membership doesn't change: same member key, same indices. So nothing in the account changes and
   no approval is needed. A copy that survives the handover (a crash between steps 2 and 3, a profile
   restored from a backup) is the same 3 shares twice, not 6 points. An app holds **one membership per
   account** and refuses a second handover for an account it already serves.
-- **Retiring an extension.** When an extension that holds a membership finds the app, it compares
-  first:
+- **Retiring an extension.** When an extension that holds a membership finds the app, it first asks
+  the app to sign a fresh challenge with the member key it claims and to re-run the share check. An app
+  reports only a membership that passed handover step 2 or join step 5 (§4.2). Then it compares:
   - if the app holds the **same** member key for the same `g`, the extension's copy is a leftover:
     it just deletes it locally and sends nothing;
-  - if the app holds a **different**, current member key for the same `g` (the app joined
-    separately, so the laptop is two members), the extension removes itself: a `remove` naming its own
-    key (§6.4);
+  - if the app holds a **different** member key for the same `g` that is a current device in the
+    extension's own view (the app joined separately, so the laptop is two members), the extension
+    removes itself (§6.4), and destroys its copy once a server has acknowledged the `remove`;
+  - if the extension's own key is already removed, it destroys its copy; if the app holds a removed
+    key, the app drops it and the extension hands over;
   - if the app serves no membership for this `g`, the extension hands over as above.
 
-  An extension never removes itself in any other case, so it can never remove the machine's only
-  member.
+  An extension never removes itself in any other case, nor while it is inviting the app to join, so it
+  can never remove the machine's only member. An app that is asked to take a handover again for the
+  same member key accepts it as a retry.
 - A lock belongs to the member app (Touch ID through the Secure Enclave). A handed-over membership has
   no lock until the app registers one by a lock change (§3.2).
 
@@ -642,7 +650,7 @@ second device or the paper. A helper never approves anything.
 | Add a `device` (§3.2) | `lock`, `pair` or `paper`; or `recovery` |
 | Re-register a device's lock (§3.2) | `pair` or `paper`; or `recovery` |
 | Report a `device` or `helper` lost (§6.4) | `lock`, `pair` or `paper`; or `recovery` |
-| A device removes itself (§6.4) | its own member key's signature |
+| A device removes itself (§6.4) | `self` (its own member key's signature) |
 | "Refresh now" (servers, helper, paper, locks, relays, data and release keys) | `lock`, `pair` or `paper`; or `recovery` (`refresh.md`) |
 | Export a child key (§6.6) | `lock`, `pair` or `paper` |
 | Remove or replace a notice channel (§8.1) | `lock`, `pair` or `paper` |
@@ -675,8 +683,9 @@ second device or the paper. A helper never approves anything.
 
 - A change `{"remove": <key>}` names a `device` or a `helper`, with its approval (§6.2). A lockless
   single device cannot report another; the person uses a second device or the paper.
-- **A device may always remove itself**: a `remove` naming its own key, approved by its own member key's
-  detached signature, needs nothing else. It is how an extension retires in favour of its machine's
+- **A device may always remove itself**: a `remove` naming its own key, with the approval
+  `"self": { "member": <key>, "sig": … }` (a detached signature over `"keykin-self/1" ‖ g ‖ change
+  hash`), needs nothing else. A server co-signs it only while that key is a current device. It is how an extension retires in favour of its machine's
   app (§4.6), and a thief gains nothing by it.
 - The change goes to every server and every device as a delivery (§7.1). From the moment a member has
   it, servers MUST refuse every round with the removed member and drop its push addresses, and devices
@@ -943,7 +952,13 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 - **Local software on a member's machine** that runs as the person can read an extension's stored
   shares, fake the native-messaging host at a handover, and see the requests an extension relays. That
   is 3 points and the account's traffic on that machine, the same as for an nsec stored there, which
-  is the bar.
+  is the bar. A desktop app keeps its shares in the OS keychain, which other programs can't read
+  silently on macOS; but a local program that can reach the app's native-messaging host can ask it to
+  sign for any site the app has a grant for. So the host's manifest lists only Keykin extension IDs in
+  `allowed_origins`, the app accepts only a browser-launched host it has checked, and grants are per
+  browser, profile and origin. Windows and Linux can't authenticate the caller as well as macOS can.
+  Browsers that can't reach a native host (Flatpak or Snap, some managed policies) leave a second
+  member if the app joins separately; the app's join screen asks about an existing extension.
 - **A stolen device plus one dishonest server** is 4 points: if the device's shares can be extracted,
   that is the key itself, offline and for good.
 - **A stolen device with no lock plus one honest server** can sign everyday events, and overwrite lists
@@ -1119,3 +1134,10 @@ everything a `welcome` does plus grants and history, committed in a set order (s
 confirm, then delete) with no test round; and an extension removes itself only when the app holds a
 *different* current member key for the same account, so a leftover copy can never remove the
 machine's only member. An app also holds one membership per account.
+
+## Changes in draft 8.5
+
+From the re-check of §4.6 (no critical or high): the extension checks the app's membership with a
+fresh challenge and its own view before deleting or retiring; the handover runs the full §3.4 checks,
+finishes in-flight work first and moves push registration; a `self` approval for self-removal; lock-change
+retries after a void; §10 on the desktop app's native-messaging host and browsers that can't reach it.
