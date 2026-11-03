@@ -17,12 +17,14 @@ import { KIND_EPOCH, type Approval, type Change, type EpochContent, type MemberE
 import { Bus, type Transport } from './bus.ts';
 import { DeviceNode, ServerNode, PaperHolder } from './nodes.ts';
 
+let seq = 0;
+export interface Net extends Transport { add(n: any): any }
 export interface Account { bus: Bus; A: DeviceNode; servers: ServerNode[]; paper: KeyPair; g: string; epochId: string }
 
 /** §11.2 import: the device deals an nsec it holds into shares, signs the epoch record with it, welcomes
  *  the servers and the paper, then forgets the nsec. */
-export function create(o: { lockless?: boolean } = {}): Account {
-  const bus = new Bus();
+export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise<Account> {
+  const bus = (o.net ?? new Bus()) as Bus;
   const A = bus.add(new DeviceNode(bus, 'A', o.lockless ? null : softLock())) as DeviceNode;
   const servers = [4, 7, 8].map((_, k) => bus.add(new ServerNode(bus, `S${k + 1}`)) as ServerNode);
   const paper = newKey();
@@ -43,7 +45,10 @@ export function create(o: { lockless?: boolean } = {}): Account {
     Uint8Array.from(Buffer.from(scalarHex(d.secret), 'hex'))) as NostrEvent;
   A.adopt(recEv, [], { ids: new Set(), C: d.commitment, shares: new Map([1, 2, 3].map((i) => [i, d.shares.get(i)!])) });
   A.seeds.set('base', baseSeed); A.base = base; A.baseDk = baseDk;
-  servers.forEach((s, k) => s.welcome({ recEv, changes: [], state: [], share: [[4, 7, 8][k], d.shares.get([4, 7, 8][k])!], seeds: [['base', baseSeed]], items: [], base }));
+  for (const [k, s] of servers.entries()) {
+    const a = await bus.send(A.kp, s.kp.pub, { type: 'seat_welcome', w: { recEv, changes: [], state: [], share: [[4, 7, 8][k], scalarHex(d.shares.get([4, 7, 8][k])!)], seeds: [['base', baseSeed]], items: [], base } });
+    if (a?.type !== 'ack') refuse(a?.code ?? 'welcome_failed', a?.detail);
+  }
   d.shares.clear();                                                   // the dealer forgets everything but A's own shares
   return { bus, A, servers, paper, g, epochId };
 }
@@ -51,7 +56,7 @@ export function create(o: { lockless?: boolean } = {}): Account {
 /** Invite a new device (§4.2), invite direction. `approve` makes the add's approval. Returns the joined device. */
 export async function invite(acc: Account, inviter: DeviceNode, approve: (list: Change[]) => Approval, o: { lock?: boolean; via?: number; racer?: boolean } = {}): Promise<DeviceNode> {
   const { bus } = acc;
-  const B = bus.add(new DeviceNode(bus, `D${bus.nodes.size}`, o.lock ? softLock() : null)) as DeviceNode;
+  const B = bus.add(new DeviceNode(bus, `D${++seq}`, o.lock ? softLock() : null)) as DeviceNode;
   inviter.inviter = new Inviter({ g: inviter.g, m: inviter.kp.pub, now: bus.now });
   const code = parseCode(inviter.inviter.invite(inviter.rec!.relays)) as any;
   B.joiner = new Joiner({ n: B.kp.pub, lock: B.lock?.pub ?? null, now: bus.now, scanned: code });
@@ -81,13 +86,14 @@ export async function invite(acc: Account, inviter: DeviceNode, approve: (list: 
  *  at the new state by the device and one live server (§6.7.6). */
 export async function replaceServer(acc: Account, dev: DeviceNode, oldIdx: number, approve: (list: Change[]) => Approval): Promise<ServerNode> {
   const { bus } = acc;
-  const Y = bus.add(new ServerNode(bus, `Y${bus.nodes.size}`)) as ServerNode;
+  const Y = bus.add(new ServerNode(bus, `Y${++seq}`)) as ServerNode;
   const old = dev.m!.seats.get(`server:${oldIdx}`)!.holder;
   const list: Change[] = [{ seat: { seat: `server:${oldIdx}`, new: Y.entry(oldIdx), replaces: old?.key ?? null } }, { redeal: { dealer: dev.kp.pub } }];
   const signed = await dev.submit(list, approve(list), { deliverTo: [...dev.servers().map((s) => s.key), Y.kp.pub, ...(old ? [old.key] : [])] });
   void signed;
   // The newcomer's welcome (no share yet), then `need_repair` answered by the device and a live server.
-  Y.welcome({ recEv: dev.recEv!, changes: dev.changes, state: [...dev.state!.ids], seeds: [...dev.seeds].filter(([k]) => k), items: dev.items, base: dev.base! });
+  const wa = await bus.send(dev.kp, Y.kp.pub, { type: 'seat_welcome', w: { recEv: dev.recEv!, changes: dev.changes, state: [...dev.state!.ids], seeds: [...dev.seeds], items: dev.items, base: dev.base! } });
+  if (wa?.type !== 'ack') refuse(wa?.code ?? 'welcome_failed', wa?.detail);
   const helper = dev.servers().find((s) => s.key !== Y.kp.pub && bus.alive(s.key))!;
   const sigmas = await dev.repairFor([{ key: dev.kp.pub, indices: [...dev.state!.shares.keys()] }, { key: helper.key, indices: helper.shares }], oldIdx, Y.kp.pub, 'seat');
   await bus.send(dev.kp, Y.kp.pub, { type: 'seat_fill', sigmas, state: [...dev.state!.ids] });

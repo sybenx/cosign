@@ -6,7 +6,7 @@ import type { KeyPair, NostrEvent } from '../src/event.ts';
 
 export interface Node { kp: KeyPair; handle(from: string, body: any, sentAt: number): any }
 /** What nodes send through: the in-memory Bus here, or runtime/relay.ts over real relays. */
-export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any): Promise<any>; kill?(pub: string): void }
+export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any, o?: { timeoutMs?: number }): Promise<any>; kill?(pub: string): void }
 
 export class Bus implements Transport {
   now: number;

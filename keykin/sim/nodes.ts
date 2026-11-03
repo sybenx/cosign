@@ -65,12 +65,12 @@ export class ServerNode implements Node {
   entry(idx: number): MemberEntry { return { key: this.kp.pub, kind: 'server', shares: [idx], host: this.host.pub, operator: 'op', own: false, https: `https://${this.name}.test`, relays: ['wss://r.test'] }; }
 
   /** A seat holder's welcome (§6.7.4): record, changes, state, release seeds, material, and the share if repaired already. */
-  welcome(w: { recEv: NostrEvent; changes: NostrEvent[]; state: string[]; share?: [number, bigint]; seeds: [string, string][]; items: Item[]; base: Item }) {
+  welcome(w: { recEv: NostrEvent; changes: NostrEvent[]; state: string[]; share?: [number, string]; seeds: [string, string][]; items: Item[]; base: Item }) {
     this.recEv = w.recEv;
     this.rec = checkEpochRecord(w.recEv, { g: w.recEv.pubkey });
     const m = computeMembership(this.rec, w.changes);
     const C = commitmentAt(commitmentFrom(this.rec.commitment), [...m.redeals.values()].filter((x) => w.state.includes(x.r.id)).map((x) => x.r));
-    const shares = new Map(w.share ? [w.share] : []);
+    const shares = new Map<number, bigint>(w.share ? [[w.share[0], scalarFrom(w.share[1])]] : []);
     if (w.share) checkOwnShares(this.rec.g, shares, C, false);
     this.co = new CoSigner({ me: this.kp, host: this.host, kind: 'server', now: () => this.now, record: this.rec, changes: [...w.changes],
       state: { ids: new Set(w.state), C, shares }, upkeep: (p, mm) => this.upkeep(p, mm) });
@@ -96,8 +96,8 @@ export class ServerNode implements Node {
     let c: any; try { c = JSON.parse(ev.content); } catch { return; }
     const r = c?.change?.redeal; const u = r && this.uploads.get(r.id);
     if (!u) return;
-    for (const s of [...postListView(this.m, c.list).values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub)) {
-      const a = await this.bus.send(this.kp, s.key, { type: 'upload_status', redeal: r.id });
+    for (const s of [...postListView(this.m, c.list).values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub && !this.quietSince(x.key))) {
+      const a = await this.bus.send(this.kp, s.key, { type: 'upload_status', redeal: r.id }, { timeoutMs: 2500 });
       if (a?.held) u.held.add(s.key);
     }
   }
@@ -106,10 +106,15 @@ export class ServerNode implements Node {
   async catchUp() {
     if (!this.co) return;
     for (const s of [...this.m.members.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub)) {
-      const a = await this.bus.send(this.kp, s.key, msg('changes_get', this.rec!.g, this.rec!.epoch.id, 'ask'));
-      if (a?.type === 'changes') this.takeChanges(a.changes);
+      if (this.quietSince(s.key)) continue;
+      const a = await this.bus.send(this.kp, s.key, msg('changes_get', this.rec!.g, this.rec!.epoch.id, 'ask'), { timeoutMs: 2500 });
+      if (a?.type === 'changes') { this.quiet.delete(s.key); this.takeChanges(a.changes); }
+      else if (a?.code === 'unreachable') this.quiet.set(s.key, this.now);
     }
   }
+  /** Peers that have not answered: skipped for an hour (§6.3, §7.1), then tried again. */
+  quiet = new Map<string, number>();
+  quietSince(k: string) { const t = this.quiet.get(k); return t !== undefined && this.now - t < 3600; }
 
   takeChanges(evs: NostrEvent[]) {
     this.co!.addChanges(evs);

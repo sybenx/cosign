@@ -14,7 +14,7 @@ import type { Change } from '../src/types.ts';
 const code = async (f: () => unknown) => { try { await f(); return 'ok'; } catch (e: any) { return e.code ?? e.message; } };
 
 test('create and sign: device + first server; a dead server falls through to the next', async () => {
-  const acc = create();
+  const acc = await create();
   const e = await acc.A.sign({ content: 'gm' });
   assert.ok(verifyEvent(e)); assert.equal(e.pubkey, acc.g);
   acc.bus.kill(acc.servers[0].kp.pub);
@@ -23,7 +23,7 @@ test('create and sign: device + first server; a dead server falls through to the
 });
 
 test('add a device by lock; the new device signs with another server and co-signs for A', async () => {
-  const acc = create();
+  const acc = await create();
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
   assert.ok(acc.servers.every((s) => s.m.devices.has(B.kp.pub)));
   assert.ok(verifyEvent(await B.sign({ content: 'from B' })));
@@ -36,7 +36,7 @@ import * as coord from '../src/coordinator.ts';
 function awaitImport() { return coord; }
 
 test('report lost by lock: [remove, redeal]; everyone moves to the new state; the lost device is refused', async () => {
-  const acc = create();
+  const acc = await create();
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
   const before = new Map(acc.A.state!.shares);
   const list: Change[] = [{ remove: B.kp.pub }, { redeal: { dealer: acc.A.kp.pub } }];
@@ -52,7 +52,7 @@ test('report lost by lock: [remove, redeal]; everyone moves to the new state; th
 });
 
 test('a lockless single device cannot report another, but pair with a second device can', async () => {
-  const acc = create({ lockless: true });
+  const acc = await create({ lockless: true });
   const P = acc.paper;
   const ch = (await acc.bus.send(acc.A.kp, acc.servers[0].kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'))).challenge;
   const B = await invite(acc, acc.A, (l) => approvePaper(acc.g, acc.epochId, l, acc.bus.now + 3600, acc.A.kp, P, ch, acc.servers[0].host.pub));
@@ -68,7 +68,7 @@ test('a lockless single device cannot report another, but pair with a second dev
 });
 
 test('server replacement via Upkeep (F1): same share value at the same index; signing never stops', async () => {
-  const acc = create();
+  const acc = await create();
   const S3 = acc.servers[2];
   const oldShare = S3.co!.state.shares.get(8)!;
   acc.bus.kill(S3.kp.pub);
@@ -87,7 +87,7 @@ test('server replacement via Upkeep (F1): same share value at the same index; si
 });
 
 test('report lost with every server: the redeal reaches a device asleep through its inbox', async () => {
-  const acc = create();
+  const acc = await create();
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
   const C = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
   acc.bus.kill(B.kp.pub);                      // B asleep
@@ -100,7 +100,7 @@ test('report lost with every server: the redeal reaches a device asleep through 
 });
 
 test('paper recovery after a redeal: wait, release, recovery join, report the lost phone, redeal', async () => {
-  const acc = create();
+  const acc = await create();
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
   const list: Change[] = [{ remove: B.kp.pub }, { redeal: { dealer: acc.A.kp.pub } }];
   await acc.A.submit(list, acc.A.approveLock(list));             // a redeal: the paper must catch up through its item
@@ -114,7 +114,7 @@ test('paper recovery after a redeal: wait, release, recovery join, report the lo
 });
 
 test('a recovery wait cancelled by a locked device stops the release', async () => {
-  const acc = create();
+  const acc = await create();
   const s = acc.servers.map((x) => x.kp.pub);
   const { PaperHolder } = nodes;
   const P = new PaperHolder(acc.bus, acc.paper, acc.g, acc.epochId, s);
@@ -129,7 +129,7 @@ import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';
 
 test('concurrent changes: two adds by two devices, delivered in different orders, give one membership', async () => {
-  const acc = create();
+  const acc = await create();
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l), { lock: true });
   const C = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
   const D = await invite(acc, B, (l) => B.approveLock(l), { via: 1 });
@@ -151,7 +151,7 @@ test('concurrent changes: two adds by two devices, delivered in different orders
 });
 
 test('a dealer dying before the co-sign changes nothing; inert uploads expire', async () => {
-  const acc = create();
+  const acc = await create();
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
   const list: Change[] = [{ remove: B.kp.pub }, { redeal: { dealer: acc.A.kp.pub } }];
   await acc.A.submit(list, acc.A.approveLock(list), { dieAfterUpload: true });
@@ -162,7 +162,7 @@ test('a dealer dying before the co-sign changes nothing; inert uploads expire', 
 });
 
 test('a server down during the redeal catches up by rerepair, with a proof at its old state', async () => {
-  const acc = create();
+  const acc = await create();
   const S2 = acc.servers[1];
   acc.bus.kill(S2.kp.pub);
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
@@ -194,7 +194,7 @@ test('a server down during the redeal catches up by rerepair, with a proof at it
 });
 
 test('one host cannot be repaired into two seats; the backup seat is never repaired by need_repair', async () => {
-  const acc = create();
+  const acc = await create();
   const S1 = acc.servers[0];
   assert.match(await code(async () => await acc.A.repairFor([{ key: acc.A.kp.pub, indices: [1, 2, 3] }, { key: S1.kp.pub, indices: [4] }], 5, acc.paper.pub, 'seat')), /backup_seat/);
   assert.match(await code(async () => await acc.A.repairFor([{ key: acc.A.kp.pub, indices: [1, 2, 3] }, { key: S1.kp.pub, indices: [4] }], 99999, acc.paper.pub, 'seat')), /not_assigned/);
