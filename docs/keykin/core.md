@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.7 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.8 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -849,7 +849,8 @@ A round with no device-class member (I4) happens only in a recovery session.
    release seeds of its state, the epoch record, the set of changes, the backup material and its waited
    statement (`release`). Members serve the material only to members, or in a release after the wait.
 4. The holder checks the material's base against the pinned hash and the backup key's signature,
-   opens it, adds the paper deltas of exactly the redeals in the servers' current state, and checks
+   opens it (a base made by F7 is wrapped under the release seed of the redeal in that `paper` change's
+   own list, found by the list hash), adds the paper deltas of exactly the redeals in the servers' current state, and checks
    the sum against `P_b^S` (§6.7.6 F11).
 5. For 7 days after its own wait ended (the **recovery session**), each server takes part, in the
    two-call form (§5.1), in rounds of the backup plus two servers: but only for a recovery join (§4.4)
@@ -938,9 +939,11 @@ They are changes of §3.2 (kind 24302, group-signed, valid in any order).
     it).
   - Two seat changes for one seat with the same `new`, or with the same host under different member keys,
     count as one (the lower list hash's `new` wins; the losing member key goes into `removed`). Otherwise, with different `new`, both are void and
-    the seat stays empty until a `void:<id>` reseat. Two seat changes that would put **one host in two
-    seats at once** (as current holders) are both void too; a host that held a seat before may hold
-    another later (I7).
+    the seat stays empty until a `void:<id>` reseat. Two seat changes for **different seats** with the
+    same `new.host` are both void, and both `new` keys go into `removed`, **unless** one of them names in
+    `replaces` a holder that the other one's seat chain had already replaced (so the host moved, rather
+    than holding two seats at once). This depends only on the changes themselves, so every member reaches
+    the same answer in any order; a host that held a seat before may hold another later (I7).
   - The helper leaves only by `seat helper→null`; a `remove` never names a seat holder.
   - Every key that stops being a seat's current holder, `replaces` or voided `new`, goes into `removed`,
     and gets the removal notice (§6.4).
@@ -1044,7 +1047,9 @@ Further rules:
   answer by repair at the seat's index and the current state: a device and a server, the helper and a
   server, two devices, or a device and the paper (so new servers can be filled even when every old one
   is dead). It always gives the same value. Each server answers it **once per key and index that
-  succeeded**: a repair whose sum fails the share check doesn't count, and the asker names the bad
+  succeeded**: success is the owner's `repair_ok {participant}`, sent to each helper after its share
+  checks; until a helper has it, the answer isn't used up. A repair whose sum fails the share check
+  doesn't count, and the asker names the bad
   helper so the next try uses another. Repair
   helpers refuse a host that already holds another seat in their view, so concurrent seat lists can't
   repair one host into two seats.
@@ -1251,12 +1256,20 @@ Pinned from the reference implementation (batch 2):
   - `need_repair`: the seat's current holder, or a current device filling that seat;
   - `rerepair`: the index's owner, with its proof.
 
-  Repair requests carry `participant` (the asker), `seal_to` (the owner's key), `why` (the change that
-  makes it the owner) and `state`.
+  Repair requests carry `participant` (the index being repaired), `seal_to` (its owner's key), `why` (the
+  change that makes it the owner), `state` and `helpers` (each helper's member key and indices); for F7,
+  the `[paper, redeal]` list and its approval; for `rerepair`, `{challenge, state, proof: {i, R, z}}`.
+- **A helper checks the helper list against its own view** before it computes anything: every entry is a
+  current member listing exactly its own indices, the helper itself is among them, nobody appears twice,
+  the list is worth at least 4, and neither the index's new owner nor the backup (outside its recovery
+  session) is a helper. Otherwise a device could list a server's index as its own and receive every
+  delta that server makes.
 - **`rerepair` proof:** Schnorr over `e = H("keykin-rerepair/1" ‖ g ‖ owner key ‖ i (4 bytes) ‖ P_i^{S_old}
   ‖ R ‖ challenge)`, with a challenge the server issued to that owner.
-- **Challenges** are bound to the key they were issued to (for a `paper` approval, the backup key) and
-  are used once per request id: a retry of the same request may reuse it, a new request may not.
+- **Challenges** are bound to the key they were issued to (for a `paper` approval, the backup key). A
+  `paper` challenge is used once **per list hash**: it serves that list's co-sign and, for F7, the repair
+  towards K under the same approval, and a retry of the same list may reuse it. Other challenges are used
+  once per request id.
 - **A list is co-signed in one request.** Every event of a list travels in one `sign` request
   (`list_events`), each with **its own** nonce commitments from the coordinator; the co-signer answers
   with one commitment pair and one partial per event and index (in the two-call form, `commit {count}`
@@ -1455,6 +1468,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `hold` | device → servers | 5.8 |
 | `helper_stop` / `helper_resume` | device → servers | 5.7 |
 | `kept_done` | device → devices (delivery) | 4.3 |
+| `repair_ok` | new owner → repair helpers | 6.7.4 |
 | `pair_request` / `pair_sign` | first device → second device (via `deliver`) / back | 6.2 |
 | `change` | any member → members (a signed change) | 3.2 |
 | `changes_get` / `changes` | member → server / back | 3.2 |
@@ -1942,3 +1956,11 @@ From the red team of 14.2 to 14.5 (0 critical, 1 high) and Helper's fifth:
 - A helper seat change clears only the stop counters it names; stop counters are capped (M4).
 - Helper rounds are never dated ahead.
 - `kept_done` is in the message table.
+
+## Changes in draft 14.8
+
+From the reference implementation's batch 3 (items 28–33): `participant` is the index being repaired, and
+repair requests' fields; **a helper checks the helper list against its own view** (independent review 2
+reproduced a fourth point without it); `repair_ok` from the owner marks a `need_repair` as succeeded; a
+`paper` challenge is used once per list hash; which release seed opens an F7 base (§6.5 step 4); and
+"one host in two seats" decided by the changes alone (§6.7.2).
