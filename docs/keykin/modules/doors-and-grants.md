@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 12 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 13 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -114,32 +114,34 @@ for listing and re-sending. The wildcard is also published in the ending device'
   event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `"keykin-grant-set/1"
   ‖ g ‖ d ‖ created_at ‖ SHA-256(entries ‖ tombstones ‖ ended list)`. The maker publishes at `created_at = max(now,
   last + 1)`.
-- **Every home adopts its own newest event**: at start, at each 5-minute inbox fetch, before each publish
-  and before any takeover, it fetches its own newest grant event. It publishes to the account's recorded
-  relays plus its write relays, and **records which relays accepted** each publish (an `OK` for every part).
-  A publish counts only when at least two relays, and more than half, accept it; otherwise it is retried
-  and the old set kept. A fetch is good only when more than half of that set answer, at least two,
-  leaving out relays that failed 10 tries in a row over at least 24 hours (falling back to the account's
-  current relays if fewer than two remain). If none can be had, the device shows one quiet line: "Your relays
-  can't be reached; sites signed in here may be asked again." Until the first good fetch it waits up to 3
-  seconds for it, then answers grants made since its own last publish and gives other requests
-  `try-later:` (NIP-46 and NIP-07), retrying every 10 seconds. NIP-55 has no such answer, so there the
-  device answers from its own state at once. A restart of an extension's background worker, an Android
-  process or the iOS notification extension within 5 minutes of a good fetch doesn't count as a start. It never publishes after a failed fetch. It takes it over **only if it is newer than the home's own last publish**, and
-  then drops only entries **made before** that event that are missing from it; for each entry the higher
-  `v` wins (ties as below). So a restored or copied home stops answering an ended
-  grant within minutes and never republishes it, a stale relay copy changes nothing, and a grant made a
-  moment ago is never dropped.
+- **Publishing.** A home stores a change to its grants before it publishes it. It publishes to the account's
+  **recorded relays** (the epoch record's and seat changes' relays), records which accepted every part (an
+  `OK`), drops relays that refuse the event for good, and retries with back-off until more than half of the
+  rest accept (all of them, if there are only one or two). It also writes to its NIP-65 write relays, which
+  don't count.
+- **A browser extension that is the member adopts its own newest event**, because a browser profile can be
+  copied: at start, at each 5-minute inbox fetch and before each publish or takeover, it fetches its own
+  newest grant event. A fetch is good when more than half of the relays that accepted its last publish
+  answer, or, failing that, more than half of those plus the account's recorded relays. Until the first
+  good fetch it waits up to 3 seconds, then answers grants made since its last publish and gives other
+  requests `try-later:`, retrying every 10 seconds, and shows one quiet line if relays can't be reached. It
+  never publishes after a failed fetch. It takes the event over **only if it is newer than its own last
+  publish**, and then drops only entries **made before** that event that are missing from it; for each
+  entry the higher `v` wins (ties as below). A restart of the background worker within 5 minutes of a good
+  fetch doesn't count as a start. Apps on phones and the desktop app keep grants with their shares, which
+  no backup restores, so they skip this check.
 - **Grants are stored like shares** (core §7.3): grants, ended lists and signer keys are excluded from
-  restorable backups, so restoring a device from a backup brings back no grant. (A copied browser profile
-  is a copy of a member, as core §10 says.)
+  restorable backups, so restoring a device from a backup brings back no grant. An extension keeps them in
+  its local storage, never in browser sync storage. (A copied browser profile is a copy of a member, as
+  core §10 says, which the check above handles.)
 - **A grant that left its maker's event never comes back.** Each device's grant event keeps a compact
-  **ended list** (the 16-byte ids of its grants that ended, and for helper grants the signer key's hash).
-  Every device also keeps the **union** of all makers' ended lists, the welcome carries it, and a home
-  merges any ids it learns into its own before it publishes. An id is dropped once its grant would have
-  expired anyway. Any entry whose id is on its maker's ended list is a
-  resurrection: ignored everywhere, and the maker is sent a tombstone. Re-sends are batched: at most one
-  delivery per maker per day in the first week, then one a week, carrying them all. (A handover keeps the ids, so moved grants are no
+  **ended list** of `{id, until}` (the 16-byte ids of its grants that ended, and for helper grants the
+  signer key's hash; `until` is the grant's latest possible expiry plus 30 days, or never). Every device
+  also keeps the **union** of all makers' ended lists, the welcome's and handover's `grants` field carries
+  it, and a home merges the ids of **its own** grants it learns into its own list before it publishes. An
+  id is dropped after its `until`. Any entry whose id is in the union is a resurrection: ignored everywhere, and the maker is sent a tombstone. Re-sends are batched: at most one
+  delivery per maker per day in the first week, then one a week, carrying them all, and none while an
+  earlier one is unacknowledged. (A handover keeps the ids, so moved grants are no
   resurrection.)
 - **Tombstones** are kept until the maker's newest event no longer has the entry, and at least 30 days;
   for helper grants, until the helper's report no longer lists them. Each device also applies, for its own
@@ -368,6 +370,17 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 13**, from its twelfth red team (0 critical, 1 high):
+  - a fetch that finds no majority in the last set counts against it plus the account's recorded relays at
+    once, so one relay outage doesn't stall a restart (H1).
+
+  The mediums and lows:
+  - publishing counts only the recorded relays, drops refusing relays, and backs off (M1);
+  - the resurrection test uses the union, and homes merge only their own ids (M2);
+  - only a browser extension runs the start check; phone and desktop apps keep grants with their shares
+    and skip it, so NIP-55 needs no exception (M3);
+  - `{id, until}` with 30 days' slack, extension local storage only, re-sends paused while unacknowledged,
+    one-relay accounts (lows).
 - **Draft 12**, from its eleventh red team (0 critical, 2 high):
   - grants are stored like shares, excluded from backups; every device keeps the union of ended ids,
     carried in welcomes and merged before publishing (H1);
