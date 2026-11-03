@@ -2,6 +2,19 @@
 
 Draft 3 · 2026-11-02 · optional module of [Keykin Core](core.md) draft 8.1 · not built
 
+> **Parked (2026-11-02).** Its own red team on this draft (`keykin-refresh-redteam-2.md` in the shared
+> notes) found 1 critical and 2 high problems, all at the seams with the core:
+>
+> 1. members a refresh removes are never told, so a leaving server still counts a leaving helper and
+>    the two make 4 points;
+> 2. a late abort can race the commit and void a valid new paper;
+> 3. a dishonest partner can show members commitments it did not use.
+>
+> Fixing them needs new machinery: notifying and retiring leaving members, ordering aborts against
+> commits, and binding every confirmation to one commitment. Under the agreed stop rule it is parked,
+> and Keykin Core stands on its own. Core §10 says what an account without refresh cannot do. Pick
+> this up only after the core has been lived with.
+
 "Refresh now" is the one ceremony that changes an account's structure. It re-deals every share, so
 honest members' old pieces are destroyed and the new ones no longer combine with anything kept from
 before. That is what makes replacing a server safe. It also adds or removes a helper, prints a new

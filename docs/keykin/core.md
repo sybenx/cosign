@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 8.1 · 2026-11-02 · `draft` `optional` · not built
+Draft 8.2 · 2026-11-02 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -8,8 +8,9 @@ The key is split with FROST into weighted shares: each of the user's devices hol
 of your devices sign, and all the servers together never can.
 
 This document is the **core**: the smallest set of rules two independent implementations need to
-work together and keep the account safe. "Refresh now", the one ceremony that changes the account's
-structure, is in [`refresh.md`](refresh.md). Everything a person sees, and every other optional
+work together and keep the account safe. "Refresh now", the one ceremony meant to change the
+account's structure, is in [`refresh.md`](refresh.md), which is **parked** (§12): until it is
+reworked, an account keeps the servers, helper and paper it was created with (§10). Everything a person sees, and every other optional
 feature, lives in a module (§12). Sites change nothing: they keep using NIP-07, NIP-46, NIP-55 and
 the QRST signer-ticket, which the Doors module covers.
 
@@ -98,7 +99,8 @@ depends on a person seeing them:
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
    scanning it back or re-entering it (§4.3).
 
-`refresh.md` adds one more: before a refresh starts, that the person must destroy the old paper.
+`refresh.md` (parked) adds its own: when a refresh has finished, that the person must now destroy the
+old paper.
 
 ## 2. Who does what
 
@@ -634,7 +636,7 @@ second device or the paper. A helper never approves anything.
 - **What removal does not do.** The removed device's shares, the release key and the data key do not
   change. Every member refusing it is the protection (§10). "Refresh now" re-deals the shares, so the
   removed device's pieces no longer combine with any honest member's; apps SHOULD offer it after a
-  removal. What the removed device itself kept, it keeps (§10).
+  removal once it exists (it is parked, §12). What the removed device itself kept, it keeps (§10).
 
 ### 6.5 Recovery
 
@@ -653,8 +655,9 @@ A round with no device-class member (I4) happens only in a recovery session.
 5. For 7 days after its own wait ended (the **recovery session**), each server takes part, in the
    two-call form (§5.1), in rounds of the backup plus two servers: but only for a recovery join (§4.4),
    changes approved by `recovery` (§6.2), and a refresh. Not ordinary events.
-6. The new device then runs "Refresh now" (`refresh.md`), which makes a new paper with a **new backup
-   key**; the recovery app destroys the old backup's shares and the release bundle.
+6. The recovery app then destroys the backup's shares and the release bundle. The paper stays the
+   same: a new paper needs "Refresh now", which is parked (§12). Once refresh exists, the new device
+   runs it to make a new paper with a **new backup key**.
 
 So a stolen paper needs two servers that each take part after their wait, with every device told.
 
@@ -863,6 +866,12 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 
 **What does not, said plainly.**
 
+- **While "Refresh now" is parked, the structure is fixed.** An account keeps the servers, helper and
+  paper it was created with. A dead server cannot be replaced: with 3 servers, one dead still leaves
+  signing and recovery working; two dead leave signing (device + the last server) but no paper
+  recovery. The data key never changes. After a paper recovery the same paper stays in use. These go
+  away when refresh is reworked.
+
 - **Removed devices keep valid pieces.** The key underneath never changes, so whatever a removed
   device kept still fits it. Between refreshes: a removed device plus any one server that ignores the
   block (hacked, buggy, restored from an old backup) is 4 points, and it can read private data written
@@ -960,9 +969,14 @@ provisional until upstream assigns them.
 
 Each is a short document of its own, and none may weaken anything above.
 
-- **Refresh now** ([`refresh.md`](refresh.md)): the one ceremony for structural changes: servers, a
-  helper, the paper, locks, relays, and new data and release keys. Every staying member online together.
-  An implementation without it can never change its servers.
+- **Refresh now** ([`refresh.md`](refresh.md)), **parked**: the ceremony for structural changes
+  (servers, a helper, the paper, relays, new data and release keys), every staying member online
+  together. Its own red team (round 2, on draft 3) still found 1 critical and 2 high problems, all at
+  its seams with the core: members a refresh removes are never told, so a leaving server and a
+  leaving helper still make 4 points; an abort can race the commit and void a valid new paper; and a
+  dishonest partner can show members commitments it did not use. Fixing them needs new machinery
+  (notifying and retiring leaving members, ordering aborts against commits, binding every
+  confirmation to one commitment), so it is parked until the core has been lived with.
 - **Account admin**: creating a key (DKG, import), adding and removing devices on screen, retire, delete
   (NIP-62 plus destroying shares and forgetting push addresses), the take-out bundle, the passkey page on
   servers for reporting a device lost.
@@ -982,7 +996,8 @@ Each is a short document of its own, and none may weaken anything above.
 ## 13. Open items
 
 - **Formal check** of the one-call round (§5.1).
-- **Outside reviewer** sign-off on the core and `refresh.md`.
+- **Outside reviewer** sign-off on the core.
+- **Refresh now**, parked (§12).
 - Repair with mixed-weight helpers relies on `frost-core`'s `repairable` module; its behaviour with a
   helper holding 3 indices must be pinned by vectors.
 
