@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.2 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.3 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -121,14 +121,22 @@ would.
 5. push addresses and notice channels (§8.1), and the inbox, including deliveries kept until
    acknowledged (§7.1);
 6. answered request ids until each expires (§5.6), and its own counters for §5.8.
+7. if the person opted in, the account's NIP-46 signer public keys, for watching (below).
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
 co-signs, checks approvals, enforces the two waits and the stateless destructive rule (§5.8), sends
 wake-up pushes, and helps with repair (`need_repair`, `rerepair`). That is all.
 
+**Watching for NIP-46 (opt-in).** If the person turns it on for a server (default off), that server
+MAY keep a list of the account's NIP-46 signer **public** keys, watch its relays for kind 24133 events
+addressed to them, keep each one in the inbox of the device that holds the grant (about 2 minutes,
+`ask` class), and push that device. It never holds a signer key or a grant, so it can't read the
+requests, only see when a site is talking to the account. This is how a sleeping iPhone answers a
+borrowed computer or a desktop site.
+
 | | device | helper | server | backup |
 |---|---|---|---|---|
-| Coordinate everyday signing | yes | yes | only if `own` (§3.1), and only by asking a device | only in a recovery session (§6.5) |
+| Coordinate everyday signing | yes | yes | no | only in a recovery session (§6.5) |
 | Co-sign for others | yes | yes | yes | no |
 | Get decryption answers (§5.5) | yes | no | no | no |
 | Approve an account change (§6.2) | with its lock, with a second device, or with the paper | **no** | no | with a device, or in a recovery |
@@ -439,7 +447,7 @@ local thief doesn't already have; §10 says so.
 
 ### 5.1 The round
 
-**Two parties: one call.** The coordinator (a device-class member, or an `own` server asking a device)
+**Two parties: one call.** The coordinator (a device-class member)
 sends `sign` to one co-signer:
 
 ```jsonc
