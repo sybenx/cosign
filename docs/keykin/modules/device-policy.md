@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 10 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.8 · not built
+Draft 11 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.8 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -35,12 +35,14 @@ hold:
   app (Doors and grants §1). Entries are kept while their grant exists and 90 days after; an encrypt
   record, and the record of which grant an event was signed for, are kept as long as that event is
   **current**: for a replaceable or addressable event, until a newer version replaces it; for a regular
-  event, until it is deleted, but for notes, reactions and reposts at most 90 days. Snapshots are split at
-  48 KB like Doors and grants' grant events, with `d` made the same way (an HMAC under the base data key). A closed month's snapshot is
+  event, until it is deleted, or while its grant lasts for notes, reactions and reposts. Zap requests,
+  relay sign-ins and upload tokens are never recorded, and encrypt records for messages are kept 90 days.
+  Snapshots are split at 48 KB, with `d = "keykin-meta:" ‖ hex(HMAC-SHA256(HKDF(base data key,
+  "keykin-meta-d/1"), member key ‖ month ‖ part))`, distinct from grant events. A closed month's snapshot is
   dropped once all its entries are. Each device publishes it
   as **one cumulative snapshot per month**, signed by its member key, with a sequence number **per writer
   and month**; a higher number replaces that writer's earlier snapshot for the same month, and only the
-  current month changes. It publishes at most once a minute (through the data service, or else as an
+  current month changes. It publishes only changed parts, at most once every 10 minutes (through the data service, or else as an
   encrypted account-signed kind 30078 with a `keykin-` `d`, as Doors and grants does for grants), and
   fetches the others' snapshots, for at most 3 seconds, before a judgement that depends on them; if they
   don't arrive, it judges with what it has. A device accepts a snapshot only from a key that is a current device,
@@ -62,9 +64,12 @@ Kinds, explicitly:
 | Profile | 0 |
 | Relay lists | 10002, 10050 |
 | Follow and mute lists | 3, 10000 |
-| Other lists and sets (NIP-51 and similar), listed exactly | 10001, 10003, 10004, 10005, 10006, 10007, 10009, 10012, 10013, 10015, 10020, 10030, 10063, 10101, 10102; sets 30000, 30002, 30003, 30004, 30005, 30007, 30015, 30030, 39089. Articles (30023, 30024), badges and marketplace kinds are ordinary events |
+| Other lists and sets (NIP-51 and similar), listed exactly | 10001, 10003, 10004, 10005, 10006, 10007, 10009, 10012, 10013, 10015, 10020, 10030, 10063, 10101, 10102; sets 30000, 30002, 30003, 30004, 30005, 30006, 30007, 30008, 30015, 30030, 39089 |
 | Wallets and payments (NIP-60/61) | 17375, 37375, 7375, 7376, 7374, 10019 |
-| Everything else | not judged by this table (articles 30023, marketplace kinds, app data 30078 and the rest are ordinary events) |
+| Others' content | articles (30023, 30040, 30041), classifieds (30402, 30403), stalls and products (30017, 30018), calendar events (31922, 31923), wiki pages (30818): judged only by the "another's content" row below |
+| Everything else | ordinary events (app data 30078, drafts 30024 and 31234, and the rest) |
+
+The **judged kinds** are the profile, list, set and wallet groups above; "others' content" has its own row.
 
 **Items.** An item is a tag's name plus its first value, and whether it is public or private, with relay URLs normalised (lowercase host, no
 trailing slash). Relay hints, petnames and other later values don't count, and `d`, `title`,
@@ -107,12 +112,13 @@ in the member app, and other sites', never count against a site.
 | Anything in core §5.8 (vanishing; a deletion of 5 or more targets or a burst; an emptied profile or list; a relay list with no relays) | **Held** |
 | A site deleting a list, set or the profile: an `a` target naming its current version, or an `e` target that is the newest version the device knows of, or newer | **Confirm** (Undo restores it, as for an emptied list) |
 | A site leaving a list or set with **no items**, public or private, in a new version of a list that had items, or removing **every** item of a reference that had at least one (a new, empty named set is not a removal; for the profile, only the profile rows and core §5.8 apply) | **Confirm** |
-| A site replacing **another's content**: an article (30023), classified (30402, 30403), stall or product (30017, 30018), calendar event (31922, 31923) or wiki page (30818), with a version that is **blank** (no content and no tags but `d`), under a quarter of the **size** (content bytes plus tag values) of the reference, adds an `expiration` or moves one earlier. The reference is the newest version at that address **not signed for this grant**, fetched from relays before judging; anything not recorded as this grant's counts as another's | **Confirm**; the device keeps the reference while the grant lasts and 90 days after, so Undo can restore it. Ordinary edits stay silent. App data (30078) and drafts (30024, 31234) are not covered |
+| A site replacing **another's content** (the group above) with a version that is **blank** (no content and no tags but `d`), under a quarter of the **size** (content bytes plus tag values) of the reference, adds an `expiration` or moves one earlier. The reference is the newest version at that address **not signed for this grant**, fetched from relays for at most 3 seconds (without one, only the blank and expiry tests apply); anything not recorded as this grant's counts as another's. **Whenever** a site replaces a version it didn't sign, silently or not, the device keeps that version as the reference, while the grant lasts and 90 days after, and judges the site's later versions against it | **Confirm**; Undo restores the reference. Ordinary edits stay silent; same-size junk is silent but undoable |
 | A deletion of one ordinary event of the account (not of a judged kind), that the site signed itself, within its daily budget | Silent, after the **10-second Undo** (§3) |
 | A deletion of one ordinary event another site or the member app signed, or not recorded as this grant's | **Confirm** |
 | A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
 | A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
-| A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 3 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count, this deletion included, stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, even when servers demand an approval, and nothing is signed (a newer token event already supersedes them; the device doesn't check its `del` list). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
+| A site's judged-kind or others'-content event dated more than a minute ahead | declined (so Undo and rebased drafts never lose to it at relays) |
+| A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 3 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count, this deletion included, stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, even when servers or a co-signing device refuse, and nothing is signed (a newer token event already supersedes them; the device doesn't check its `del` list). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
 | New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
 | Wallet and mint settings (17375, 37375) changed, or the payment pubkey or mints in 10019 changed, by a site | **Confirm** |
 | Profile: 2 or more filled fields emptied by a site within 7 days, counted like list removals (a whitespace-only value, or a removed key, counts as empty); or `lud16`, `lud06` or `nip05` changed by a site | **Confirm** |
@@ -162,8 +168,9 @@ going to a server instead: on `needs-approval` it shows its own Held card. A hel
 ## 3. Undo
 
 - **Undo is judged.** It signs an earlier version from history as a new event, with a fresh `created_at`
-  later than any deletion it undoes (if that deletion is dated ahead, the device waits until its time has
-  passed, since a co-signer refuses events dated more than 10 minutes ahead),
+  later than any deletion it undoes and than the newest version it replaces (if that is dated ahead, the
+  device waits until its time has passed, since a co-signer refuses events dated more than 10 minutes
+  ahead; a waiting Undo is kept in the outbox, so it survives the app being killed),
   and goes through §2 against the current version like any change. Additions are never destructive, so
   restoring a bigger list is silent; restoring a smaller one is Confirm; restoring an empty one is Held
   (core §5.8).
@@ -251,6 +258,17 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 11**, from its tenth red team (0 critical, 1 high):
+  - whenever a site replaces a version it didn't sign, that version is kept as the reference, so a silent
+    edit first can't erase the original (DP10-1).
+
+  The mediums and lows:
+  - a 3-second cap on fetching the reference (DP10-2);
+  - fewer records, changed parts only, every 10 minutes (DP10-3);
+  - a distinct, monthly snapshot `d` (DP10-4);
+  - a site's events dated more than a minute ahead declined; Undo dated after them (DP10-5);
+  - "judged kinds" defined, others' content its own group, wallet refusals by devices, the site's own old
+    notes, a waiting Undo kept, missing kinds (lows).
 - **Draft 10**, from its ninth red team (0 critical, 3 high):
   - another's content is judged against the newest version this grant didn't sign, fetched first, and
     kept while the grant lasts (DP9-1, DP9-2);
