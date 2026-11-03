@@ -1,6 +1,6 @@
 # Keykin module: Key families
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.9 · not built · off the 1.0 path
+Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.9 · not built · off the 1.0 path
 
 A **key family** links a **master** key to a **child** key in public, so other people's clients can show
 them as one person and, if the child's key leaks, offer to move followers to the master. It is the core's
@@ -32,9 +32,13 @@ core's (core §11.3).
 - **The accept must name this family's master** (`p` = the family's author), and a release counts only
   from that family's master.
 - **No child becomes a master.** A family whose master is already the child in an **earlier-anchored**
-  family is ignored. A master may later become a child (that is "Protect this key", even after making app
+  settled or pending family is ignored (dead and released families don't count; two in the same block
+  are ordered by event id). A master may later become a child (that is "Protect this key", even after making app
   passwords), so compared by anchor height, never by settled status.
-- Every event has exactly one `p` tag, and a leaked event counts only from the family's master.
+- A family and an accept each have exactly one `p` tag, and the accept's author must equal the family's
+  `p`. A release and a leaked event have exactly one `e` tag and count only from the family's master.
+- **A leaked middle key.** Once a master has itself been named leaked (by its own master), its later
+  releases and leaked events are ignored, and a move offered for its children points to its own master.
 
 ### 1.1 The timestamp
 
@@ -69,16 +73,18 @@ and:
    counts. Released families still block: releasing never helps in a dispute.
 3. **Dead pairs.** Once a (master, child) pair has any anchored release, every family for that pair is
    dead for good, so an old accept can't be replayed.
-4. **The first family decides.** Take the earliest family that is not dead. If it is in a dispute, `C` is
+4. **No claims on a settled child.** A family anchored while another family for `C` was settled and not
+   yet released is dead for good. (Changing master still works: release first, then claim.)
+5. **The first family decides.** Take the earliest family that is not dead. If it is in a dispute, `C` is
    **disputed for good**: no later family can settle it. Otherwise, once it was anchored at least 2016 +
    144 blocks ago (a day's grace for late proofs), it is settled, and every later family for `C` is
    ignored.
-5. **Late reveals.** If this client saw a family before it saw an earlier-anchored one for `C` (by more
+6. **Late reveals.** If this client saw a family before it saw an earlier-anchored one for `C` (by more
    than a day; "saw" means a full check of at least two index relays), the two are a **dispute** for this
    client, never a win for the earlier one. Families from the same master, and a family released before
-   the other was anchored, are exempt. This local rule
+   the other was anchored (the release's own anchor is earlier), are exempt. This local rule
    can only downgrade, never make a family win. A client that keeps no history counts as a new viewer.
-6. Otherwise the family is **pending**, and shows no badge.
+7. Otherwise the family is **pending**, and shows no badge.
 
 These rules get test vectors with the module (`vectors/`).
 
@@ -106,13 +112,15 @@ also names the master). Nothing else counts, and the child's current profile nev
   device is told about. So a stolen phone with no lock can't quietly accept a thief's master. On a key with
   no lock, a family or a leaked warning therefore waits 3 days.
 - A Keykin app watches the index relays for families naming the person's own keys and shows any it didn't
-  make: "Someone claimed your key *child* for *master*. Make your own claim now, from a device you trust;
-  if theirs was first, it will show as disputed." Before importing a key as a child, the app looks for any
+  make: "Someone claimed your key *child* for *master*." For a child with no settled family it adds: "Make
+  your own claim now, from a device you trust; if theirs was first, it will show as disputed." For a
+  settled child it adds: "Your family stands; their claim is ignored." Before importing a key as a child, the app looks for any
   family already naming it that the person didn't make, and if it finds one says plainly: "This key was
   already claimed by someone else; it has leaked. Your claim will show as disputed."
 - **Before signing a new family**, the app looks for an existing one for that child by any of the person's
-  masters and reuses it, so a retry or a second device never starts a dispute with itself.
-- Proofs (kind 1040) for family events are never signed or published on a site's request either. 
+  masters that isn't dead and reuses it, so a retry or a second device never starts a dispute with itself.
+- A device never signs, on a site's request, a kind 5 aimed at a proof (kind 1040) of a family event.
+  Clients accept a valid proof from any author. 
 
 ## 5. Child keys
 
@@ -133,7 +141,10 @@ For someone who already has an nsec, the app offers both, plainly (Account admin
 
 - **"Bring my key"**: import the nsec as the account. Quickest. "Protect this key" stays available later.
 - **"New account that protects my key"**: a fresh master by DKG (never whole), and the existing nsec
-  imported as a child. The app signs the family, then anchors it, which takes a few hours. The person
+  imported as a child. The app signs the family, then anchors it, which takes a few hours (on a key with
+  no lock, the accept and the family each wait 3 days first, so about six days before the two-week window
+  starts). New app passwords afterwards are the new master's children, so their badge names the new
+  master. The person
   keeps posting as the npub everyone knows. The card says plainly:
   - "If someone copied your old key before today, or copies it in the next two weeks, they can hold a
     claim that makes yours disputed. We can't know."
@@ -176,6 +187,15 @@ The app suggests the second once, quietly, never as a gate.
 
 ## Changes
 
+- **Draft 6**, from its fifth red team (0 critical, 1 high):
+  - a family anchored while another for that child was settled and not released is dead for good, so an
+    ignored claim can't come back when the person changes master (H1).
+
+  The mediums and lows:
+  - a leaked middle key's releases and leaked events ignored, and moves pointed to its master (M1);
+  - `p` and `e` tag rules, the accept's author, same-block order, dead families not barring masters,
+    reusing only live families, the guard on deleting proofs, the release exemption, the watcher wording,
+    new app passwords' badge, lockless timing (lows).
 - **Draft 5**, from its fourth red team (0 critical, 1 high):
   - a master may later become a child, so "Protect this key" works after app passwords; chains compared by
     anchor height (H1).
