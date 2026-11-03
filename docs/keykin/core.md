@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 8 · 2026-11-02 · `draft` `optional` · not built
+Draft 8.1 · 2026-11-02 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -193,18 +193,23 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
 
 - There are only three: **add a device**, **remove a device or helper**, and **re-register a
   device's lock** (after its face or fingerprint enrollment changed). Everything else (servers, a
-  helper, the paper, relays) changes only at a refresh. If two lock changes for one device replace
-  the same old lock, both are void and the device is lockless until it makes a new one.
+  helper, the paper, relays) changes only at a refresh.
+- **A device's current lock** is the lock in the epoch record (or in the add that brought it in),
+  followed along lock changes: a lock change applies when its `replaces` is the device's current lock
+  (`null` when it has none). If two lock changes replace the same lock, both are void and the device
+  is lockless until it makes another lock change. Lock changes are approved only by `pair` or
+  `paper` (§6.2).
 - **Indices without coordination.** An added device's three indices are
   `2^16 + (int(SHA-256("keykin-index/1" ‖ g ‖ epoch id ‖ key ‖ salt ‖ j)[0..4], big-endian) mod 2^30)`
-  for `j = 0, 1, 2`. The inviting device picks the lowest `salt` whose indices collide with nothing it
+  for `j = 0, 1, 2` (`salt` and `j` as 4-byte big-endian integers). The inviting device picks the lowest `salt` whose indices collide with nothing it
   knows. If two changes of the epoch ever claim the same index, both adds are void and the new
-  devices join again.
+  devices join again. Every index, here and in epoch records, is a FROST identifier given as a 32-byte
+  big-endian scalar (`frost-core`'s `Identifier::deserialize`), not the 16-bit constructor.
 - **Order does not matter.** The membership is the epoch record's members, plus every valid add,
   minus every key in a valid remove or in `removed`. A remove always wins over an add of the same key.
 - A change is **valid** when it is signed by `g`, names the current epoch, and its approval names
-  members who were in the membership (the epoch record's members or devices added by changes of that
-  epoch). A later removal of the approver does not undo it, so every member reaches the same answer
+  `device` members (never a helper) who were in the membership (the epoch record's members or devices
+  added by changes of that epoch), with signatures every member verifies. A later removal of the approver does not undo it, so every member reaches the same answer
   whatever order changes arrive in.
 - **Freshness is the co-signer's job, once.** Only a server co-signing a change checks that its
   approval is fresh: the challenge, the waited statements' age, that the approver is not already
@@ -212,9 +217,12 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
   signature, the approver's membership and the structure. (The co-signer's signature is the evidence
   that the check was made.) The window between an approver's removal and the news reaching a server
   is a stated limit (§10).
-- **A remove crosses epochs.** A `remove` made in an older epoch still applies in every later one: a
-  member that learns of it removes that key wherever it is, and a refresh plan MUST list every removal
-  its sender knows of.
+- **Epochs and changes.** A change naming an older epoch is refused, with one exception: a `remove`
+  naming the epoch just before the current one is accepted for 7 days after the commit (members keep
+  that epoch's record and changes that long) and applies in the current epoch too. A refresh plan MUST
+  list every removal its sender knows of, and servers check that it also keeps every device added in
+  the epoch (`refresh.md`). A member that receives a change naming an epoch newer than its own fetches
+  that epoch's record first.
 - Changes never expire within their epoch. Every server keeps the whole set and gives it out
   (`changes_get {epoch}` → `changes`). A member catching up asks **every** server and takes the union,
   so one server leaving out a removal changes nothing. A refresh folds the set into the next epoch record and starts a new empty one.
@@ -236,7 +244,9 @@ change that breaks one, and every member MUST refuse to adopt one.
   §7.2). One consequence: at most one `helper`.
 
 Also: each server holds exactly 1 share, each device and helper exactly 3; indices are unique; and
-the epoch record has **exactly 3 servers or more**, so one dead server never blocks signing. (Apps
+the epoch record has **at least 3 servers** (I2 then means exactly 3), so one dead server never
+blocks signing. A server that leaves is in `removed` for good; to come back it joins with a new member
+key. (Apps
 add public servers automatically, alongside any server the person runs.) Changes only add devices
 and remove devices or helpers, or change a lock, so they cannot break I1, I2, I3 or I5.
 
@@ -323,7 +333,9 @@ contribution cannot be forged, and a racer's hello fails the check.
 
 ### 4.3 The paper backup
 
-The paper holds a **backup key pair**, not shares. Its shares exist only wrapped (§7.2). It is made at
+The paper holds a **backup key pair**, not shares: the backup secret, the group key `g`, and the
+servers' host keys and relays, so a recovery can start from the paper alone. Its shares exist only
+wrapped (§7.2). The read-back (step 4) checks every field. It is made at
 account creation or in a refresh, never between, and it is checked on the device that prints it:
 
 1. The device makes the backup key pair.
@@ -543,7 +555,11 @@ the user-present and user-verified flags set; and that `sig` verifies over
 - for a destructive event, `"sign" ‖ event id` (§5.8);
 - for an account change, `"change" ‖ SHA-256(JCS(change)) ‖ epoch id`;
 - for a cancel, `"cancel" ‖ wait id`;
-- for a refresh, `"refresh" ‖ SHA-256(JCS(plan without approval))`.
+- for a refresh, `"refresh" ‖ SHA-256(JCS(plan without approval))`;
+- for any other request (`take_out`, removing a notice channel), `type ‖ id ‖ SHA-256(JCS(body
+  without the assertion))`.
+
+A `pair` signs the same string as a lock would for that request.
 
 A `paper` approval's backup signature covers the change hash and a challenge from the server it is
 sent to; only that server checks the challenge (§3.2).
@@ -591,12 +607,13 @@ second device or the paper. A helper never approves anything.
   notice channel (§8.1), and when its own wait has passed, pushes the requester (`ask`) and signs a
   **waited statement**: `{ "server": <host key>, "kind": "recovery" | "hold", "wait": <wait id>,
   "start": <unix>, "end": <unix>, "sig": <BIP-340 by the host key over SHA-256("keykin-waited/1" ‖ g ‖
-  kind ‖ wait ‖ start ‖ end)> }`. A hold's wait id is `SHA-256("hold" ‖ event id)`; a recovery's is
+  kind ‖ wait ‖ start ‖ end)> }` (`start` and `end` as 8-byte big-endian unix seconds). A hold's wait id is `SHA-256("hold" ‖ event id)`; a recovery's is
   `SHA-256("recovery" ‖ backup key ‖ epoch id ‖ r)`, with `r` a random value the holder puts in every
   `release_request`, so every server names the same wait. Verifiers MUST check that `end − start ≥ W`;
   a co-signer also accepts a statement only within 7 days of its `end` (§3.2).
 - **Cancel** `cancel {wait}`, from a `device` with a lock assertion or from two devices (`pair`), ends
-  the wait at that server, which tells everyone. A helper never cancels. The requester may always
+  the wait at that server, which tells everyone. A device sends it to every server and repeats until
+  each one answers. A helper never cancels. The requester may always
   `withdraw` its own. A server MUST NOT issue a waited statement or a release bundle until it has fetched
   its deliveries from its peers (§7.1), so a missed `cancel` still counts; a peer that has not answered
   for an hour is skipped.
@@ -667,8 +684,9 @@ statement or releases anything again, skipping a peer that has not answered for 
 kept for the whole epoch (§3.2). Deliveries for a removed member, and for the backup (which never
 fetches), are dropped; `deliver` from a removed member is refused.
 
-Deliveries travel **only live or through server inboxes**, never as copies on relays: anything that
-carries a share or a key must not sit in public archives.
+Deliveries travel **through HTTPS, server inboxes, or live kind 21059 wraps** (which relays do not
+store), never as stored kind 1059 copies on relays: anything that carries a share or a key must not
+sit in public archives.
 
 ### 7.2 The backup material and the release key
 
@@ -766,7 +784,8 @@ The seal's key is the sender: there is no other sender field.
 - **Stored** (towards a member that may be asleep): the server's inbox (§8.2). Messages that carry no
   share, key, epoch record or change MAY also go to relays as kind 1059 with a NIP-40 `expiration` at the
   end of their class.
-- **Never on relays:** anything that carries a share, a key, an epoch record or a change (§7.1).
+- **Never stored on relays:** anything that carries a share, a key, an epoch record or a change goes
+  only live (kind 21059), over HTTPS, or through an inbox, never as kind 1059 (§7.1).
 - A plaintext over 24,000 bytes is split into `{ "type": "part", "of": "<id>", "k": k, "m": total,
   "data": "<base64>" }` rumors, reassembled by `(sender, of)`. Receivers MUST refuse a message over 512 KB
   in total and drop parts whose message has expired.
@@ -859,7 +878,10 @@ server MAY ask for proof of work (NIP-13) on enrollment.
   device.
 - **One operator today.** All three live servers are run by one person, so "two servers' waits" and
   "every server refuses" are one party's word until other operators exist.
-- **Two stolen devices** (6 points) sign without any server and skip every server rule.
+- **Two stolen devices** (6 points) sign without any server and skip every server rule. **Two apps on
+  one machine are two devices**: a desktop app and a browser extension on one laptop are 6 points, so
+  that laptop alone is the key. Apps on one machine SHOULD share one member (as NIP-55 apps on Android
+  do) rather than each join.
 - **A stolen device plus one dishonest server** is 4 points: if the device's shares can be extracted,
   that is the key itself, offline and for good.
 - **A stolen device with no lock plus one honest server** can sign everyday events, and overwrite lists
@@ -871,6 +893,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 - **A change approved just before its approver's removal reached a server stays valid.** The window is
   how long a `remove` takes to arrive.
 - **Helper plus one server** signs, by design: the person opted in to that.
+- **A lock accepts any enrolled biometric**, a partner's finger included, as the phone itself does.
 - **Locks are unattested.** Servers cannot tell a hardware, biometric-only key from a software one, and a
   tampered app can make its own "lock".
 - **Browser profiles.** An extension keeps shares a copied profile can carry away unless the browser
@@ -965,7 +988,8 @@ Each is a short document of its own, and none may weaken anything above.
 
 ## 14. Test vectors
 
-The vectors file is `docs/keykin/vectors.md`. Done when the TypeScript and Kotlin implementations both
+The vectors are in `docs/keykin/vectors/` (`vectors.md` describes them; `vectors.json` is generated
+by `gen_vectors.py`). Done when the TypeScript and Kotlin implementations both
 pass it and a fuzzed parser has run against every message. The interop plan is
 `docs/keykin/interop-plan.md`.
 
@@ -1000,3 +1024,14 @@ The user's fourth cut (2026-11-02, after red-team round 7):
   sets (L4); recovery waits share an id and statements say their kind (M3); the new device shows the
   join check and the person types it on the inviter (M4); the refresh lock text and the paper
   challenge are defined (L1); deliveries for removed members and the backup are dropped (L3).
+
+## Changes in draft 8.1
+
+From red-team round 8, which found no critical or high problem in the core (its three highs were in
+`refresh.md`): a device's current lock is defined (M5); approvers are devices and every member checks
+their signatures (M6); `take_out` and notice-channel encodings, and `pair` signing the lock string
+(M6); cross-epoch changes simplified to a `remove` of the previous epoch for 7 days (M4); two apps on
+one machine are two devices, stated (M7); the paper carries `g`, server host keys and relays, and the
+read-back checks them (M8); shares may travel as live 21059 but never stored 1059 (M9); 32-byte index
+encoding (L3); leaving servers rejoin with a new key (L4); "at least 3 servers" (L5); any enrolled
+biometric (L6); cancels go to every server until each answers (L9).

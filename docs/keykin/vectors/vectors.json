@@ -1,0 +1,309 @@
+{
+ "spec": "Keykin Core draft 8.1",
+ "note": "hex unless stated; x-only keys are 32 bytes",
+ "cases": {
+  "join_check": [
+   {
+    "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
+    "m": "7a5a7dabcb83769fb6f5b62658544fc69bb7e97719bf3450d32e2c8d4e8cf79a",
+    "n": "80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463",
+    "s": "043a718774c572bd8a25adbeb1bfcd5c",
+    "t": "e3b98a4da31a127d4bde6e43033f66ba",
+    "code": "862783"
+   },
+   {
+    "note": "changing t changes the code",
+    "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
+    "m": "7a5a7dabcb83769fb6f5b62658544fc69bb7e97719bf3450d32e2c8d4e8cf79a",
+    "n": "80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463",
+    "s": "043a718774c572bd8a25adbeb1bfcd5c",
+    "t": "c44474038d459e40e4714afefa7bf8da",
+    "code": "611403"
+   }
+  ],
+  "change_hash": {
+   "change": {
+    "add": {
+     "key": "80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463",
+     "kind": "device",
+     "lock": null,
+     "salt": 0
+    }
+   },
+   "jcs": "{\"add\":{\"key\":\"80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463\",\"kind\":\"device\",\"lock\":null,\"salt\":0}}",
+   "sha256": "30afbdea42ded20b7d7afd79ba2a3d53574c7efdb668fe1e11497bab5b9e9bcd"
+  },
+  "pair_code": {
+   "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
+   "change_hash": "30afbdea42ded20b7d7afd79ba2a3d53574c7efdb668fe1e11497bab5b9e9bcd",
+   "r": "454349e422f05297191ead13e21d3db5",
+   "code": "990009"
+  },
+  "indices": {
+   "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
+   "epoch_id": "afc9b31d9f3f3645ae563606e1ddbe4b",
+   "key": "80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463",
+   "salt": 0,
+   "salt_encoding": "4-byte big-endian",
+   "j_encoding": "4-byte big-endian",
+   "indices": [
+    171094396,
+    395380596,
+    201842161
+   ],
+   "identifiers_32byte": [
+    "000000000000000000000000000000000000000000000000000000000a32b17c",
+    "0000000000000000000000000000000000000000000000000000000017910774",
+    "000000000000000000000000000000000000000000000000000000000c07ddf1"
+   ]
+  },
+  "wait_ids": {
+   "event_id": "b8e1f80bd70ae0784c7855a451731b745fddb67749d23f637be9082b75e9575b",
+   "hold": "67a6e80cb2eea58fc048e517a3f97182d579f8ae908e869198167998b902f6aa",
+   "backup_key": "bd3074f4a6bea388c3af94de39450d0cfe8d262de2da5bbcf920b44d6b4aec3b",
+   "epoch_id": "afc9b31d9f3f3645ae563606e1ddbe4b",
+   "r": "b938106975667fdf03849a922026e5f2",
+   "recovery": "f748df96258d1ef30a651017b3fa03a9459b5579f47e6b1c93406c05061455ae"
+  },
+  "lock_challenge": [
+   {
+    "what": "sign ‖ event id",
+    "challenge": "6Jv1W0h0zan4TN3XK7CKmZLBkeKRdohs_FidB01IADc"
+   },
+   {
+    "what": "change ‖ change hash ‖ epoch id",
+    "challenge": "nMb9ML4KwvoIkXXrZBe07uSpu9FdR0JyKaqX7jaBXJk"
+   },
+   {
+    "what": "cancel ‖ wait id",
+    "challenge": "W5GCrGKw7htZp_CCEsaqsbJEIrvOiCqYQ0c6m8OMrxs"
+   }
+  ],
+  "waited_statement_digest": {
+   "kind": "recovery",
+   "wait": "f748df96258d1ef30a651017b3fa03a9459b5579f47e6b1c93406c05061455ae",
+   "start": 1793600000,
+   "end": 1793859200,
+   "digest": "a39eccee3354b09aebae4f9da154b3c112cea2283c7a59ff09240c747c865505",
+   "note": "start and end as 8-byte big-endian unix seconds"
+  },
+  "commitment_rebuild": {
+   "commitment": [
+    "02fb65966780bfb057aed9ee34c6e583716a55965531d9c970edba400dff21e105",
+    "03144718ecbeef0b8cdfd0b1cf2e8530270064470ca755b6ccf351c0a3bcace9d7",
+    "034a22e618d16ce831e4d22b27bc75ecaec367c6e6cb86927a8d4f341d96877156",
+    "028c0bc48926c5f22cdbef88e637736fe767e7eac09e0838d509d330f5b12338eb"
+   ],
+   "device_indices": [
+    1,
+    2,
+    3
+   ],
+   "device_points": [
+    "03e8cfa5474b0f4e6e9a562b9f85e3d9d086b25dcecb8d2183d84d451e57eb2ae7",
+    "020668697a875a16cdc319e54704a9b703e76d00c47446402787ce09d297600db0",
+    "0373ce805e33b7447ffb68fc2e491cd4e18b66f2075a483cddd1819feab05aa480"
+   ],
+   "rebuilt": [
+    "02fb65966780bfb057aed9ee34c6e583716a55965531d9c970edba400dff21e105",
+    "03144718ecbeef0b8cdfd0b1cf2e8530270064470ca755b6ccf351c0a3bcace9d7",
+    "034a22e618d16ce831e4d22b27bc75ecaec367c6e6cb86927a8d4f341d96877156",
+    "028c0bc48926c5f22cdbef88e637736fe767e7eac09e0838d509d330f5b12338eb"
+   ],
+   "valid": true,
+   "negative": {
+    "commitment": [
+     "02fb65966780bfb057aed9ee34c6e583716a55965531d9c970edba400dff21e105",
+     "03144718ecbeef0b8cdfd0b1cf2e8530270064470ca755b6ccf351c0a3bcace9d7",
+     "032e1bc9ecae43d087f06b45dda883f91ae23c1781edc3cbf55af1ca569267b69b",
+     "028c0bc48926c5f22cdbef88e637736fe767e7eac09e0838d509d330f5b12338eb"
+    ],
+    "valid": false,
+    "note": "C2 changed by +G: the rebuild from the device's own points differs, so refuse"
+   },
+   "derived_points": {
+    "4": "03215137a1b7e9f4e27749b72c94eb86cc5760d14081873f46f532829b8297bf17",
+    "5": "03bf979254f939eb54a37600c930b4fadaf6f5022f745019d11ce428b22519cbb6",
+    "6": "03110ebaa7e2ae6b66f79b7e77835cbe41b4aec9a5945d50e83192280cde1d9c4d",
+    "171094396": "021bd1e7f3eb287506ddf4808dc55f50df87f5815dac25c13ac35e715bc8284380"
+   }
+  },
+  "ecdh_dleq": {
+   "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
+   "epoch_id": "afc9b31d9f3f3645ae563606e1ddbe4b",
+   "Q": "036dd012e609447dec3d49932842b7177cd8b0f99b3422976a7fd6393cdfa375c9",
+   "signers": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "i": 4,
+   "lambda_i": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140",
+   "Y": "035253a7aafc672ac6ccacdf1f6c7c469c762d7fca88661b76222e21359f54e43b",
+   "W_i": "02215137a1b7e9f4e27749b72c94eb86cc5760d14081873f46f532829b8297bf17",
+   "k": "0301cca077ac6278fd026f542adc7cacabfd9cc84518024e2236e3d71e722149",
+   "R1": "03fc41b00181ca97aaf3f4fa67a6785355404c3633c816351678a072953203add4",
+   "R2": "02ed43873e65127baaf0c13aae181f3103909874e4257cee53e97a7814fef304af",
+   "e": "98cc733f9c6bfeb12162b2d105b243e2161b2ed4866b54248460c0d0f073c7df",
+   "z": "593debcfa8b1de2c6a5e99f46b73a23b7fd5e8e84ee11ddada64527e9ea7b716",
+   "valid": true,
+   "negative": [
+    {
+     "case": "z + 1",
+     "z": "593debcfa8b1de2c6a5e99f46b73a23b7fd5e8e84ee11ddada64527e9ea7b717",
+     "valid": false
+    },
+    {
+     "case": "answer covers indices [4, 4]",
+     "valid": false
+    },
+    {
+     "case": "Q is the identity",
+     "valid": false
+    }
+   ]
+  },
+  "future_dates": [
+   {
+    "kind": 1,
+    "ahead_s": 86400,
+    "accept": true
+   },
+   {
+    "kind": 0,
+    "ahead_s": 601,
+    "accept": false
+   },
+   {
+    "kind": 3,
+    "ahead_s": 599,
+    "accept": true
+   },
+   {
+    "kind": 10002,
+    "ahead_s": 3600,
+    "accept": false
+   },
+   {
+    "kind": 30023,
+    "ahead_s": 700,
+    "accept": false
+   },
+   {
+    "kind": 30023,
+    "ahead_s": 60,
+    "accept": true
+   }
+  ],
+  "stateless_destructive": [
+   {
+    "event": {
+     "kind": 62
+    },
+    "needs": "approval or hold"
+   },
+   {
+    "event": {
+     "kind": 5,
+     "targets": 1
+    },
+    "needs": "nothing"
+   },
+   {
+    "event": {
+     "kind": 5,
+     "targets": 5
+    },
+    "needs": "approval or hold"
+   },
+   {
+    "event": {
+     "kind": 5,
+     "targets": 2,
+     "unapproved_targets_last_10min": 4
+    },
+    "needs": "approval or hold"
+   },
+   {
+    "event": {
+     "kind": 0,
+     "content": "{}"
+    },
+    "needs": "approval or hold"
+   },
+   {
+    "event": {
+     "kind": 0,
+     "content": "{\"name\":\"x\"}"
+    },
+    "needs": "nothing"
+   },
+   {
+    "event": {
+     "kind": 3,
+     "tags": []
+    },
+    "needs": "approval or hold"
+   },
+   {
+    "event": {
+     "kind": 3,
+     "tags": [
+      [
+       "p",
+       "…"
+      ]
+     ]
+    },
+    "needs": "nothing"
+   },
+   {
+    "event": {
+     "kind": 10002,
+     "tags": []
+    },
+    "needs": "approval or hold"
+   }
+  ],
+  "lifetimes": [
+   {
+    "type": "sign",
+    "cls": "sign",
+    "age_s": 89,
+    "accept": true
+   },
+   {
+    "type": "sign",
+    "cls": "sign",
+    "age_s": 91,
+    "accept": false
+   },
+   {
+    "type": "sign",
+    "cls": "ask",
+    "age_s": 149,
+    "accept": true
+   },
+   {
+    "type": "hold",
+    "cls": "member",
+    "age_s": 604800,
+    "accept": true
+   },
+   {
+    "type": "hold",
+    "cls": "sign",
+    "accept": false,
+    "note": "class not allowed for type"
+   },
+   {
+    "type": "sign",
+    "cls": "sign",
+    "age_s": -31,
+    "accept": false,
+    "note": "dated 31 s ahead"
+   }
+  ]
+ }
+}

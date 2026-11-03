@@ -330,3 +330,53 @@ M5 is a question for you (below).
 
 If all three are yes: core draft 8 and refresh draft 2, then round 8 under the same rule, then the test
 vectors.
+
+---
+
+# After round 8 (core draft 8 + refresh draft 2)
+
+Round 8 found **0 critical, 3 high, 9 medium, 9 low** (`keykin-core-redteam-8.md`). **All three
+highs are in `refresh.md`; the core had none.** So the core passes the stop rule. Its mediums and
+lows were fixed as core draft 8.1, and its test vectors are written (`vectors/`). Refresh, judged on
+its own, does not pass yet.
+
+## Plain summary for the user
+
+**Keykin Core is through.** For the first time a fresh review found nothing critical or high in the
+core. Its test vectors now exist: a generator script anyone can rerun, plus the list of behaviour
+cases a second implementation must pass.
+
+**"Refresh now" still has three problems.** None is a takeover. Each leaves the account stuck, or
+leaves you without a working paper:
+
+1. If the phone running a refresh dies before printing, the servers wait for it for ever and refuse
+   every later change.
+2. The new paper is printed before everyone has confirmed. If the refresh then fails and you have
+   already shredded the old paper, you have no working paper at all.
+3. If every server is dead at once (today one person runs all three), a refresh can't run, because it
+   needs a live server in the middle of it. So the servers could never be replaced.
+
+All three can be fixed without new machinery, by reordering steps and widening one role:
+
+1. The servers' timer starts when the plan arrives (2 hours, reference), and any of your devices with
+   an approval can cancel a stuck refresh.
+2. The paper is printed only after everyone has confirmed. "Destroy your old paper" is shown only once
+   the servers have switched over. Until then the app says "keep your old paper".
+3. When no server stays, a second device of yours, or your paper scanned on the starting device, takes
+   the server's place in the middle of the refresh.
+
+The mediums go in the same draft:
+
+- a member's own clock can never drop pending pieces the commit still needs;
+- servers check that a plan keeps every device added since the last refresh;
+- the new paper material reaches every server before the commit;
+- any refusal aborts the plan;
+- a commit ends a recovery that was using the old paper;
+- a recovery's refresh plan comes from the backup holder.
+
+## Question for the user
+
+1. **Apply these three fixes to "Refresh now" and review it once more on its own?** The alternative is
+   to park refresh for now and ship the core alone. In that case servers can't be replaced, and a lost
+   phone's pieces never stop fitting. Recommended: apply the fixes. They reorder steps and add nothing
+   new.
