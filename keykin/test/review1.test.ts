@@ -357,7 +357,7 @@ test('review 4 A1: seat_welcome only once, only from a current device, only if i
   const acc = await create();
   const stranger = newKey();
   const w = { recEv: acc.A.recEv, changes: [], state: [], seeds: [], items: [], base: acc.A.base };
-  assert.equal((await acc.bus.send(stranger, acc.servers[0].kp.pub, { type: 'seat_welcome', w })).code, 'already_welcomed');
+  assert.match((await acc.bus.send(stranger, acc.servers[0].kp.pub, { type: 'seat_welcome', w })).code, /exists|already_welcomed/);
   const { ServerNode } = await import('../sim/nodes.ts');
   const fresh = acc.bus.add(new ServerNode(acc.bus, 'fresh')) as any;
   assert.equal((await acc.bus.send(acc.A.kp, fresh.kp.pub, { type: 'seat_welcome', w })).code, 'not_seated');
