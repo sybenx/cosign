@@ -174,3 +174,4 @@ because it describes the code during the freeze.
 - 2026-11-02 · Default (UI): after 7 days with every server unreachable from 2 networks, a calm card offers to move all three.
 - 2026-11-02 · Default (UI): after report-lost or a server swap, one quiet cue (a filled dot on Backup) suggests a new paper; never a banner, never forced.
 - 2026-11-02 · Default: the user signs the public server list for now; the app pins it; co-signers are added once other operators exist.
+- 2026-11-02 · Process: red-team round 9 (core draft 9, Upkeep) found 0 critical, 6 high. Stopped; `simplification.md` (round 9 part) proposes cutting the servers' beacon check (beacon becomes a paper signpost only), a running release key, per-redeal material items, any-4-points `need_repair`, and "new paper" instead of same-key paper repair. Two questions for the user. Seats stay replaceable.

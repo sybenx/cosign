@@ -415,3 +415,64 @@ next draft:
   applies"; warn before the last device removes itself; correct the platform wording (the iPhone
   Safari extension shares keys through a keychain group; Touch ID is Mac-only; a handed-over Mac
   needs the paper or a second device to turn on Touch ID).
+
+---
+
+# After round 9 (core draft 9, Upkeep)
+
+Round 9 found **0 critical, 6 high, 8 medium, 8 low** (`keykin-core-redteam-9.md`). The core idea held:
+one seat in one state is one point, so servers never exceed 3 points; redeals can't move the key;
+racing redeals commute; and a lockless thief can't make Upkeep changes. Patching stops under the rule.
+Servers, the helper and the paper stay replaceable in every option below.
+
+## Plain summary for the user
+
+The seats-and-redeal idea works. Two things around it don't yet.
+
+1. **The public "beacon" causes most of the trouble** (H1, H2 and five smaller findings). Servers check
+   it before they act, so a missing beacon freezes them: it was never published at creation, and a site
+   can get it deleted with an ordinary delete. Its only real jobs are to help a paper find today's
+   servers, and to tell a retired server that comes back that it's retired.
+   - **Proposal:** servers stop checking it. A retired server that comes back without hearing it was
+     replaced can only pair with pieces kept from its old state, which §10 already admits.
+   - The beacon stays only as a signpost for the paper: published at creation, and never deletable
+     through a site.
+2. **How the backup material and the release key are put together** breaks when two changes happen at
+   once (H3, H4), and the "repair a missing paper piece" step contradicts another rule (H6). Proposal:
+   - The backup material becomes a set of separate items, one per change, so two at once just add up.
+   - The release key becomes one running value that the welcome hands over.
+   - If a paper piece is ever missing, the fix is simply printing a new paper.
+
+The remaining high (H5: when every server dies, the new servers can't get their pieces) is a one-line
+fix: two of your devices, or a device and the paper, can fill a seat.
+
+## Round 9's high findings
+
+| ID | What | Proposal |
+|---|---|---|
+| H1 | No beacon is ever published at creation, and servers that find none co-sign nothing: two dead servers freeze the third. | **Cut** the servers' beacon check (they no longer read it). Publish the beacon at creation. |
+| H2 | A site with a delete grant can delete the beacon (a far-future kind 5), freezing servers. | With the cut, deleting it no longer freezes anything. Devices still refuse any kind 5 that targets a beacon address, current or past (L3). |
+| H3 | `rk(S)` needs every seed, but a welcome carries only the current key, so later joiners can't deal redeals. | **Simplify:** the release key is one running value, `rk ← H(rk ‖ seed)`, applied in redeal-id order. Every member holds just the current value, and the welcome hands it over. |
+| H4 | Two concurrent redeals each re-wrap the whole material, so no copy has both paper deltas. | **Simplify:** the material is a set of items: the base, plus one paper delta per redeal, each wrapped under its own redeal's release seed. Concurrent items just union. A recovery release hands over every seed of the state. |
+| H5 | In F3 (every server dead), `need_repair` requires a server among the helpers. | Fix: any 4 points may answer, including two devices, or a device with the paper. |
+| H6 | "Repeat F7 with the same K" contradicts "repair towards K once"; repeating can void K. | **Simplify:** a missing paper delta means making a new paper (F7 with a new key). No same-K repair. |
+
+The mediums go in the same draft:
+
+- `rerepair` only for a redeal whose delta was never addressed to the member (a concurrent add), so a
+  copied device can't heal itself through it (M1);
+- `need_repair` only for the seat's current holder (M2);
+- a stranded report-lost redeal is re-dealt, never stepped back past (M5);
+- the approval binds the list, and only the approving device deals its redeal (M6);
+- a seat holder's welcome is defined, with no data key (M7);
+- §10 states what δ-knowledge allows, and the "same state" claim is corrected (M8).
+
+The lows are text fixes. M3 and M4 vanish with the beacon cut.
+
+## Questions for the user
+
+1. **Servers stop checking the public beacon.** They just keep working with their peers. A retired
+   server that comes back without hearing it was retired can only pair with pieces kept from back then,
+   which is already a stated limit. The beacon stays as a signpost for your paper. Recommended: yes.
+2. **If a paper ever misses a piece, the fix is printing a new paper.** No silent repair of the same
+   paper; the app shows the Backup dot. Recommended: yes.
