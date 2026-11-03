@@ -251,4 +251,29 @@ M('one server seat with host ""', seatEvs('server:4', F.servers[0].kp.pub, srvEn
   M('change content with trailing text', [F.sign(24302, JSON.stringify({ v: 1, g: F.g, epoch: F.epochId, change: l[0], list: l, approval: ap }) + ' x', [['v', '1'], ['epoch', F.epochId]])]);
 }
 
+// SLIP-39 (Backup §3): TS-made shares Kotlin must combine, and corruptions both must refuse alike.
+{
+  const { generate, combine } = await import(`${K}/src/slip39.ts`);
+  const hx = (b: Uint8Array) => Buffer.from(b).toString('hex');
+  const S = (name: string, mnemonics: string[], passphrase = '') => P('slip39', name, { mnemonics, passphrase }, res(() => hx(combine(mnemonics, passphrase))));
+  const secret = new Uint8Array(32).map((_, i) => i * 7 + 1);
+  const p: string[] = generate(1, [[2, 3]], secret, '', 1, (n: number) => new Uint8Array(n).map((_, i) => (i * 31 + n) & 0xff))[0];
+  const g2 = generate(2, [[2, 3], [1, 1], [3, 4]], secret.slice(0, 16), 'TREZOR', 0, (n: number) => new Uint8Array(n).map((_, i) => (i * 13 + 5) & 0xff));
+  S('2 of 3, pieces 0 and 2', [p[0], p[2]]);
+  S('2 of 3, pieces 2 and 1 (order)', [p[2], p[1]]);
+  S('one piece alone', [p[0]]);
+  S('the same piece twice', [p[0], p[0]]);
+  S('all three pieces', p);
+  const w = p[0].split(' ');
+  S('one word swapped for another', [[...w.slice(0, 5), w[5] === 'academic' ? 'acid' : 'academic', ...w.slice(6)].join(' '), p[1]]);
+  S('upper case words', [p[0].toUpperCase(), p[1]]);
+  S('extra spaces and a newline', ['  ' + p[0].replace(/ /g, '  ') + '\n', p[1]]);
+  S('an unknown word', [[...w.slice(0, 3), 'zzzz', ...w.slice(4)].join(' '), p[1]]);
+  S('one word missing', [w.slice(0, -1).join(' '), p[1]]);
+  S('two groups, 2 + 1 members', [g2[0][1], g2[0][0], g2[1][0]], 'TREZOR');
+  S('two groups, wrong passphrase', [g2[0][1], g2[0][0], g2[1][0]], 'trezor');
+  S('two groups, one group short a member', [g2[0][1], g2[1][0]], 'TREZOR');
+  S('mixing two sets', [p[0], g2[0][0]]);
+}
+
 console.log(JSON.stringify(out, null, 1));
