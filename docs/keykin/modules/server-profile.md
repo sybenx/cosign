@@ -1,6 +1,6 @@
 # Keykin module: Server profile
 
-Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
+Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
 
 This module covers running a Keykin server and being listed as one: the duties as an operator sees them,
 abuse defaults, how a server enrols and announces itself, the signed public list, closing and moving,
@@ -62,8 +62,8 @@ A conforming server, for every account it serves:
     is kept **per member key**, not per account, since one host can hold an old and a new seat for the
     same account. When it verifies the change that retired a member key, it destroys everything for that
     key, its stored member and VAPID keys included, except the forwarding note, which it keeps for as
-    long as it runs. It serves that note to the account's backup and device keys, and to the account's
-    other seat servers by their host keys. If a dedupe (core §6.7.2) makes the loser a key on this same
+    long as it runs. It serves that note to the account's backup and device keys, to the account's
+    other seat servers by their host keys, and to the heir key of any heir record it held. If a dedupe (core §6.7.2) makes the loser a key on this same
     host, it first opens the loser key's pending deliveries, then moves the share, which has the same
     value, to the winner's key, and only then destroys the loser key. Devices that apply the dedupe
     re-register push with the winner key's VAPID key;
@@ -87,7 +87,8 @@ core requires a server to answer.**
   - an incoming holder's uploads and welcome (§4);
   - `changes_get` from a removed key (core §3.2);
   - the `challenge` before a `seated?` or `forward_get`, and the `challenge` a paper asks of a server
-    being seated in F3.
+    being seated in F3;
+  - requests signed by a held heir record's key (Backup module §4).
 - **Everything else** is counted per sender key, only after the sender is verified as a current member,
   the account's backup key, or a peer server. This replaces core §9.3's per-account reference figure on
   purpose: counting per key means a thief's device can't use up the owner's allowance.
@@ -243,6 +244,13 @@ admin §1.1).
 - **`seated?` is verified.** The request carries a signature by the key it asks about, over the server's
   challenge. A server answers only if that signature verifies, so seeing a member key on relays isn't
   enough to learn which servers serve it.
+
+### 4.1 Messages
+
+| `type` | From → to | `cls` |
+|---|---|---|
+| `enroll {g}` / `enroll_reply` | device → server / back | `ask` |
+| `notice {shutdown, seq, host}` / `notice {endpoints}` | server → members and peers | `member` |
 
 ## 5. Closing, moving, and going quiet
 

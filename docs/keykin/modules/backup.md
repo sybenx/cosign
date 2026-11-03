@@ -1,6 +1,6 @@
 # Keykin module: Backup
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
 
 The core has one backup: the **paper**, a backup key pair whose shares exist only as wrapped material
 (core §4.3, §7.2), recovered with two servers after a 3-day wait (§6.5). This module says how that key is
@@ -194,7 +194,6 @@ and send it the heir record from their own storage.
 - **Every** server holding a piece sends every device `heir_held {set id, x}`, signed by its host key, as a
   delivery: at setup and after each repair. Devices show one quiet line, "Your heir can't inherit until
   you renew your backup", when fewer than two current seats have sent `heir_held` for the current set.
-- While an heir exists, replacement picks (core §6.7.7) prefer servers that implement this module.
 
 ### 4.3 The long wait
 
@@ -229,8 +228,17 @@ After a cancel, servers refuse a new `heir_request` from that heir for **30 days
 | Change | Approval |
 |---|---|
 | Set up or change an heir | a new set (F7, §1.1) |
-| Remove the heir | **any current device**, no approval: it only takes power away. It is a delivery; every device and notice channel is told, naming the device ("*Laptop* removed your heir"). It is final: servers delete the record and their piece, refuse any `heir_request` for it and end a running wait. A mistaken removal means a new set |
+| Remove the heir | **any current device**, no approval: it only takes power away. It is a delivery, `heir_remove {set id}`, which every server checks as core §3.2 does for requests with no co-signer; every device and notice channel is told, naming the device ("*Laptop* removed your heir"). It is final: servers delete the record and their piece, refuse any `heir_request` for it and end a running wait. A mistaken removal means a new set |
 | Cancel an heir wait | any current device (§4.3) |
+
+### 4.5 Messages
+
+| `type` | From → to | `cls` |
+|---|---|---|
+| `heir_request {set id, request id}` | heir → servers | `member` |
+| `heir_get` | heir → servers | `member` |
+| `heir_held {set id, x}` | server → devices (delivery) | `member` |
+| `heir_remove {set id}` | device → servers (delivery) | `member` |
 
 ## 5. When every server is gone
 
@@ -273,6 +281,8 @@ servers. The app offers it calmly, after 7 days with every server unreachable fr
   still needs the heir's holder key.
 - **A server holding a heir record** tells the heir which servers serve the account, as it would the
   backup key (core §10).
+- **A removed device keeps the holder-inbox key** (it comes from the base data key, which never rotates),
+  so it can read friends' still-holding and lost notes, and so learn who the friends are.
 - **24 words in the wrong place** (a photo, a cloud note) are as dangerous as the paper.
 - **Words alone** can't find servers that aren't on the public list.
 - With no paper, no friends and every device lost, the account is gone. That is the likeliest loss, and

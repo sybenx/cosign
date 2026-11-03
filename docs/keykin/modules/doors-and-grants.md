@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 19 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
+Draft 19 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -71,7 +71,7 @@ a request needs by looking at what it is.
   silently only for the site's own events.
 - **Decrypts in bulk.** Site decrypts arriving within about 50 ms go in one `ecdh` request with many
   points (core §5.5); the site's own decrypts always go first, and a prefetch batch yields to them; above
-  about 30 a minute (per device, a reference that keeps the account under core §9.3's figure) it batches
+  about 30 a minute (per device, a reference that keeps it under Server profile §3's per-key figure) it batches
   more and waits, so a client decrypting junk one by one can't use up the account's
   message budget. On a site's first NIP-59 unwrap under `dms`, the device fetches the account's kind
   1059 wraps from its 10050 relays and sends all their ephemeral keys in a few large `ecdh` batches; NIP-04
@@ -194,7 +194,8 @@ for listing. The wildcard is also published in the ending device's event.
   - `by` is a current device in its own view;
   - `by_sig` verifies, and `by` is the maker whose event it came from.
 - **When a device is removed, every grant it made is revoked** by every device, because a thief's device
-  could plant grants while it was a member. The person sees the list, with what to do for each NIP-46
+  could plant grants while it was a member, except the helper grants its remove names in `kept` (Helper
+  module §3.3). The person sees the list, with what to do for each NIP-46
   site homed there: "Grants made by *Laptop* were signed out. Sign out of *Coracle* on that site too, then
   sign in again."
   - The one exception is a `self` remove (core §4.6) or a handover: the extension first fetches its inbox

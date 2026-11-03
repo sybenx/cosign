@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.13 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.14 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -319,6 +319,8 @@ screens show. (This closes live finding #17.)
 
 Either side can show the code, so a desktop without a camera can still join.
 
+- A helper's join code adds `h=<host key>`, and its `join_hello` carries the host key's signature over `n`,
+  binding the host to the member key (I6).
 - **Invite**, shown by a member device: `keykin:join?g=<group key>&m=<inviter member key>&s=<16
   random bytes, base64url>&x=<expiry, unix>&r=<relay>&r=<relay>…`
 - **Join code**, shown by the new device: `keykin:hello?n=<new member key>&s=<…>&x=<…>&r=<relay>…`
@@ -597,9 +599,9 @@ Every request carries `cls`. Each message type allows only some classes:
 
 Types not in the table: deliveries and requests a sender repeats until answered (`cancel`, `withdraw`,
 `upload`, `upload_held`, `push_register`, `push_unregister`, `notify_register`, `paper_reissue`,
-`helper_stop`, `helper_resume`, `account_delete`) are
+`helper_stop`, `helper_resume`, `account_delete`, `stop_relay`, `kept_done`, `kept_new`, `repair_ok`) are
 `member`; every other request (`changes_get`, `inbox_get`, `need_repair`, `rerepair`, `need_seeds`,
-`state_get`, `seated?`, `forward_get`, `take_out`) is `ask`.
+`state_get`, `state`, `seated?`, `forward_get`, `take_out`, `pair_request`, `pair_sign`) is `ask`.
 
 - A receiver measures age with its own clock from the rumor's `created_at` (when the request was sent),
   or from the inbox's `age` (§8.2) if that is larger. It MUST refuse a request older than its lifetime
@@ -764,7 +766,10 @@ by `lock`, `pair` and `paper`; `detached(type, body)` below means a BIP-340 sign
   over a fresh `challenge` from the named server. `sig` is `detached("paper", {"what": hex(what)})` by the
   device; `backup_sig` is `detached("paper", {"list": list hash, "challenge": challenge})` by the backup
   key, or, for a request that isn't a list (`take_out`, `account_delete`, a notice channel), `detached("paper",
-  {"what": hex(what), "challenge": challenge})`. A device and the paper are 5 points, already the key.
+  {"what": hex(what), "challenge": challenge})`. A request with no co-signer that every server checks
+  (`account_delete`, `helper_resume`) carries `"challenges": [{server, challenge, backup_sig}]`, one per
+  server, in place of the single `challenge` and `backup_sig`. A device and the paper are 5 points, already
+  the key.
 - **`recovery`**: `{ "release_request": …, "waited": [<statement>, <statement>], "backup": <backup key>,
   "backup_sig": … }`: the paper alone, in a recovery session (§6.5), after two servers' waits. The backup
   key signs **this change's** hash, `detached("recovery", {"list": list hash})`, and servers take it only
@@ -861,7 +866,8 @@ A round with no device-class member (I4) happens only in a recovery session.
    the sum against `P_b^S` (§6.7.6 F11).
 5. For 7 days after its own wait ended (the **recovery session**), each server takes part, in the
    two-call form (§5.1), in rounds of the backup plus two servers: but only for a recovery join (§4.4)
-   and changes approved by `recovery` (§6.2): reseats, a new paper and a redeal (§6.7.6 F9). Not
+   and changes approved by `recovery` (§6.2): reseats, a report-lost `[remove, redeal]`, a new paper and a
+   redeal (§6.7.6 F9). Not
    ordinary events.
 6. The recovery app then destroys the backup's shares and the release bundle, and offers a new paper
    (F7), never forcing it.
@@ -1187,7 +1193,7 @@ phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
   starts from step 1 with a new K. There is never a second repair towards the same K.
 - **F8, data key and release seeds.** Every redeal moves both on. A bare `[redeal]` exists but is never
   needed by hand.
-- **F9, after a paper-only recovery.** `recovery` approvals cover reseats, a new paper (offered, not
+- **F9, after a paper-only recovery.** `recovery` approvals cover reseats, report-lost, a new paper (offered, not
   forced) and a redeal. The recovery app's new device deals the redeal, once it has joined (§4.4), but
   every `recovery`-approved change is **co-signed only in a round the holder coordinates** (the backup
   plus two servers, two-call form, §6.5 step 5), never in an everyday round of the new device.
@@ -1404,7 +1410,9 @@ the paper's base has a paper item for the current backup key (§6.7.6).
   sealed `sign` for an ordinary note is about 3.9 KB, so in practice the device fetches; `wrap` is for
   small notices.
 - Anything for a member that may be asleep goes in that server's **inbox** first, and only then is
-  pushed. A member leaves something for another member with `deliver {to, wrap}`: `to` must be a current
+  pushed. A member leaves something for another member with `deliver {to, wrap, slot?}`; a delivery with a
+  `slot` replaces the sender's earlier one in the same slot for that recipient (a module's cumulative
+  reports use this): `to` must be a current
   member, the wrap's `p` tag must be `to`, and the server counts it against the sender's caps (reference:
   32 waiting per sender and recipient, with its own push budget). Kind 21059 is used only towards members
   known to be awake (§9.1).
@@ -1671,8 +1679,8 @@ user's account.
 
 Readers MUST accept the old names for ever: the record `d` tag `frost` and `cosign`, the server
 announcement `d` tag `cosign-server`, `cosign:` codes, and Cosign paper QR codes, which they recognise and explain: a
-0.12 paper belongs to the 0.12 account, which moves only by import (§11.2). Writers use the `keykin` names. Kind numbers 24301, 24302, 30242, 30243 and 10243 stay
-provisional until upstream assigns them.
+0.12 paper belongs to the 0.12 account, which moves only by import (§11.2). Writers use the `keykin` names. Kind numbers 24301, 24302, 30242, 30243, 10243 and the key-family kinds
+1244–1247 stay provisional until upstream assigns them.
 
 ## 12. Modules (not part of Core)
 
@@ -1684,12 +1692,12 @@ Each is a short document of its own, and none may weaken anything above.
   telling the person calmly after a week that a server is quiet and offering to move its piece (§6.7.6
   F1), the signed public server list (§6.7.7),
   announcements (kind 30243/10243), the operator notice.
-- **Device policy**: the destructive check, Undo from the device's own history, re-confirming staged
-  events (a staged replaceable event older than the newest known is destructive), honest quiet notices.
+- **Device policy**: the destructive check, Undo from the device's own history, rebasing staged drafts onto
+  the newest version, honest quiet notices.
 - **Doors and grants**: NIP-07, NIP-46 (per-site signer keys, bunker://, watching), NIP-55, the QRST
   signer-ticket, the same-device door on iPhone, grants and scopes, the iOS push appendix.
-- **Backup**: 24 words, recovery contacts, heir. (Finding servers from the paper is the signpost, §6.7.5,
-  and the old escape hatch is F3.)
+- **Backup**: 24 words, recovery contacts, heir. (A paper finds today's servers by the public list, forwarding
+  notes and the signpost, §6.7.5; the old escape hatch is F3.)
 - **Helper**: the opt-in (joins by a `seat` change, §6.7.6 F6).
 - **Key families**: family events signed by both keys, NIP-03 timestamps, release and leaked events; child groups. This is the answer to a
   serious leak of the key itself.
@@ -2012,3 +2020,10 @@ and keep cleared ids a year (M4, L5).
 
 From the reference implementation's batch 5: `stop_relay {stop, by}` carries helper stops between
 servers.
+
+## Changes in draft 14.14
+
+From the final seam review across the core and all modules (0 critical, 0 high): per-server `challenges`
+for `paper`-approved requests checked by every server (M3); report-lost under a `recovery` approval in
+§6.5 and F9 (M4); `deliver` slots, so cumulative reports replace each other (M5); the helper's host bound
+in its join (L10); lifetime classes for every message (L13); §11.3 and §12 brought up to date (L14).

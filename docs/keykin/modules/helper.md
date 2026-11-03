@@ -1,6 +1,6 @@
 # Keykin module: Helper
 
-Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
 
 A **helper** is a family member's or friend's always-on box that holds the helper seat (3 shares, core
 §3.1, I6). With one server it can post for the account while every one of the person's devices sleeps.
@@ -107,7 +107,7 @@ adding a server, and refuses a match; replacement picks skip the helper's operat
 
 ### 3.2 Stopping, at once
 
-**Stop helper** is on every device, with no approval (core §5.7, `helper_stop {id}`): it stops the helper
+**Stop helper** is on every device, with no approval (core §5.7, `helper_stop {id, by}`): it stops the helper
 seat, whoever holds it. Servers keep the stop as account state, so it never expires and reaches servers
 seated later, and the device shows "Stopped" once a server confirms. Every device and the helper are told.
 It only takes power away, so a lone device with no lock can do it too. A stopped helper stays in its seat
@@ -116,11 +116,14 @@ lock, two devices, or the paper), which clears exactly the stops that device has
 
 ### 3.3 Removing or moving
 
-- **Remove the helper**: `[seat helper→null, redeal]` with an approval (core F6). It also clears the stop.
+- **Remove the helper**: `[seat helper→null, redeal]` with an approval (core F6). It names every stop in
+  force in `clears_stops`.
 - **Moving to another box** is a seat change to the new box's member key, with the same approval.
 - Either way every grant the helper was home to ends, and the screen says so: "*3* sites will ask you to
   sign in again." It also lists posts still scheduled on the box, which the friend may still publish.
 - A helper that is offline needs nothing: no seat depends on it.
+- On an `account_delete` (Account admin §3) the helper checks it as core §3.2 does (every approver a current
+  device in its own view), then destroys everything for the account.
 - A helper that has been unreachable for 30 days is shown once, calmly: "*Name*'s helper has been off for a
   month." The person may stop or remove it; nothing is done for them.
 
@@ -159,11 +162,11 @@ They can't read messages, private lists or wallet content. The opt-in screen lin
 | `type` | From → to | `cls` |
 |---|---|---|
 | `helper_mint {site}` / `helper_link {bunker}` | device → helper / back | `ask` |
-| `helper_report {event ids, grants, last_used, logouts}` | helper → devices (delivery, replacing) | `member` |
+| `helper_report {event ids, grants, last_used, logouts}` | helper → devices (delivery with a `slot`, core §8.2) | `member` |
 | `helper_connect {nostrconnect}` | device → helper | `ask` |
 | `publish_later {event}` / `unpublish {id}` | device → helper | `member` |
 | `helper_regrant {entry}` / `regrant_ok` | staying device → helper / back | `member` |
-| `helper_conflict {}` | helper → devices (delivery) | `member` |
+| `helper_conflict {member}` | helper → devices (delivery) | `member` |
 
 ## 7. Limits, said plainly
 

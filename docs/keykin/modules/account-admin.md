@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -216,7 +216,7 @@ the children's followers (Key families module §7).
      current, and its own challenge's signature when the request carries one per server (as it does when
      the device asked every server for a challenge). A peer's word alone never deletes anything. It then destroys everything for the
      account (its share, seeds, material, waits, push addresses, notice channels, heir record), keeps only
-     `SHA-256(g)`, the approved request and the changes that make its approver a device (core §2), and
+     `SHA-256(g)`, the epoch record, the approved request and the changes that prove its approval (core §2), and
      answers every later request for `g` with a host-signed `deleted` and those, which devices check. It
      never seats or creates `g` again. Servers that never held the account aren't bound by it.
    - Every device that verifies it destroys everything for the account. Friends and the heir get one

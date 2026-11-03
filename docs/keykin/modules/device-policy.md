@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 18 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
+Draft 18 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -55,6 +55,8 @@ hold:
   index names; the index is republished with every part. Each part and the index are
   dated `max(now, last + 1)`. So a removed device or the sync service can't forge it or roll
   it back, and out-of-order sync loses nothing.
+- **Pinned holder keys** of friends and the heir (Backup module §1.1) are copied into every device's
+  snapshot and never dropped with a reported device's metadata.
 - **A device leaving by its own choice** (Remove this device, or a `self` remove, core §4.6) first merges
   its metadata into the snapshot of the device that takes over or approves (if
   there is one), and only then sends the remove. Only a report-lost drops a device's metadata.
@@ -116,7 +118,7 @@ edits after the newest version (as Undo does, §3).
 
 | Event | Level |
 |---|---|
-| Anything in core §5.8 (vanishing; a deletion of 5 or more targets or a burst; an emptied profile or list; a relay list with no relays) | **Held** |
+| Anything in core §5.8 (a key-family event; vanishing; a deletion of 5 or more targets or a burst; an emptied profile or list; a relay list with no relays) | **Held** |
 | A site deleting a list, set or the profile: an `a` target naming its current version, or an `e` target that is the newest version the device knows of, or newer | **Confirm** (Undo restores it, as for an emptied list) |
 | A site leaving a list or set with **no items**, public or private, in a new version of a list that had items, or removing **every** item of a reference that had at least one (a new, empty named set is not a removal; for the profile, only the profile rows and core §5.8 apply) | **Confirm** |
 | A deletion of one ordinary event of the account (not of a judged kind), that the site signed itself, within its daily budget | Silent, after the **10-second Undo** (§3) |
@@ -144,7 +146,8 @@ follows?"), with Allow and Decline. No lock is needed, because servers would co-
 holding the device can tap Allow; that is no worse than an nsec, which is the bar.
 
 **Held** shows the same card with the core §5.8 answer: the device's lock, or, on a device with no lock,
-**Wait 3 days**, which the person chooses themself. A site's request can lead to a hold only by the person
+**Wait 3 days**, which the person chooses themself. During a recovery wait (core §6.3) the card offers only
+the lock, and says a recovery is running. A site's request can lead to a hold only by the person
 choosing it on this card; it never starts one itself. The card says the change happens on *date* unless
 they stop it. There is at most one pending hold per site. The person can always **Withdraw** their own
 hold (core §6.3), even on a device without a lock.
