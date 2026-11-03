@@ -307,3 +307,23 @@ test('review 3 #1 critical: repair_finish seals only to the seal_to its start au
   const other = await acc.bus.send(acc.servers[2].kp, S1.kp.pub, { type: 'repair_finish', participant: 7, rid: 'ab'.repeat(16), deltas: [] });
   assert.equal(other.code, 'unknown_repair');
 });
+
+test('core 14.7 §5.2: in a list, each event gets its own nonce pair, at the coordinator and the co-signer', () => {
+  const F = fixture(); const A = F.devices[0];
+  const S = server(F, 0, [], { uploads: { get: () => ({ items: [], held: new Set(['a', 'b']), list: [], approval: {}, redealId: '', at: clock }) as any, liveSeatHolders: () => 3 } });
+  const b = newKey();
+  const list: Change[] = [{ remove: b.pub }, { redeal: { dealer: A.kp.pub } }];
+  const addB: Change[] = [{ add: { key: b.pub, kind: 'device', lock: null, salt: 0 } }];
+  const S2 = server(F, 0, [F.change(addB[0], addB, approveLock(F.g, F.epochId, addB, EXP(), A.kp.pub, A.lock!))]);
+  const evs = [list[0], { redeal: dealRedeal(F.g, A.kp, [], new Map(), F.backup.kp.pub, [5, 6]).redeal }].map((change) => ({ pubkey: F.g, created_at: clock, kind: 24302, tags: [['v', '1'], ['epoch', F.epochId]],
+    content: JSON.stringify({ v: 1, g: F.g, epoch: F.epochId, change, list, approval: approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, A.lock!) }) }));
+  const r = new ListCall(ctx(F), dev(F), { key: F.servers[0].kp.pub, indices: [4] }, evs);
+  const mineD = r.request.list_events.map((x: any) => x.commitments.map((c: any) => c.D).join());
+  assert.notEqual(mineD[0], mineD[1], 'the coordinator commits afresh per event');
+  void S; void S2;
+  // The co-signer side: two-call `commit {count}` returns one distinct set per event.
+  const t = new TwoCall(ctx(F), { key: A.kp.pub, indices: [1, 2, 3], shares: A.shares }, [{ key: F.servers[0].kp.pub, indices: [4] }, { key: F.servers[1].kp.pub, indices: [7] }], evs);
+  const c = server(F, 0).handle(A.kp.pub, t.commitRequest(), clock);
+  assert.equal(c.sets.length, 2);
+  assert.notEqual(c.sets[0][0].D, c.sets[1][0].D);
+});
