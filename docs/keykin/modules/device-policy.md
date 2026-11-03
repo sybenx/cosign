@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.5 · not built
+Draft 9 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.5 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -33,12 +33,16 @@ hold:
   which grant made each list version, the pre-site and last-approved versions, the removal logs,
   deletion counts, and the hashes of ciphertexts the device encrypted and for which grant or for the member
   app (Doors and grants §1). Entries are kept while their grant exists and 90 days after; an encrypt
-  record is kept as long as an event carrying that ciphertext is current. A closed month's snapshot is
+  record, and the record of which grant an event was signed for, are kept as long as that event is
+  **current**: for a replaceable or addressable event, until a newer version replaces it; for a regular
+  event, until it is deleted. A closed month's snapshot is
   dropped once all its entries are. Each device publishes it
   as **one cumulative snapshot per month**, signed by its member key, with a sequence number **per writer
   and month**; a higher number replaces that writer's earlier snapshot for the same month, and only the
-  current month changes. It publishes at most once a minute, and fetches the others' snapshots before a
-  judgement that depends on them. A device accepts a snapshot only from a key that is a current device,
+  current month changes. It publishes at most once a minute (through the data service, or else as an
+  encrypted account-signed kind 30078 with a `keykin-` `d`, as Doors and grants does for grants), and
+  fetches the others' snapshots, for at most 3 seconds, before a judgement that depends on them; if they
+  don't arrive, it judges with what it has. A device accepts a snapshot only from a key that is a current device,
   and never one with a lower number than it has seen from that writer **for that month**. So a removed device or the sync service can't forge it or roll
   it back, and out-of-order sync loses nothing.
 - **A device leaving by its own choice** (Remove this device, or a `self` remove, core §4.6) first merges
@@ -61,7 +65,7 @@ Kinds, explicitly:
 | Wallets and payments (NIP-60/61) | 17375, 37375, 7375, 7376, 7374, 10019 |
 | Everything else | not judged by this table (articles 30023, marketplace kinds, app data 30078 and the rest are ordinary events) |
 
-**Items.** An item is a tag's name plus its first value, with relay URLs normalised (lowercase host, no
+**Items.** An item is a tag's name plus its first value, and whether it is public or private, with relay URLs normalised (lowercase host, no
 trailing slash). Relay hints, petnames and other later values don't count, and `d`, `title`,
 `description`, `image`, `alt` and `client` tags are not items. A list's **private items** (NIP-51
 content encrypted to the account's own key) are items too. The self conversation key is the same for
@@ -100,15 +104,16 @@ in the member app, and other sites', never count against a site.
 |---|---|
 | Anything in core §5.8 (vanishing; a deletion of 5 or more targets or a burst; an emptied profile or list; a relay list with no relays) | **Held** |
 | A site deleting a list, set or the profile: an `a` target naming its current version, or an `e` target that is the newest version the device knows of, or newer | **Confirm** (Undo restores it, as for an emptied list) |
-| A site leaving a list or set with **no items**, public or private, in a new version, or removing **every** item of a reference that had at least one (for the profile, only the profile rows and core §5.8 apply) | **Confirm** |
+| A site leaving a list or set with **no items**, public or private, in a new version of a list that had items, or removing **every** item of a reference that had at least one (a new, empty named set is not a removal; for the profile, only the profile rows and core §5.8 apply) | **Confirm** |
+| A site replacing a replaceable or addressable event of an ordinary kind (an article, product, wiki page, calendar event…) that another grant or the member app signed, with a version that is blank, under a quarter of the length, or adds an `expiration` | **Confirm**; the device keeps the replaced version for 90 days, so Undo can restore it. Ordinary edits stay silent |
 | A deletion of one ordinary event of the account (not of a judged kind), that the site signed itself, within its daily budget | Silent, after the **10-second Undo** (§3) |
 | A deletion of one ordinary event another site or the member app signed | **Confirm** |
 | A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
 | A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
-| A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 4 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, and nothing is signed (a newer token event already supersedes them). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
+| A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 3 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count, this deletion included, stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, and nothing is signed (a newer token event already supersedes them). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
 | New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
 | Wallet and mint settings (17375, 37375) changed, or the payment pubkey or mints in 10019 changed, by a site | **Confirm** |
-| Profile: 2 or more filled fields emptied by a site within 7 days, counted like list removals (a whitespace-only value counts as empty); or `lud16`, `lud06` or `nip05` changed by a site | **Confirm** |
+| Profile: 2 or more filled fields emptied by a site within 7 days, counted like list removals (a whitespace-only value, or a removed key, counts as empty); or `lud16`, `lud06` or `nip05` changed by a site | **Confirm** |
 | Profile: `name`, `picture` or `about` replaced (not emptied) | Silent |
 | Follow, mute and other lists: a site's net removals, public and private, reach **10 items, or 20% of the reference and at least 5 items** | **Confirm** |
 | Relay lists: any relay removed by a site, or switched from write to read only | **Confirm** |
@@ -154,7 +159,8 @@ going to a server instead: on `needs-approval` it shows its own Held card. A hel
 
 ## 3. Undo
 
-- **Undo is judged.** It signs an earlier version from history as a new event, with a fresh `created_at`,
+- **Undo is judged.** It signs an earlier version from history as a new event, with a fresh `created_at`
+  later than any deletion it undoes (a deletion may be dated up to 10 minutes ahead),
   and goes through §2 against the current version like any change. Additions are never destructive, so
   restoring a bigger list is silent; restoring a smaller one is Confirm; restoring an empty one is Held
   (core §5.8).
@@ -224,6 +230,8 @@ rebased: §4 applies to it.
 - **Single deletions are silent** up to a site's daily budget, so a site can quietly delete 20 posts a
   day before a card appears.
 - **A device that missed the newest version** judges against an older one.
+- **Junk in every profile field.** A site may replace `name`, `picture` and `about` with junk silently,
+  since replacing them is ordinary; Undo restores them.
 - **The 7-day window rolls.** A patient site can cut a list by under 10 items, or under 20%, each week, and
   so shrink 430 follows to a handful over a year without a card. Undo everything *site* did still
   reverses it.
@@ -237,6 +245,16 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 9**, from its eighth red team (0 critical, 1 high):
+  - a site blanking, shrinking or expiring another app's article or other addressable event gets a Confirm
+    card, and the replaced version is kept for Undo (DP8-1).
+
+  The mediums and lows:
+  - signed-for records kept while the event is current, with "current" defined (DP8-2);
+  - a new empty set is no removal (DP8-3);
+  - wallet deletions at most 3 targets; Undo dated after the deletion; public or private in an item's
+    identity; a 3-second snapshot fetch and where snapshots live; removed profile keys; junk fields stated
+    (lows).
 - **Draft 8**, from its seventh red team (0 critical, 1 high):
   - an item that leaves the public tags counts as removed, and kinds with no private items are judged
     publicly (DP7-1).
