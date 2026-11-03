@@ -2,8 +2,6 @@
 
 2026-11-03 · branch `claude/keykin-spec-0b883d` · docs only, nothing built, nothing pushed
 
-**Focus:** one Nostr account for life. Sign in anywhere, trusted devices ask less, and no single website, server, app or company can stop you. Cover what people actually need from an account, without fighting the platforms for the last few percent.
-
 **The bar:** an nsec kept in a password manager. Every rule must beat it on security *and* ease of use.
 
 Keykin is the new working name of the Cosign protocol: one Nostr key for life, split with FROST so that
