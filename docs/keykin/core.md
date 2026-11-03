@@ -669,7 +669,8 @@ co-signer and any retry), **or** a passed hold:
 - kind 3, 10000–10030 or 30000–30030 with no tags other than `d` **and an empty `content`**;
 - kind 10002 with no `r` tag whose value starts with `wss://` or `ws://`;
 - a key-family event of any kind: family, release, leaked or accept (kinds 1244–1247, Key families module;
-  a site never gets one signed).
+  a site never gets one signed). These kinds are provisional and MUST be pinned before Core 1.0; if the NIP
+  assigns others, this list changes in a minor version before families are enabled.
 
 These tests are exact: kind 0's content is parsed as a JSON object, and content that isn't one, or has a
 duplicate key, counts as empty; a field is non-empty only if it is a string with a non-whitespace

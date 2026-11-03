@@ -1,6 +1,6 @@
 # Keykin module: Key families
 
-Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.6 · not built · off the 1.0 path
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.6 · not built · off the 1.0 path
 
 A **key family** links a **master** key to a **child** key in public, so other people's clients can show
 them as one person and, if the child's key leaks, offer to move followers to the master. It is the core's
@@ -31,9 +31,10 @@ core's (core §11.3).
   other's part. Clients ignore kind 5 aimed at any of these kinds or at their proofs.
 - **The accept must name this family's master** (`p` = the family's author), and a release counts only
   from that family's master.
-- **No chains, earliest wins.** A key that is already the child in a settled family can't be a master, and
-  a key that is already a master in a settled family can't be a child: a later family that would make such
-  a chain is ignored, never the earlier settled one.
+- **No child becomes a master.** A family whose master is already the child in an **earlier-anchored**
+  family is ignored. A master may later become a child (that is "Protect this key", even after making app
+  passwords), so compared by anchor height, never by settled status.
+- Every event has exactly one `p` tag, and a leaked event counts only from the family's master.
 
 ### 1.1 The timestamp
 
@@ -73,7 +74,9 @@ and:
    144 blocks ago (a day's grace for late proofs), it is settled, and every later family for `C` is
    ignored.
 5. **Late reveals.** If this client saw a family before it saw an earlier-anchored one for `C` (by more
-   than a day), the two are a **dispute** for this client, never a win for the earlier one. This local rule
+   than a day; "saw" means a full check of at least two index relays), the two are a **dispute** for this
+   client, never a win for the earlier one. Families from the same master, and a family released before
+   the other was anchored, are exempt. This local rule
    can only downgrade, never make a family win. A client that keeps no history counts as a new viewer.
 6. Otherwise the family is **pending**, and shows no badge.
 
@@ -103,9 +106,13 @@ also names the master). Nothing else counts, and the child's current profile nev
   device is told about. So a stolen phone with no lock can't quietly accept a thief's master. On a key with
   no lock, a family or a leaked warning therefore waits 3 days.
 - A Keykin app watches the index relays for families naming the person's own keys and shows any it didn't
-  make: "Someone claimed your key *child* for *master*." Before importing a key as a child, the app looks
-  for any family already naming it that the person didn't make, and if it finds one says plainly: "This
-  key was already claimed by someone else; it has leaked." 
+  make: "Someone claimed your key *child* for *master*. Make your own claim now, from a device you trust;
+  if theirs was first, it will show as disputed." Before importing a key as a child, the app looks for any
+  family already naming it that the person didn't make, and if it finds one says plainly: "This key was
+  already claimed by someone else; it has leaked. Your claim will show as disputed."
+- **Before signing a new family**, the app looks for an existing one for that child by any of the person's
+  masters and reuses it, so a retry or a second device never starts a dispute with itself.
+- Proofs (kind 1040) for family events are never signed or published on a site's request either. 
 
 ## 5. Child keys
 
@@ -128,7 +135,8 @@ For someone who already has an nsec, the app offers both, plainly (Account admin
 - **"New account that protects my key"**: a fresh master by DKG (never whole), and the existing nsec
   imported as a child. The app signs the family, then anchors it, which takes a few hours. The person
   keeps posting as the npub everyone knows. The card says plainly:
-  - "If someone copied your old key before today, they may already hold an earlier claim. We can't know."
+  - "If someone copied your old key before today, or copies it in the next two weeks, they can hold a
+    claim that makes yours disputed. We can't know."
   - "Once this has settled (about two weeks), a later leak can't take it over, and your followers can move
     to the new account."
   - What it costs: two accounts, so two backups, and a Face ID per dead server for each. When there are
@@ -139,7 +147,9 @@ The app suggests the second once, quietly, never as a gate.
 ## 7. Changing master, and deleting one
 
 - To change master: release the old family, wait until the release is anchored, then make the new family
-  after the old one's window has passed (2016 blocks from its anchor), or it is a dispute for good.
+  after the old one's window has passed (2016 blocks from its anchor), or it is a dispute for good. In
+  between, the child is unprotected; that gap is the price of a change.
+- Deleting a master's account (Account admin §3) warns first: "This also ends your key families."
 - Deleting a master's account erases its families from relays that honour the vanish; clients keep the
   proofs they have already verified.
 
@@ -152,6 +162,12 @@ The app suggests the second once, quietly, never as a gate.
   first can anchor a claim first. Viewers who saw yours first see a dispute; new viewers see the earlier
   claim win.
 - **A dispute is for good.** Neither side can clear it.
+- **A thief who held the key during the two weeks** before your family settled can keep a claim back and
+  reveal it later, turning your settled family into a dispute for good. Nothing under these rules stops
+  that; the onboarding card says so.
+- **Events stay on relays only while someone republishes them**, which is the master's app.
+- **Kind numbers are provisional.** They must be pinned before 1.0 (core §11.3), or 1.0 devices wouldn't
+  guard the final kinds.
 - **Disputes rarely resolve themselves.** New masters are quiet keys, and most people have no NIP-05
   domain.
 - **The master shares the child's devices and often its servers**, so the core's worst leftover cases
@@ -160,6 +176,17 @@ The app suggests the second once, quietly, never as a gate.
 
 ## Changes
 
+- **Draft 5**, from its fourth red team (0 critical, 1 high):
+  - a master may later become a child, so "Protect this key" works after app passwords; chains compared by
+    anchor height (H1).
+
+  The mediums and lows:
+  - the held-back claim during the window stated (M1);
+  - same-master and released families exempt from late reveals, "saw" defined (M2);
+  - an existing family reused before signing a new one (M3);
+  - kind numbers to pin before 1.0 (M4, core 14.6);
+  - one `p` tag, leaked only from the master, proofs guarded, watcher and import wording, the gap when
+    changing master, a warning on deleting a master, republishing (lows).
 - **Draft 4**, from its third red team (0 critical, 3 high):
   - a dispute on the first family lasts for good (H1);
   - all four family kinds are Held and guarded from sites, in core 14.2 too (H2);
