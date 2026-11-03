@@ -125,6 +125,19 @@ test('a recovery wait cancelled by a locked device stops the release', async () 
   acc.bus.advance(3 * 86400 + 1);
   assert.equal(await code(async () => await P.collect(s)), 'waited_missing');
 });
+test('a missed cancel still counts: a server fetches its peers before releasing (§6.3)', async () => {
+  const acc = await create();
+  const s = acc.servers.map((x) => x.kp.pub);
+  const P = new nodes.PaperHolder(acc.bus, acc.paper, acc.g, acc.epochId, s);
+  await P.start(s);
+  const wait = codesMod.recoveryWaitId(acc.paper.pub, acc.epochId, P.r);
+  acc.bus.kill(s[1]); acc.bus.kill(s[2]);                 // only S1 hears the cancel
+  const cancel = msg('cancel', acc.g, acc.epochId, 'ask', { wait, approval: { lock: { member: acc.A.kp.pub, assertion: acc.A.lock!.assert(acc.g, codesMod.what.cancel(wait)) } } });
+  assert.equal((await acc.bus.send(acc.A.kp, s[0], cancel)).kind, 'cancelled');
+  acc.bus.revive(s[1]); acc.bus.revive(s[2]);
+  acc.bus.advance(3 * 86400 + 1);
+  assert.equal(await code(async () => P.collect(s)), 'waited_missing', 'S2 and S3 fetched the cancel from S1 first');
+});
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';
 

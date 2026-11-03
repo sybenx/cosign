@@ -351,7 +351,7 @@ export class CoSigner {
     const evId = eventId(ev), wait = holdWaitId(evId);
     const mine = [...this.holds.values()].filter((h) => h.device === from && !h.cancelled && h.end > now - SESSION_S);
     if (!this.holds.has(wait) && mine.length >= MAX_HOLDS) refuse('too_many_holds');
-    const h = this.holds.get(wait) ?? { wait, eventId: evId, device: from, start: now, end: now + this.W, cancelled: false };
+    const h = this.holds.get(wait) ?? { wait, eventId: evId, device: from, start: now, end: now + this.W, cancelled: this.cancelledWaits.has(wait) };
     this.holds.set(wait, h);
     return { v: 1, type: 'notice', re: msg.id, kind: 'hold', wait, start: h.start, end: h.end };
   }
@@ -368,23 +368,33 @@ export class CoSigner {
   private cancel(from: string, msg: any, now: number) {
     const s = this.sender(from);
     if (s.kind !== 'device') refuse('not_device', 'a helper never cancels');
-    const wait = msg.wait;
-    hexN(wait, 32, 'wait');
-    const w = what.cancel(wait);
-    const a = msg.approval ?? {};
+    if (msg.approval?.lock && msg.approval.lock.member !== from) refuse('needs_approval');
+    this.takeCancel({ wait: msg.wait, approval: msg.approval });
+    void now;
+    return { v: 1, type: 'notice', re: msg.id, kind: 'cancelled', wait: msg.wait };
+  }
+
+  /** Accepted cancels, kept as deliveries for peers (§6.3, §7.1): a server that missed one fetches it. */
+  cancels: { wait: string; approval: any }[] = [];
+  cancelledWaits = new Set<string>();
+  /** Check and apply a cancel, whoever relayed it: its lock assertion or pair is the authority. */
+  takeCancel(c: { wait: string; approval: any }) {
+    hexN(c.wait, 32, 'wait');
+    const w = what.cancel(c.wait);
+    const a = c.approval ?? {};
     if (a.lock) {
-      if (a.lock.member !== from || !s.lock) refuse('needs_approval');
-      const e = checkAssertion(this.g, s.lock!, w, a.lock.assertion); if (e) refuse(e);
+      const dev = this.m.members.get(a.lock.member);
+      if (!dev || dev.kind !== 'device' || this.m.removed.has(dev.key) || !dev.lock) refuse('needs_approval');
+      const e = checkAssertion(this.g, dev!.lock!, w, a.lock.assertion); if (e) refuse(e);
     } else if (a.pair) {
       const [x, y] = a.pair;
       if (x.member === y.member || !this.m.devices.has(x.member) || !this.m.devices.has(y.member)) refuse('approver_not_device');
       const d = detachedDigest('pair', this.g, { what: bytesToHex(w), r: x.r });
       if (!schnorrVerify(x.sig, d, x.member) || !schnorrVerify(y.code_sig, d, y.member)) refuse('bad_signature');
     } else refuse('needs_approval');
-    const t = this.holds.get(wait) ?? this.recoveries.get(wait);
+    const t = this.holds.get(c.wait) ?? this.recoveries.get(c.wait);
     if (t) t.cancelled = true;
-    void now;
-    return { v: 1, type: 'notice', re: msg.id, kind: 'cancelled', wait };
+    if (!this.cancelledWaits.has(c.wait)) { this.cancelledWaits.add(c.wait); this.cancels.push(c); }
   }
 
   private withdraw(from: string, msg: any) {
@@ -416,7 +426,7 @@ export class CoSigner {
       if (!exp || exp < now) refuse('stale_challenge');
       this.challenges.delete(challenge);
       if (!schnorrVerify(sig, detachedDigest('release_request', this.g, { r, challenge }), from)) refuse('bad_signature');
-      const rec: Recovery = { wait, backup: from, r, start: now, end: now + this.W, cancelled: false, withdrawn: false };
+      const rec: Recovery = { wait, backup: from, r, start: now, end: now + this.W, cancelled: this.cancelledWaits.has(wait), withdrawn: false };
       this.recoveries.set(wait, rec);
       for (const h of this.holds.values()) h.cancelled = true;     // a recovery ends running holds
       return { v: 1, type: 'notice', re: msg.id, kind: 'recovery', wait, start: rec.start, end: rec.end };

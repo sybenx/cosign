@@ -90,6 +90,14 @@ export class ServerNode implements Node {
     if (missing.length) throw new KeykinError('missing', missing.join(','));
   }
 
+  async fetchCancels() {
+    for (const s of [...this.m.members.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub && !this.quietSince(x.key))) {
+      const a = await this.bus.send(this.kp, s.key, msg('cancels_get', this.rec!.g, this.rec!.epoch.id, 'ask'), { timeoutMs: 2500 });
+      if (a?.type === 'cancels') for (const c of a.cancels) try { this.co!.takeCancel(c); } catch { /* not valid here */ }
+      else if (a?.code === 'unreachable') this.quiet.set(s.key, this.now);
+    }
+  }
+
   /** Before co-signing a change: fetch live peers (§6.7.3), and for a redeal collect `upload_held`. */
   private async beforeChangeCosign(ev: Unsigned) {
     await this.catchUp();
@@ -169,6 +177,7 @@ export class ServerNode implements Node {
         this.uploads.set(body.redeal, u);
         return { type: 'upload_held', redeal: body.redeal, server: this.host.pub };
       }
+      case 'cancels_get': return { type: 'cancels', cancels: this.co.cancels };
       case 'upload_status': { const u = this.uploads.get(body.redeal); return { type: 'upload_status', held: !!u && this.now - u.at < 7 * 86400 }; }
       case 'deliver':
         this.inbox.deliver({ from, to: body.to, wrap: body.wrap, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey });
@@ -191,6 +200,8 @@ export class ServerNode implements Node {
       }
       default: {
         if (body.type === 'sign' && body.event?.kind === KIND_CHANGE) await this.beforeChangeCosign(body.event);
+        // No waited statement or release before fetching peers' deliveries, so a missed cancel counts (§6.3).
+        if (body.type === 'release_request' || (body.type === 'sign' && body.hold !== undefined)) await this.fetchCancels();
         const a = this.co.handle(from, body, sentAt);
         if (a?.type === 'release') {
           // The release bundle (§6.5 step 3): seeds of this state, record, changes, material, statement.

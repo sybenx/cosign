@@ -52,7 +52,7 @@ refuse result. The codes are proposals until the spec pins them.
 | 6 | Hold cancelled by a locked device | no statement; `sign` with the hold refused `hold_not_passed` | `cosigner.test.ts` |
 | 6 | A recovery ends running holds and refuses new ones | refuse `frozen` | `cosigner.test.ts` |
 | 6 | Recovery wait cancelled by a locked device | the holder gets no release (`waited_missing`) | `sim.test.ts` |
-| 6 | Missed `cancel`; dead peer skipped after an hour | the server fetches peers before co-signing; quiet peers skipped for an hour | `sim/nodes.ts` (`catchUp`); not yet a dedicated test |
+| 6 | Missed `cancel`; dead peer skipped after an hour | a server fetches peers' cancels before a waited statement or release, so the recovery is not released; a quiet peer is skipped for an hour | `sim.test.ts` (missed cancel); skipping is in `sim/nodes.ts` (`quiet`) |
 | 7 | Removal by `lock`, `pair`, `paper` | accept | `membership.test.ts`, `sim.test.ts` |
 | 7 | Lockless single device reporting another | refuse `no_lock` | `membership.test.ts`, `sim.test.ts` |
 | 7 | Rounds with a removed member | refuse `removed` | `cosigner.test.ts`, `sim.test.ts` |
