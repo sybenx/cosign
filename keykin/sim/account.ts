@@ -14,7 +14,7 @@ import { unwrap, wrap } from '../src/transport.ts';
 import { softLock } from '../src/lock.ts';
 import { newKey, type KeyPair, type NostrEvent } from '../src/event.ts';
 import { KIND_EPOCH, type Approval, type Change, type EpochContent, type MemberEntry } from '../src/types.ts';
-import { Bus } from './bus.ts';
+import { Bus, type Transport } from './bus.ts';
 import { DeviceNode, ServerNode, PaperHolder } from './nodes.ts';
 
 export interface Account { bus: Bus; A: DeviceNode; servers: ServerNode[]; paper: KeyPair; g: string; epochId: string }
@@ -49,23 +49,24 @@ export function create(o: { lockless?: boolean } = {}): Account {
 }
 
 /** Invite a new device (§4.2), invite direction. `approve` makes the add's approval. Returns the joined device. */
-export function invite(acc: Account, inviter: DeviceNode, approve: (list: Change[]) => Approval, o: { lock?: boolean; via?: number; racer?: boolean } = {}): DeviceNode {
+export async function invite(acc: Account, inviter: DeviceNode, approve: (list: Change[]) => Approval, o: { lock?: boolean; via?: number; racer?: boolean } = {}): Promise<DeviceNode> {
   const { bus } = acc;
   const B = bus.add(new DeviceNode(bus, `D${bus.nodes.size}`, o.lock ? softLock() : null)) as DeviceNode;
   inviter.inviter = new Inviter({ g: inviter.g, m: inviter.kp.pub, now: bus.now });
   const code = parseCode(inviter.inviter.invite(inviter.rec!.relays)) as any;
   B.joiner = new Joiner({ n: B.kp.pub, lock: B.lock?.pub ?? null, now: bus.now, scanned: code });
   const h = B.joiner.hello();
-  const nonce = bus.send(B.kp, h.to, h.msg);
+  const nonce = await bus.send(B.kp, h.to, h.msg);
   if (nonce?.type !== 'join_nonce') refuse(nonce?.code ?? 'no_nonce');
   B.joiner.onNonce(inviter.kp.pub, nonce);
   if (!inviter.inviter.typed(B.joiner.check)) refuse('check_mismatch');
   const { salt, indices } = pickSalt(inviter.g, inviter.epochId, B.kp.pub, takenIndices(inviter.m!));
   const add: Change = { add: { key: B.kp.pub, kind: 'device', lock: B.lock?.pub ?? null, salt } };
-  inviter.submit([add], approve([add]));
+  await inviter.submit([add], approve([add]));
   const server = inviter.servers().filter((s) => bus.alive(s.key))[o.via ?? 0];
-  const sigmas = indices.flatMap((i) => inviter.repairFor([{ key: inviter.kp.pub, indices: [...inviter.state!.shares.keys()] }, { key: server.key, indices: server.shares }], i, B.kp.pub, 'add')
-    .map((w) => ({ ...unwrap(B.kp.sk, w).body, from: unwrap(B.kp.sk, w).from })));
+  const sigmas: any[] = [];
+  for (const i of indices) for (const w of await inviter.repairFor([{ key: inviter.kp.pub, indices: [...inviter.state!.shares.keys()] }, { key: server.key, indices: server.shares }], i, B.kp.pub, 'add'))
+    sigmas.push({ ...unwrap(B.kp.sk, w).body, from: unwrap(B.kp.sk, w).from });
   const welcome = { record: inviter.recEv!, changes: inviter.changes, state: [...inviter.state!.ids] };
   const sealed = wrap(inviter.kp.sk, B.kp.pub, { type: 'welcome', ...welcome });
   const opened = unwrap(B.kp.sk, sealed);
@@ -78,31 +79,31 @@ export function invite(acc: Account, inviter: DeviceNode, approve: (list: Change
 
 /** Seat a new server (F1/F4): `[seat i→Y, redeal]` with one approval, then the repair of the seat
  *  at the new state by the device and one live server (§6.7.6). */
-export function replaceServer(acc: Account, dev: DeviceNode, oldIdx: number, approve: (list: Change[]) => Approval): ServerNode {
+export async function replaceServer(acc: Account, dev: DeviceNode, oldIdx: number, approve: (list: Change[]) => Approval): Promise<ServerNode> {
   const { bus } = acc;
   const Y = bus.add(new ServerNode(bus, `Y${bus.nodes.size}`)) as ServerNode;
   const old = dev.m!.seats.get(`server:${oldIdx}`)!.holder;
   const list: Change[] = [{ seat: { seat: `server:${oldIdx}`, new: Y.entry(oldIdx), replaces: old?.key ?? null } }, { redeal: { dealer: dev.kp.pub } }];
-  const signed = dev.submit(list, approve(list), { deliverTo: [...dev.servers().map((s) => s.key), Y.kp.pub, ...(old ? [old.key] : [])] });
+  const signed = await dev.submit(list, approve(list), { deliverTo: [...dev.servers().map((s) => s.key), Y.kp.pub, ...(old ? [old.key] : [])] });
   void signed;
   // The newcomer's welcome (no share yet), then `need_repair` answered by the device and a live server.
   Y.welcome({ recEv: dev.recEv!, changes: dev.changes, state: [...dev.state!.ids], seeds: [...dev.seeds].filter(([k]) => k), items: dev.items, base: dev.base! });
   const helper = dev.servers().find((s) => s.key !== Y.kp.pub && bus.alive(s.key))!;
-  const sigmas = dev.repairFor([{ key: dev.kp.pub, indices: [...dev.state!.shares.keys()] }, { key: helper.key, indices: helper.shares }], oldIdx, Y.kp.pub, 'seat');
-  bus.send(dev.kp, Y.kp.pub, { type: 'seat_fill', sigmas, state: [...dev.state!.ids] });
+  const sigmas = await dev.repairFor([{ key: dev.kp.pub, indices: [...dev.state!.shares.keys()] }, { key: helper.key, indices: helper.shares }], oldIdx, Y.kp.pub, 'seat');
+  await bus.send(dev.kp, Y.kp.pub, { type: 'seat_fill', sigmas, state: [...dev.state!.ids] });
   return Y;
 }
 
 /** Paper-only recovery (§6.5, §4.4, F9): wait, open the material, recovery-join a new device, then
  *  report `lost` and redeal under `recovery` approvals the holder co-signs in its session. */
-export function recover(acc: Account, lost: DeviceNode[]) {
+export async function recover(acc: Account, lost: DeviceNode[]) {
   const { bus } = acc;
   const anyServer = acc.servers.find((s) => s.co && !s.retired && bus.alive(s.kp.pub))!;
   const servers = [...anyServer.m.seats.values()].filter((s) => s.holder && bus.alive(s.holder.key)).map((s) => s.holder!);
   const P = new PaperHolder(bus, acc.paper, acc.g, acc.epochId, servers.map((s) => s.key));
-  P.start(servers.map((s) => s.key));
+  await P.start(servers.map((s) => s.key));
   bus.advance(3 * 86400 + 1);
-  const r = P.collect(servers.map((s) => s.key));
+  const r = await P.collect(servers.map((s) => s.key));
   const two = servers.slice(0, 2);
   // Recovery join: the new device's add, approved by `recovery`, co-signed by backup + two servers.
   const D = bus.add(new DeviceNode(bus, 'R', softLock())) as DeviceNode;
@@ -110,8 +111,8 @@ export function recover(acc: Account, lost: DeviceNode[]) {
   const add: Change[] = [{ add: { key: D.kp.pub, kind: 'device', lock: D.lock!.pub, salt } }];
   const mk = (c: Change, list: Change[], ap: Approval) => ({ pubkey: acc.g, created_at: bus.now, kind: 24302, tags: [['v', '1'], ['epoch', acc.epochId]],
     content: JSON.stringify({ v: 1, g: acc.g, epoch: acc.epochId, change: c, list, approval: ap }) });
-  const addEv = P.cosign(mk(add[0], add, P.approve(add, r.waited)), two, r.state);
-  for (const s of servers) bus.send(P.kp, s.key, { type: 'change', events: [addEv] });
+  const addEv = await P.cosign(mk(add[0], add, P.approve(add, r.waited)), two, r.state);
+  for (const s of servers) await bus.send(P.kp, s.key, { type: 'change', events: [addEv] });
   // Repair the new device's indices: helpers backup (2) and two servers (§4.4).
   const changes = [...r.changes, addEv];
   const sigmas: any[] = [];
@@ -121,7 +122,7 @@ export function recover(acc: Account, lost: DeviceNode[]) {
     const helpers = [{ key: P.kp.pub, indices: [...P.shares!.keys()] }, ...two.map((s) => ({ key: s.key, indices: s.shares }))];
     const proxy = new DeviceNode(bus, 'proxy', null);
     proxy.kp = P.kp; proxy.state = { ids: r.state, C: P.C!, shares: P.shares! };
-    for (const w of proxy.repairFor(helpers, i, D.kp.pub, 'add')) { const o = unwrap(D.kp.sk, w); sigmas.push({ ...o.body, from: o.from }); }
+    for (const w of await proxy.repairFor(helpers, i, D.kp.pub, 'add')) { const o = unwrap(D.kp.sk, w); sigmas.push({ ...o.body, from: o.from }); }
   }
   D.joiner = new Joiner({ n: D.kp.pub, lock: D.lock!.pub, now: bus.now, scanned: { g: acc.g, m: P.kp.pub, s: '00'.repeat(16), x: bus.now + 600, r: [] } });
   const welcome = unwrap(D.kp.sk, wrap(P.kp.sk, D.kp.pub, { type: 'welcome', record: r.recEv, changes, state: [...r.state] }));
@@ -132,7 +133,7 @@ export function recover(acc: Account, lost: DeviceNode[]) {
   // F9: report the lost devices and redeal, approved by `recovery`; D deals, the holder co-signs.
   if (lost.length) {
     const list: Change[] = [...lost.map((l) => ({ remove: l.kp.pub }) as Change), { redeal: { dealer: D.kp.pub } }];
-    D.submit(list, P.approve(list, r.waited), { cosigner: (ev) => P.cosign(ev, two, r.state) });
+    await D.submit(list, P.approve(list, r.waited), { cosigner: (ev) => P.cosign(ev, two, r.state) });
   }
   // The recovery app destroys the backup's shares and the release bundle (§6.5 step 6).
   P.shares = null; P.bundles.clear();

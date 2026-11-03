@@ -20,7 +20,7 @@ import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/c
 import { newKey, schnorrSign, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import type { SoftLock } from '../src/lock.ts';
-import type { Bus, Node } from './bus.ts';
+import type { Transport, Node } from './bus.ts';
 
 const rid = () => bytesToHex(randomBytes(16));
 export const msg = (type: string, g: string, epoch: string, cls: string, extra: object = {}) => ({ v: 1, type, g, epoch, id: rid(), cls, ...extra });
@@ -58,8 +58,8 @@ export class ServerNode implements Node {
   repair = new RepairHelper();
   answeredRepair = new Set<string>();
   retired = false;
-  bus: Bus; name: string;
-  constructor(bus: Bus, name: string) { this.bus = bus; this.name = name; }
+  bus: Transport; name: string;
+  constructor(bus: Transport, name: string) { this.bus = bus; this.name = name; }
   get now() { return this.bus.now; }
   get m() { return this.co!.m; }
   entry(idx: number): MemberEntry { return { key: this.kp.pub, kind: 'server', shares: [idx], host: this.host.pub, operator: 'op', own: false, https: `https://${this.name}.test`, relays: ['wss://r.test'] }; }
@@ -82,22 +82,31 @@ export class ServerNode implements Node {
   private upkeep(p: any, m: Membership) {
     if (p.type !== 'redeal') return;
     const r: Redeal = p.c.change.redeal;
-    this.catchUp();
     const u = this.uploads.get(r.id);
     const view = postListView(m, p.c.list);
-    const peers = [...view.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub);
-    if (u) for (const s of peers) { const a = this.bus.send(this.kp, s.key, { type: 'upload_status', redeal: r.id }); if (a?.held) u.held.add(s.key); }
     if (u) u.held.add(this.kp.pub);
     const live = [...view.values()].filter((x) => x.kind === 'server' && this.bus.alive(x.key)).length;
     const missing = redealMissing(m, p.c.list, r, u, live);
     if (missing.length) throw new KeykinError('missing', missing.join(','));
   }
 
+  /** Before co-signing a change: fetch live peers (§6.7.3), and for a redeal collect `upload_held`. */
+  private async beforeChangeCosign(ev: Unsigned) {
+    await this.catchUp();
+    let c: any; try { c = JSON.parse(ev.content); } catch { return; }
+    const r = c?.change?.redeal; const u = r && this.uploads.get(r.id);
+    if (!u) return;
+    for (const s of [...postListView(this.m, c.list).values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub)) {
+      const a = await this.bus.send(this.kp, s.key, { type: 'upload_status', redeal: r.id });
+      if (a?.held) u.held.add(s.key);
+    }
+  }
+
   /** Fetch the change set from every live peer (union) before acting (§3.2, §7.1). */
-  catchUp() {
+  async catchUp() {
     if (!this.co) return;
     for (const s of [...this.m.members.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub)) {
-      const a = this.bus.send(this.kp, s.key, msg('changes_get', this.rec!.g, this.rec!.epoch.id, 'ask'));
+      const a = await this.bus.send(this.kp, s.key, msg('changes_get', this.rec!.g, this.rec!.epoch.id, 'ask'));
       if (a?.type === 'changes') this.takeChanges(a.changes);
     }
   }
@@ -136,11 +145,11 @@ export class ServerNode implements Node {
     this.seeds.clear(); this.items = []; this.uploads.clear();
   }
 
-  handle(from: string, body: any, sentAt: number): any {
-    try { return this.dispatch(from, body, sentAt); }
+  async handle(from: string, body: any, sentAt: number): Promise<any> {
+    try { return await this.dispatch(from, body, sentAt); }
     catch (e) { return { type: 'error', re: body?.id, code: e instanceof KeykinError ? e.code : 'internal', detail: String(e) }; }
   }
-  private dispatch(from: string, body: any, sentAt: number): any {
+  private async dispatch(from: string, body: any, sentAt: number): Promise<any> {
     if (body.type === 'seat_welcome') { this.welcome(body.w); return { type: 'ack' }; }
     if (!this.co) return { type: 'error', code: 'unknown_account' };
     const m = this.m;
@@ -176,6 +185,7 @@ export class ServerNode implements Node {
         return { type: 'ack' };
       }
       default: {
+        if (body.type === 'sign' && body.event?.kind === KIND_CHANGE) await this.beforeChangeCosign(body.event);
         const a = this.co.handle(from, body, sentAt);
         if (a?.type === 'release') {
           // The release bundle (§6.5 step 3): seeds of this state, record, changes, material, statement.
@@ -231,8 +241,8 @@ export class DeviceNode implements Node {
   wiped = false;
   /** A device's own destructive policy (Device policy module): here, always yes. */
   policy = (_e: Unsigned, _f: string) => true;
-  bus: Bus; name: string;
-  constructor(bus: Bus, name: string, lock: SoftLock | null) { this.bus = bus; this.name = name; this.lock = lock; }
+  bus: Transport; name: string;
+  constructor(bus: Transport, name: string, lock: SoftLock | null) { this.bus = bus; this.name = name; this.lock = lock; }
   get now() { return this.bus.now; }
   get g() { return this.rec!.g; }
   get epochId() { return this.rec!.epoch.id; }
@@ -259,15 +269,15 @@ export class DeviceNode implements Node {
 
   // ---- driving ----
   /** Sign an event with the first live server that answers; `stale` brings us forward and retries. */
-  sign(ev: Partial<Unsigned>, extra: { approval?: Approval; hold?: string } = {}): NostrEvent {
+  async sign(ev: Partial<Unsigned>, extra: { approval?: Approval; hold?: string } = {}): Promise<NostrEvent> {
     const event: Unsigned = { pubkey: this.g, created_at: this.now, kind: 1, tags: [], content: '', ...ev };
     let lastErr = 'no_server';
     for (const s of this.servers()) {
       if (!this.bus.alive(s.key)) { lastErr = 'unreachable'; continue; }
       for (let tries = 0; tries < 2; tries++) {
         const r = new OneCall(this.ctx(), this.me(), { key: s.key, indices: s.shares }, event, extra);
-        const a = this.bus.send(this.kp, s.key, r.request);
-        if (a?.type === 'stale') { r.abandon(); this.fetch(); continue; }
+        const a = await this.bus.send(this.kp, s.key, r.request);
+        if (a?.type === 'stale') { r.abandon(); await this.fetch(); continue; }
         if (a?.type !== 'partial') { r.abandon(); lastErr = a?.code ?? 'no_answer'; this.lastDetail = a?.detail; break; }
         return r.finish(a);
       }
@@ -276,17 +286,17 @@ export class DeviceNode implements Node {
   }
 
   /** Catch up: the union of every server's change set, then every server's inbox (§3.2, §8.2). */
-  fetch() {
+  async fetch() {
     for (const s of this.servers()) {
-      const a = this.bus.send(this.kp, s.key, msg('changes_get', this.g, this.epochId, 'ask'));
+      const a = await this.bus.send(this.kp, s.key, msg('changes_get', this.g, this.epochId, 'ask'));
       if (a?.type === 'changes') this.takeChanges(a.changes);
     }
     if (this.wiped) return;
     for (const s of this.servers()) {
-      const a = this.bus.send(this.kp, s.key, msg('inbox_get', this.g, this.epochId, 'ask'));
+      const a = await this.bus.send(this.kp, s.key, msg('inbox_get', this.g, this.epochId, 'ask'));
       if (a?.type !== 'inbox') continue;
       for (const it of a.items) this.takeDelivery(it.wrap);
-      this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid) }));
+      await this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid) }));
     }
     this.applyAll();
   }
@@ -319,7 +329,7 @@ export class DeviceNode implements Node {
 
   /** Make, co-sign and deliver a list (§6.7.6: one approval, the dealer uploads, one server co-signs,
    *  the dealer destroys δ, everyone applies). `extraView` adds incoming members for the deltas. */
-  submit(list: Change[], approval: Approval, o: { cosigner?: (ev: Unsigned) => NostrEvent; dieAfterUpload?: boolean; deliverTo?: string[] } = {}): NostrEvent[] {
+  async submit(list: Change[], approval: Approval, o: { cosigner?: (ev: Unsigned) => Promise<NostrEvent>; dieAfterUpload?: boolean; deliverTo?: string[] } = {}): Promise<NostrEvent[]> {
     const m = this.m!;
     let dealt: Dealt | null = null;
     let full = list;
@@ -333,21 +343,21 @@ export class DeviceNode implements Node {
           ...(x.kind !== 'helper' ? { release: dealt!.releaseSeed } : {}),
           ...(x.kind === 'device' ? { dk: dealt!.dkSeed, paper_ck: dealt!.paperCk } : {}) }) }));
       const up = msg('upload', this.g, this.epochId, 'member', { list: approvalListOf(list), approval, redeal: dealt.redeal.id, items, paper_item: dealt.paperItem });
-      for (const s of [...view.values()].filter((x) => x.kind === 'server')) this.bus.send(this.kp, s.key, up);
+      for (const s of [...view.values()].filter((x) => x.kind === 'server')) await this.bus.send(this.kp, s.key, up);
       full = list.map((c) => ('redeal' in c ? { redeal: dealt!.redeal } : c));
-      if (o.dieAfterUpload) { dealt.destroy(); this.bus.kill(this.kp.pub); return []; }
+      if (o.dieAfterUpload) { dealt.destroy(); this.bus.kill?.(this.kp.pub); return []; }
     }
     const signed: NostrEvent[] = [];
     try {
       for (const c of full) {
         const content = JSON.stringify({ v: 1, g: this.g, epoch: this.epochId, change: c, list: approvalListOf(list), approval });
         const ev: Unsigned = { pubkey: this.g, created_at: this.now, kind: KIND_CHANGE, tags: [['v', '1'], ['epoch', this.epochId]], content };
-        signed.push(o.cosigner ? o.cosigner(ev) : this.sign(ev));
+        signed.push(o.cosigner ? await o.cosigner(ev) : await this.sign(ev));
       }
     } catch (e) { dealt?.destroy(); throw e; }
     // Deliver the list as one to every server (and live device); then apply our own delta and destroy δ.
     const targets = o.deliverTo ?? [...m.members.values(), ...postListView(m, list).values()].filter((x) => x.kind === 'server').map((x) => x.key);
-    for (const t of new Set(targets)) this.bus.send(this.kp, t, { type: 'change', events: signed });
+    for (const t of new Set(targets)) await this.bus.send(this.kp, t, { type: 'change', events: signed });
     this.takeChanges(signed);
     if (dealt && !this.wiped) {
       const mine = dealt.deltas.get(this.kp.pub);
@@ -360,25 +370,27 @@ export class DeviceNode implements Node {
 
   /** Run a repair for `participant` with helper members (this device and others), sealing every
    *  sigma to `sealTo`. Returns the sealed sigmas, for forwarding. */
-  repairFor(helpers: { key: string; indices: number[] }[], participant: number, sealTo: string, why: string, extra: object = {}): NostrEvent[] {
+  async repairFor(helpers: { key: string; indices: number[] }[], participant: number, sealTo: string, why: string, extra: object = {}): Promise<NostrEvent[]> {
     const st = stateOf(this.state!);
     const rid_ = rid();
     const start = { type: 'repair_start', participant, helpers, state: st, rid: rid_, why, ...extra };
     const outs = new Map<string, Record<string, NostrEvent>>();
     for (const h of helpers) {
-      const a = h.key === this.kp.pub ? this.repair.start(this.kp, this.state!.C, this.state!.shares, start) : this.bus.send(this.kp, h.key, start);
+      const a = h.key === this.kp.pub ? this.repair.start(this.kp, this.state!.C, this.state!.shares, start) : await this.bus.send(this.kp, h.key, start);
       if (a?.type !== 'repair_delta') throw new KeykinError(a?.code ?? 'repair_refused', `${h.key.slice(0, 8)}: ${a?.detail ?? ''}`);
       outs.set(h.key, a.out);
     }
-    return helpers.map((h) => {
+    const out: NostrEvent[] = [];
+    for (const h of helpers) {
       const fin = { type: 'repair_finish', participant, rid: rid_, sealTo, deltas: helpers.filter((x) => x.key !== h.key).map((x) => outs.get(x.key)![h.key]) };
-      const a = h.key === this.kp.pub ? this.repair.finish(this.kp, fin, st, sealTo) : this.bus.send(this.kp, h.key, fin);
+      const a = h.key === this.kp.pub ? this.repair.finish(this.kp, fin, st, sealTo) : await this.bus.send(this.kp, h.key, fin);
       if (a?.type !== 'repair_sigma') throw new KeykinError(a?.code ?? 'repair_refused');
-      return a.wrap as NostrEvent;
-    });
+      out.push(a.wrap as NostrEvent);
+    }
+    return out;
   }
 
-  handle(from: string, body: any, sentAt: number): any {
+  async handle(from: string, body: any, sentAt: number): Promise<any> {
     try {
       switch (body.type) {
         case 'join_hello': return this.inviter!.onHello(from, body, this.now).msg;
@@ -402,26 +414,26 @@ export function approvalListOf(list: Change[]): Change[] {
 // --- the paper holder --------------------------------------------------------------------
 
 export class PaperHolder implements Node {
-  kp: KeyPair; bus: Bus;
+  kp: KeyPair; bus: Transport;
   g: string; epochId: string; serverHints: string[];
   shares: Map<number, bigint> | null = null; C: Commitment | null = null;
   r = rid();
   bundles = new Map<string, any>();
-  constructor(bus: Bus, kp: KeyPair, g: string, epochId: string, serverHints: string[]) { this.kp = kp; this.bus = bus; this.g = g; this.epochId = epochId; this.serverHints = serverHints; }
+  constructor(bus: Transport, kp: KeyPair, g: string, epochId: string, serverHints: string[]) { this.kp = kp; this.bus = bus; this.g = g; this.epochId = epochId; this.serverHints = serverHints; }
   handle(): any { return { type: 'error', code: 'unsupported' }; }
   /** §6.5 steps 1–2 at each server. */
-  start(servers: string[]) {
+  async start(servers: string[]) {
     for (const s of servers) {
-      const ch = this.bus.send(this.kp, s, msg('challenge', this.g, this.epochId, 'ask'));
+      const ch = await this.bus.send(this.kp, s, msg('challenge', this.g, this.epochId, 'ask'));
       if (ch?.type !== 'challenge') continue;
-      this.bus.send(this.kp, s, msg('release_request', this.g, this.epochId, 'member', { r: this.r, challenge: ch.challenge,
+      await this.bus.send(this.kp, s, msg('release_request', this.g, this.epochId, 'member', { r: this.r, challenge: ch.challenge,
         sig: schnorrSign(detachedDigest('release_request', this.g, { r: this.r, challenge: ch.challenge }), this.kp.sk) }));
     }
   }
   /** §6.5 steps 3–4: collect releases, open the material, check against `P_b^S`. */
-  collect(servers: string[]) {
+  async collect(servers: string[]) {
     for (const s of servers) {
-      const a = this.bus.send(this.kp, s, msg('release_request', this.g, this.epochId, 'member', { r: this.r }));
+      const a = await this.bus.send(this.kp, s, msg('release_request', this.g, this.epochId, 'member', { r: this.r }));
       if (a?.type === 'release') this.bundles.set(s, a);
     }
     if (this.bundles.size < 2) refuse('waited_missing');
@@ -440,12 +452,14 @@ export class PaperHolder implements Node {
   }
   approve(list: Change[], waited: Waited[]) { return approveRecovery(this.g, approvalListOf(list), this.kp, { r: this.r }, waited); }
   /** A recovery round: backup (2) plus two servers, two-call form. */
-  cosign(ev: Unsigned, servers: MemberEntry[], state: Set<string>): NostrEvent {
+  async cosign(ev: Unsigned, servers: MemberEntry[], state: Set<string>): Promise<NostrEvent> {
     const ctx = { g: this.g, epochId: this.epochId, state: stateHash(state), C: this.C! };
     const t = new TwoCall(ctx, { key: this.kp.pub, indices: [...this.shares!.keys()], shares: this.shares! }, servers.map((s) => ({ key: s.key, indices: s.shares })), ev);
-    for (const s of servers) t.took(s.key, this.bus.send(this.kp, s.key, t.commitRequest()));
+    for (const s of servers) t.took(s.key, await this.bus.send(this.kp, s.key, t.commitRequest()));
     const req = t.signRequest();
-    return t.finish(new Map(servers.map((s) => [s.key, this.bus.send(this.kp, s.key, req)])));
+    const parts = new Map<string, any>();
+    for (const s of servers) parts.set(s.key, await this.bus.send(this.kp, s.key, req));
+    return t.finish(parts);
   }
 }
 export { sha, hexToBytes, recoveryWaitId, pickSalt, takenIndices, parseCode, baseItem };
