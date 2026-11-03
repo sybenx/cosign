@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.6 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.7 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -125,7 +125,8 @@ would.
    relays and home device, for watching (below);
 8. if the person set up an heir (Backup module), the heir record (the envelope, the heir's public key and
    the commitments to the envelope key) and its own piece of the envelope key;
-9. the newest public server list it has verified (Server profile module).
+9. the newest public server list it has verified, and its own seat keys, enrol secrets and the inert
+   uploads for incoming seats (Server profile module).
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
 co-signs, checks approvals, enforces the two waits and the stateless destructive rule (§5.8), sends
@@ -984,7 +985,8 @@ replaced. Three routes, tried in order:
    it. This needs no relays and no published event.
 2. **Follow the forwarding notes.** A retired server, after destroying everything else, keeps for the
    account only the group-signed change that retired it and the hashes of the keys allowed to ask for it
-   (the backup keys and device keys it knew). It serves that change to a request signed by one of them. That is a forwarding note with no secrets. From
+   (the backup keys, device keys and other seat servers' keys it knew). It serves that change to a
+   request signed by one of them. That is a forwarding note with no secrets. From
    the printed servers, the paper app walks the notes to today's servers.
 3. **The signpost**, for servers the person runs themself that are not on the public list. It is a kind
    30078 event signed by `g`, with `d = hex(SHA-256("keykin-beacon/1" ‖ backup key))`.
@@ -1707,9 +1709,9 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
 
-## Changes in drafts 13.2 to 13.6
+## Changes in drafts 13.2 to 13.7
 
 Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
-and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6).
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7).
