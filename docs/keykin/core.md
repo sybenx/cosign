@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.10 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.11 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -644,10 +644,13 @@ and naming the stopping device, with no approval, as a delivery to every server:
 It stops **the helper seat**, whoever holds it. A server that has any stop in force refuses every round
 the helper coordinates or takes part in.
 - **Stops are account state, not requests.** A server keeps every stop in force for as long as it is in
-  force (core §2 item 6), carries them in seat holders' welcomes, and passes them to its peers; they never
-  expire. Devices re-send them to every incoming seat holder.
+  force (core §2 item 6), and every **cleared** stop id too, carries both in seat holders' welcomes, and
+  passes them to its peers; they never expire. A stop whose id is cleared never comes back in force.
+  Devices re-send stops to every incoming seat holder, and are told about resumes. A member may have at
+  most 3 stops in force; beyond that a server answers "already stopped".
 - **Only a named clear ends a stop.** `helper_resume {ids}`, with an approval (`lock`, `pair` or `paper`,
-  checked by every receiver as in §3.2), clears exactly the stop ids it names; a **helper seat** change
+  checked by every receiver as in §3.2; for `paper`, with a challenge from every server, as for
+  `account_delete`), clears exactly the stop ids it names; a **helper seat** change
   clears only the stop ids it names in `clears_stops: [ids]`. A stop the resuming device hadn't seen stays
   in force. No other seat change touches a stop. So a late or missed message can only leave the helper
   stopped, never running.
@@ -1984,3 +1987,9 @@ co-signer's hedge includes the event's position in a list (M1); devices keep pap
 after a redeal, for F7s that straddle it (M2); "one host in two seats" voids only changes approved within
 24 hours of each other (M5); a server answering `deleted` or "unknown account" while its peers serve the
 account counts as dead for F1 (M6).
+
+## Changes in draft 14.11
+
+From Helper's seventh red team (0 critical, 0 high): cleared stop ids are kept as account state so a
+cleared stop never returns; at most 3 stops in force per member; a `paper`-approved resume gets a
+challenge from every server.

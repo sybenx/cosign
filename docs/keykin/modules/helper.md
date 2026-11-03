@@ -1,6 +1,6 @@
 # Keykin module: Helper
 
-Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.10 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.11 · not built
 
 A **helper** is a family member's or friend's always-on box that holds the helper seat (3 shares, core
 §3.1, I6). With one server it can post for the account while every one of the person's devices sleeps.
@@ -56,7 +56,9 @@ being published, because it is already signed; **Unschedule** asks the publisher
   under the device that stays, with `was`, and **that** device sends the helper `helper_regrant {entry}`
   carrying its re-signed entry. The helper accepts a regrant only from a current device that is not being
   removed, only with that device's own signature on the entry, and only while the old device is still a
-  member; it acknowledges, and the remove is sent only after every regrant is acknowledged. Devices send
+  member; it acknowledges, and the remove is sent only after every regrant is acknowledged, carrying a
+  `kept` field (the kept grants' signer key hashes, part of its approved list) so no device ends them. If
+  the helper doesn't answer within 2 minutes, the app offers to remove the device without keeping them. Devices send
   no tombstone for a grant whose entry has a `was` they know. If the remove then fails, the kept grants
   simply stay under the staying device. A `self` remove keeps them all, since the machine stays. **Report
   lost never offers this**: every helper site that phone set up ends, and the app offers to unschedule
@@ -80,7 +82,9 @@ being published, because it is already signed; **Unschedule** asks the publisher
    package) and picks **Be a helper**. It shows a join code (core §4.1) carrying its host key, and tells
    the friend: "Your npub will be listed in *name*'s account." As soon as the hello names the account
    (core §4.1, before any seat change), it checks the machine (its own apps, and extensions over native
-   messaging); if a member of that account is on it, it stops the join and tells the person's device
+   messaging, and a machine-wide marker file every Keykin app writes, so other user accounts on the same
+   computer count too); the add screen also asks "Does anyone else use this computer with this account?";
+   if a member of that account is on it, it stops the join and tells the person's device
    which one ("This machine also runs your *Chrome* extension"), so the machine never holds 6 points. If
    one joins later anyway, it refuses to serve (answering its sites `declined: stopped`) and sends
    `helper_conflict {member}` naming it. It never takes a handover from an extension (core §4.6). Afterwards any
@@ -126,8 +130,8 @@ lock, two devices, or the paper), which clears exactly the stops that device has
   last_used, logouts}`, at most 64 KB, sealed, as a delivery that replaces its earlier one, updated once an
   hour or every 50 events. When it is full, the oldest event ids give way to a count and a time span
   (`dropped {count, from, to}`); a report starts afresh after each acknowledgement, which a device sends
-  after fetching the report's events that relays keep (zap requests, relay sign-ins and unpublished events
-  are listed by count only, never fetched), and devices compare the count with what they find in that
+  after one fetch of the report's events, of at most 10 seconds (zap requests and relay sign-ins are listed
+  by count only; ids not found are recorded as such), and devices compare the count with what they find in that
   span. Reports also list the ids of posts scheduled on the box, so any device can show them. A device fetches the events by id from relays, checks each (`pubkey == g`, the
   signature) and writes Device policy's metadata for them (Device policy §1), marking the attribution as
   the helper's. Devices show it quietly: "*Helper* signed 12 notes for *Bot*."
@@ -182,6 +186,14 @@ They can't read messages, private lists or wallet content. The opt-in screen lin
 
 ## Changes
 
+- **Draft 8**, from its seventh red team (0 critical, 0 high), its mediums and lows:
+  - cleared stops never come back, and at most 3 stops per member (M1, M2, core 14.11);
+  - a `kept` field in the remove, so a third device doesn't end kept sites (M3);
+  - a 2-minute limit on the helper's acknowledgement (M4);
+  - one bounded fetch before acknowledging a report (M5);
+  - a machine-wide marker and a question on the add screen (M6);
+  - a `paper`-approved resume gets a challenge from every server (M7, core 14.11);
+  - wording and message names (lows).
 - **Draft 7**, from its sixth red team (0 critical, 2 high):
   - a regrant comes only from the staying device, signed by it, acknowledged before the remove (H1, M1);
   - stops are named and kept as account state, so a resume clears only those its device saw (H2, M3,
