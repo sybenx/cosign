@@ -94,6 +94,15 @@ export function approvePaper(g: string, epochId: string, list: Change[], expiry:
     backup_sig: schnorrSign(detachedDigest('paper', g, { list: approvalHash(list), challenge }), backup.sk) } };
 }
 
+/** A paper approval on a request no co-signer joins and every server checks (`account_delete`,
+ *  `helper_resume`; core §6.2): one device signature, and the backup key's signature over each server's
+ *  own challenge, `challenges: [{server, challenge, backup_sig}]`. `w` is the request's `what`. */
+export function approvePaperRequest(g: string, w: Uint8Array, device: KeyPair, backup: KeyPair, challenges: { server: string; challenge: string }[]): { paper: any } {
+  const what = bytesToHex(w);
+  return { paper: { member: device.pub, sig: schnorrSign(detachedDigest('paper', g, { what }), device.sk), backup: backup.pub,
+    challenges: challenges.map(({ server, challenge }) => ({ server, challenge, backup_sig: schnorrSign(detachedDigest('paper', g, { what, challenge }), backup.sk) })) } };
+}
+
 export function approveRecovery(g: string, list: Change[], backup: KeyPair, releaseRequest: unknown, waited: Waited[]): Approval {
   return { recovery: { backup: backup.pub, release_request: releaseRequest, waited,
     backup_sig: schnorrSign(detachedDigest('recovery', g, { list: approvalHash(list) }), backup.sk) } };

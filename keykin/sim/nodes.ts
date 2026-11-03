@@ -20,7 +20,7 @@ import { repairShare } from '../src/frost.ts';
 import { Inbox } from '../src/inbox.ts';
 import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
-import { approveRecovery, approveLock, approvePaper, placeholderList } from '../src/approval.ts';
+import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList } from '../src/approval.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
 import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
@@ -725,14 +725,35 @@ export class DeviceNode implements Node {
 
   /** Account admin §3 "Destroy my key": sent to every server; this device destroys its copy only once
    *  two servers have answered `deleted`. */
-  async deleteAccount(): Promise<number> {
+  async deleteAccount(o: { paper?: KeyPair } = {}): Promise<number> {
     const body = msg('account_delete', this.g, this.epochId, 'member', {});
-    const w = what.request('account_delete', body.id, body);
-    const req = { ...body, approval: { lock: { member: this.kp.pub, assertion: this.lock!.assert(this.g, w) } } };
+    const req = { ...body, approval: await this.approveRequest('account_delete', body, o.paper) };
     let n = 0;
     for (const s of this.servers()) { const a = await this.bus.send(this.kp, s.key, req); if (a?.type === 'deleted') n++; }
     if (n >= 2) this.wipe();
     return n;
+  }
+
+  /** Approve a request that every server checks and no co-signer joins: by this device's lock, or by
+   *  the paper, this device plus the backup key over a challenge from every server (core §6.2). */
+  async approveRequest(type: string, body: any, paper?: KeyPair): Promise<any> {
+    const w = what.request(type, body.id, body);
+    if (!paper) return { lock: { member: this.kp.pub, assertion: this.lock!.assert(this.g, w) } };
+    const challenges: { server: string; challenge: string }[] = [];
+    for (const s of this.servers()) {
+      const ch = await this.bus.send(paper, s.key, msg('challenge', this.g, this.epochId, 'ask'));
+      if (ch?.type === 'challenge') challenges.push({ server: ch.server, challenge: ch.challenge });
+    }
+    return approvePaperRequest(this.g, w, this.kp, paper, challenges);
+  }
+
+  /** Helper module §3.2 "Resume helper": clears exactly the stops this device has seen, at every server. */
+  async resumeHelper(ids: string[], o: { paper?: KeyPair } = {}): Promise<any[]> {
+    const body = msg('helper_resume', this.g, this.epochId, 'member', { ids });
+    const req = { ...body, approval: await this.approveRequest('helper_resume', body, o.paper) };
+    const out: any[] = [];
+    for (const s of this.servers()) out.push(await this.bus.send(this.kp, s.key, req));
+    return out;
   }
 
   /** Run a repair for `participant` with helper members (this device and others), sealing every

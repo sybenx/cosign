@@ -20,7 +20,7 @@ import { itemHash } from './redeal.ts';
 import { RepairHelper } from './repair.ts';
 import { checkEnroll } from './serverprofile.ts';
 import { checkHeirPiece, heirWaitId, type HeirRecord } from './backup.ts';
-import { takenIndices, signpostCount, signpostServers } from './membership.ts';
+import { takenIndices, signpostCount, signpostServers, servers as seatedServers } from './membership.ts';
 import { jcs } from './bytes.ts';
 import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Waited } from './types.ts';
 
@@ -198,7 +198,7 @@ export class CoSigner {
     const w = what.request('account_delete', msg.id, body);
     // A request relayed in a peer's `deleted` is checked here too, never taken on the peer's word (core
     // §3.2): its sender is its approving device; only the paper challenge stays the first server's.
-    if (relayed) from = approval?.lock?.member ?? approval?.pair?.[0]?.member ?? (approval?.paper?.member ?? approval?.paper?.[0]?.member);
+    if (relayed) from = approval?.lock?.member ?? approval?.pair?.[0]?.member ?? approval?.paper?.member;
     const dev = this.sender(from);
     if (dev.kind !== 'device') refuse('not_device');
     let approvers: string[] = [];
@@ -214,20 +214,40 @@ export class CoSigner {
       if (!schnorrVerify(x.sig, d, x.member) || !schnorrVerify(y.code_sig, d, y.member)) refuse('bad_signature');
       approvers = [x.member, y.member];
     } else if (approval?.paper) {
-      const p = approval.paper.find?.((x: any) => x.server === (this.o.host?.pub ?? this.o.me.pub)) ?? approval.paper;
-      if (p.backup !== this.m.backupKey || !this.m.devices.has(p.member)) refuse('not_current_backup');
-      if (!schnorrVerify(p.sig, detachedDigest('paper', this.g, { what: bytesToHex(w) }), p.member)) refuse('bad_signature');
-      if (!schnorrVerify(p.backup_sig, detachedDigest('paper', this.g, { what: bytesToHex(w), challenge: p.challenge }), p.backup)) refuse('bad_signature');
-      if (!relayed && !this.takeChallenge(p.challenge, p.backup, now)) refuse('stale_challenge');
-      approvers = [p.member];
+      approvers = [this.checkRequestPaper(approval.paper, w, now, relayed)];
+      if (approvers[0] !== from) refuse('needs_approval', 'the paper approval is by the requesting device');
     } else refuse('needs_approval', 'a delete needs lock, pair or paper; there is no hold path');
     // The changes that make each approver a device, so anyone can check the tombstone's proof.
     // With their lock changes and, for a paper approval, the paper change of that key (review 5 B10).
-    const paperKey = approval?.paper ? (approval.paper.backup ?? approval.paper[0]?.backup) : null;
+    const paperKey = approval?.paper ? approval.paper.backup : null;
     const changes = this.m.accepted.filter((p) => (p.type === 'add' && approvers.includes((p.c.change as any).add.key))
       || (p.type === 'lock' && approvers.includes((p.c.change as any).lock.member))
       || (p.type === 'paper' && paperKey && (p.c.change as any).paper.key === paperKey)).map((p) => p.ev);
     return { request: msg, changes };
+  }
+
+  /** A paper approval on a request every server checks (core §6.2: `account_delete`, `helper_resume`):
+   *  `{member, sig, backup, challenges: [{server, challenge, backup_sig}]}`. The device must be current and
+   *  the backup key the current one; this server's own entry is checked and its challenge used up. A
+   *  delete relayed in a peer's `deleted` has had our challenge used already, or never reached us: then
+   *  any entry from a current server, validly signed, stands (the first server took its own challenge).
+   *  Returns the approving device. */
+  private checkRequestPaper(p: any, w: Uint8Array, now: number, relayed = false): string {
+    if (!p || typeof p !== 'object' || !Array.isArray(p.challenges) || !p.challenges.length) refuse('malformed', 'a paper request approval carries challenges');
+    if (p.backup !== this.m.backupKey || !this.m.devices.has(p.member)) refuse('not_current_backup');
+    const what = bytesToHex(w);
+    if (!schnorrVerify(p.sig, detachedDigest('paper', this.g, { what }), p.member)) refuse('bad_signature');
+    const me = this.o.host?.pub ?? this.o.me.pub;
+    const hosts = new Set(seatedServers(this.m).map((s) => s.host));
+    const signed = (c: any) => typeof c?.challenge === 'string' && schnorrVerify(c.backup_sig, detachedDigest('paper', this.g, { what, challenge: c.challenge }), p.backup);
+    const mine = p.challenges.filter((c: any) => c?.server === me);
+    if (mine.length > 1) refuse('malformed', 'one challenge per server');
+    if (!relayed) {
+      if (mine.length !== 1) refuse('stale_challenge', 'no challenge from this server');
+      if (!signed(mine[0])) refuse('bad_signature');
+      if (!this.takeChallenge(mine[0].challenge, p.backup, now)) refuse('stale_challenge');
+    } else if (!p.challenges.some((c: any) => hosts.has(c?.server) && signed(c))) refuse('bad_signature');
+    return p.member;
   }
 
   /** Help a repair (§4.2 step 3, §6.7.4, §6.7.10): authorised first, and the finish seals only to
@@ -391,7 +411,9 @@ export class CoSigner {
         if (x.member === y.member || !this.m.devices.has(x.member) || !this.m.devices.has(y.member)) refuse('approver_not_device');
         const d = detachedDigest('pair', this.g, { what: bytesToHex(w), r: x.r });
         if (!schnorrVerify(x.sig, d, x.member) || !schnorrVerify(y.code_sig, d, y.member)) refuse('bad_signature');
-      } else refuse('needs_approval', 'a resume needs lock or pair (paper resumes need every server\'s challenge)');
+      } else if (approval?.paper) {
+        if (this.checkRequestPaper(approval.paper, w, now) !== from) refuse('needs_approval', 'the paper approval is by the requesting device');
+      } else refuse('needs_approval', 'a resume needs lock, pair or paper');
       if (!Array.isArray(msg.ids)) refuse('malformed');
       this.clearStops(msg.ids, now);
       return { v: 1, type: 'notice', re: msg.id, kind: 'helper_resumed', stops: [...this.stops.keys()] };
