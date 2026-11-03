@@ -10,7 +10,7 @@ password manager. Every rule must beat that on security **and** on ease of use.
 
 | File | What it is | Status |
 |---|---|---|
-| [core.md](core.md) | Keykin Core, draft 9: the core spec, with Upkeep (§6.7) for replacing servers, helper and paper | Round 8 passed the core before Upkeep; draft 9 is in red-team round 9. |
+| [core.md](core.md) | Keykin Core, draft 10: the core spec, with Upkeep (§6.7) for replacing servers, helper and paper | Round 9 (Upkeep): 0 critical, 6 high → cut; draft 10 is in red-team round 10. |
 | [core.md §4.6](core.md) | One member per machine (a desktop app is the machine's member; extensions relay to it) | Reviewed: 0 critical, 2 high (handover gaps), verdict keep. Fixes applied in 8.4; re-check clean, folded into 8.5. |
 | [vectors/](vectors/) | Test vectors: `gen_vectors.py` produces `vectors.json` (computed); `vectors.md` lists the behaviour cases | Computed vectors done. Behaviour cases need a reference implementation to fill in expected outputs. |
 | [interop-plan.md](interop-plan.md) | How to test compatibility: nak must pass, plus a top set chosen by use (Primal, Amethyst, nostr-tools/NDK, Damus) | Plan only. |
@@ -35,6 +35,7 @@ of sessions, not in the repo.
 | refresh only | refresh 3 | 1 | 2 → redesign |
 | machine rule | core 8.3 §4.6 | 0 | 2 → fixed in 8.4 |
 | machine re-check | core 8.4 §4.6 | 0 | 0 → passes (8.5) |
+| 9 | core 9 (Upkeep) | 0 | 6 → cut, draft 10 |
 
 ## Open by design
 
@@ -43,7 +44,7 @@ of sessions, not in the repo.
 - **Reference implementation**, to produce the behaviour vectors' expected outputs. TypeScript and
   Kotlin should both pass them.
 - **Interop runs** against a prototype (`interop-plan.md`).
-- **Upkeep** (core §6.7): red-team round 9 under the stop rule.
+- **Upkeep** (core §6.7): red-team round 10 under the stop rule.
 - **Modules** not yet written: Account admin, Server profile, Device policy, Doors and grants, Backup,
   Helper, Key families.
 

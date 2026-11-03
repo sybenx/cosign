@@ -175,3 +175,6 @@ because it describes the code during the freeze.
 - 2026-11-02 · Default (UI): after report-lost or a server swap, one quiet cue (a filled dot on Backup) suggests a new paper; never a banner, never forced.
 - 2026-11-02 · Default: the user signs the public server list for now; the app pins it; co-signers are added once other operators exist.
 - 2026-11-02 · Process: red-team round 9 (core draft 9, Upkeep) found 0 critical, 6 high. Stopped; `simplification.md` (round 9 part) proposes cutting the servers' beacon check (beacon becomes a paper signpost only), a running release key, per-redeal material items, any-4-points `need_repair`, and "new paper" instead of same-key paper repair. Two questions for the user. Seats stay replaceable.
+- 2026-11-02 · User: kept the three Upkeep UI defaults (7-day calm card offering to move all servers; quiet dot on Backup; the user signs the public server list for now).
+- 2026-11-02 · Hub, under the user's standing rules (the user can overrule): **servers stop checking the beacon**; it becomes a paper-only signpost, published at creation and never deletable through a site grant.
+- 2026-11-02 · Hub, same basis: **a paper missing a piece is fixed by printing a new paper** (quiet dot on Backup), never by a silent same-key repair.
