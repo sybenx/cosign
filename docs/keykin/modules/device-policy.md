@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 13 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.11 · not built
+Draft 14 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.11 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -36,11 +36,12 @@ hold:
   record, and the record of which grant an event was signed for, are kept as long as that event is
   **current**: for a replaceable or addressable event, until a newer version replaces it; for a regular
   event, until it is deleted, or while its grant lasts for notes, reactions and reposts. Zap requests and
-  relay sign-ins are never recorded; upload tokens are recorded only as the blob hashes (`x`) each grant
-  uploaded; and encrypt records for messages are kept 90 days.
+  relay sign-ins are never recorded; upload tokens are recorded only as the blob hash (`x`) and host each
+  grant uploaded, and only if nothing else had claimed that hash first (no event of the account signed for
+  another grant or the member app references it, and no other grant recorded it); and encrypt records for messages are kept 90 days.
   Snapshots are split at 48 KB, with `d = "keykin-meta:" ‖ hex(HMAC-SHA256(HKDF(base data key,
-  "keykin-meta-d/1"), member key ‖ month ‖ part))`, `month` as the ASCII `YYYY-MM` and `part` as 2 bytes
-  big-endian, distinct from grant events. Each part has its own sequence number, and part 0 carries a
+  "keykin-meta-d/1"), member key ‖ month ‖ part))`, `month` as the ASCII `YYYY-MM` in UTC and `part` as 2
+  bytes big-endian, distinct from grant events. Each part has its own sequence number, and part 0 carries a
   signed list of every part's number and hash, so unchanged parts are never mistaken for rollbacks. A closed month's snapshot is
   dropped once all its entries are. Each device publishes it
   as **one cumulative snapshot per month**, signed by its member key; a higher number replaces that
@@ -48,7 +49,9 @@ hold:
   encrypted account-signed kind 30078 with a `keykin-` `d`, as Doors and grants does for grants), and
   fetches the others' snapshots, for at most 3 seconds, before a judgement that depends on them; if they
   don't arrive, it judges with what it has. A device accepts a snapshot only from a key that is a current device,
-  and never one with a lower number than it has seen from that writer **for that month**. So a removed device or the sync service can't forge it or roll
+  and never a part with a lower number than it has seen for **that part**; part 0 is republished with
+  every change. A reader fetches the current and the previous month, and older months when a judgement
+  needs them. So a removed device or the sync service can't forge it or roll
   it back, and out-of-order sync loses nothing.
 - **A device leaving by its own choice** (Remove this device, or a `self` remove, core §4.6) first merges
   its metadata into the snapshot of the device that takes over or approves (if
@@ -117,8 +120,8 @@ in the member app, and other sites', never count against a site.
 | A deletion of one ordinary event another site or the member app signed, or not recorded as this grant's | **Confirm** |
 | A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
 | A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
-| A site's **replaceable or addressable** judged-kind event dated more than a minute ahead | re-dated to now before signing (so Undo and rebased drafts never lose to it at relays); regular kinds, wallet events included, are left alone |
-| A Blossom `t=delete` or NIP-98 `DELETE` token | Silent for a blob this grant uploaded (by its `x`), within the site's daily deletion budget; otherwise **Confirm** |
+| A Blossom `t=delete` token | Silent only when it names exactly one hash and that hash's recorded host, for a blob this grant uploaded (above), within the site's daily deletion budget; otherwise **Confirm** |
+| A NIP-98 `DELETE`, `PUT` or `PATCH` token, or a Blossom token naming several hashes | **Confirm** |
 | A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 3 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count, this deletion included, stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, even when servers or a co-signing device refuse, and nothing is signed (a newer token event already supersedes them; the device doesn't check its `del` list). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
 | New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
 | Wallet and mint settings (17375, 37375) changed, or the payment pubkey or mints in 10019 changed, by a site | **Confirm** |
@@ -171,8 +174,8 @@ going to a server instead: on `needs-approval` it shows its own Held card. A hel
 - **Undo is judged.** It signs an earlier version from history as a new event, with a fresh `created_at`
   later than any deletion it undoes and than the newest version it replaces (if that is dated ahead, the
   device waits until its time has passed, since a co-signer refuses events dated more than 10 minutes
-  ahead; a waiting Undo is kept in the outbox, so it survives the app being killed, and is re-applied to
-  the current version when it is signed, so the person's newer edits stay),
+  ahead; a waiting Undo is kept in the outbox as the changes it makes, so it survives the app being killed
+  and is re-applied to the current version when it is signed, keeping the person's newer edits),
   and goes through §2 against the current version like any change. Additions are never destructive, so
   restoring a bigger list is silent; restoring a smaller one is Confirm; restoring an empty one is Held
   (core §5.8).
@@ -262,6 +265,17 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 14**, from its twelfth red team (0 critical, 1 high):
+  - a blob counts as the site's only if nothing else claimed its hash first, with its host, and a silent
+    delete names exactly that one hash and host (DP12-1).
+
+  The mediums and lows:
+  - the re-dating row is dropped; Undo and rebased drafts already date themselves after the newest
+    (DP12-2, DP12-7);
+  - per-part rollback wording, and part 0 republished with every change (DP12-3);
+  - NIP-98 deletes, `PUT`/`PATCH` and multi-hash tokens are Confirm (DP12-4);
+  - a waiting Undo stored as changes (DP12-5);
+  - `month` in UTC, and which months a reader fetches (DP12-6).
 - **Draft 13** (Q8, at the bar, for convergence): the "others' content" rule is cut; lists, profile,
   relays and wallet stay guarded, and §8 states the limit.
 - **Draft 12**, from its eleventh red team (0 critical, 1 high):
