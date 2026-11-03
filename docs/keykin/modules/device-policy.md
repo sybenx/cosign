@@ -174,9 +174,10 @@ going to a server instead: on `needs-approval` it shows its own Held card. A hel
 ## 3. Undo
 
 - **Undo is judged.** It signs an earlier version from history as a new event, with a fresh `created_at`
-  at the newest version's time plus one second, or now if later, so it never loses to a version dated
-  ahead and never waits (at most 5 minutes ahead, which co-signers accept; a waiting Undo is kept in the outbox as the changes it makes, so it survives the app being killed
-  and is re-applied to the current version when it is signed, keeping the person's newer edits),
+  at the newest version's time plus one second, or now if later (at most 5 minutes ahead, which co-signers
+  accept), so it never loses to a version dated ahead and never waits. An Undo not yet signed is kept in
+  the outbox as the changes it makes, so it survives the app being killed and is re-applied to the current
+  version when it is signed, keeping the person's newer edits;
   and goes through §2 against the current version like any change. Additions are never destructive, so
   restoring a bigger list is silent; restoring a smaller one is Confirm; restoring an empty one is Held
   (core §5.8).
