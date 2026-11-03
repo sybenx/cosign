@@ -1,6 +1,6 @@
 # Keykin module: Backup
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.15 · not built
 
 The core has one backup: the **paper**, a backup key pair whose shares exist only as wrapped material
 (core §4.3, §7.2), recovered with two servers after a 3-day wait (§6.5). This module says how that key is
@@ -40,8 +40,9 @@ renews your heir and the pieces your 3 friends hold."
    Holders that haven't acknowledged by then are dropped and named on Backup. If no recoverable set is
    reached before the expiry, nothing is sent: the device destroys K (core §4.3 step 4), and the old set
    stays in force.
-5. **F7 step 4**: the `paper` change carries two module fields, which the group signature pins (core
-   §11.1 ignores unknown fields):
+5. **F7 step 4**: the `paper` change carries two module fields **inside its `paper` object**
+   (`change.paper.holders`, `change.paper.heir`, never beside it: core §9.5), which the group signature
+   pins (core keeps unknown fields there and hashes them):
    - `holders`: the hashes of the holder keys kept in the set;
    - `heir`: the hash of the heir record, if there is one. The record and each server's piece travel with
      the change as inert uploads (core §6.7.3), and every server accepts a record **only** when it applies

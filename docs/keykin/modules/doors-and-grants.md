@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 19 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
+Draft 19 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.15 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -220,7 +220,7 @@ for listing. The wildcard is also published in the ending device's event.
   minutes everywhere.
 - **New devices.** This module adds a `grants` field (every current entry, tombstone and the union of ended
   ids) to the welcome
-  and the handover (core §4.2, §4.6; core §11.1 ignores unknown fields). A new device that got none reads
+  and the handover (core §4.2, §4.6; core §11.1 keeps, hashes and compares unknown fields, §9.5). A new device that got none reads
   the grant events from relays, checks them as above, and answers for no grant until it has.
 - **A grant applies only on its connection.** A NIP-07 grant for an origin in Chrome on the laptop
   doesn't let the same origin sign silently in another browser, profile or machine. Synced copies are for

@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.14 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.15 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -680,15 +680,19 @@ co-signer and any retry), **or** a passed hold:
   reference numbers, counted per account at each server, no history kept; a thief spreading deletions
   over three servers gets about three times that, still far less than a stolen nsec allows);
 - kind 0 whose content has no non-empty `name`, `display_name`, `about` or `picture`;
-- kind 3, 10000–10030 or 30000–30030 with no tags other than `d` **and an empty `content`**;
-- kind 10002 with no `r` tag whose value starts with `wss://` or `ws://`;
+- kind 3, 10000–10030 or 30000–30030 with no tags other than `d` **and an empty `content`** (the zero-length string; whitespace or `{}` is not
+  empty);
+- kind 10002 with no `r` tag whose value starts with `wss://` or `ws://` (byte-exact, case-sensitive);
 - a key-family event of any kind: family, release, leaked or accept (kinds 1244–1247, Key families module;
   a site never gets one signed). These kinds are provisional and MUST be pinned before Core 1.0; if the NIP
   assigns others, this list changes in a minor version before families are enabled.
 
 These tests are exact: kind 0's content is parsed as a JSON object, and content that isn't one, or has a
 duplicate key, counts as empty; a field is non-empty only if it is a string with a non-whitespace
-character.
+character. A tag counts only if it has at least two elements, empty strings included (`[]` and `["r"]` count as no
+tag at all; `["p",""]` counts),
+and a kind 5's targets are its distinct (`e` or `a`, value) pairs. §9.5 gives the parse rules and the
+whitespace set.
 
 **Holding** is a wait (§6.3) on `{"hold": <event id>}`: the device sends `hold {event}`; servers start a
 wait and tell every member and channel; after `W` the device sends `sign` with `hold: <wait id>` and a
@@ -1122,7 +1126,8 @@ replaced. Three routes, tried in order:
    - **Guards.** A device MUST NOT sign, on a site's request, a kind 30078 with any of the account's
      signpost `d` values, or a kind 5 targeting one. Co-signers keep the current signpost's event id
      (one hash per backup key). They refuse every kind 5 that targets a signpost by `e` or `a`, from
-     anyone, and co-sign a signpost only from a device, with the right `n` and an `h` that matches their
+     anyone (an `e` value matches the signpost id, and an `a` value split on `:` matches kind `30078`, `g`
+     and a signpost `d`, hex compared ignoring case), and co-sign a signpost only from a device, with the right `n` and an `h` that matches their
      own view.
    - Servers never act on the signpost.
 
@@ -1511,6 +1516,97 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 The signpost (kind 30078) is the one Core event published on relays (§6.7.5); modules may publish their own (Doors and grants: grant events). That is the whole of Core. Cosign 0.12 has 55 message types in
 `server/core/group.ts`; everything not here belongs to a module or goes.
 
+### 9.5 Reading and writing JSON
+
+Two implementations must decide every input the same way, so Core fixes how JSON is read and written. The
+profile covers every **Keykin body** (any JSON Core or a module defines: rumor contents (§9.1), epoch
+records and changes (§3), approvals, signposts, server lists, module events' contents, and a lock
+assertion's `clientData` (§6.1)) and every **event object** Core parses: rumors, seals and gift wraps,
+Keykin's own events, and every event a member is asked to co-sign.
+
+- **Strict UTF-8 and RFC 8259.** Bytes are decoded fatally: a NIP-44 plaintext, a `clientData` or any
+  other JSON text holding invalid UTF-8 (overlong forms, encoded surrogates, values beyond U+10FFFF) is
+  `malformed`, never repaired with U+FFFD. The text is then one RFC 8259 JSON value: no byte order mark,
+  comments, trailing commas, single quotes or `NaN`, and nothing around the value but RFC 8259's `ws`
+  (space, tab, line feed, carriage return).
+- **No key twice.** An object that names a key twice, at any depth, is `malformed`; it is never "last one
+  wins" or "first one wins". Keys and strings are compared by code point after escapes are undone (`"a"`
+  and `"\u0061"` are the same key), with no Unicode normalisation.
+- **No lone surrogates.** A string or key holding an unpaired surrogate, raw or escaped (`"\ud800"`), is
+  `malformed`.
+- **No control characters but five.** A string or key holding, after escapes are undone (so raw or
+  escaped), U+0000–U+001F other than U+0008, U+0009, U+000A, U+000C and U+000D is `malformed`. Every
+  string, in NIP-01's id serialization and in JCS alike, is then written exactly so: `"` as `\"`, `\` as
+  `\\`, the five as `\b \t \n \f \r`, and every other character as raw UTF-8 (`<`, `&`, U+007F, U+2028 and
+  characters beyond U+FFFF included). Library writers that escape more MUST NOT be used for either: Gson
+  escapes U+2028 and U+2029 even with HTML escaping off, Android's `org.json` writes `/` as `\/`, and
+  Python escapes non-ASCII unless told `ensure_ascii=False`; writing both by hand is safest. This refuses
+  a note holding U+000B, which Word uses for a manual line break; it is a known refusal, because Nostr
+  libraries disagree on that note's id.
+- **Depth.** The outermost value is at depth 1, and a value at depth 33 is `malformed`. Each JSON text is
+  counted on its own (a seal, the rumor inside it and the rumor's content are three texts).
+- **Integers only, spelled one way.** Every number is written `-?(0|[1-9][0-9]*)` with absolute value at
+  most 2^53 − 1; `-0`, a fraction, an exponent (`1.0`, `1e0`) or a larger value is `malformed`, checked as
+  the text is parsed, so no implementation rounds. This covers an event's `created_at` (non-negative) and
+  `kind`. Decimal strings in Keykin tags (`["v","1"]`, `["epoch","<number>"]`) use the same spelling and
+  are compared as strings.
+- **Event shape.** A signed event (a seal, a gift wrap, a Keykin event) has exactly `id`, `pubkey`,
+  `created_at`, `kind`, `tags`, `content` and `sig`; a rumor has the same without `sig`. `id` and `pubkey`
+  are 64 lowercase hex characters, `sig` 128, `kind` an integer from 0 to 65535, `created_at` a
+  non-negative integer, `content` a string, and `tags` an array of arrays of strings. Anything else is
+  `malformed`. A receiver recomputes `id` (NIP-01) and refuses a mismatch.
+- **A site's event.** An event a site asks to have signed (NIP-07, NIP-46, NIP-55) may leave out `id`,
+  `pubkey` and `sig`, and an empty string or `null` there counts as absent; a missing `tags` counts as
+  `[]` and a missing `content` as `""`; its other fields follow the shape above. The device refuses a
+  `pubkey` other than `g`, drops `id`, `sig` and any extra field (a site's `id` is never trusted), and
+  sends co-signers exactly `pubkey` (= `g`), `created_at`, `kind`, `tags`, `content` and `id`. A co-signer
+  refuses any other field, recomputes the id (§5.4) and refuses one that differs.
+- **JCS** is RFC 8785: keys sorted by UTF-16 code units; a string escapes only `"`, `\\` and U+0000–U+001F
+  (as `\b \f \n \r \t`); every other character, U+007F and above included, is written raw. On values that
+  passed the rules above this is ES2019 `JSON.stringify` with sorted keys, written by hand rather than
+  through an object (a JavaScript object puts `"9"` before `"10"`). Every hash or signature over a body
+  that another member checks is over JCS of the parsed value, which is the complete JSON tree with unknown
+  fields kept (an implementation that maps bodies to typed records keeps the tree beside them), never over
+  the bytes received, with two exceptions fixed by other standards: a lock assertion is checked over the
+  `clientData` bytes as the authenticator made them (WebAuthn, §6.1), and an event id is over NIP-01's
+  serialization. Wherever Core compares values ("an identical add", "the same `new`", "matches one entry
+  of the list"), they are the same when their JCS bytes are equal, an add's absent `lock` counting as
+  `"lock": null`.
+- **A change names one change.** A change's `change` object, and every entry of an approved list (§6.7.2),
+  has exactly one of `add`, `remove`, `lock`, `seat`, `paper` or `redeal`, plus `to` (a member key) with a
+  `remove` only (§6.4); a key counts as present whatever its value, `null` included. Anything else there
+  is not a change: it is refused, it is not "void", and it takes part in no rule of §3 or §6.7 (an
+  exception to §11.1's "unknown fields are ignored"; module fields go inside the change they belong to).
+- **Encodings in Keykin fields.** In a Keykin body or a Keykin event (not the tags of an event a site asks
+  to have signed, which §5.7–5.8 judge): hex is lowercase, with exactly the length the field needs;
+  base64url (RFC 4648 §5) uses the URL alphabet only, with no padding (Java's `Base64.getUrlEncoder()`
+  pads unless told `withoutPadding()`), spaces or line breaks, a length that is not 1 mod 4, and zero
+  unused bits in the last character. A part's `data` (§9.1) is standard base64 (RFC 4648 §4): length 0 mod
+  4, at most two `=` and only at the end, and zero unused bits. A seal's or gift wrap's `content` is
+  NIP-44's payload, standard base64 with padding, with zero unused bits; the same rumor under two wraps is
+  one message, known by its recomputed id (this only removes duplicate wraps; §5.3 and §5.6 still decide
+  replays of requests).
+- **Saying why.** A device that refuses a site's event under these rules names the cause in its log and to
+  the site (for example "contains control character U+000B"), never a bare `malformed`.
+
+A legacy record (§3.4's `cosign` and `frost` tags) is read with the parse rules; its field encodings are
+whatever Cosign 0.12 wrote (§11.2).
+
+**Kind 0.** §5.8's test reads a profile written by any Nostr app. A kind 0 event is an event object, so
+the rules above apply to it; its *content* is read with the first five rules only (UTF-8, RFC 8259, no key
+twice, no lone surrogates or stray control characters, depth), and content that breaks one, or is not an
+object, counts as empty; numbers inside it are checked against RFC 8259's grammar only, never converted,
+so no form or size makes the parse fail. A field is non-empty when it is a string holding a character
+outside this whitespace set (JavaScript's `\s`): U+0009–U+000D, U+0020, U+00A0, U+1680, U+2000–U+200A,
+U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF. So a sloppy app's valid-looking profile (a repeated
+key, a BOM) is held for `W` like a blank one, and a name of invisible characters (U+200B, U+3164) passes,
+as a name of `"."` does: a face-value test cannot judge content, and Device policy judges profiles on the
+device.
+
+Hostile inputs that every implementation must decide the same way are to become shared negative vectors
+(§14), including U+2028 in a note, a signpost target in uppercase hex, and integer-like keys (`"10"` sorts
+before `"9"` in JCS, unlike a JavaScript object's own key order).
+
 ## 10. Security properties, and their limits
 
 **What holds.**
@@ -1656,7 +1752,8 @@ The signpost (kind 30078) is the one Core event published on relays (§6.7.5); m
 
 - Core follows semantic versioning. Any wire change bumps the major version, which is `v` in every
   rumor, every epoch record, every change and every push payload.
-- Unknown fields are ignored. Unknown message types are refused (`unsupported`). Unknown member kinds are
+- Unknown fields have no meaning of their own, but are kept, hashed and compared (§9.5); in a change's
+  `change` object they are refused. Unknown message types are refused (`unsupported`). Unknown member kinds are
   kept (§3.1).
 - Servers SHOULD support versions N and N−1. A device that meets a record, change or message with a major
   version it does not know MUST refuse to sign and show that it needs an update (§1.1).
@@ -1714,7 +1811,9 @@ Each is a short document of its own, and none may weaken anything above.
 
 The vectors are in `docs/keykin/vectors/` (`vectors.md` describes them; `vectors.json` is generated
 by `gen_vectors.py`). Done when the TypeScript and Kotlin implementations both
-pass it and a fuzzed parser has run against every message. The interop plan is
+pass it and a fuzzed parser has run against every message. The reference implementation's 161
+differential JSON probes (`keykin/vectors/diff/` in its branch) are to become a shared negative-vector
+file for §9.5, copied into `docs/keykin/vectors/` before 1.0. The interop plan is
 `docs/keykin/interop-plan.md`.
 
 ## Changes in draft 7
@@ -2027,3 +2126,11 @@ From the final seam review across the core and all modules (0 critical, 0 high):
 for `paper`-approved requests checked by every server (M3); report-lost under a `recovery` approval in
 §6.5 and F9 (M4); `deliver` slots, so cumulative reports replace each other (M5); the helper's host bound
 in its join (L10); lifetime classes for every message (L13); §11.3 and §12 brought up to date (L14).
+
+## Changes in draft 14.15
+
+From the reference implementation's batch 6 (a differential run over two implementations): §9.5, a strict
+JSON profile for bodies and events: fatal UTF-8, no repeated keys, no lone surrogates or stray control
+characters, depth 32, integers spelled one way, JCS, a change naming exactly one change, hex and base64,
+the event shape and a site's event, §5.8's tag counting, and the kind 0 whitespace set. Five red-team rounds (3, 2, 1 and 1 high, then clean; no critical) are folded in, with the last
+round's mediums: how a kind 5 targets a signpost (§6.7.5), and what an empty `content` is (§5.8).
