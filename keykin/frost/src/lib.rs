@@ -20,11 +20,10 @@ use k256::Scalar;
 use rand_core::{CryptoRng, OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use wasm_bindgen::prelude::*;
 
 type Nonce = frost_core::round1::Nonce<Suite>;
-type R<T> = Result<T, JsError>;
-fn e<E: std::fmt::Debug>(what: &'static str) -> impl Fn(E) -> JsError { move |x| JsError::new(&format!("{what}: {x:?}")) }
+type R<T> = Result<T, String>;
+fn e<E: std::fmt::Debug>(what: &'static str) -> impl Fn(E) -> String { move |x| format!("{what}: {x:?}") }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Commit {
@@ -37,11 +36,11 @@ pub struct Commit {
 
 fn bytes<const N: usize>(h: &str, what: &'static str) -> R<[u8; N]> {
     let v = hex::decode(h).map_err(e(what))?;
-    v.try_into().map_err(|_| JsError::new(&format!("{what}: expected {N} bytes")))
+    v.try_into().map_err(|_| format!("{what}: expected {N} bytes"))
 }
 fn id(h: &str) -> R<Identifier> { Identifier::deserialize(&bytes::<32>(h, "identifier")?).map_err(e("identifier")) }
 fn scalar(h: &str, what: &'static str) -> R<Scalar> {
-    Option::<Scalar>::from(Scalar::from_repr(bytes::<32>(h, what)?.into())).ok_or(JsError::new(&format!("{what}: out of range")))
+    Option::<Scalar>::from(Scalar::from_repr(bytes::<32>(h, what)?.into())).ok_or(format!("{what}: out of range"))
 }
 
 fn commitment(json: &str) -> R<VerifiableSecretSharingCommitment> {
@@ -50,9 +49,9 @@ fn commitment(json: &str) -> R<VerifiableSecretSharingCommitment> {
     VerifiableSecretSharingCommitment::deserialize(raw).map_err(e("commitment"))
 }
 fn group_key(c: &VerifiableSecretSharingCommitment) -> R<VerifyingKey> {
-    let c0 = c.coefficients().first().ok_or(JsError::new("empty commitment"))?;
+    let c0 = c.coefficients().first().ok_or("empty commitment".to_string())?;
     let enc = c0.serialize().map_err(e("C0"))?;
-    if enc[0] != 0x02 { return Err(JsError::new("C0 must have even y")); }
+    if enc[0] != 0x02 { return Err("C0 must have even y".to_string()); }
     VerifyingKey::deserialize(&enc).map_err(e("C0"))
 }
 fn min_signers(c: &VerifiableSecretSharingCommitment) -> u16 { c.coefficients().len() as u16 }
@@ -63,7 +62,7 @@ fn key_package(c: &VerifiableSecretSharingCommitment, i: &str, share: &str) -> R
     let vs = VerifyingShare::from_commitment(ident, c);
     let kp = KeyPackage::new(ident, s, vs, group_key(c)?, min_signers(c));
     // The share must be the one the commitment names: s·G = P_i^S (§3.4 step 3).
-    if VerifyingShare::from(*kp.signing_share()) != vs { return Err(JsError::new("share doesn't match the commitment")); }
+    if VerifyingShare::from(*kp.signing_share()) != vs { return Err("share doesn't match the commitment".to_string()); }
     Ok(kp)
 }
 
@@ -73,7 +72,7 @@ fn signing_package(msg: &str, commits: &[Commit]) -> R<SigningPackage> {
     for c in commits {
         let d = NonceCommitment::deserialize(&bytes::<33>(&c.d, "D")?).map_err(e("D"))?;
         let ee = NonceCommitment::deserialize(&bytes::<33>(&c.e, "E")?).map_err(e("E"))?;
-        if map.insert(id(&c.i)?, SigningCommitments::new(d, ee)).is_some() { return Err(JsError::new("repeated index in commitments")); }
+        if map.insert(id(&c.i)?, SigningCommitments::new(d, ee)).is_some() { return Err("repeated index in commitments".to_string()); }
     }
     Ok(SigningPackage::new(map, &m))
 }
@@ -96,7 +95,6 @@ impl RngCore for Hedged {
 impl CryptoRng for Hedged {}
 
 /// The share point `P_i^S` for identifier `i`, compressed hex.
-#[wasm_bindgen(js_name = sharePoint)]
 pub fn share_point(commitment_json: &str, i: &str) -> R<String> {
     let vs = VerifyingShare::from_commitment(id(i)?, &commitment(commitment_json)?);
     Ok(hex::encode(vs.serialize().map_err(e("point"))?))
@@ -104,7 +102,6 @@ pub fn share_point(commitment_json: &str, i: &str) -> R<String> {
 
 /// Round 1 for one index: `{"nonces": hex(hiding ‖ binding), "commit": {i, D, E}}`. `hedge` is the
 /// 32-byte random input of §5.2. The nonces never leave process memory.
-#[wasm_bindgen]
 pub fn commit(commitment_json: &str, i: &str, share: &str, hedge: &str) -> R<String> {
     let kp = key_package(&commitment(commitment_json)?, i, share)?;
     let mut rng = Hedged { seed: bytes(hedge, "hedge")?, ctr: 0 };
@@ -116,7 +113,6 @@ pub fn commit(commitment_json: &str, i: &str, share: &str, hedge: &str) -> R<Str
 }
 
 /// Round 2 for one index: its `z` for `msg` (the 32-byte event id) over every commitment.
-#[wasm_bindgen]
 pub fn sign(commitment_json: &str, i: &str, share: &str, nonces: &str, msg: &str, commits_json: &str) -> R<String> {
     let kp = key_package(&commitment(commitment_json)?, i, share)?;
     let n: [u8; 64] = bytes(nonces, "nonces")?;
@@ -132,7 +128,6 @@ fn public_package(c: &VerifiableSecretSharingCommitment, ids: &[Identifier]) -> 
 }
 
 /// Check one index's `z` against `P_i^S` (`verify_signature_share`).
-#[wasm_bindgen(js_name = verifyPartial)]
 pub fn verify_partial(commitment_json: &str, msg: &str, commits_json: &str, i: &str, z: &str) -> R<bool> {
     let c = commitment(commitment_json)?;
     let commits: Vec<Commit> = serde_json::from_str(commits_json).map_err(e("commits"))?;
@@ -146,7 +141,6 @@ pub fn verify_partial(commitment_json: &str, msg: &str, commits_json: &str, i: &
 }
 
 /// Aggregate `[[i, z], …]` into a BIP-340 signature (64 bytes hex). Fails unless it verifies.
-#[wasm_bindgen]
 pub fn aggregate(commitment_json: &str, msg: &str, commits_json: &str, partials_json: &str) -> R<String> {
     let c = commitment(commitment_json)?;
     let commits: Vec<Commit> = serde_json::from_str(commits_json).map_err(e("commits"))?;
@@ -159,7 +153,6 @@ pub fn aggregate(commitment_json: &str, msg: &str, commits_json: &str, partials_
 }
 
 /// Repair step 1 (§4.2 step 3) for one helper index: `[[helper i, delta], …]`, one per helper.
-#[wasm_bindgen(js_name = repairStep1)]
 pub fn repair_step1(commitment_json: &str, helpers_json: &str, i: &str, share: &str, participant: &str) -> R<String> {
     let c = commitment(commitment_json)?;
     let helpers: Vec<String> = serde_json::from_str(helpers_json).map_err(e("helpers"))?;
@@ -168,13 +161,12 @@ pub fn repair_step1(commitment_json: &str, helpers_json: &str, i: &str, share: &
     let ss = frost::keys::SecretShare::new(kp.identifier().clone(), *kp.signing_share(), c);
     let deltas = frost::keys::repairable::repair_share_step_1::<Suite, OsRng>(&ids, &ss, &mut OsRng, id(participant)?).map_err(e("repair"))?;
     let out = helpers.iter().zip(ids.iter())
-        .map(|(h, ident)| Ok((h.clone(), hex::encode(deltas.get(ident).ok_or(JsError::new("delta missing"))?.to_bytes()))))
+        .map(|(h, ident)| Ok((h.clone(), hex::encode(deltas.get(ident).ok_or("delta missing".to_string())?.to_bytes()))))
         .collect::<R<Vec<(String, String)>>>()?;
     Ok(serde_json::to_string(&out).unwrap())
 }
 
 /// Repair step 2: a sigma from the deltas meant for one helper index (or several, summed).
-#[wasm_bindgen(js_name = repairStep2)]
 pub fn repair_step2(deltas_json: &str) -> R<String> {
     let d: Vec<String> = serde_json::from_str(deltas_json).map_err(e("deltas"))?;
     let s = d.iter().map(|x| scalar(x, "delta")).collect::<R<Vec<_>>>()?;
@@ -182,13 +174,12 @@ pub fn repair_step2(deltas_json: &str) -> R<String> {
 }
 
 /// Repair step 3, by the new holder: its share from the sigmas, checked against `P_i^S`.
-#[wasm_bindgen(js_name = repairStep3)]
 pub fn repair_step3(commitment_json: &str, sigmas_json: &str, participant: &str) -> R<String> {
     let c = commitment(commitment_json)?;
     let d: Vec<String> = serde_json::from_str(sigmas_json).map_err(e("sigmas"))?;
     let s = d.iter().map(|x| scalar(x, "sigma")).collect::<R<Vec<_>>>()?;
     let share = frost::keys::repairable::repair_share_step_3(&s, id(participant)?, &c);
-    share.verify().map_err(|_| JsError::new("the repaired share doesn't match the commitment"))?;
+    share.verify().map_err(|_| "the repaired share doesn't match the commitment".to_string())?;
     Ok(hex::encode(share.signing_share().serialize()))
 }
 
@@ -204,7 +195,6 @@ fn ids_pkgs<T, F: Fn(&[u8]) -> Result<T, frost_core::Error<Suite>>>(json: &str, 
 }
 
 /// Part 1 for one index: `{"secret", "package"}`. `hedge` seeds the polynomial and proof (§5.2's stream).
-#[wasm_bindgen(js_name = dkgPart1)]
 pub fn dkg_part1(i: &str, max_signers: u16, min_signers: u16, hedge: &str) -> R<String> {
     let rng = Hedged { seed: bytes(hedge, "hedge")?, ctr: 0 };
     let (secret, package) = frost::keys::dkg::part1(id(i)?, max_signers, min_signers, rng).map_err(e("dkg part 1"))?;
@@ -212,7 +202,6 @@ pub fn dkg_part1(i: &str, max_signers: u16, min_signers: u16, hedge: &str) -> R<
 }
 
 /// Part 2: from every other index's round-1 package (`[[i, package], …]`), a round-2 package for each.
-#[wasm_bindgen(js_name = dkgPart2)]
 pub fn dkg_part2(secret: &str, others_json: &str) -> R<String> {
     let s = frost::keys::dkg::round1::SecretPackage::deserialize(&hex::decode(secret).map_err(e("secret"))?).map_err(e("secret"))?;
     let others = ids_pkgs(others_json, |b| frost::keys::dkg::round1::Package::deserialize(b), "round 1")?;
@@ -222,7 +211,6 @@ pub fn dkg_part2(secret: &str, others_json: &str) -> R<String> {
 }
 
 /// Part 3: `{"share", "groupX", "points": [[i, P_i], …]}`, even y.
-#[wasm_bindgen(js_name = dkgPart3)]
 pub fn dkg_part3(secret2: &str, round1_json: &str, round2_json: &str) -> R<String> {
     use frost::keys::EvenY;
     let s = frost::keys::dkg::round2::SecretPackage::deserialize(&hex::decode(secret2).map_err(e("secret"))?).map_err(e("secret"))?;
@@ -235,3 +223,8 @@ pub fn dkg_part3(secret2: &str, round1_json: &str, round2_json: &str) -> R<Strin
     let points: Vec<(String, String)> = pkp.verifying_shares().iter().map(|(k, v)| Ok((hex::encode(k.serialize()), hex::encode(v.serialize().map_err(e("point"))?)))).collect::<R<_>>()?;
     Ok(serde_json::json!({ "share": hex::encode(kp.signing_share().serialize()), "groupX": hex::encode(&vk[1..]), "points": points }).to_string())
 }
+
+#[cfg(feature = "wasm")]
+mod wasm;
+#[cfg(feature = "jni")]
+mod jni_bindings;

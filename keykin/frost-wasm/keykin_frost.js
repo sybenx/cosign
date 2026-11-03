@@ -1,24 +1,23 @@
 /* @ts-self-types="./keykin_frost.d.ts" */
 
 /**
- * Aggregate `[[i, z], …]` into a BIP-340 signature (64 bytes hex). Fails unless it verifies.
- * @param {string} commitment_json
+ * @param {string} c
  * @param {string} msg
- * @param {string} commits_json
- * @param {string} partials_json
+ * @param {string} commits
+ * @param {string} partials
  * @returns {string}
  */
-function aggregate(commitment_json, msg, commits_json, partials_json) {
+function aggregate(c, msg, commits, partials) {
     let deferred6_0;
     let deferred6_1;
     try {
-        const ptr0 = passStringToWasm0(commitment_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(c, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(msg, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(commits_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr2 = passStringToWasm0(commits, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(partials_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr3 = passStringToWasm0(partials, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len3 = WASM_VECTOR_LEN;
         const ret = wasm.aggregate(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
         var ptr5 = ret[0];
@@ -37,19 +36,17 @@ function aggregate(commitment_json, msg, commits_json, partials_json) {
 exports.aggregate = aggregate;
 
 /**
- * Round 1 for one index: `{"nonces": hex(hiding ‖ binding), "commit": {i, D, E}}`. `hedge` is the
- * 32-byte random input of §5.2. The nonces never leave process memory.
- * @param {string} commitment_json
+ * @param {string} c
  * @param {string} i
  * @param {string} share
  * @param {string} hedge
  * @returns {string}
  */
-function commit(commitment_json, i, share, hedge) {
+function commit(c, i, share, hedge) {
     let deferred6_0;
     let deferred6_1;
     try {
-        const ptr0 = passStringToWasm0(commitment_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(c, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(i, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
@@ -74,14 +71,13 @@ function commit(commitment_json, i, share, hedge) {
 exports.commit = commit;
 
 /**
- * Part 1 for one index: `{"secret", "package"}`. `hedge` seeds the polynomial and proof (§5.2's stream).
  * @param {string} i
- * @param {number} max_signers
- * @param {number} min_signers
+ * @param {number} max
+ * @param {number} min
  * @param {string} hedge
  * @returns {string}
  */
-function dkgPart1(i, max_signers, min_signers, hedge) {
+function dkgPart1(i, max, min, hedge) {
     let deferred4_0;
     let deferred4_1;
     try {
@@ -89,7 +85,7 @@ function dkgPart1(i, max_signers, min_signers, hedge) {
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(hedge, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.dkgPart1(ptr0, len0, max_signers, min_signers, ptr1, len1);
+        const ret = wasm.dkgPart1(ptr0, len0, max, min, ptr1, len1);
         var ptr3 = ret[0];
         var len3 = ret[1];
         if (ret[3]) {
@@ -106,18 +102,17 @@ function dkgPart1(i, max_signers, min_signers, hedge) {
 exports.dkgPart1 = dkgPart1;
 
 /**
- * Part 2: from every other index's round-1 package (`[[i, package], …]`), a round-2 package for each.
  * @param {string} secret
- * @param {string} others_json
+ * @param {string} others
  * @returns {string}
  */
-function dkgPart2(secret, others_json) {
+function dkgPart2(secret, others) {
     let deferred4_0;
     let deferred4_1;
     try {
         const ptr0 = passStringToWasm0(secret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(others_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(others, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.dkgPart2(ptr0, len0, ptr1, len1);
         var ptr3 = ret[0];
@@ -136,21 +131,20 @@ function dkgPart2(secret, others_json) {
 exports.dkgPart2 = dkgPart2;
 
 /**
- * Part 3: `{"share", "groupX", "points": [[i, P_i], …]}`, even y.
  * @param {string} secret2
- * @param {string} round1_json
- * @param {string} round2_json
+ * @param {string} r1
+ * @param {string} r2
  * @returns {string}
  */
-function dkgPart3(secret2, round1_json, round2_json) {
+function dkgPart3(secret2, r1, r2) {
     let deferred5_0;
     let deferred5_1;
     try {
         const ptr0 = passStringToWasm0(secret2, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(round1_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(r1, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(round2_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr2 = passStringToWasm0(r2, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
         const ret = wasm.dkgPart3(ptr0, len0, ptr1, len1, ptr2, len2);
         var ptr4 = ret[0];
@@ -169,21 +163,20 @@ function dkgPart3(secret2, round1_json, round2_json) {
 exports.dkgPart3 = dkgPart3;
 
 /**
- * Repair step 1 (§4.2 step 3) for one helper index: `[[helper i, delta], …]`, one per helper.
- * @param {string} commitment_json
- * @param {string} helpers_json
+ * @param {string} c
+ * @param {string} helpers
  * @param {string} i
  * @param {string} share
  * @param {string} participant
  * @returns {string}
  */
-function repairStep1(commitment_json, helpers_json, i, share, participant) {
+function repairStep1(c, helpers, i, share, participant) {
     let deferred7_0;
     let deferred7_1;
     try {
-        const ptr0 = passStringToWasm0(commitment_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(c, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(helpers_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(helpers, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ptr2 = passStringToWasm0(i, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
@@ -208,15 +201,14 @@ function repairStep1(commitment_json, helpers_json, i, share, participant) {
 exports.repairStep1 = repairStep1;
 
 /**
- * Repair step 2: a sigma from the deltas meant for one helper index (or several, summed).
- * @param {string} deltas_json
+ * @param {string} deltas
  * @returns {string}
  */
-function repairStep2(deltas_json) {
+function repairStep2(deltas) {
     let deferred3_0;
     let deferred3_1;
     try {
-        const ptr0 = passStringToWasm0(deltas_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(deltas, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.repairStep2(ptr0, len0);
         var ptr2 = ret[0];
@@ -235,19 +227,18 @@ function repairStep2(deltas_json) {
 exports.repairStep2 = repairStep2;
 
 /**
- * Repair step 3, by the new holder: its share from the sigmas, checked against `P_i^S`.
- * @param {string} commitment_json
- * @param {string} sigmas_json
+ * @param {string} c
+ * @param {string} sigmas
  * @param {string} participant
  * @returns {string}
  */
-function repairStep3(commitment_json, sigmas_json, participant) {
+function repairStep3(c, sigmas, participant) {
     let deferred5_0;
     let deferred5_1;
     try {
-        const ptr0 = passStringToWasm0(commitment_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(c, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(sigmas_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(sigmas, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ptr2 = passStringToWasm0(participant, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
@@ -268,16 +259,15 @@ function repairStep3(commitment_json, sigmas_json, participant) {
 exports.repairStep3 = repairStep3;
 
 /**
- * The share point `P_i^S` for identifier `i`, compressed hex.
- * @param {string} commitment_json
+ * @param {string} c
  * @param {string} i
  * @returns {string}
  */
-function sharePoint(commitment_json, i) {
+function sharePoint(c, i) {
     let deferred4_0;
     let deferred4_1;
     try {
-        const ptr0 = passStringToWasm0(commitment_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(c, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(i, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
@@ -298,20 +288,19 @@ function sharePoint(commitment_json, i) {
 exports.sharePoint = sharePoint;
 
 /**
- * Round 2 for one index: its `z` for `msg` (the 32-byte event id) over every commitment.
- * @param {string} commitment_json
+ * @param {string} c
  * @param {string} i
  * @param {string} share
  * @param {string} nonces
  * @param {string} msg
- * @param {string} commits_json
+ * @param {string} commits
  * @returns {string}
  */
-function sign(commitment_json, i, share, nonces, msg, commits_json) {
+function sign(c, i, share, nonces, msg, commits) {
     let deferred8_0;
     let deferred8_1;
     try {
-        const ptr0 = passStringToWasm0(commitment_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(c, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(i, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
@@ -321,7 +310,7 @@ function sign(commitment_json, i, share, nonces, msg, commits_json) {
         const len3 = WASM_VECTOR_LEN;
         const ptr4 = passStringToWasm0(msg, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len4 = WASM_VECTOR_LEN;
-        const ptr5 = passStringToWasm0(commits_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr5 = passStringToWasm0(commits, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len5 = WASM_VECTOR_LEN;
         const ret = wasm.sign(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5);
         var ptr7 = ret[0];
@@ -340,20 +329,19 @@ function sign(commitment_json, i, share, nonces, msg, commits_json) {
 exports.sign = sign;
 
 /**
- * Check one index's `z` against `P_i^S` (`verify_signature_share`).
- * @param {string} commitment_json
+ * @param {string} c
  * @param {string} msg
- * @param {string} commits_json
+ * @param {string} commits
  * @param {string} i
  * @param {string} z
  * @returns {boolean}
  */
-function verifyPartial(commitment_json, msg, commits_json, i, z) {
-    const ptr0 = passStringToWasm0(commitment_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+function verifyPartial(c, msg, commits, i, z) {
+    const ptr0 = passStringToWasm0(c, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passStringToWasm0(msg, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(commits_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const ptr2 = passStringToWasm0(commits, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len2 = WASM_VECTOR_LEN;
     const ptr3 = passStringToWasm0(i, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len3 = WASM_VECTOR_LEN;

@@ -13,13 +13,18 @@ frost-secp256k1-tr = "2.2"
 frost-core = "2.2"
 k256 = { version = "0.13", features = ["arithmetic"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { version = "0.2" }
 sha2 = "0.10"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-wasm-bindgen = "0.2"
+wasm-bindgen = { version = "0.2", optional = true }
+jni = { version = "0.21", optional = true }
 
 [profile.release]
 opt-level = "s"
 lto = true
+
+[features]
+wasm = ["dep:wasm-bindgen", "getrandom/js"]
+jni = ["dep:jni"]
