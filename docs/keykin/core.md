@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 12 · 2026-11-02 · `draft` `optional` · not built
+Draft 13 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -98,12 +98,12 @@ depends on a person seeing them:
    second device; for adding a device, the code is the join check shown on the new device, typed on
    the second device (§6.2);
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
-   scanning it back or re-entering it (§4.3).
-
+   scanning it back or re-entering it (§4.3);
 7. a new paper: "Keep your old paper until this app says the new one is ready", and only after the
    conflict check, "You can destroy the old paper" (§6.7.6 F7);
-8. a device restoring its pieces (`rerepair`, "*Laptop* restored its pieces"), and devices "added by a
-   device you removed" (§6.7).
+8. a device restoring its pieces or catching up seeds by `rerepair`, `need_repair` or `need_seeds`
+   ("*Laptop* restored its pieces", with a "Report lost" button), and devices "added by a device you
+   removed" (§6.7).
 
 ## 2. Who does what
 
@@ -114,8 +114,8 @@ would.
 **Servers do the minimum.** Per account, a server MUST keep only:
 
 1. its share at its current state (§6.7.1);
-2. the epoch record and the set of changes, for ever (§3), and after it is retired only the change that
-   retired it (§6.7.5);
+2. the epoch record and the set of changes, for ever (§3), the current signpost's event id, and after it
+   is retired only the change that retired it plus the hashes of the keys allowed to fetch it (§6.7.5);
 3. every release seed of its state, and the backup material (§7.2);
 4. running waits (recoveries and holds) with their notices, and recovery sessions (§6);
 5. push addresses and notice channels (§8.1), and the inbox, including deliveries kept until
@@ -666,10 +666,11 @@ second device or the paper. A helper never approves anything.
 |---|---|
 | Add a `device` (§3.2) | `lock`, `pair` or `paper`; or `recovery` |
 | Re-register a device's lock (§3.2) | `pair` or `paper`; or `recovery` |
-| `[remove, redeal]`: report a `device` or `helper` lost (§6.4) | `lock`, `pair` or `paper`; or `recovery` |
+| `[remove, redeal]`: report a `device` lost (§6.4) | `lock`, `pair` or `paper`; or `recovery` |
 | A device removes itself (§6.4) | `self` (its own member key's signature) |
 | `[seat …, redeal]`: add, swap or remove a server; add the helper (§6.7) | `lock`, `pair` or `paper`; or `recovery` |
 | `[paper, redeal]`: a new paper (§6.7.6 F7) | `lock`, `pair` or `paper`; or `recovery` |
+| `[redeal]` alone: a stranded redeal's replacement (§6.7.1) | `lock`, `pair` or `paper`; or `recovery` |
 | A list no current seat holder co-signed (every server dead, F3) | `pair`, `paper` or `recovery` only |
 | Export a child key (§6.8) | `lock`, `pair` or `paper` |
 | Remove or replace a notice channel (§8.1) | `lock`, `pair` or `paper` |
@@ -703,12 +704,12 @@ second device or the paper. A helper never approves anything.
 - A change `{"remove": <key>}` names a `device` (the helper leaves by a seat change, §6.7.2), in one list with a redeal (§6.7.2), with
   its approval (§6.2). The removed member gets no delta and no seed. A lockless single device cannot
   report another; the person uses a second device or the paper.
-- **A device may always remove itself**: a `remove` naming its own key, with the approval
-  `"self": { "member": <key>, "sig": … }` (a detached signature over `"keykin-self/1" ‖ g ‖ change
-  hash`), needs nothing else and no redeal. A server co-signs it only while that key is a current device.
-  A `self` remove that no device on the same machine explains (not an extension retiring, §4.6) makes
-  the other devices offer a `[redeal]` quietly, in case it came from a thief. It is how an extension retires in favour of its machine's
-  app (§4.6), and a thief gains nothing by it.
+- **A `self` remove** exists only for the §4.6 case: an extension retiring in favour of its machine's app,
+  which joined separately. It is `{"remove": <own key>, "to": <app member key>}` with the approval
+  `"self": { "member": <key>, "sig": …, "app_sig": … }`: detached signatures by the leaving key and by the
+  named app's member key over `"keykin-self/1" ‖ g ‖ change hash`. A server co-signs it only while both are
+  current devices and they are different keys. It needs no redeal. In every other case a device leaves by
+  an ordinary report-lost (`[remove, redeal]`, §6.2).
 - The change goes to every server and every device as a delivery (§7.1). From the moment a member has
   it, servers MUST refuse every round with the removed member, and devices MUST refuse to co-sign with
   it. It is never delayed, and never waits for its redeal.
@@ -776,7 +777,10 @@ stuck. Two ideas make that safe:
   1. check `δ(i)·G == Σ_k D_k·i^k` for each of its indices;
   2. add it, and check `s'·G == P_i^{S'}`; a device also rebuilds `C_{S'}` from its own 3 points and `g`
      (§3.4 step 4);
-  3. destroy, at once, the old share, `δ(i)`, any paper conversation key and any decrypted paper delta;
+  3. destroy, at once, the old share and `δ(i)`. A device also works out `δ(b1)`, `δ(b2)` (from the
+     redeal's full `δ`: its own 3 values plus `δ(0) = 0`) and keeps them with the redeal's data-key seed,
+     encrypted at rest, **until the paper item for the current backup key is verified** (§6.7.6), then
+     destroys them and the paper conversation key;
   4. send `ack`.
 - **Never sign at a state you have left.** Honest members can't: they destroyed it.
 - Servers apply every redeal they know before co-signing an Upkeep change; repair helpers do too. Before
@@ -789,10 +793,13 @@ stuck. Two ideas make that safe:
   - A member whose state contains an abandoned id never applies the fresh redeal's deltas. It rerepairs
     to the fresh redeal's state instead, with a proof at its own current state. `rerepair` may drop only
     ids that a valid `abandons` names.
-  - A redeal whose id has been abandoned is never applied by anyone, even if its deltas reappear.
+  - A redeal whose id has been abandoned is never applied by anyone, even if its deltas reappear, and
+    neither is any redeal whose `base` contains an abandoned id.
   - A removed member never gets the fresh redeal's deltas or seeds.
-  - If no state has 4 live points (the servers at one state, the last device at another), only a paper
-    recovery helps (§6.7.8).
+  - If no state has 4 live points (the servers at one state, the last device at another), a device plus
+    the paper, or a paper recovery, brings the account forward (§6.7.8).
+  - A redeal counts as co-signed only when its upload is held by at least two live post-change seat
+    holders, or by every one when fewer are live, so a co-sign can't strand it on the co-signer alone.
 
   A repair at a named state sets the member's state, so no redeal is ever applied twice.
 
@@ -849,11 +856,8 @@ Further rules:
   unapproved seat change would let a lockless thief seat its own server, and an unapproved redeal would
   let it spoil the paper.
 - **Mandatory redeal.** Every list with a `seat` or a `remove` MUST include one redeal, except a `self`
-  remove (§4.6). A `self` remove names the app member key it hands over to on the same machine. If it
-  doesn't, or no such app is a current device, the other devices raise the ordinary report-lost card
-  ("*X* removed itself. Was that you?"), approved like any report as a `[redeal]`, so a thief who copied a
-  phone's pieces can't dodge the redeal. The §4.6 handover needs none (same key, same
-  indices).
+  remove (§6.4), which is countersigned by the app taking over and so can't be used to dodge it. The §4.6
+  handover needs none (same key, same indices).
 - **No current seat holder co-signed** (every server dead, §6.7.6 F3): such a list is accepted only with
   `pair`, `paper` or `recovery` approval, and the paper challenge then comes from a server being seated.
   A co-signer attaches a host-key `cosig`, stored with the change and served by `changes_get`. A change
@@ -883,15 +887,17 @@ Further rules:
 - **The co-signer of a redeal:**
   - fetches its live peers first, so it knows of every paper change;
   - checks the approval and the dealer's signature;
-  - holds a delta for every member that is not removed in its post-list view, plus the `paper_item`
-    and the `release_seed`, and otherwise answers `missing`;
+  - holds a delta for every member in its post-list view, incoming seat holders included and the backup
+    excluded (the backup gets the `paper_item` instead), plus the `paper_item` and the `release_seed`,
+    and otherwise answers `missing`;
   - refuses if `paper_to` is not the post-list current backup key, or if the item's hash doesn't match;
   - drops deltas addressed to removed keys.
 
   A single server may co-sign a list alone.
 - **The co-signer of a paper change:**
   - fetches every live peer first;
-  - requires the paper change's `state` to equal every co-signed redeal it knows;
+  - accepts a paper change whose `state` lacks some co-signed redeals it knows: devices re-issue the
+    items for those redeals to K (§6.7.6), and F7 step 5 waits for them;
   - checks that `replaces` is the current backup key;
   - receives the base material item in the same request and checks that its hash equals `inner` and
     that it is signed by K.
@@ -907,12 +913,15 @@ Further rules:
   can have the paper's pieces repaired to them. **Any helpers worth 4 points**
   answer by repair at the seat's index and the current state: a device and a server, the helper and a
   server, two devices, or a device and the paper (so new servers can be filled even when every old one
-  is dead). It always gives the same value.
+  is dead). It always gives the same value. Each server answers it **once per key and index**. Repair
+  helpers refuse a host that already holds another seat in their view, so concurrent seat lists can't
+  repair one host into two seats.
 - **`rerepair {indices, state, proof}`.** A current member repairs its own existing indices at a named
   state, for any redeal it lacks. The proof is a Schnorr proof of knowledge of its share at an earlier
   state in its own chain, bound to a fresh server challenge. It is allowed only at the indices its seat
-  chain or add gives it, and never for a removed member. Every device is told ("*Laptop* restored its
-  pieces", §1.1).
+  chain or add gives it, never for the backup seat, and never for a removed member. Every device is told,
+  with a "Report lost" button ("*Laptop* restored its pieces", §1.1), and so is every answered
+  `need_seeds`, since a copy of a member's storage could otherwise catch up unseen.
 - **`need_seeds`.** Any current device seals the data-key and release seeds to another current device
   that asks, and the release seeds (only) to a current seat server that asks.
 - **An incoming seat holder**, once welcomed, fetches every unacknowledged delivery, for every member,
@@ -932,22 +941,25 @@ A paper must always be able to find today's servers, even after every server pri
 replaced. Three routes, tried in order:
 
 1. **Ask the public list.** The paper app takes the app maker's signed public server list (§6.7.7) and
-   asks each listed server `seated? {H(backup key), challenge}`. A server that holds a seat for an
-   account whose current backup key matches answers with a reply signed by its host key and sealed to
-   the backup key. This needs no relays and no published event.
-2. **Follow the forwarding notes.** A retired server, after destroying everything else, keeps exactly one
-   thing for the account: the group-signed change that retired it. It serves that change to a request
-   signed by the account's current or former backup key. That is a forwarding note with no secrets. From
+   asks each listed server `seated? {H(key), challenge}`, where the key is the backup key or, from a
+   device, its member key. A server that holds a seat for an account where that key is the current backup
+   key or a current device answers with a reply sealed to the key, carrying its host signature outside
+   the seal so the asker can check it. This needs no relays and no published event.
+2. **Follow the forwarding notes.** A retired server, after destroying everything else, keeps for the
+   account only the group-signed change that retired it and the hashes of the keys allowed to ask for it
+   (the backup keys and device keys it knew). It serves that change to a request signed by one of them. That is a forwarding note with no secrets. From
    the printed servers, the paper app walks the notes to today's servers.
 3. **The signpost**, for servers the person runs themself that are not on the public list. It is a kind
    30078 event signed by `g`, with `d = hex(SHA-256("keykin-beacon/1" ‖ backup key))`.
-   - Its clear fields are `n`, the count of every co-signed seat and paper change, void ones included,
+   - Its clear fields are `n`, the count of every seat and paper change in the change set (co-signed or
+     F3, void ones included),
      so it only ever grows; and `h = SHA-256("keykin-beacon/1" ‖ epoch id ‖ JCS(current server entries))`.
    - The rest is two sealed copies of the current servers' host keys, HTTPS endpoints and relays: one
      NIP-44 to the backup key, and one under `HKDF(base data key, "keykin-beacon/1")` for a device that
      slept through every server being replaced.
    - It is published at creation, to the paper's printed relays and the current ones. Any device that
-     learns of a seat or paper change it did not make, or finds the signpost missing, republishes it.
+     learns of a seat or paper change it did not make, or finds the signpost missing or its device copy
+     wrong, republishes it. Servers seated later learn the current signpost's event id from their welcome.
    - Readers take the highest `n` whose decrypted copy matches `h`. (The paper carries the epoch id, so
      the holder can check `h`.)
    - **Guards.** A device MUST NOT sign, on a site's request, a kind 30078 with any of the account's
@@ -972,7 +984,9 @@ servers answer.
 - Before it starts a wait or releases anything, a server runs `changes_get` against every peer it
   knows.
 - A server that was offline for more than 7 days stays **passive** for the account (no waits, no
-  releases) until a current device contacts it.
+  releases) until a live peer confirms, by `changes_get`, that it still holds its seat. If no peer is
+  live, the paper holder's `release_request` lifts passivity once the server has run its full wait and
+  found no change removing it at any peer or device it can reach.
 
 #### 6.7.6 Flows
 
@@ -1026,8 +1040,10 @@ phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
 **A device keeps a "paper item verified" bit** for each redeal it applied by delta (§6.7.1). If one not in
 the paper's base lacks a verified item for the current K, the device **re-issues** it. It knows that
 redeal's full `δ` (its 3 values plus `δ(0) = 0`) and its data-key seed, so it seals `{δ(b1), δ(b2), dk
-seed}` to K as a supplementary item under that redeal's release seed and delivers it to the servers. The
-holder's sum check against `P_b^S` validates it. This is not a repair: K learns only what devices
+seed}` to K as a supplementary item under that redeal's release seed, signs it with its member key, and
+delivers it to the servers, which keep at most one per redeal and key and refuse items from non-devices.
+The holder checks each item against its redeal's commitments (`δ(b)·G == Σ D_k·b^k`), and the sum
+against `P_b^S`. This is not a repair: K learns only what devices
 already know. A **new paper** (F7, the quiet dot) is for a paper that is lost or exposed, or when no
 current device can re-issue.
 
@@ -1036,8 +1052,9 @@ current device can re-issue.
 - The public server list is signed by the app maker, and apps pin its minimum version. (For now the user
   signs it and the app pins it; co-signers are added once other operators exist.)
 - The server that sends the `ask` names a candidate. A device accepts it only if it is the deterministic
-  pick `hash(g ‖ dead key ‖ version)` over the **newest list version the device knows** (at least the
-  pin), never putting two seats on one
+  pick `hash(g ‖ dead key ‖ seat ‖ version)` over the **newest list version the device knows** (at least
+  the pin), taken from that seat's own slice of the list (the list's servers dealt round-robin to the
+  three server seats), never putting two seats on one
   `operator` while another eligible one exists. It checks for itself that the server is dead before it
   shows the card. When there is no other operator, the card says "All your servers are run by X".
 
@@ -1116,7 +1133,7 @@ Each item is wrapped a second time, with XChaCha20-Poly1305, under **its own red
 base item under the release seed made with it). Two redeals at once each add their own item, and the
 set is simply the union. Every server and every device keeps every item and every release seed of its
 state (so device + paper still works if every server is gone). Members refuse an item whose hash doesn't
-match its change. Helpers and backups never hold release seeds; a recovery receives them only after the
+match its change (re-issued items: §6.7.6). Helpers and backups never hold release seeds; a recovery receives them only after the
 wait (§6.5).
 
 So helper + paper (3 + 2) cannot sign without a server's wait (I5). Device + paper works at once, because
@@ -1133,8 +1150,8 @@ the paper's base has a paper item for the current backup key (§6.7.6).
   NOT be limited to while the device is unlocked: background signing works as it does with an nsec today.
   (iPhone keeps keys sealed between a restart and the first unlock; that is the platform, not a rule.)
   The lock (§6.1) is a separate key, used only for approvals.
-- On applying a redeal a member destroys at once the old share, `δ(i)`, any paper conversation key and
-  any decrypted paper item (§6.7.1).
+- On applying a redeal a member destroys at once the old share and `δ(i)`; a device keeps the paper
+  values of §6.7.1 step 3 only until the current paper's item for that redeal is verified.
 - A removed or wiped member MUST destroy everything it holds, with no snapshot, backup, version history
   or log line that keeps it. Where storage keeps history that cannot be turned off (for example 30-day
   point-in-time recovery), only ciphertext may be stored there, with the key kept outside it.
@@ -1604,3 +1621,21 @@ From red-team round 11 (0 critical, 1 high):
 - Lows: the co-signer applies only with the group-signed list; `need_seeds` for servers; `cosig`
   notice-only and stored; one list hash; the approving device enforces once per K; the newest list
   version picks; a 90-day lookup on open; verified bits for redeals applied by delta.
+
+## Changes in draft 13
+
+From red-team round 12 (0 critical, 1 high), all local:
+
+- Devices keep `δ(b1)`, `δ(b2)` and the data-key seed until the current paper's item is verified, so
+  re-issue works (H1).
+- A `self` remove only for §4.6, countersigned by the app (M1, L4).
+- Concurrent seat lists can't put one host in two seats (M2).
+- Catch-up messages show a "Report lost" button, and `need_repair` is answered once per key and index
+  (M3).
+- Devices can use `seated?` and forwarding notes (M4).
+- Passive servers are released by a peer, or after a full wait (M5).
+- Re-issued items are signed, capped and checked per item (M6).
+- A paper may lag some redeals, and devices fill the gap (M7).
+- Stranded-redeal edge cases (M8).
+- Lows: signposts for later-seated servers, the table rows, the §2 list, `rerepair` and the backup seat,
+  delta recipients, and numbering.
