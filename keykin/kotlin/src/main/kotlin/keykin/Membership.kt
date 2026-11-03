@@ -131,7 +131,25 @@ object Approvals {
                     !schnorrVerify(p.getString("sig"), detached("paper", a.g, JSONObject().put("what", hex(w))), p.getString("member")) -> "bad_signature"
                     !schnorrVerify(p.getString("backup_sig"), detached("paper", a.g, JSONObject().put("list", hash(list)).put("challenge", p.getString("challenge"))), p.getString("backup")) -> "bad_signature"
                     else -> null } }
-            else -> "unsupported_approval"   // recovery and self: not in these vectors yet
+            "recovery" -> { val p = ap.getJSONObject("recovery"); val backup = p.getString("backup")
+                val rr = p.optJSONObject("release_request")?.optString("r")
+                when { backup !in a.backupKeys -> "not_backup_key"
+                    !schnorrVerify(p.getString("backup_sig"), detached("recovery", a.g, JSONObject().put("list", hash(list))), backup) -> "bad_signature"
+                    rr.isNullOrEmpty() -> "bad_approval"
+                    else -> { val wait = Codes.recoveryWaitId(backup, a.epochId, rr); val ws = p.getJSONArray("waited")
+                        val ok = (0 until ws.length()).map { ws.getJSONObject(it) }.filter { s -> s.getString("kind") == "recovery" && s.getString("wait") == wait && s.getString("server") in a.hostKeys
+                            && s.getLong("end") - s.getLong("start") >= a.w && schnorrVerify(s.getString("sig"), unhex(Codes.waitedDigest(a.g, "recovery", wait, s.getLong("start"), s.getLong("end"))), s.getString("server")) }
+                        if (ok.map { it.getString("server") }.toSet().size < 2) "waited_missing" else null } } }
+            "self" -> { val p = ap.getJSONObject("self")
+                val rm = (0 until list.length()).map { list.getJSONObject(it) }.first { it.has("remove") }
+                val to = rm.getString("to"); val dealer = (0 until list.length()).map { list.getJSONObject(it) }.first { it.has("redeal") }.getJSONObject("redeal").getString("dealer")
+                val d = sha(utf8("keykin-self/1"), unhex(a.g), unhex(hash(list)))
+                when { p.getString("member") != rm.getString("remove") -> "bad_approval"
+                    !dev(p.getString("member")) || !dev(to) || p.getString("member") == to -> "approver_not_device"
+                    !schnorrVerify(p.getString("sig"), d, p.getString("member")) || !schnorrVerify(p.getString("app_sig"), d, to) -> "bad_signature"
+                    dealer != to -> "self_redeal_dealer"
+                    else -> null } }
+            else -> "bad_approval"
         }
     }
 }

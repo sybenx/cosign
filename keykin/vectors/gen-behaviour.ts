@@ -109,4 +109,17 @@ out.cases.approvals = [
   ap(addX, approvePaper(F.g, F.epochId, addX, EXP, A.kp, F.backup.kp, 'dd'.repeat(16), F.servers[0].host.pub), 'add by paper'),
   ap(addX, approvePaper(F.g, F.epochId, addX, EXP, A.kp, newKey(), 'dd'.repeat(16), F.servers[0].host.pub), 'paper by a stranger key'),
 ];
+// self (§4.6) and recovery (§6.2) approvals.
+{
+  const { approveSelf, approveRecovery, signWaited } = await import('../src/approval.ts');
+  const { recoveryWaitId } = await import('../src/codes.ts');
+  const selfL: Change[] = [{ remove: A.kp.pub, to: B.pub }, { redeal: { dealer: B.pub } }];
+  out.cases.approvals.push(ap(selfL, approveSelf(F.g, selfL, A.kp, B), 'self remove, countersigned by the app'));
+  out.cases.approvals.push(ap(selfL, approveSelf(F.g, selfL, A.kp, newKey()), 'self remove, wrong app signature'));
+  const r = 'ab'.repeat(16), wait = recoveryWaitId(F.backup.kp.pub, F.epochId, r);
+  const w = (k: number, len = 3 * 86400) => signWaited(F.g, F.servers[k].host, 'recovery', wait, 1_800_000_000, 1_800_000_000 + len);
+  out.cases.approvals.push(ap(addX, approveRecovery(F.g, addX, F.backup.kp, { r }, [w(0), w(1)]), 'recovery with two waited statements'));
+  out.cases.approvals.push(ap(addX, approveRecovery(F.g, addX, F.backup.kp, { r }, [w(0), w(0)]), 'recovery: one server twice'));
+  out.cases.approvals.push(ap(addX, approveRecovery(F.g, addX, F.backup.kp, { r }, [w(0), w(1, 86400)]), 'recovery: a wait shorter than W'));
+}
 console.log(JSON.stringify(out, null, 1));
