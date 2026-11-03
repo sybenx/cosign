@@ -245,7 +245,7 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
     const a = ch.add, indices = deviceIndices(g, epochId, a.key, a.salt), same = changeKey({ add: a } as Change);
     const prev = adds.get(a.key) ?? [];
     // The same add twice counts once; two different adds of one key void it (§3.2). "The same" is JCS
-    // byte equality of the whole add, an absent lock counting as null (§9.5).
+    // byte equality of the whole add (§9.5).
     if (!prev.some((x) => x.same === same)) prev.push({ salt: a.salt, lock: a.lock ?? null, indices, same });
     adds.set(a.key, prev);
     indices.forEach((i) => claim(i, a.key));

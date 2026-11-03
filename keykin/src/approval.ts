@@ -67,12 +67,9 @@ export function placeholderList(list: Change[]): Change[] {
     return c;
   });
 }
-/** The comparison form (§9.5): two changes are the same when these JCS bytes are equal, an add's absent
- *  `lock` counting as `"lock": null`. */
-export function changeKey(c: Change): string {
-  const a = (c as any)?.add;
-  return jcs(a && typeof a === 'object' && !Array.isArray(a) && !('lock' in a) ? { ...c, add: { ...a, lock: null } } : c);
-}
+/** The comparison form (§9.5): two changes are the same when their JCS bytes are equal. An add always
+ *  carries `lock` (core 14.16), so an entry without one matches nothing. */
+export const changeKey = (c: Change): string => jcs(c);
 export const approvalHash = (list: Change[]) => listHash(placeholderList(list));
 
 /** The bytes a lock (or a `pair`) signs for a list (§6.1). */

@@ -143,7 +143,7 @@ test('§5.8 with §9.5: tags counted from two elements, distinct targets, empty 
 test('§6.7.2: the paper placeholder keeps every field but inner and state; §9.5 change comparison', () => {
   const c = { paper: { key: 'k', replaces: 'r', inner: 'i', state: ['s'], holders: ['h'], heir: 'e', module_field: { x: 1 } } } as any;
   assert.deepEqual(placeholderList([c])[0], { paper: { key: 'k', replaces: 'r', holders: ['h'], heir: 'e', module_field: { x: 1 } } });
-  assert.equal(changeKey({ add: { key: 'k', kind: 'device', salt: 1 } } as any), changeKey({ add: { key: 'k', kind: 'device', salt: 1, lock: null } } as any));
+  assert.notEqual(changeKey({ add: { key: 'k', kind: 'device', salt: 1 } } as any), changeKey({ add: { key: 'k', kind: 'device', salt: 1, lock: null } } as any), 'an add always carries lock (14.16)');
   assert.notEqual(changeKey({ add: { key: 'k', kind: 'device', salt: 1, x: 1 } } as any), changeKey({ add: { key: 'k', kind: 'device', salt: 1 } } as any));
 });
 

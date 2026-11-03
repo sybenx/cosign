@@ -43,6 +43,6 @@ class JsonTest {
     @Test fun paperPlaceholderKeepsModuleFields() {
         val c = Json.obj("{\"paper\":{\"key\":\"k\",\"replaces\":\"r\",\"inner\":\"i\",\"state\":[],\"holders\":[\"h\"],\"x\":{\"y\":1}}}")
         assertEquals("[{\"paper\":{\"holders\":[\"h\"],\"key\":\"k\",\"replaces\":\"r\",\"x\":{\"y\":1}}}]", Jcs.of(Approvals.placeholder(org.json.JSONArray().put(c))))
-        assertEquals(Approvals.key(Json.obj("{\"add\":{\"key\":\"k\",\"salt\":1}}")), Approvals.key(Json.obj("{\"add\":{\"key\":\"k\",\"salt\":1,\"lock\":null}}")))
+        kotlin.test.assertNotEquals(Approvals.key(Json.obj("{\"add\":{\"key\":\"k\",\"salt\":1}}")), Approvals.key(Json.obj("{\"add\":{\"key\":\"k\",\"salt\":1,\"lock\":null}}")))
     }
 }

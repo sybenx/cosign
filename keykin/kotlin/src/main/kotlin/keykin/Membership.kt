@@ -100,13 +100,8 @@ object Approvals {
         }
     })
     fun hash(list: JSONArray) = Codes.listHash(Jcs.of(placeholder(list)))
-    /** §9.5's comparison form: JCS bytes, an add's absent `lock` counting as `"lock": null`. */
-    fun key(c: Any?): String {
-        val a = (c as? JSONObject)?.opt("add") as? JSONObject
-        if (a == null || a.has("lock")) return Jcs.of(c)
-        val a2 = JSONObject(); for (k in a.keySet()) a2.put(k, a.get(k)); a2.put("lock", JSONObject.NULL)
-        val c2 = JSONObject(); for (k in (c as JSONObject).keySet()) c2.put(k, if (k == "add") a2 else c.get(k)); return Jcs.of(c2)
-    }
+    /** §9.5's comparison form: JCS bytes. An add always carries `lock` (core 14.16). */
+    fun key(c: Any?): String = Jcs.of(c)
     fun detached(type: String, g: String, body: Any) = sha(utf8("keykin-$type/1"), unhex(g), utf8(Jcs.of(body)))
     fun shape(list: JSONArray) {
         need(list.length() > 0, "bad_list", "empty")
