@@ -1,24 +1,25 @@
 # Keykin: status
 
-2026-11-02 · branch `claude/keykin-spec-0b883d` · docs only, nothing built, nothing pushed
+2026-11-03 · branch `claude/keykin-spec-0b883d` · docs only, nothing built, nothing pushed
 
-Keykin is the new working name of the Cosign protocol: one Nostr key for life, split with FROST so
-that no device, server or company holds it. The bar every rule is held to is an nsec kept in a
-password manager. Every rule must beat that on security **and** on ease of use.
+Keykin is the new working name of the Cosign protocol: one Nostr key for life, split with FROST so that
+no device, server or company holds it. The bar every rule is held to is an nsec kept in a password
+manager. Every rule must beat that on security **and** on ease of use.
 
 ## What is here
 
 | File | What it is | Status |
 |---|---|---|
-| [core.md](core.md) | Keykin Core, draft 10: the core spec, with Upkeep (§6.7) for replacing servers, helper and paper | Round 9 (Upkeep): 0 critical, 6 high → cut; draft 10 is in red-team round 10. |
-| [core.md §4.6](core.md) | One member per machine (a desktop app is the machine's member; extensions relay to it) | Reviewed: 0 critical, 2 high (handover gaps), verdict keep. Fixes applied in 8.4; re-check clean, folded into 8.5. |
-| [vectors/](vectors/) | Test vectors: `gen_vectors.py` produces `vectors.json` (computed); `vectors.md` lists the behaviour cases | Computed vectors done. Behaviour cases need a reference implementation to fill in expected outputs. |
-| [interop-plan.md](interop-plan.md) | How to test compatibility: nak must pass, plus a top set chosen by use (Primal, Amethyst, nostr-tools/NDK, Damus) | Plan only. |
-| [simplification.md](simplification.md) | Why the design was cut five times, with the user's answers | Record. |
+| [core.md](core.md) | **Keykin Core, draft 13.1**: the core spec, including Upkeep (§6.7, replacing servers, the helper and the paper) and one member per machine (§4.6) | **Red-team round 13 found no critical or high problems.** Its mediums and lows are folded in. |
+| [vectors/](vectors/) | Test vectors: `gen_vectors.py` produces `vectors.json` (computed, for draft 13.1); `vectors.md` lists the behaviour cases | Computed vectors regenerated for 13.1. Behaviour cases need a reference implementation to fill in expected outputs. |
+| [interop-plan.md](interop-plan.md) | Compatibility tests: nak must pass, plus a top set chosen by use (Primal, Amethyst, nostr-tools/NDK, Damus), and the Upkeep events a site must never notice | Plan only. |
+| [simplification.md](simplification.md) | Why and how the design was cut, round by round, with the user's answers | Record. |
 | [../decisions.md](../decisions.md) | Every decision, one dated line each | Current. |
 
-The red-team reports (rounds 1–8, refresh, machine rule) are in the shared notes folder for this group
-of sessions, not in the repo.
+The red-team reports (`keykin-core-redteam-1.md` … `-13.md`, `keykin-refresh-redteam-2.md`,
+`keykin-machine-rule-*.md`) are in the shared notes folder for this group of sessions, not in the repo.
+The design panel's Upkeep proposal is `~/igloo/keykin-upkeep-design.md`. `refresh.md` was replaced by
+Upkeep and is in git history.
 
 ## Red-team rounds
 
@@ -32,21 +33,33 @@ of sessions, not in the repo.
 | 6 | draft 6 | 1 | 6 |
 | 7 | core 7 + refresh 1 | 1 | 5 |
 | 8 | core 8 + refresh 2 | 0 | 0 in the core (3 in refresh) |
-| refresh only | refresh 3 | 1 | 2 → redesign |
-| machine rule | core 8.3 §4.6 | 0 | 2 → fixed in 8.4 |
-| machine re-check | core 8.4 §4.6 | 0 | 0 → passes (8.5) |
-| 9 | core 9 (Upkeep) | 0 | 6 → cut, draft 10 |
+| refresh only | refresh 3 | 1 | 2 → replaced by Upkeep |
+| machine rule | core 8.3 §4.6 | 0 | 2 → fixed |
+| machine re-check | core 8.4 §4.6 | 0 | 0 |
+| 9 | core 9 (Upkeep) | 0 | 6 |
+| 10 | core 10 | 0 | 2 |
+| 11 | core 11 | 0 | 1 |
+| 12 | core 12 | 0 | 1 (local) |
+| **13** | **core 13** | **0** | **0** |
 
 ## Open by design
 
 - **Outside reviewer** sign-off on the core.
 - **Formal check** of the one-call signing round (core §5.1).
-- **Reference implementation**, to produce the behaviour vectors' expected outputs. TypeScript and
+- **Reference implementation**, to produce the behaviour vectors' expected outputs; TypeScript and
   Kotlin should both pass them.
 - **Interop runs** against a prototype (`interop-plan.md`).
-- **Upkeep** (core §6.7): red-team round 10 under the stop rule.
 - **Modules** not yet written: Account admin, Server profile, Device policy, Doors and grants, Backup,
   Helper, Key families.
+- **One user decision** (below).
 
-`../COSIGN.md`, `../NIP-XX.md`, `../servers.md` and `../choosing-servers.md` still describe Cosign
-0.12 as built, and stay until the Keykin build replaces it.
+## Question for the user
+
+**A single phone without a working face or fingerprint lock, that has also lost its paper,** can never
+make a new paper or replace a server again. Every account change needs a lock, a second device or the
+paper, and there is no "wait 3 days instead" any more. Fixing that would need a new mechanism, for
+example a server-enforced wait used only to make a new paper. Today the app pushes such a user hard
+towards a second device at setup, and core §10 states the limit. Leave it, or add the narrow wait-path?
+
+`../COSIGN.md`, `../NIP-XX.md`, `../servers.md` and `../choosing-servers.md` still describe Cosign 0.12 as
+built, and stay until the Keykin build replaces it.
