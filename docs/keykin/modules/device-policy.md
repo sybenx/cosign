@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 11 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.10 · not built
+Draft 12 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.10 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -35,22 +35,24 @@ hold:
   app (Doors and grants §1). Entries are kept while their grant exists and 90 days after; an encrypt
   record, and the record of which grant an event was signed for, are kept as long as that event is
   **current**: for a replaceable or addressable event, until a newer version replaces it; for a regular
-  event, until it is deleted, or while its grant lasts for notes, reactions and reposts. Zap requests,
-  relay sign-ins and upload tokens are never recorded, and encrypt records for messages are kept 90 days.
+  event, until it is deleted, or while its grant lasts for notes, reactions and reposts. Zap requests and
+  relay sign-ins are never recorded; upload tokens are recorded only as the blob hashes (`x`) each grant
+  uploaded; and encrypt records for messages are kept 90 days.
   Snapshots are split at 48 KB, with `d = "keykin-meta:" ‖ hex(HMAC-SHA256(HKDF(base data key,
-  "keykin-meta-d/1"), member key ‖ month ‖ part))`, distinct from grant events. A closed month's snapshot is
+  "keykin-meta-d/1"), member key ‖ month ‖ part))`, `month` as the ASCII `YYYY-MM` and `part` as 2 bytes
+  big-endian, distinct from grant events. Each part has its own sequence number, and part 0 carries a
+  signed list of every part's number and hash, so unchanged parts are never mistaken for rollbacks. A closed month's snapshot is
   dropped once all its entries are. Each device publishes it
-  as **one cumulative snapshot per month**, signed by its member key, with a sequence number **per writer
-  and month**; a higher number replaces that writer's earlier snapshot for the same month, and only the
-  current month changes. It publishes only changed parts, at most once every 10 minutes (through the data service, or else as an
+  as **one cumulative snapshot per month**, signed by its member key; a higher number replaces that
+  writer's earlier copy of the same part, and only the current month changes. It publishes only changed parts, at most once every 10 minutes (through the data service, or else as an
   encrypted account-signed kind 30078 with a `keykin-` `d`, as Doors and grants does for grants), and
   fetches the others' snapshots, for at most 3 seconds, before a judgement that depends on them; if they
   don't arrive, it judges with what it has. A device accepts a snapshot only from a key that is a current device,
   and never one with a lower number than it has seen from that writer **for that month**. So a removed device or the sync service can't forge it or roll
   it back, and out-of-order sync loses nothing.
 - **A device leaving by its own choice** (Remove this device, or a `self` remove, core §4.6) first merges
-  its metadata into the snapshot of the device that takes over or approves (if there is one), and only
-  then sends the remove. Only a report-lost drops a device's metadata.
+  its metadata, kept references included, into the snapshot of the device that takes over or approves (if
+  there is one), and only then sends the remove. Only a report-lost drops a device's metadata.
 - History and metadata are encrypted at rest with an AEAD under a key derived from the data key and bound
   to `g`, and never sent to Keykin servers. Devices MAY sync them through a data service, which stores
   them encrypted.
@@ -112,12 +114,13 @@ in the member app, and other sites', never count against a site.
 | Anything in core §5.8 (vanishing; a deletion of 5 or more targets or a burst; an emptied profile or list; a relay list with no relays) | **Held** |
 | A site deleting a list, set or the profile: an `a` target naming its current version, or an `e` target that is the newest version the device knows of, or newer | **Confirm** (Undo restores it, as for an emptied list) |
 | A site leaving a list or set with **no items**, public or private, in a new version of a list that had items, or removing **every** item of a reference that had at least one (a new, empty named set is not a removal; for the profile, only the profile rows and core §5.8 apply) | **Confirm** |
-| A site replacing **another's content** (the group above) with a version that is **blank** (no content and no tags but `d`), under a quarter of the **size** (content bytes plus tag values) of the reference, adds an `expiration` or moves one earlier. The reference is the newest version at that address **not signed for this grant**, fetched from relays for at most 3 seconds (without one, only the blank and expiry tests apply); anything not recorded as this grant's counts as another's. **Whenever** a site replaces a version it didn't sign, silently or not, the device keeps that version as the reference, while the grant lasts and 90 days after, and judges the site's later versions against it | **Confirm**; Undo restores the reference. Ordinary edits stay silent; same-size junk is silent but undoable |
+| A site replacing **another's content** (the group above) with a version that is **blank** (no content and no tags but `d`), under a quarter of the **size** (content bytes plus tag values) of the reference, adds an `expiration` or moves one earlier. The reference is the newest version at that address **not signed for this grant**, fetched from two relays, waiting at most 3 seconds (without one, only the blank test applies, and an expiry on an address with no earlier version is fine); anything not recorded as this grant's counts as another's. **The first time** a grant replaces a version it didn't sign at an address, silently or not, the device keeps that version for that grant and **never replaces it**, while the grant lasts and 90 days after; later edits by any site are judged against the newest version no site's grant signed | **Confirm**; Undo restores the reference. Ordinary edits stay silent; same-size junk is silent but undoable |
 | A deletion of one ordinary event of the account (not of a judged kind), that the site signed itself, within its daily budget | Silent, after the **10-second Undo** (§3) |
 | A deletion of one ordinary event another site or the member app signed, or not recorded as this grant's | **Confirm** |
 | A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
 | A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
-| A site's judged-kind or others'-content event dated more than a minute ahead | declined (so Undo and rebased drafts never lose to it at relays) |
+| A site's **replaceable or addressable** judged-kind or others'-content event dated more than a minute ahead | re-dated to now before signing (so Undo and rebased drafts never lose to it at relays); regular kinds, wallet events included, are left alone |
+| A Blossom `t=delete` or NIP-98 `DELETE` token | Silent for a blob this grant uploaded (by its `x`), within the site's daily deletion budget; otherwise **Confirm** |
 | A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 3 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count, this deletion included, stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, even when servers or a co-signing device refuse, and nothing is signed (a newer token event already supersedes them; the device doesn't check its `del` list). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
 | New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
 | Wallet and mint settings (17375, 37375) changed, or the payment pubkey or mints in 10019 changed, by a site | **Confirm** |
@@ -170,7 +173,8 @@ going to a server instead: on `needs-approval` it shows its own Held card. A hel
 - **Undo is judged.** It signs an earlier version from history as a new event, with a fresh `created_at`
   later than any deletion it undoes and than the newest version it replaces (if that is dated ahead, the
   device waits until its time has passed, since a co-signer refuses events dated more than 10 minutes
-  ahead; a waiting Undo is kept in the outbox, so it survives the app being killed),
+  ahead; a waiting Undo is kept in the outbox, so it survives the app being killed, and is re-applied to
+  the current version when it is signed, so the person's newer edits stay),
   and goes through §2 against the current version like any change. Additions are never destructive, so
   restoring a bigger list is silent; restoring a smaller one is Confirm; restoring an empty one is Held
   (core §5.8).
@@ -201,7 +205,7 @@ A replaceable draft is stored with the version it was based on. When the device 
 1. it fetches the newest version of each list a draft touches, from at least two relays and its own
    history, and takes the newest valid one;
 2. it rebases each replaceable draft onto that version, applying the draft's own additions and removals
-   against its stored base, with a **fresh `created_at`**;
+   against its stored base, with a **fresh `created_at`** later than that version's;
 3. it judges the result by §2.
 
 A draft identical to what is already published is dropped silently. A draft that was confirmed before
@@ -258,6 +262,16 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 12**, from its eleventh red team (0 critical, 1 high):
+  - each grant's first-replaced version is kept and never replaced, and later edits are judged against the
+    newest version no site signed, so two sites can't launder an article away (DP11-1).
+
+  The mediums and lows:
+  - a sequence number per snapshot part, a signed part list, `month` and `part` encodings (DP11-2);
+  - events dated ahead re-dated, only for replaceable and addressable kinds (DP11-3);
+  - a rule for Blossom and NIP-98 delete tokens, with uploaded blob hashes recorded (DP11-4);
+  - two relays for the 3-second fetch, expiries on new addresses, Undo re-applied to the current version,
+    rebased drafts dated after the newest, kept references merged on leaving (lows).
 - **Draft 11**, from its tenth red team (0 critical, 1 high):
   - whenever a site replaces a version it didn't sign, that version is kept as the reference, so a silent
     edit first can't erase the original (DP10-1).
