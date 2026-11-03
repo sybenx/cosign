@@ -92,3 +92,23 @@ export function pickOrder(list: ServerList, seats: number[], seat: number, g: st
   return [...eligible.filter((x) => !o.seatedOperators.has(x.operator)), ...eligible.filter((x) => o.seatedOperators.has(x.operator))];
 }
 export { hkdf32, hexToBytes };
+
+// --- announcements (§4) -----------------------------------------------------------------------
+
+export interface Announcement { host: string; relays: string[]; https: string | null; enroll: 'open' | 'invite'; versions: number[]; pow?: number; operator: string | null }
+/** A kind 30243 server announcement, `d = keykin-server` (readers also accept `cosign-server`), signed by the host key. */
+export function readAnnouncement(e: NostrEvent): Announcement | null {
+  if (e.kind !== 30243 || !['keykin-server', 'cosign-server'].includes(tag(e, 'd') ?? '') || !verifyEvent(e)) return null;
+  let c: any; try { c = JSON.parse(e.content); } catch { return null; }
+  if (!Array.isArray(c.relays) || !['open', 'invite'].includes(c.enroll) || !Array.isArray(c.versions)) return null;
+  const op = e.tags.find((t) => t[0] === 'p' && t[3] === 'operator')?.[1] ?? null;
+  return { host: e.pubkey, relays: c.relays, https: c.https ?? null, enroll: c.enroll, versions: c.versions, pow: c.pow, operator: op };
+}
+/** A server belongs to an operator only when both name each other: its announcement's operator `p`, and
+ *  the operator's kind 10243 list naming its host key. */
+export function operatorOf(a: Announcement, opList: NostrEvent | null): string | null {
+  if (!a.operator || !opList || opList.kind !== 10243 || opList.pubkey !== a.operator || !verifyEvent(opList)) return null;
+  return opList.tags.some((t) => t[0] === 'p' && t[1] === a.host) ? a.operator : null;
+}
+/** Enrol secrets rotate monthly and are destroyed 13 months after they were made (§4). */
+export const enrolSecretAlive = (madeAt: number, now: number) => now - madeAt < 13 * 31 * 86400;

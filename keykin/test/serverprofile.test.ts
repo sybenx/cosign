@@ -66,3 +66,17 @@ test('the signed public list: pinned key, no rollback, key_next; the determinist
   assert.ok(!pickOrder(closed, [4, 7, 8], 7, g, dead, { seatedHosts: new Set(), seatedOperators: new Set() }).some((x) => x.host === a[0].host));
   assert.ok(!pickOrder(v1.list, [4, 7, 8], 7, g, dead, { seatedHosts: new Set([a[0].host]), seatedOperators: new Set() }).some((x) => x.host === a[0].host));
 });
+
+test('§4 announcements: an operator owns a server only when both name each other', async () => {
+  const { readAnnouncement, operatorOf, enrolSecretAlive } = await import('../src/serverprofile.ts');
+  const host = newKey(), op = newKey();
+  const ann = finalizeEvent({ kind: 30243, created_at: now, tags: [['d', 'keykin-server'], ['p', op.pub, '', 'operator']], content: JSON.stringify({ relays: ['wss://r'], https: 'https://s', enroll: 'open', versions: [1] }) }, host.sk) as any;
+  const a = readAnnouncement(ann)!;
+  assert.equal(a.host, host.pub);
+  const list = finalizeEvent({ kind: 10243, created_at: now, tags: [['p', host.pub]], content: '' }, op.sk) as any;
+  assert.equal(operatorOf(a, list), op.pub);
+  const notMine = finalizeEvent({ kind: 10243, created_at: now, tags: [['p', newKey().pub]], content: '' }, op.sk) as any;
+  assert.equal(operatorOf(a, notMine), null, 'unknown: the list does not name it');
+  assert.equal(readAnnouncement({ ...ann, content: '{}' }), null);
+  assert.ok(enrolSecretAlive(now, now + 365 * 86400) && !enrolSecretAlive(now, now + 14 * 31 * 86400));
+});
