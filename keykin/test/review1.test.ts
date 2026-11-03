@@ -54,6 +54,10 @@ test('#2 high: once a signpost is co-signed, its delete by e tag is refused', ()
   const S2 = server(F); S2.restore(S.snapshot());
   const del2 = new OneCall(ctx(F), dev(F), { key: F.servers[0].kp.pub, indices: [4] }, { pubkey: F.g, created_at: clock, kind: 5, tags: [['e', signed.id]], content: '' });
   assert.equal(S2.handle(F.devices[0].kp.pub, del2.request, clock).code, 'machinery', 'survives a restart');
+  // A server that didn't co-sign it learns the id by delivery (core 14.2), and refuses too.
+  const S3 = server(F, 1); S3.noteSignpost(signed.id);
+  const del3 = new OneCall(ctx(F), dev(F), { key: F.servers[1].kp.pub, indices: [7] }, { pubkey: F.g, created_at: clock, kind: 5, tags: [['e', signed.id]], content: '' });
+  assert.equal(S3.handle(F.devices[0].kp.pub, del3.request, clock).code, 'machinery');
 });
 
 function seatEvs(F: Fixture, idx: number, replaces: string | null, entry: any) {

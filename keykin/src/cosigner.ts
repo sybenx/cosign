@@ -86,17 +86,17 @@ export class CoSigner {
     return true;
   }
 
-  /** May this member help repair `participant` for `sealTo` (§4.2 step 3, §4.4, §6.7.4)? Throws if not.
+  /** May this member help repair `participant` for `seal_to` (§4.2 step 3, §4.4, §6.7.4)? Throws if not.
    *  The sigma always goes to the index's assigned owner, never to whoever asks. */
   answeredRepair = new Set<string>();
-  authorizeRepair(from: string, body: { participant: number; sealTo: string; why: string; state: string; proof?: any }, now = this.o.now()) {
+  authorizeRepair(from: string, body: { participant: number; seal_to: string; why: string; state: string; proof?: any }, now = this.o.now()) {
     const m = this.m;
     if (body.state !== stateOf(this.state)) refuse('stale');
     const p = body.participant;
     if (m.record.seats.backup.includes(p)) refuse('backup_seat', 'never repaired by need_repair or a join');
     const owner = [...m.members.values()].find((x) => x.shares.includes(p));
     if (!owner || m.removed.has(owner.key) || owner.kind === 'backup') refuse('not_assigned', 'no valid change assigns this index');
-    if (body.sealTo !== owner!.key) refuse('not_assigned', 'a repair is sealed only to the index\'s owner');
+    if (body.seal_to !== owner!.key) refuse('not_assigned', 'a repair is sealed only to the index\'s owner');
     const requester = this.m.members.get(from);
     switch (body.why) {
       case 'add': {

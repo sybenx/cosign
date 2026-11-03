@@ -35,13 +35,13 @@ class RepairHelper {
     for (const [k, ds] of r.out) out[k] = wrap(kp.sk, k, { type: 'repair_delta', participant: body.participant, rid: body.rid, deltas: ds });
     return { type: 'repair_delta', out };
   }
-  finish(kp: KeyPair, body: any, state: string, sealTo: string) {
+  finish(kp: KeyPair, body: any, state: string, seal_to: string) {
     const kept = this.kept.get(`${body.participant}:${body.rid}`);
     if (!kept) refuse('unknown_repair');
     this.kept.delete(`${body.participant}:${body.rid}`);
     const received = (body.deltas as NostrEvent[]).map((w) => unwrap(kp.sk, w).body.deltas as string[]);
     const sigma = repairFinish(kept!, received);
-    return { type: 'repair_sigma', wrap: wrap(kp.sk, sealTo, { type: 'repair_sigma', index: body.participant, sigma, state }) };
+    return { type: 'repair_sigma', wrap: wrap(kp.sk, seal_to, { type: 'repair_sigma', index: body.participant, sigma, state }) };
   }
 }
 
@@ -174,6 +174,9 @@ export class ServerNode implements Node {
         this.uploads.set(body.redeal, u);
         return { type: 'upload_held', redeal: body.redeal, server: this.host.pub };
       }
+      case 'signpost_id':                                  // core 14.2 §6.7.10: a device delivers each new signpost id
+        if (!m.devices.has(from)) refuse('not_device');
+        this.co.noteSignpost(body.id); return { type: 'ack' };
       case 'cancels_get': return { type: 'cancels', cancels: this.co.cancels };
       case 'upload_status': { const u = this.uploads.get(body.redeal); return { type: 'upload_status', held: !!u && this.now - u.at < 7 * 86400 }; }
       case 'deliver':
@@ -182,7 +185,7 @@ export class ServerNode implements Node {
       case 'inbox_get': if (m.removed.has(from)) refuse('removed'); return { type: 'inbox', items: this.inbox.get(from, this.now) };
       case 'inbox_ack': this.inbox.ack(from, body.iids); return { type: 'ack' };
       case 'repair_start': return this.repairStart(from, body);
-      case 'repair_finish': return this.repair.finish(this.kp, body, stateOf(this.co.state), body.sealTo);
+      case 'repair_finish': return this.repair.finish(this.kp, body, stateOf(this.co.state), body.seal_to);
       case 'repair_sigma': {                                  // we are the participant (a seat being filled)
         const o = unwrap(this.kp.sk, body.wrap); void o; return { type: 'ack' };
       }
@@ -212,7 +215,7 @@ export class ServerNode implements Node {
   private repairStart(from: string, body: any) {
     if (body.state !== stateOf(this.co!.state)) return { type: 'stale', ids: [...this.co!.state.ids].sort() };
     this.co!.authorizeRepair(from, body, this.now);
-    if (body.why === 'seat') this.co!.repairSucceeded(body.sealTo, body.participant);
+    if (body.why === 'seat') this.co!.repairSucceeded(body.seal_to, body.participant);
     return this.repair.start(this.kp, this.co!.state.C, this.co!.state.shares, body);
   }
 }
@@ -366,11 +369,11 @@ export class DeviceNode implements Node {
   }
 
   /** Run a repair for `participant` with helper members (this device and others), sealing every
-   *  sigma to `sealTo`. Returns the sealed sigmas, for forwarding. */
-  async repairFor(helpers: { key: string; indices: number[] }[], participant: number, sealTo: string, why: string, extra: object = {}): Promise<NostrEvent[]> {
+   *  sigma to `seal_to`. Returns the sealed sigmas, for forwarding. */
+  async repairFor(helpers: { key: string; indices: number[] }[], participant: number, seal_to: string, why: string, extra: object = {}): Promise<NostrEvent[]> {
     const st = stateOf(this.state!);
     const rid_ = rid();
-    const start = { type: 'repair_start', participant, helpers, state: st, rid: rid_, why, sealTo, ...extra };
+    const start = { type: 'repair_start', participant, helpers, state: st, rid: rid_, why, seal_to, ...extra };
     const outs = new Map<string, Record<string, NostrEvent>>();
     for (const h of helpers) {
       const a = h.key === this.kp.pub ? this.repair.start(this.kp, this.state!.C, this.state!.shares, start) : await this.bus.send(this.kp, h.key, start);
@@ -379,8 +382,8 @@ export class DeviceNode implements Node {
     }
     const out: NostrEvent[] = [];
     for (const h of helpers) {
-      const fin = { type: 'repair_finish', participant, rid: rid_, sealTo, deltas: helpers.filter((x) => x.key !== h.key).map((x) => outs.get(x.key)![h.key]) };
-      const a = h.key === this.kp.pub ? this.repair.finish(this.kp, fin, st, sealTo) : await this.bus.send(this.kp, h.key, fin);
+      const fin = { type: 'repair_finish', participant, rid: rid_, seal_to, deltas: helpers.filter((x) => x.key !== h.key).map((x) => outs.get(x.key)![h.key]) };
+      const a = h.key === this.kp.pub ? this.repair.finish(this.kp, fin, st, seal_to) : await this.bus.send(this.kp, h.key, fin);
       if (a?.type !== 'repair_sigma') throw new KeykinError(a?.code ?? 'repair_refused');
       out.push(a.wrap as NostrEvent);
     }
@@ -394,7 +397,7 @@ export class DeviceNode implements Node {
         case 'join_nonce': this.joiner!.onNonce(from, body); return { type: 'ack' };
         case 'welcome_offer': return this.joiner!.onOffer(from, body, this.now).msg;
         case 'repair_start': this.co!.authorizeRepair(from, body, this.now); return this.repair.start(this.kp, this.state!.C, this.state!.shares, body);
-        case 'repair_finish': return this.repair.finish(this.kp, body, stateOf(this.state!), body.sealTo);
+        case 'repair_finish': return this.repair.finish(this.kp, body, stateOf(this.state!), body.seal_to);
         case 'change': this.takeChanges(body.events); return { type: 'ack' };
         case 'delta_push': this.takeDelivery(body.wrap); this.applyAll(); return { type: 'ack' };
         default: return this.co!.handle(from, body, sentAt);

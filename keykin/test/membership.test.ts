@@ -162,7 +162,7 @@ test('case 3: two adds claiming one index are both void; two lock changes replac
   // Find two keys whose salt-0 indices collide is infeasible; instead give one key two adds with different salts.
   const k = newKey().pub;
   const m = computeMembership(F.rec, [addDevice(F, 'lock', k, 0), addDevice(F, 'lock', k, 1)]);
-  assert.ok(m.voidAdds.has(k) && !m.devices.has(k));
+  assert.ok(m.voidAdds.has(k) && !m.devices.has(k) && m.removed.has(k), 'void adds\' keys are removed (14.1)');
   // The same add twice (a retry) counts once.
   const m1 = computeMembership(F.rec, [addDevice(F, 'lock', k, 0), addDevice(F, 'lock', k, 0)]);
   assert.ok(m1.devices.has(k));

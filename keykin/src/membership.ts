@@ -245,6 +245,7 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
     if (list.length > 1 || recordKeys.has(key)) { voidAdds.add(key); continue; }
     if (list[0].indices.some((i) => (claims.get(i)?.size ?? 0) > 1) || new Set(list[0].indices).size !== 3) voidAdds.add(key);
   }
+  for (const k of voidAdds) removed.add(k);              // a void add's key is never a member (core 14.1)
 
   // Locks: follow each device's lock along lock changes.
   const locks = new Map<string, LockPub | null>();
