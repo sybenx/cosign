@@ -167,3 +167,10 @@ because it describes the code during the freeze.
 - 2026-11-02 · Process: the one-member-per-machine rule (core §4.6) got a focused red team: 0 critical, 2 high (both handover specification gaps). Reviewer verdict: keep the rule. Not patched under the stop rule; fixes proposed in `simplification.md` (last part).
 - 2026-11-02 · Review: the one-member-per-machine handover fixes (H1, H2 and the commit order) applied in core 8.4.
 - 2026-11-02 · Review: the quick re-check of core §4.6 (draft 8.4) found no critical or high problem; its mediums and lows are folded into core 8.5. The one-member-per-machine rule passes.
+
+## Keykin Upkeep (2026-11-02)
+
+- 2026-11-02 · Hub design panel (4 approaches, 3 judges, 2 red teams) → **Keykin Upkeep**, written into Core as draft 9: fixed seats for servers, paper and helper; replacement = repair at the same seat index (a newcomer never adds weight); every seat change and report-lost carries a mandatory additive redeal (old pieces die; data and release keys rotate); members track a set of applied redeal ids instead of epoch moves; nothing needs everyone online. Replaces `refresh.md`.
+- 2026-11-02 · Default (UI): after 7 days with every server unreachable from 2 networks, a calm card offers to move all three.
+- 2026-11-02 · Default (UI): after report-lost or a server swap, one quiet cue (a filled dot on Backup) suggests a new paper; never a banner, never forced.
+- 2026-11-02 · Default: the user signs the public server list for now; the app pins it; co-signers are added once other operators exist.

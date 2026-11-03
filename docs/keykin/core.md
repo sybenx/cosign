@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 8.5 · 2026-11-02 · `draft` `optional` · not built
+Draft 9 · 2026-11-02 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -8,10 +8,9 @@ The key is split with FROST into weighted shares: each of the user's devices hol
 of your devices sign, and all the servers together never can.
 
 This document is the **core**: the smallest set of rules two independent implementations need to
-work together and keep the account safe. "Refresh now", the one ceremony meant to change the
-account's structure, is in [`refresh.md`](refresh.md), which is **parked** (§12): until it is
-reworked, an account keeps the servers, helper and paper it was created with (§10). Everything a person sees, and every other optional
-feature, lives in a module (§12). Sites change nothing: they keep using NIP-07, NIP-46, NIP-55 and
+work together and keep the account safe. That includes **Upkeep** (§6.7): replacing servers, the
+helper and the paper, which the user requires to work. Everything a person sees, and every other
+optional feature, lives in a module (§12). Sites change nothing: they keep using NIP-07, NIP-46, NIP-55 and
 the QRST signer-ticket, which the Doors module covers.
 
 **The bar.** An nsec kept in a password manager. Every rule here must beat it on security *and* on
@@ -27,15 +26,15 @@ Keykin is the new working name of Cosign. Cosign 0.12 (built, described in `../C
 prototype this replaces; §11 says how existing accounts move over. Old `cosign` names stay readable
 for ever.
 
-**How it got this shape.** Seven independent red teams kept finding serious problems in the same
-places, and the user cut them (decision log, 2026-11-02; reasoning in `simplification.md`):
+**How it got this shape.** Independent red teams kept finding serious problems in the same places,
+and the user cut them (decision log, 2026-11-02; reasoning in `simplification.md`):
 
-- the core never re-deals shares;
 - every account change needs a biometric lock, a second device with a typed code, or the paper;
 - everyday changes (add a device, report one lost, paper recovery) are independent signed approvals,
   safe in any order;
-- structural changes (servers, a helper, the paper) happen only in "Refresh now", with everyone
-  online;
+- servers, the helper and the paper sit in fixed seats; replacing one repairs the same share for the
+  newcomer, and every replacement and report-lost carries a redeal that kills old pieces (Upkeep,
+  §6.7, from the hub's design panel). Nothing needs everyone online;
 - there is no in-place move from Cosign 0.12: an account moves by importing its nsec (§11.2).
 
 ---
@@ -43,7 +42,7 @@ places, and the user cut them (decision log, 2026-11-02; reasoning in `simplific
 ## 1. Terms
 
 - **Group key** `g`: the account's Nostr key (x-only, BIP-340). Its private half never exists whole
-  anywhere (§6.6).
+  anywhere (§6.8).
 - **Ciphersuite**: `FROST-secp256k1-SHA256-TR-v1`, as implemented by the Zcash Foundation's
   `frost-secp256k1-tr` 2.x: RFC 9591's FROST(secp256k1, SHA-256) with the BIP-340 challenge as H2,
   the group key and shares brought to even y at key generation (`into_even_y`), and each signer's
@@ -51,25 +50,27 @@ places, and the user cut them (decision log, 2026-11-02; reasoning in `simplific
   this, and neither does Cosign 0.12's hand-rolled `server/frost.ts` (§11.2).
 - **Share**: one FROST share `s_i = f(i)` at a unique index `i ≥ 1`, worth one point. `f` has degree
   3; threshold `t = 4`.
-- **Epoch**: one polynomial `f`. An account starts in epoch 1 at creation; only "Refresh now" moves
-  it to a new epoch, re-dealing every share (`refresh.md`). Between refreshes nothing re-deals.
+- **Epoch record**: the account's creation record (§3.1). In Core 1.x it never moves: it pins the
+  group key, the commitment `C` at creation, the seats and the first members.
+- **Seat**: the fixed share indices of a server, the paper or the helper (§3.1). A replacement takes
+  over the same seat.
+- **Redeal** and **state**: a redeal adds a fresh zero-constant polynomial to every share; a member's
+  state is the set of redeals it has applied (§6.7.1).
 - **Member**: anything holding shares. It has a **member key** (secp256k1) that seals and
   authenticates its messages. Member kinds:
 
   | Kind | Shares | What it is | Joins |
   |---|---|---|---|
-  | `device` | 3 | An app on hardware the user owns: phone, tablet, desktop app, browser extension. | any time (§4) or at a refresh |
-  | `helper` | 3 | A family or friend's always-on box, only on the user's opt-in. | only at a refresh |
-  | `server` | 1 | An always-on service: public, a friend's, or the user's own. | at creation or a refresh |
-  | `backup` | 2 | The paper backup key. Nothing online holds its shares. | at creation or a refresh |
+  | `device` | 3 | An app on hardware the user owns: phone, tablet, desktop app, browser extension. | any time (§4) |
+  | `helper` | 3 | A family or friend's always-on box, only on the user's opt-in. | by a `seat` change (§6.7) |
+  | `server` | 1 | An always-on service: public, a friend's, or the user's own. | at creation, or by a `seat` change |
+  | `backup` | 2 | The paper backup key. Nothing online holds its shares. | at creation, or by a `paper` change |
 
 - **Device-class**: `device` and `helper`. Only these coordinate everyday signing.
-- **Epoch record**: the signed list of members at the start of an epoch, with the polynomial
-  commitment (§3.1). Made only at creation and by "Refresh now".
-- **Change**: a signed, self-contained account change made between refreshes: adding a device,
-  removing a device or helper, or re-registering a device's lock (§3.2). Changes can be applied in
-  any order.
-- **Membership**: the epoch record plus every valid change of that epoch.
+- **Change**: a signed, self-contained account change: adding a device, removing a device or helper,
+  re-registering a device's lock, and the Upkeep changes `seat`, `paper` and `redeal` (§3.2, §6.7).
+  Changes can be applied in any order.
+- **Membership**: the epoch record plus every valid change.
 - **Lock**: a P-256 key in secure hardware that signs only after a fresh **biometric** match and stops
   working when the enrolled faces or fingerprints change (§6.1). A passcode never counts.
 - **Approval**: what an account change needs: a lock, two devices with a typed code, a device with
@@ -77,9 +78,9 @@ places, and the user cut them (decision log, 2026-11-02; reasoning in `simplific
 - **Wait**: a delay, 3 days by default (`W`), that servers apply on their own clocks to exactly two
   things: a paper recovery (§6.5) and a held mass deletion (§5.8).
 - **Release key**: a random 32-byte key held by devices and servers, never by helpers or backups,
-  that wraps the backup's shares a second time (§7.2). It changes only at a refresh.
+  that wraps the backup's shares a second time (§7.2). It changes with every redeal (`rk(S)`).
 - **Data key**: a random 32-byte key held whole by devices only, for reading the account's own
-  private data. It can read, never sign, and changes only at a refresh (§4.5).
+  private data. It can read, never sign, and changes with every redeal (`dk(S)`, §4.5).
 - **Request**: any member message that asks for an answer. Each has an `id` (16 random bytes, hex)
   and a lifetime class (§5.6).
 
@@ -99,8 +100,10 @@ depends on a person seeing them:
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
    scanning it back or re-entering it (§4.3).
 
-`refresh.md` (parked) adds its own: when a refresh has finished, that the person must now destroy the
-old paper.
+7. a new paper: "Keep your old paper until this app says the new one is ready", and only after the
+   conflict check, "You can destroy the old paper" (§6.7.6 F7);
+8. a device restoring its pieces (`rerepair`, "*Laptop* restored its pieces"), and devices "added by a
+   device you removed" (§6.7).
 
 ## 2. Who does what
 
@@ -110,10 +113,9 @@ would.
 
 **Servers do the minimum.** Per account, a server MUST keep only:
 
-1. its share for the current epoch (and, during a refresh, the pending and the previous one,
-   `refresh.md`);
-2. the current epoch record and the set of changes of this epoch (§3);
-3. the current release key and the backup material (§7.2);
+1. its share at its current state (§6.7.1);
+2. the epoch record and the set of changes, for ever (§3);
+3. the current release key, the release-key seeds it was sent, and the backup material (§7.2);
 4. running waits (recoveries and holds) with their notices, and recovery sessions (§6);
 5. push addresses and notice channels (§8.1), and the inbox, including deliveries kept until
    acknowledged (§7.1);
@@ -121,7 +123,8 @@ would.
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
 co-signs, checks approvals, enforces the two waits and the stateless destructive rule (§5.8), sends
-wake-up pushes, and helps with repair. That is all.
+wake-up pushes, helps with repair (`need_repair`, `rerepair`), and runs the freshness check (§6.7.5).
+That is all.
 
 | | device | helper | server | backup |
 |---|---|---|---|---|
@@ -130,7 +133,7 @@ wake-up pushes, and helps with repair. That is all.
 | Get decryption answers (§5.5) | yes | no | no | no |
 | Approve an account change (§6.2) | with its lock, with a second device, or with the paper | **no** | no | with a device, or in a recovery |
 | Cancel a wait | with its lock, or with a second device | **no** | no | no (the holder withdraws its own) |
-| Hold the release key | yes | no | yes | after release only |
+| Hold the release key | yes | no | yes, while seated | after release only |
 | Hold the data key | yes | no | no | no |
 
 ## 3. Membership
@@ -144,11 +147,11 @@ tags `["d","keykin"]`, `["v","1"]` and `["epoch","<number>"]`. Its content is JS
 {
   "v": 1,
   "g": "<x-only group key, hex>",
-  "epoch": { "n": 3, "id": "<16 random bytes, hex>" },
-  "prev": "<event id of the previous epoch record, or null at creation>",
+  "epoch": { "n": 1, "id": "<16 random bytes, hex>" },
+  "prev": null,
   "t": 4,
   "commitment": ["<C0>", "<C1>", "<C2>", "<C3>"],   // 33-byte compressed points, hex, even-y form
-  "role": "master",            // or "child" (§6.6); set at creation only
+  "role": "master",            // or "child" (§6.8); set at creation only
   "origin": "dkg",             // or "import"; set at creation only
   "relays": ["wss://…", "wss://…", "wss://…"],
   "members": [
@@ -160,21 +163,25 @@ tags `["d","keykin"]`, `["v","1"]` and `["epoch","<number>"]`. Its content is JS
     { "key": "<backup key>", "kind": "backup", "shares": [5, 6] }
   ],
   "removed": [ "<every member key ever removed from this account>" ],
-  "backup": "<SHA-256 of the backup material's inner layer, §7.2>",
-  "refresh": { /* the refresh's approval and every staying member's confirmation, refresh.md */ }
+  "backup": "<SHA-256 of the backup material's inner layer at creation, §7.2>",
+  "seats": { "servers": [4, 7, 8], "backup": [5, 6], "helper": [h1, h2, h3] }
 }
 ```
 
-- `commitment` is the Feldman commitment to this epoch's `f`: `C_k = a_k·G`, with `C0` the group
-  point, which never changes. The point of share `i` is always **derived**, `P_i = Σ C_k·i^k`, and
-  never taken from a message.
+- `commitment` is the Feldman commitment to `f` at creation: `C_k = a_k·G`, with `C0` the group point,
+  which never changes. A member's current commitment is `C_S` (§6.7.1). The point of share `i` is
+  always **derived**, `P_i^S = Σ C_S,k·i^k`, and never taken from a message. `backup` and `commitment`
+  are creation pins; later papers are pinned by their `paper` change.
+- `seats` are fixed at creation and never change. Server and backup seats are the creation indices;
+  the helper's are `2^16 + (int(SHA-256("keykin-seat/1" ‖ g ‖ "helper" ‖ j)[0..4], big-endian) mod
+  2^30)` for `j = 0, 1, 2`, reserved even when there is no helper.
 - `lock` is absent for a member without one. `own` marks a server the user runs; it counts as one of
   the user's devices for privacy, nothing else.
 - `removed` only grows, across epochs. A key in it is never a member again, in this epoch or any
   later one.
 - **Unknown member kinds** are kept, and a device shows them. For the invariants, an unknown kind's
   shares count towards I2 as if it were a server, and as neither device nor server in I5. A member
-  that meets an unknown kind MUST NOT take part in a refresh until it is updated, but signs everything
+  that meets an unknown kind MUST NOT co-sign Upkeep changes until it is updated, but signs everything
   else.
 
 The epoch record and the changes are passed only between members, inside sealed messages (§9).
@@ -190,12 +197,13 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
   "change": { "add": { "key": "<member key>", "kind": "device", "lock": { … } | null, "salt": 0 } },
             // or { "remove": "<member key>" }
             // or { "lock": { "member": "<device key>", "replaces": "<old lock pub, or null>", "new": { "pub": "…", "rp": "…" } } }
+            // or { "seat": … }, { "paper": … }, { "redeal": … }   (§6.7.2)
   "approval": { /* §6.2 */ } }
 ```
 
-- There are only three: **add a device**, **remove a device or helper**, and **re-register a
-  device's lock** (after its face or fingerprint enrollment changed). Everything else (servers, a
-  helper, the paper, relays) changes only at a refresh.
+- Everyday changes: **add a device**, **remove a device or helper**, and **re-register a device's
+  lock** (after its face or fingerprint enrollment changed). Upkeep changes: **seat**, **paper** and
+  **redeal** (§6.7.2). Relays change with a seat change's new member entries.
 - **A device's current lock** is the lock in the epoch record (or in the add that brought it in),
   followed along lock changes: a lock change applies when its `replaces` is the device's current lock
   (`null` when it has none). If two lock changes replace the same lock, both are void and the device
@@ -205,7 +213,7 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
 - **Indices without coordination.** An added device's three indices are
   `2^16 + (int(SHA-256("keykin-index/1" ‖ g ‖ epoch id ‖ key ‖ salt ‖ j)[0..4], big-endian) mod 2^30)`
   for `j = 0, 1, 2` (`salt` and `j` as 4-byte big-endian integers). The inviting device picks the lowest `salt` whose indices collide with nothing it
-  knows. If two changes of the epoch ever claim the same index, both adds are void and the new
+  knows, the seats included. If two changes of the epoch ever claim the same index, both adds are void and the new
   devices join again. Every index, here and in epoch records, is a FROST identifier given as a 32-byte
   big-endian scalar (`frost-core`'s `Identifier::deserialize`), not the 16-bit constructor.
 - **Order does not matter.** The membership is the epoch record's members, plus every valid add,
@@ -220,17 +228,10 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
   signature, the approver's membership and the structure. (The co-signer's signature is the evidence
   that the check was made.) The window between an approver's removal and the news reaching a server
   is a stated limit (§10).
-- **Epochs and changes.** A change naming an older epoch is refused, with one exception: a `remove`
-  naming the epoch just before the current one is accepted for 7 days after the commit (members keep
-  that epoch's record and changes that long) and applies in the current epoch too. A refresh plan MUST
-  list every removal its sender knows of, and servers check that it also keeps every device added in
-  the epoch (`refresh.md`). A member that receives a change naming an epoch newer than its own fetches
-  that epoch's record first.
-- Changes never expire within their epoch. Every server keeps the whole set and gives it out
-  (`changes_get {epoch}` → `changes`). A member catching up asks **every** server and takes the union,
-  so one server leaving out a removal changes nothing. A refresh folds the set into the next epoch record and starts a new empty one.
-- While a server holds a pending refresh plan (`refresh.md`), it refuses new adds (`error busy`); a
-  `remove` aborts the plan.
+- Changes never expire. Every server keeps the whole set for ever (about 10 KB a year) and gives it out
+  (`changes_get` → `changes`). A member catching up asks **every** server and takes the union, so one
+  server leaving out a removal changes nothing. `changes_get` from a removed key always returns the
+  change that removed it.
 
 ### 3.3 Invariants
 
@@ -238,20 +239,23 @@ The membership is valid only if all of these hold. Servers MUST refuse to co-sig
 change that breaks one, and every member MUST refuse to adopt one.
 
 - **I1.** No member holds more than 3 shares.
-- **I2.** Servers together hold 3 shares or fewer.
-- **I3.** There is at most one `backup`, holding 2 shares.
+- **I2.** A server holds exactly one server seat, and each seat has at most one current holder, so
+  servers only ever hold the 3 server-seat indices.
+- **I3.** The backup holds exactly the backup seat.
+- **I6.** A helper holds exactly the helper seat.
+- **I7.** A seat's `new` holder is not a current member key or host and is not in `removed`. A host that
+  held a seat before may be seated again, in any seat, with a fresh member key.
 - **I4.** A round whose participants include no device-class member is a **recovery round** and
   needs a recovery session (§6.5).
 - **I5.** Any set of members that contains no `device` and no `server` is worth less than 4, with
   `backup` shares counted as 0 (they are unreadable until a server releases them after its wait,
   §7.2). One consequence: at most one `helper`.
 
-Also: each server holds exactly 1 share, each device and helper exactly 3; indices are unique; and
-the epoch record has **at least 3 servers** (I2 then means exactly 3), so one dead server never
-blocks signing. A server that leaves is in `removed` for good; to come back it joins with a new member
-key. (Apps
-add public servers automatically, alongside any server the person runs.) Changes only add devices
-and remove devices or helpers, or change a lock, so they cannot break I1, I2, I3 or I5.
+Also: each device holds exactly 3 shares; device indices never collide with each other or with a
+seat; and there are **exactly 3 server seats**, so one dead server never blocks signing. (Apps add
+public servers automatically, alongside any server the person runs.) Because a replacement takes the
+same seat and the same share value, no sequence of seat changes can give servers more than 3 distinct
+points in any one state.
 
 ### 3.4 Checking
 
@@ -260,21 +264,23 @@ A member adopting an **epoch record** MUST check that:
 1. it is kind 30242, its `d` tag is `keykin` (or, read-only, `cosign` or `frost`), its `v` and
    `epoch` tags equal the content's, and the signature verifies under `g`, the group key this member
    already knows (from its own creation of the account, or from the code it scanned, §4);
-2. its epoch number is one more than the record it holds and `prev` is that record's id (or it is
-   the record it was handed at join), and its `refresh` evidence verifies (`refresh.md`);
-3. `C0` is the group point, and for every share it holds, `s_i·G == P_i`;
+2. it is the account's only epoch record (`prev` is null), the one the member created or was handed at
+   join;
+3. `C0` is the group point, and for every share it holds, `s_i·G == P_i^S` at its state;
 4. **a device, in addition, rebuilds the commitment from first-hand facts**: its own 3 points and
-   the group point fix a degree-3 polynomial, so it computes `C0…C3` from them and refuses any record
-   whose commitment differs. No member list can fool this;
+   the group point fix a degree-3 polynomial, so it computes `C_S` from them and refuses any record or
+   redeal whose commitments disagree. It does this again after every applied redeal. No member list can
+   fool this;
 5. the invariants hold, and no key in its `members` is in any `removed` it has seen.
 
 A member taking a **change** MUST check that it is kind 24302, its `v` and `epoch` tags equal the
-content's, it is signed by `g`, and it is valid (§3.2). A refused record or change is shown on a
-device (§1.1). Members never go back to a lower epoch.
+content's, it is signed by `g`, and it is valid (§3.2, §6.7.2). A refused record or change is shown on
+a device (§1.1). A member never signs at a state it has left (§6.7.1).
 
 ## 4. Joining
 
-Adding a device uses this handshake, between refreshes or as part of one. A joining member trusts
+Adding a device uses this handshake. Seating a server or the helper uses the same check and repair
+(§6.7). A joining member trusts
 nothing it did not get from a code the person scanned, from the group key, or from the check both
 screens show. (This closes live finding #17.)
 
@@ -313,13 +319,15 @@ whose number matches.
 2. **The change.** After the check, the inviting device gets the add approved (§6.2: its lock, a
    second device with the typed join check, or the paper) and gets the change co-signed by a server.
    A new member is always a `device`; it never chooses its own kind.
-3. **Repair.** For each new index, the inviting device (3 shares) and one server (1) run the repair of
+3. **Repair.** At the current state (named in every message), for each new index, the inviting device
+   (3 shares) and one server (1) run the repair of
    `frost-core`'s `repairable` module with all 4 shares as helpers: each helper share computes its
    Lagrange-weighted deltas, the helpers exchange them (`repair_delta`), and each sums what it received
    into one `sigma`, sealed to the new device (`repair_sigma`). A server MUST take part only for indices
    that a valid change assigns to that new device. No member ever sees the new share.
 4. **Welcome.** The inviting device seals to the new device (`welcome`): the epoch record, the set of
-   changes, the relays, the release key, the backup material (§7.2) and the data key (§4.5).
+   changes, the relays, the state, the release key, the backup material (base plus every paper delta,
+   §7.2), the base data key and every data-key seed (§4.5).
 5. **Checks.** The new device MUST refuse to finish unless:
    - the `welcome` is sealed by `m`;
    - the epoch record passes §3.4 against `g` (the invite's, or the offer's, which the device then
@@ -338,21 +346,23 @@ contribution cannot be forged, and a racer's hello fails the check.
 
 The paper holds a **backup key pair**, not shares: the backup secret, the group key `g`, and the
 servers' host keys and relays, so a recovery can start from the paper alone. Its shares exist only
-wrapped (§7.2). The read-back (step 4) checks every field. It is made at
-account creation or in a refresh, never between, and it is checked on the device that prints it:
+wrapped (§7.2). The read-back (step 4) checks every field. It is made at account creation, or by a
+`paper` change (§6.7.6 F7), and it is checked on the device that prints it:
 
 1. The device makes the backup key pair.
-2. The device and one server repair the backup's indices on the epoch's polynomial (in a refresh,
-   with pending shares); every `repair_sigma` is sealed to the backup key. The device, which holds the
+2. The device and one server repair the backup seat at the current state; every `repair_sigma` is
+   sealed to the backup key. The device, which holds the
    backup secret at this moment, opens them, sums them and checks the shares against `P_i`.
 3. The device wraps the shares and the data key (§7.2) and signs the inner layer with the backup key.
-   The epoch record pins the inner layer's hash (`backup`), so members refuse any other copy.
+   The epoch record (at creation) or the `paper` change (later) pins the inner layer's hash, so members
+   refuse any other copy. A `paper` change commits only together with its material.
 4. The device keeps the backup secret, encrypted at rest (§7.3), until the person has printed or saved
    it **and shown it is readable** by scanning it back or re-entering it (§1.1), then destroys it and
    the shares. Until then that device alone is worth 5 points, the same as an nsec on it; it SHOULD
    prompt to finish the backup.
 
-The paper never changes during its epoch.
+After that, each redeal appends a **paper delta** for it (§7.2), so a paper reaches every later state
+without being reprinted.
 
 ### 4.4 Recovery join
 
@@ -365,8 +375,11 @@ by the backup key, and step 5 requires sigmas from the backup and both servers.
 A random 32-byte key, never derived from the group key or any to-self conversation key and never
 published. Devices hold it whole, in storage that is never backed up or synced (on iPhone, never in
 iCloud Keychain or a restorable backup). Helpers, servers and backups never get it, except that a copy
-is in the backup material, so a recovery loses no data (§7.2). It changes only at a refresh; devices
-keep older ones so they can read older data, and data services re-encrypt lazily.
+is in the backup material, so a recovery loses no data (§7.2). It is
+`dk(S) = HKDF("keykin-dk/1", base data key ‖ seeds of S, sorted)`: every redeal brings a new seed (sent
+to devices only, §6.7.3), so it rotates with every redeal, and a removed device never gets a later seed.
+Data names the state hash it was written under; devices keep older keys to read older data, and data
+services re-encrypt lazily.
 
 ### 4.6 One member per machine
 
@@ -385,16 +398,17 @@ wire change.
   If it finds the app, it does not join; if it already is the member, it **hands its membership over**,
   after finishing or abandoning any round, join, pair session or hold it has in flight:
   1. It passes **everything a `welcome` carries** (§4.2 step 4) to the app over native messaging: the
-     member key and shares, the epoch record and the set of changes, the release key, the backup
-     material and the data key, plus its site grants and its history.
+     member key and shares, the state, the epoch record and the set of changes, the release key, the
+     backup material, the base data key and every seed, plus its site grants and its history.
   2. The app stores all of it durably, reloads it from storage, runs the full checks of §3.4 on the
      epoch record and changes, checks that the member key is a current device holding exactly those
      indices and that `s_i·G == P_i` for every share, registers its own push addresses (replacing the
      extension's), and only then confirms.
   3. The extension then destroys its copy and becomes a relay.
 
-  The membership doesn't change: same member key, same indices. So nothing in the account changes and
-  no approval is needed. A copy that survives the handover (a crash between steps 2 and 3, a profile
+  The membership doesn't change: same member key, same indices, same state. So nothing in the account
+  changes, no approval and no redeal are needed. During a handover the extension acknowledges nothing,
+  and abandons any redeal it dealt that is not yet co-signed. A copy that survives the handover (a crash between steps 2 and 3, a profile
   restored from a backup) is the same 3 shares twice, not 6 points. An app holds **one membership per
   account** and refuses a second handover for an account it already serves.
 - **Retiring an extension.** When an extension that holds a membership finds the app, it first asks
@@ -428,7 +442,7 @@ local thief doesn't already have; §10 says so.
 sends `sign` to one co-signer:
 
 ```jsonc
-{ "type": "sign", "epoch": "<epoch id>", "event": { /* the full unsigned event, pubkey = g */ },
+{ "type": "sign", "epoch": "<epoch id>", "state": "<SHA-256 of sorted redeal ids>", "event": { /* the full unsigned event, pubkey = g */ },
   "signers": [1, 2, 3, 4],                               // every index in this round
   "commitments": [ { "i": 1, "D": "…", "E": "…" }, … ],  // exactly the coordinator's indices
   "approval": { /* optional lock assertion, §5.8 */ }, "hold": "<wait id, optional, §5.8>" }
@@ -442,9 +456,10 @@ commitments and its signature shares together:
 ```
 
 The coordinator then computes its own shares, aggregates, checks the result as an ordinary BIP-340
-signature on the event id, and publishes. It MUST check each partial against `P_i` derived from the
-named epoch's commitment (`verify_signature_share`) and name the member whose partial fails. All
-shares in one round are of the epoch the request names.
+signature on the event id, and publishes. It MUST check each partial against `P_i^S` derived from the
+named state's commitment (`verify_signature_share`) and name the member whose partial fails. All
+shares in one round are of the state the request names; a co-signer at another state answers `stale
+{ids}` (§6.7.1).
 
 **More than two parties: two calls.** When a round needs more than one co-signer (a recovery round,
 §6.5), the coordinator first sends `commit {signers}` to each and gets back `commitments`; each
@@ -491,7 +506,7 @@ Co-signers MUST receive the full event, compute its id themselves (NIP-01) and c
 ### 5.5 Decryption
 
 For NIP-04, NIP-44 and NIP-59, a device needs `x·Q` for a peer point `Q`. It sends
-`ecdh {epoch, points: [Q…], signers}` to a co-signer, where `signers` is its own indices plus the
+`ecdh {epoch, state, points: [Q…], signers}` to a co-signer, where `signers` is its own indices plus the
 co-signer's and is worth 4 (checked as in §5.7 item 2). Every `Q` MUST be a valid point other than the
 identity. For **each** of its indices `i` and each `Q`, the co-signer answers `ecdh_partial` with the
 weighted value `Y = λ_i·s_i·Q` (`λ_i` the Lagrange coefficient of `i` in `signers`) and a proof that
@@ -500,7 +515,7 @@ weighted value `Y = λ_i·s_i·Q` (`λ_i` the Lagrange coefficient of `i` in `si
 ```
 k = H("keykin/ecdh-k/1" ‖ fresh OS randomness ‖ s_i ‖ Q ‖ SHA-256(request)) mod n
 R1 = k·G;  R2 = k·Q;  W_i = λ_i·P_i
-e = H("keykin/ecdh-dleq/1" ‖ g ‖ epoch id ‖ i ‖ W_i ‖ Q ‖ Y ‖ R1 ‖ R2) mod n
+e = H("keykin/ecdh-dleq/1" ‖ g ‖ epoch id ‖ state ‖ i ‖ W_i ‖ Q ‖ Y ‖ R1 ‖ R2) mod n
 z = k + e·λ_i·s_i       verify: z·G == R1 + e·W_i  and  z·Q == R2 + e·Y
 ```
 
@@ -509,7 +524,7 @@ z = k + e·λ_i·s_i       verify: z·G == R1 + e·W_i  and  z·Q == R2 + e·Y
 - Because the answer is weighted for a set that includes the asker's indices, it is useless unless the
   asker adds its own 3 points' worth. A member key with no shares learns nothing.
 - The coordinator MUST refuse an answer unless its indices equal that member's indices exactly (none
-  missing, none extra, no repeats) and every proof verifies with `P_i` derived from the epoch's
+  missing, none extra, no repeats) and every proof verifies with `P_i^S` derived from the state's
   commitment. A refusal is that member failing, by name. An answer without proofs is a failure.
 - Co-signers MUST answer `ecdh` only from a current `device`, so no server, `own` or not, ever
   coordinates a decryption.
@@ -540,16 +555,17 @@ Before giving a partial, a co-signer MUST check that:
 
 1. the sender is a member of the current membership and may coordinate (§2);
 2. `signers` is exactly the sender's indices plus this co-signer's (plus, in the two-call form, the
-   other co-signers'), is worth at least 4, all of the named epoch, and the commitments cover it
+   other co-signers'), is worth at least 4, all at the named state, and the commitments cover it
    exactly (§5.1);
 3. the request is fresh and not a replay (§5.6);
 4. `event.pubkey` is `g`, and, for a **replaceable or addressable** kind (0, 3, 10000–19999,
    30000–39999), the event's `created_at` is no more than 10 minutes ahead of its own clock: a version
    dated ahead would block every later change until that date. Other kinds may be dated ahead, so a
    person can schedule a post;
-5. if the event is **kind 30242 or kind 24302, whatever its tags**, it is account machinery: it MUST be
-   a valid epoch record (`refresh.md`) or a valid change (§3.2), and a device MUST never sign one on a
-   site's request;
+5. if the event is **kind 30242 or kind 24302, whatever its tags, or a kind 30078 with the account's
+   beacon `d`**, it is account machinery: it MUST be a valid change (§3.2, §6.7.2) or the beacon matching
+   the change set (§6.7.5), and a device MUST never sign one on a site's request (an epoch record is
+   made only at creation);
 6. if the round is a recovery round (I4), the recovery session's rules are met (§6.5);
 7. the stateless destructive rule (§5.8).
 
@@ -597,7 +613,7 @@ A key that accepts a passcode or PIN instead is **not a lock**. Browser passkeys
 because a site cannot stop them falling back to a PIN. So a phone with only a passcode, a browser
 extension, and a Mac without Touch ID have no lock. A device's lock is set when it joins. When it stops working (a new face or fingerprint was
 enrolled), the device is lockless until it re-registers one by a lock change (§3.2), approved by a
-second device or the paper, or at a refresh.
+second device or the paper.
 
 A **lock assertion** has one encoding everywhere, WebAuthn's structure:
 `{ "authData": "<b64url>", "clientData": "<b64url of JSON>", "sig": "<b64url DER>" }`.
@@ -608,9 +624,9 @@ the user-present and user-verified flags set; and that `sig` verifies over
 `authData ‖ SHA-256(clientData)` with the member's `pub`. `what` is:
 
 - for a destructive event, `"sign" ‖ event id` (§5.8);
-- for an account change, `"change" ‖ SHA-256(JCS(change)) ‖ epoch id`;
+- for an account change, `"change" ‖ SHA-256(JCS([change hashes of its list])) ‖ epoch id ‖ expiry`,
+  with the expiry at most 24 hours away (§6.7.2);
 - for a cancel, `"cancel" ‖ wait id`;
-- for a refresh, `"refresh" ‖ SHA-256(JCS(plan without approval))`;
 - for any other request (`take_out`, removing a notice channel), `type ‖ id ‖ SHA-256(JCS(body
   without the assertion))`.
 
@@ -624,7 +640,7 @@ biometric-only (no attestation is required); that is a stated limit (§10), not 
 
 ### 6.2 Approvals
 
-An account change (a change of §3.2, a refresh, an export) is approved by exactly one of these, carried
+An account change (a change of §3.2 or a list of them, §6.7.2; an export) is approved by exactly one of these, carried
 in its `approval`. Signed items carry **detached** BIP-340 signatures by the signer's member key over
 `SHA-256("keykin-<type>/1" ‖ g ‖ JCS(body))`, because a NIP-59 seal proves nothing to a third party.
 
@@ -649,10 +665,12 @@ second device or the paper. A helper never approves anything.
 |---|---|
 | Add a `device` (§3.2) | `lock`, `pair` or `paper`; or `recovery` |
 | Re-register a device's lock (§3.2) | `pair` or `paper`; or `recovery` |
-| Report a `device` or `helper` lost (§6.4) | `lock`, `pair` or `paper`; or `recovery` |
+| `[remove, redeal]`: report a `device` or `helper` lost (§6.4) | `lock`, `pair` or `paper`; or `recovery` |
 | A device removes itself (§6.4) | `self` (its own member key's signature) |
-| "Refresh now" (servers, helper, paper, locks, relays, data and release keys) | `lock`, `pair` or `paper`; or `recovery` (`refresh.md`) |
-| Export a child key (§6.6) | `lock`, `pair` or `paper` |
+| `[seat …, redeal]`: add, swap or remove a server; add the helper (§6.7) | `lock`, `pair` or `paper`; or `recovery` |
+| `[paper, redeal]`: a new paper (§6.7.6 F7) | `lock`, `pair` or `paper`; or `recovery` |
+| A list no current seat holder co-signed (every server dead, F3) | `pair`, `paper` or `recovery` only |
+| Export a child key (§6.8) | `lock`, `pair` or `paper` |
 | Remove or replace a notice channel (§8.1) | `lock`, `pair` or `paper` |
 | Add a notice channel | any device, no approval (refused during a recovery wait) |
 
@@ -681,45 +699,278 @@ second device or the paper. A helper never approves anything.
 
 ### 6.4 Report lost
 
-- A change `{"remove": <key>}` names a `device` or a `helper`, with its approval (§6.2). A lockless
-  single device cannot report another; the person uses a second device or the paper.
+- A change `{"remove": <key>}` names a `device` or a `helper`, in one list with a redeal (§6.7.2), with
+  its approval (§6.2). The removed member gets no delta and no seed. A lockless single device cannot
+  report another; the person uses a second device or the paper.
 - **A device may always remove itself**: a `remove` naming its own key, with the approval
   `"self": { "member": <key>, "sig": … }` (a detached signature over `"keykin-self/1" ‖ g ‖ change
-  hash`), needs nothing else. A server co-signs it only while that key is a current device. It is how an extension retires in favour of its machine's
+  hash`), needs nothing else and no redeal. A server co-signs it only while that key is a current device. It is how an extension retires in favour of its machine's
   app (§4.6), and a thief gains nothing by it.
 - The change goes to every server and every device as a delivery (§7.1). From the moment a member has
-  it, servers MUST refuse every round with the removed member and drop its push addresses, and devices
-  MUST refuse to co-sign with it. It is never delayed.
+  it, servers MUST refuse every round with the removed member, and devices MUST refuse to co-sign with
+  it. It is never delayed, and never waits for its redeal.
+- **Removal notice.** The remove (or a reseat) is also delivered to the removed member, kept 7 days,
+  with one visible push before its push addresses are dropped (§8.1). A member that verifies a
+  group-signed change removing it destroys everything it holds for the account.
 - **Removal is final.** Nobody is put back; a device removed by mistake joins again.
-- **What removal does not do.** The removed device's shares, the release key and the data key do not
-  change. Every member refusing it is the protection (§10). "Refresh now" re-deals the shares, so the
-  removed device's pieces no longer combine with any honest member's; apps SHOULD offer it after a
-  removal once it exists (it is parked, §12). What the removed device itself kept, it keeps (§10).
+- **What the redeal does, and doesn't.** Every honest member applies the redeal and destroys its old
+  share, so the removed device's pieces no longer combine with any honest member's, and the data and
+  release keys rotate. What the removed device itself kept still combines with other pieces kept from
+  the same state (§10).
 
 ### 6.5 Recovery
 
 A round with no device-class member (I4) happens only in a recovery session.
 
+0. The holder reads the beacon's paper layer (§6.7.5) to find the current servers.
 1. The backup holder picks a random `r`, asks each server for a `challenge`, and sends each a
    `release_request {r}` signed by the backup key over that server's challenge. Servers pass it to their peers as a delivery (§7.1), so a server that was down starts its
    own wait before it acts for the account again.
 2. Each server starts a recovery wait (`W`, §6.3), tells every member and channel, and freezes holds. A
    locked device, or two devices together, can cancel it; the holder can withdraw it.
 3. When its own wait has passed, a server seals the **release bundle** to the backup key: the current
-   release key, the epoch record, the set of changes, and its waited statement (`release`).
-4. The holder fetches the backup material from any server or device (§7.2), checks its inner layer
-   against the epoch record's `backup` hash and the backup key's signature, opens it, and checks the
-   shares against the commitment.
+   release key `rk(S)`, the epoch record, the set of changes, the backup material and its waited
+   statement (`release`). Members serve the material only to members, or in a release after the wait.
+4. The holder checks the material's base against the pinned hash and the backup key's signature,
+   opens it, adds the paper deltas of exactly the redeals in the servers' current state, and checks
+   the sum against `P_b^S` (§6.7.6 F11).
 5. For 7 days after its own wait ended (the **recovery session**), each server takes part, in the
-   two-call form (§5.1), in rounds of the backup plus two servers: but only for a recovery join (§4.4),
-   changes approved by `recovery` (§6.2), and a refresh. Not ordinary events.
-6. The recovery app then destroys the backup's shares and the release bundle. The paper stays the
-   same: a new paper needs "Refresh now", which is parked (§12). Once refresh exists, the new device
-   runs it to make a new paper with a **new backup key**.
+   two-call form (§5.1), in rounds of the backup plus two servers: but only for a recovery join (§4.4)
+   and changes approved by `recovery` (§6.2): reseats, a new paper and a redeal (§6.7.6 F9). Not
+   ordinary events.
+6. The recovery app then destroys the backup's shares and the release bundle, and offers a new paper
+   (F7), never forcing it.
 
 So a stolen paper needs two servers that each take part after their wait, with every device told.
 
-### 6.6 Exporting keys
+### 6.7 Upkeep: replacing servers, the helper and the paper
+
+Servers, the helper and the paper can always be replaced, without everyone online and without getting
+stuck. Two ideas make that safe:
+
+- **Seats.** Each server, the paper and the helper occupy a fixed seat: fixed share indices, set at
+  creation (§3.1). A replacement is repaired **at the same index**, so it receives the same share value
+  the old holder had. However many holders a seat has had, they count as one point in any one state.
+  A newcomer never adds weight.
+- **Redeals.** Every seat change and every report-lost comes with a **redeal**: a fresh random
+  degree-3 polynomial with zero constant term, added to every member's share. Old pieces then stop
+  combining with new ones, and the data key and the release key rotate with it.
+
+#### 6.7.1 State
+
+- A member's **state** `S` is the set of redeal ids it has applied. Its share at index `i` is
+  `f(i) + Σ_{r∈S} δ_r(i)`, and the commitment it checks against is `C_S = C + Σ_{r∈S} D_r` (with `C`
+  the epoch record's commitment and `D_r` the redeal's). `P_i^S` is always derived, never taken from a
+  message.
+- Every signing round, decryption, repair and co-sign request carries `state = SHA-256(sorted ids)`.
+  A mismatch is answered with `stale {ids}`; the side missing ids fetches them (§7.1), applies them and
+  retries.
+- **Applying a redeal:**
+  1. check `δ(i)·G == Σ_k D_k·i^k` for each of its indices;
+  2. add it, and check `s'·G == P_i^{S'}`; a device also rebuilds `C_{S'}` from its own 3 points and `g`
+     (§3.4 step 4);
+  3. destroy, at once, the old share, `δ(i)`, any paper conversation key and any decrypted paper delta,
+     and the old release key;
+  4. send `ack`.
+- **Never sign at a state you have left.** Honest members can't: they destroyed it.
+- Servers apply every redeal they know, after fetching from their peers, before co-signing anything
+  else. Repair helpers apply everything they know first.
+- A member that is **ahead** on a stranded redeal (nobody alive can still deliver its deltas) uses
+  `rerepair` (§6.7.4) to step back to the largest state that at least 4 live points share. A repair at
+  a named state sets the member's state, so no redeal is ever applied twice.
+
+#### 6.7.2 The three Upkeep changes
+
+They are changes of §3.2 (kind 24302, group-signed, valid in any order).
+
+- **`seat`**: `{"seat": {"seat": "server:<idx>" | "helper", "new": <member entry>, "replaces": <key | null
+  | "void:<id>">}}`. A seat's current holder follows the epoch record's holder along valid seat changes,
+  exactly as a lock does (§3.2). Two seat changes with the same `new` count as one. With different
+  `new`, both are void and the seat stays empty until a `void:<id>` reseat. Every `replaces` key and every
+  voided `new` key goes into `removed`.
+- **`paper`**: `{"paper": {"key": K, "replaces": <old backup key>, "inner": <hash>, "state": <sorted
+  redeal ids in its base>}}`. If two paper changes conflict, the lowest change hash wins and the loser's
+  key goes into `removed`; the old key is removed once.
+- **`redeal`**: `{"redeal": {"id": <16 bytes>, "D": [D1, D2, D3], "paper_to": K, "paper_delta": <hash>,
+  "dk": <hash>, "rk": <hash>, "material": <hash>}}`. `D0` is the identity and is implicit. A `D` that
+  contains the identity, or a `δ` that is all zero, is refused. `paper_to` is the backup key that is
+  current **after** the list the redeal is in (so in `[paper K', redeal]` it is K', and the old key gets
+  nothing). `rk` is the hash of the sealed new release-key seed, and `material` the hash of the backup
+  material re-wrapped under the new release key.
+
+**Approval lists.** Changes that belong together (a seat change and its redeal, a remove and its
+redeal, a paper change and its redeal) are approved together as one **list**: the lock assertion's
+`what` is `"change" ‖ SHA-256(JCS([change hashes])) ‖ epoch id ‖ expiry`, with the expiry at most 24
+hours away and checked by the co-signer. A paper change's hash in the list leaves out `inner`, because
+the material does not exist yet when the person approves (§6.7.6 F7). The changes of one list are
+co-signed together and delivered as one; a `remove` and its redeal never travel apart.
+
+- `seat`, `paper` and `redeal` need `lock`, `pair`, `paper` or `recovery` (§6.2), never less: an
+  unapproved seat change would let a lockless thief seat its own server, and an unapproved redeal would
+  let it spoil the paper's delta.
+- **Mandatory redeal.** Every list with a `seat` or a `remove` MUST include one redeal, except a `self`
+  remove (§4.6); the next structural redeal covers that. The §4.6 handover needs none (same key, same
+  indices).
+- A list that **no current seat holder co-signed** (every server dead, §6.7.6 F3) is accepted only with
+  `pair`, `paper` or `recovery` approval; the paper challenge then comes from a server being seated.
+  A co-signer attaches a host-key `cosig` to the delivery, and every change that arrives without one is
+  shown to every device as a notice.
+
+#### 6.7.3 Dealing
+
+- The approving device deals the redeal. It holds `δ` **only in process memory, until the co-sign**. It
+  answers `missing [keys]` only before the co-sign, and destroys `δ` at the co-sign or on any failure.
+  After a failure it deals a fresh redeal under the same approval while that approval is unexpired.
+  Every gap after the co-sign is closed by `rerepair`.
+- Before the co-sign, the dealer uploads to every live seat holder and every incoming holder, as
+  deliveries:
+
+  | Delivery | Sealed to | Contents |
+  |---|---|---|
+  | `delta` | each member | `δ(i)` for each of its indices |
+  | `paper_ck` | devices only | the conversation key for the paper delta |
+  | `dk_seed` | devices only | the data-key seed |
+  | `rk_seed` | devices, and current and incoming seat servers (never helpers, never retired holders) | the release-key seed |
+
+  An upload must carry the approval list and its valid approval, or it is refused. Uploads are inert
+  until the co-sign and expire after 7 days.
+- **The co-signer** of a redeal checks the approval; holds a delta for every member that is not removed
+  in its post-list view, plus the paper delta for `paper_to` and the `rk_seed`, and otherwise answers
+  `missing`; refuses if `paper_to` is not the post-list current backup key or `material` does not match;
+  and drops deltas addressed to removed keys. A single server may co-sign a list alone.
+- **The co-signer of a paper change** fetches every live peer first; refuses while a pending redeal that
+  is backed by a valid unexpired approval and is less than 1 hour old exists (others are ignored);
+  requires the paper change's `state` to equal every co-signed redeal it knows; and receives the material
+  in the same request, checking that its hash equals `inner` and that it is signed by K. A repair
+  towards a new backup key K happens only with a valid fresh approval naming K, at most once per K, at
+  the current state.
+
+#### 6.7.4 Filling seats and catching up
+
+- **`need_repair`.** A seated member that holds no share yet asks for one. A valid seat change or add
+  naming its key authorises it; any device plus a server, or the helper plus a server, answers by repair
+  at the seat's index and the current state. It always gives the same value.
+- **`rerepair {indices, state, proof}`.** A current member repairs its own existing indices at a named
+  state. The proof is a Schnorr proof of knowledge of its share at an earlier state in its own chain,
+  bound to a fresh server challenge. It is allowed only at the indices its seat chain or add gives it,
+  and only for a redeal where no delta was addressed to its key (a concurrent add), or where no current
+  seat holder still holds the delta addressed to it. Every device is told ("*Laptop* restored its
+  pieces", §1.1).
+- **`need_seeds`.** Any current device seals the data-key and release-key seeds to another current
+  device that asks.
+- **An incoming seat holder**, once welcomed, fetches every unacknowledged delivery from its live peers.
+- The **welcome** (§4.2 step 4) and the **handover** (§4.6) carry: the state, the base data key and every
+  data-key seed, the current release key, and the backup material (base plus every paper delta).
+
+#### 6.7.5 The beacon, and a server's freshness check
+
+- **The beacon** is a kind 30078 event signed by `g`, with `d = hex(SHA-256("keykin-beacon/1" ‖ backup
+  key))`. It has two clear fields: `n`, the count of seat and paper changes, and `seats`,
+  `[H(g ‖ host key)]` for each current seat holder. It has two sealed layers carrying the current
+  servers' host keys, HTTPS endpoints and relays: one NIP-44-encrypted to the backup key (for the paper),
+  one under `HKDF(base data key, "keykin-beacon/1")` (for devices). It is republished after every seat or
+  paper change; on a paper change the old `d` is deleted. Readers take the highest valid `n` from any
+  relay.
+- A device MUST NOT sign a kind 30078 with the account's beacon `d` on a site's request (§5.7 item 5),
+  and co-signers treat it as account machinery: they co-sign it only from a device, matching the change
+  set they hold.
+- **Freshness, failing closed.** A server checks the beacon:
+  - on start after more than 1 hour down;
+  - whenever it has reached none of its peers for more than 1 hour;
+  - before acting on any `release_request`.
+
+  If it finds no beacon, it co-signs nothing and starts no wait. If its own host key is not in `seats`,
+  it fetches the group-signed seat change that replaced it from the beacon's servers. Only after
+  verifying that change does it destroy everything it holds for the account. A beacon alone never makes
+  a server destroy anything.
+- Devices also deliver removal notices **directly to each retired server's endpoints**, retrying on every
+  app open for a year. A device that gets a wait notice or a push from a retired server answers with the
+  removal notice and a `cancel`.
+
+#### 6.7.6 Flows
+
+One approval covers each list. The dealer uploads, one server co-signs, the dealer destroys `δ`,
+incoming holders are repaired in the foreground, and the beacon is republished. Example account:
+phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
+
+- **F1, one server dies.** A peer has been quiet for 7 days, or sent a 30-day shutdown notice, and a live
+  server pushes an `ask` naming a candidate Y. The card reads "S3 stopped answering. Move its piece to
+  Y?"; one Face ID (or a pair, or the paper) approves `[seat server:i3→Y, redeal]`. S1 co-signs, A and S1
+  repair `i3` for Y at the new state, and B catches up from its inbox or the beacon's device layer. No
+  reprint.
+- **F2, two servers die.** One approval covers `[seat i2→Y2, seat i3→Y3, redeal]`; S1 co-signs.
+- **F3, every server dies.** Approval by `paper` (A + paper) or `pair` (A + B with the typed code);
+  `[seat×3, redeal]` goes through with no co-sign; Y1–Y3 issue the paper challenge and notify devices; A
+  delivers removal notices to the old servers' endpoints, and if they come back, their freshness check
+  makes them destroy everything.
+- **F4, swap or remove a server.** As F1. An honest old server destroys everything; a dishonest one keeps
+  a dead point at the old state.
+- **F5, report lost.** One approval covers `[remove R, redeal]`. R gets no delta and no seed. If R added
+  devices just before, the app flags them as "added by a device you removed".
+- **F6, helper.** Add: the typed join check (§4.1), then `[seat helper→H, redeal]`; A plus one server
+  repair the helper's seat. Remove: `[remove, redeal]`.
+- **F7, a new paper.**
+  1. A makes K. One approval covers `[paper {K, replaces, state}, redeal (paper_to K)]` (without
+     `inner`; it expires in 24 hours).
+  2. A and one server repair the backup seat towards K under that approval. A checks the shares, wraps
+     the base and signs it with K. A is worth 5 points for this moment (§4.3).
+  3. The person prints or writes the paper and reads it back. The screen says "Keep your old paper
+     until this app says the new one is ready."
+  4. A sends the paper change with `inner` and the material; the co-signer checks and co-signs.
+  5. After a conflict check against every live server, the screen says "You can destroy the old paper",
+     and servers end any wait on the old key.
+
+  If A dies before step 4, nothing has changed. If the approval expires, one more Face ID with the same
+  K finishes it; no reprint.
+- **F8, data and release keys.** Every redeal rotates both. A bare `[redeal]` exists but is never needed
+  by hand.
+- **F9, after a paper-only recovery.** `recovery` approvals cover reseats, a new paper (offered, not
+  forced) and a redeal.
+- **F10, the group key leaks.** A new npub (key families, later).
+- **F11, paper-only recovery after changes.** The holder reads the beacon's paper layer to find the
+  current servers, runs §6.5, and after the wait receives `rk(S)` and the material. It sums the base and
+  the paper deltas of exactly the redeals in the servers' current state (leaving stranded ones out), and
+  checks the sum against `P_b^S`.
+
+**A device checks after every apply** that each applied redeal not in `paper.state` has a paper delta
+for the current K that it can verify with its conversation key. If one is missing, it prompts a repeat
+of F7 steps 2 and 4 with the same K: one Face ID, no reprint.
+
+#### 6.7.7 Choosing a replacement
+
+- The public server list is signed by the app maker, and apps pin its minimum version. (For now the
+  user signs it and the app pins it; co-signers are added once other operators exist.)
+- The server that sends the `ask` names the list version and the candidate. A device accepts only the
+  deterministic pick `hash(g ‖ dead key ‖ version)` over that list, never putting two seats on one
+  `operator` while another eligible one exists, and checks for itself that the server is dead before it
+  shows the card. When there is no other operator, the card says "All your servers are run by X".
+
+#### 6.7.8 Failure handling
+
+There are no aborts, no busy state, no leases and no clock that matters.
+
+| Case | What happens |
+|---|---|
+| Dealer dies before the co-sign | Nothing changed. Inert uploads expire in 7 days and block nothing after 1 hour. |
+| Dealer dies after the co-sign | Deltas are at one or more seat holders and spread (§7.1); gaps go through `rerepair`. |
+| Seated but not repaired | `need_repair`. |
+| Every holder of a redeal's deltas is lost | Survivors keep signing at the earlier state; a member that is ahead rerepairs back. |
+| Seat conflict | Same `new`: one. Different `new`: both void, both removed, one `void:` reseat. Liveness only. |
+| Two paper changes | Lowest hash wins; the old paper stays "keep" until the conflict check passes. |
+| Old servers come back after F3 or a long outage | Their freshness check makes them destroy everything, or fail closed. |
+| A device asleep while every known server was replaced | The beacon's device layer names the current servers; incoming holders hold its deliveries; `need_seeds` covers the seeds. |
+| Approval expires in the middle of F7 | One more approval with the same K. No reprint. |
+| Fewer than 4 live points | Stuck, as with any threshold scheme: e.g. a lockless lone device with no paper and every server dead. |
+
+#### 6.7.9 What the person sees (non-normative defaults)
+
+- After 7 days with every server unreachable from 2 or more networks: a calm card offering to move all
+  three (F3).
+- After a report-lost or a server swap: one quiet cue, a filled dot on Backup, suggesting a new paper.
+  Never a banner, never forced.
+- About once a year per dead server: one Face ID. If every server is gone: scan the paper.
+
+### 6.8 Exporting keys
 
 - **The master key is never exported.** A server MUST NOT seal its share to anyone for a `master` group,
   and members MUST NOT offer to combine a master group's shares into an nsec. (Someone combining their
@@ -737,13 +988,15 @@ So a stolen paper needs two servers that each take part after their wait, with e
 ### 7.1 Deliveries kept until acknowledged
 
 Everything a member needs from others (the welcome, repair sigmas, the epoch record and changes, the
-release key, the backup material, and every `cancel`, `withdraw` and `release_request`) is a
-**delivery**. Every server of the account MUST keep each delivery for every member, other servers
+redeal deliveries of §6.7.3, the backup material, and every `cancel`, `withdraw` and
+`release_request`) is a **delivery**. Every server of the account MUST keep each delivery for every member, other servers
 included, until that member sends `ack` for it or is removed, and MUST hand it over when asked (§8.2).
 A server that was offline MUST fetch its deliveries from its peers before it co-signs, issues a waited
 statement or releases anything again, skipping a peer that has not answered for an hour. Changes are
-kept for the whole epoch (§3.2). Deliveries for a removed member, and for the backup (which never
-fetches), are dropped; `deliver` from a removed member is refused.
+kept for ever (§3.2). Deliveries for a removed member are dropped, except its removal notice, kept 7
+days (§6.4); deliveries for the backup (which never fetches) are dropped; `deliver` from a removed
+member is refused. Data-key seeds and paper conversation keys go to devices only. Uploads made before a
+co-sign are inert and expire after 7 days (§6.7.3). A server also runs its freshness check (§6.7.5).
 
 Deliveries travel **through HTTPS, server inboxes, or live kind 21059 wraps** (which relays do not
 store), never as stored kind 1059 copies on relays: anything that carries a share or a key must not
@@ -751,15 +1004,21 @@ sit in public archives.
 
 ### 7.2 The backup material and the release key
 
-The backup's shares exist only as **backup material**: the shares (made and checked once per epoch,
-§4.3) and a copy of the data key, wrapped first with NIP-44 to the backup key and signed by the backup
-key (the **inner layer**, whose SHA-256 is the epoch record's `backup`), then with XChaCha20-Poly1305
-under the release key. Every server and every device keeps the current copy (so device + paper still
+The backup's shares exist only as **backup material**:
+
+- the **base**: the shares at the paper's `state` (made and checked once, §4.3) and the base data key,
+  NIP-44 to the backup key and signed by it (the **inner layer**, pinned by hash);
+- one **paper delta** per later redeal: NIP-44 from an ephemeral key to that redeal's `paper_to`,
+  carrying `{δ(b1), δ(b2), data-key seed}`;
+- all of it wrapped with XChaCha20-Poly1305 under the release key
+  `rk(S) = HKDF("keykin-rk/1", release-key seeds of S)`. The dealer re-wraps the whole material on every
+  redeal. Every server and every device keeps the current copy (so device + paper still
 works if every server is gone), and members refuse any copy whose inner layer does not match. Helpers and
 backups never hold the release key.
 
 So helper + paper (3 + 2) cannot sign without a server's wait (I5). Device + paper works at once, because
-the device holds the release key.
+the device holds the release key. After every apply, a device checks that each applied redeal not in
+the paper's base has a paper delta for the current backup key (§6.7.6).
 
 ### 7.3 Storage at rest and destruction
 
@@ -771,6 +1030,8 @@ the device holds the release key.
   NOT be limited to while the device is unlocked: background signing works as it does with an nsec today.
   (iPhone keeps keys sealed between a restart and the first unlock; that is the platform, not a rule.)
   The lock (§6.1) is a separate key, used only for approvals.
+- On applying a redeal a member destroys at once the old share, `δ(i)`, any paper conversation key, any
+  decrypted paper delta, and the old release key (§6.7.1).
 - A removed or wiped member MUST destroy everything it holds, with no snapshot, backup, version history
   or log line that keeps it. Where storage keeps history that cannot be turned off (for example 30-day
   point-in-time recovery), only ciphertext may be stored there, with the key kept outside it.
@@ -791,8 +1052,8 @@ the device holds the release key.
   Gateways issue a separate random address per server and per account, pinned to that server's VAPID key
   when the device asks for it, so the address is useless to anyone else and servers cannot link one
   phone's accounts.
-- A server drops an address that returns 404 or 410, drops a removed member's addresses, and MUST NOT
-  copy addresses to other servers.
+- A server drops an address that returns 404 or 410, and MUST NOT copy addresses to other servers. A
+  removed member gets one visible push saying it was removed, and then its addresses are dropped.
 - **Notice channels.** A device MAY register `notify_register { "email": "…" }` or
   `{ "webhook": "https://…" }` with a server. Servers MAY support them; a server that does MUST send every
   wait notice there too, never content beyond "a change to your account is waiting; it completes on
@@ -892,9 +1153,12 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `notice` | server → members | 6.3, 8.2 |
 | `push_register` / `push_unregister` / `notify_register` | device → server | 8.1 |
 | `inbox_get` / `inbox` / `inbox_ack` / `deliver` | member ↔ server | 8.2 |
+| `delta` / `paper_ck` / `dk_seed` / `rk_seed` | dealer → members (deliveries) | 6.7.3 |
+| `stale` / `missing` | co-signer → requester | 6.7.1, 6.7.3 |
+| `need_repair` / `rerepair` / `need_seeds` | member → servers / devices | 6.7.4 |
 | `part`, `error` | anyone | 9.1 |
 
-`refresh.md` adds its own messages. That is the whole of Core. Cosign 0.12 has 55 message types in
+The beacon (kind 30078) is the one Keykin event published on relays (§6.7.5). That is the whole of Core. Cosign 0.12 has 55 message types in
 `server/core/group.ts`; everything not here belongs to a module or goes.
 
 ## 10. Security properties, and their limits
@@ -902,8 +1166,9 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 **What holds.**
 
 - One member signs nothing: not a device (3), not a server (1), not the backup (2), not a helper (3).
-- All servers of an epoch together (3) can never sign, and neither can two colluding operators. Servers
-  change only in a refresh, which re-deals, so old server pieces never add up with new ones.
+- All servers together (3) can never sign, and neither can two colluding operators. Every server a seat
+  has ever had holds the same seat value, so in any one state all the servers ever seated are still 3
+  distinct points.
 - A server can delay or withhold its share and see what it co-signs. It cannot sign, cannot make an
   epoch record or a change, cannot add a member that others believe (live finding #1), cannot read
   messages (decryption answers are useless without a device's own points), and cannot fake a push.
@@ -911,34 +1176,42 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 - A lock is a biometric-only signature that servers check, not a device's word (#4). A face reset on a
   stolen phone kills its lock.
 - **No account change without a lock, two devices with a typed code, or the paper.** A thief holding one
-  phone without its lock cannot add a device, report the owner's devices, start a refresh or touch the
+  phone without its lock cannot add a device, report the owner's devices, seat a server or touch the
   paper. They can sign everyday events, and start holds, until the owner reports the phone from a second
   device or with the paper.
 - Everyday changes are independent and safe in any order, so the account cannot fork and a device that
   was away catches up by fetching them.
 - A stolen paper needs two servers that each waited, with every device and channel told; the owner's
   locked device, or two devices, can stop it.
-- The paper is checked when it is made, signed by its own key and pinned in the epoch record, so no one
-  can silently spoil it.
+- The paper is checked when it is made, signed by its own key and pinned; every later redeal adds a
+  paper delta that devices check after each apply, so a missing one is caught.
+- Servers, the helper and the paper can always be replaced, with no step needing everyone online and
+  nothing that can get stuck (§6.7.8). Every replacement and report-lost kills old pieces held by
+  honest members and rotates the data and release keys.
 - Nonces never touch storage and are hedged, so no restore or snapshot replays one.
 
 **What does not, said plainly.**
 
-- **While "Refresh now" is parked, the structure is fixed.** An account keeps the servers, helper and
-  paper it was created with. A dead server cannot be replaced: with 3 servers, one dead still leaves
-  signing and recovery working; two dead leave signing (device + the last server) but no paper
-  recovery. The data key never changes. After a paper recovery the same paper stays in use. These go
-  away when refresh is reworked.
-
-- **Removed devices keep valid pieces.** The key underneath never changes, so whatever a removed
-  device kept still fits it. Between refreshes: a removed device plus any one server that ignores the
-  block (hacked, buggy, restored from an old backup) is 4 points, and it can read private data written
-  later. "Refresh now" changes that: honest members destroy their old pieces, so the removed device's
-  3 no longer combine with any honest server's, and the data key changes. But **pieces of the same
-  epoch that someone kept still combine with each other, for ever**: a removed device (3) plus the old
-  paper (2) is the key, and so is a removed device plus a dishonest server's kept old share. That is
-  why the old paper must be destroyed after a refresh. After a serious leak of the key itself, the fix
-  is a new key with key families (later).
+- **Pieces of one state that someone kept combine for ever.** A redeal kills old pieces only in honest
+  hands. A removed device plus a server that was dishonest at the time, a removed device plus the paper,
+  or the paper plus two servers that kept the same state (including two that died together before they
+  were replaced) is the key. Prompt replacement and a new paper narrow this; only key families end it.
+- **A paper reaches every state since it was printed**, through its paper deltas. A stolen paper is
+  dangerous until it is replaced, and the app cannot know it was exposed.
+- **A lone device has no second checker** of its own paper delta; a mistake surfaces only at an optional
+  paper check or at recovery.
+- **The approving device, and a dishonest helper, learn `δ`** of a redeal. The dealer phone holds it only
+  for seconds; a helper dishonest at a redeal plus a retired server is the key. The helper is opt-in.
+- **`rerepair` lets an unnoticed copy of a device's shares heal itself** in its narrow cases (§6.7.4).
+  Every device is told; other redeals still cut such a copy off.
+- **One Face ID per dead server**, and no automatic replacement: a standing order would let a thief plus
+  one week-dead server seat a server.
+- **Two servers dead and every device lost before replacement** ends paper-only recovery.
+- **The beacon depends on relays keeping it.** A relay that withholds the newest one can delay a
+  revived server's self-destruction (it fails closed only when it finds no beacon). The clear `seats`
+  hashes let anyone with `g` and a host key test whether that server serves this account, and structure
+  changes show up as public events.
+- **The change set never compacts** (about 10 KB a year).
 - **A stolen paper plus two dishonest servers** is the key. Today one operator runs every server. And a
   paper recovery that nobody cancels leaves the thief with a device, so the key for good.
 - **The paper needs two live servers** to recover; with fewer, it can only be used together with a
@@ -992,11 +1265,11 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | #4 lock taken on trust | §6.1 (biometric-only, checked), §6.2 |
 | #1 injected member can act | §3 (only group-signed epoch records and changes; kinds fixed) |
 | #7 wipe leaves shares recoverable | §7.3 (browsers: §10) |
-| #2 paper added with any key | papers only at creation or refresh (§4.3), checked, signed and pinned |
+| #2 paper added with any key | papers only at creation or by an approved `paper` change (§6.7), checked, signed and pinned |
 | #3 report-lost race | §6.2, §6.4 (lock, two devices with a typed code, or the paper) |
 | #8, #9 server archive and ECDH oracle | §2 (no history), §5.5 (devices only, weighted) |
 | #12 paper promotes itself | kinds never change; a backup is never a device |
-| #13 stranded server, #14 removal in a pending refresh | deliveries (§7.1); a `remove` crosses epochs (§3.2) and aborts a plan (`refresh.md`) |
+| #13 stranded server, #14 removal in a pending refresh | deliveries (§7.1); no plans or epochs move: a remove travels with its redeal in one list (§6.7.2) |
 | #16a/b optional or partial proofs | §5.5 |
 | #5 extension shares unencrypted | encrypted where it costs no prompt (§7.3); otherwise 3 points, which beats the bar (§10) |
 | #10, #11, #15 | Doors and Device policy modules (grants live on devices) |
@@ -1037,27 +1310,20 @@ provisional until upstream assigns them.
 
 Each is a short document of its own, and none may weaken anything above.
 
-- **Refresh now** ([`refresh.md`](refresh.md)), **parked**: the ceremony for structural changes
-  (servers, a helper, the paper, relays, new data and release keys), every staying member online
-  together. Its own red team (round 2, on draft 3) still found 1 critical and 2 high problems, all at
-  its seams with the core: members a refresh removes are never told, so a leaving server and a
-  leaving helper still make 4 points; an abort can race the commit and void a valid new paper; and a
-  dishonest partner can show members commitments it did not use. Fixing them needs new machinery
-  (notifying and retiring leaving members, ordering aborts against commits, binding every
-  confirmation to one commitment), so it is parked until the core has been lived with.
 - **Account admin**: creating a key (DKG, import), adding and removing devices on screen, retire, delete
   (NIP-62 plus destroying shares and forgetting push addresses), the take-out bundle, the passkey page on
   servers for reporting a device lost.
 - **Server profile**: the duties as an operator sees them, abuse defaults, the 30-day shutdown notice,
-  telling the person calmly after a week that a server is quiet and offering "Refresh now",
+  telling the person calmly after a week that a server is quiet and offering to move its piece (§6.7.6
+  F1), the signed public server list (§6.7.7),
   announcements (kind 30243/10243), the operator notice.
 - **Device policy**: the destructive check, Undo from the device's own history, re-confirming staged
   events (a staged replaceable event older than the newest known is destructive), honest quiet notices.
 - **Doors and grants**: NIP-07, NIP-46 (per-site signer keys, bunker://, auth_url), NIP-55, the QRST
   signer-ticket, the same-device door on iPhone, grants and scopes, the iOS push appendix.
-- **Backup**: 24 words, finding servers from the paper, recovery contacts, the escape hatch (device +
-  paper or two devices run a refresh that replaces dead servers), heir.
-- **Helper**: the opt-in (joins at a refresh).
+- **Backup**: 24 words, recovery contacts, heir. (Finding servers from the paper is the beacon, §6.7.5,
+  and the old escape hatch is F3.)
+- **Helper**: the opt-in (joins by a `seat` change, §6.7.6 F6).
 - **Key families**: claim, accept, release; the challenge window; child groups. This is the answer to a
   serious leak of the key itself.
 
@@ -1065,7 +1331,7 @@ Each is a short document of its own, and none may weaken anything above.
 
 - **Formal check** of the one-call round (§5.1).
 - **Outside reviewer** sign-off on the core.
-- **Refresh now**, parked (§12).
+- **Upkeep** (§6.7) needs its own red-team round and vectors (`vectors/vectors.md`, case 12).
 - Repair with mixed-weight helpers relies on `frost-core`'s `repairable` module; its behaviour with a
   helper holding 3 indices must be pinned by vectors.
 
@@ -1141,3 +1407,21 @@ From the re-check of §4.6 (no critical or high): the extension checks the app's
 fresh challenge and its own view before deleting or retiring; the handover runs the full §3.4 checks,
 finishes in-flight work first and moves push registration; a `self` approval for self-removal; lock-change
 retries after a void; §10 on the desktop app's native-messaging host and browsers that can't reach it.
+
+## Changes in draft 9
+
+**Keykin Upkeep** (§6.7), from the hub's design panel, replaces `refresh.md`. Servers, the helper and
+the paper have fixed seats. A replacement is repaired at the same index, so a newcomer never adds
+weight. Every seat change and report-lost carries a mandatory redeal that kills honest members' old
+pieces and rotates the data and release keys. Members track a set of applied redeals (their state)
+instead of epochs, so nothing needs everyone online and nothing gets stuck.
+
+New pieces: `seat`, `paper` and `redeal` changes with approval lists; process-memory dealing;
+`need_repair`, `rerepair` and `need_seeds`; paper deltas; the beacon with a fail-closed freshness check;
+and a deterministic replacement pick from a signed server list.
+
+Added while writing it in: a site can never get the beacon signed, and a server destroys its share only
+after verifying the group-signed seat change that replaced it, never on a beacon alone.
+
+§10's "structure is fixed" limit is gone, replaced by Upkeep's own limits. The §4.6 one-member rule is
+kept.
