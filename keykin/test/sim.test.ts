@@ -300,6 +300,25 @@ test('F6, the helper: seated and repaired; signs everyday posts with a server; n
   assert.ok(acc.A.m!.removed.has(H.kp.pub));
   await assert.rejects(H.sign({ content: 'gone' }), /removed|stale/);
 });
+test('§6.7.5: a server offline over 7 days stays passive until a current peer confirms its seat', async () => {
+  const acc = await create();
+  const [S1, S2, S3] = acc.servers;
+  await acc.A.sign({ content: 'everyone active' });
+  for (const s of acc.servers) await acc.bus.send(acc.A.kp, s.kp.pub, msg('state_get', acc.g, acc.epochId, 'ask'));
+  acc.bus.kill(S2.kp.pub); acc.bus.kill(S3.kp.pub);
+  acc.bus.advance(8 * 86400);
+  const ask = async () => {
+    const ch = await acc.bus.send(acc.paper, S1.kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'));
+    const r = bytesToHex(randomBytes(16));
+    const { schnorrSign } = await import('../src/event.ts');
+    return acc.bus.send(acc.paper, S1.kp.pub, msg('release_request', acc.g, acc.epochId, 'member', { r, challenge: ch.challenge,
+      sig: schnorrSign(codesMod.detachedDigest('release_request', acc.g, { r, challenge: ch.challenge }), acc.paper.sk) }));
+  };
+  assert.equal((await ask()).code, 'passive', 'no peer can confirm');
+  acc.bus.revive(S2.kp.pub);
+  S1.quiet.clear();
+  assert.equal((await ask()).kind, 'recovery', 'a live current peer confirmed');
+});
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';

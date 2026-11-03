@@ -90,6 +90,7 @@ refuse result. The codes are proposals until the spec pins them.
 | 12 | Signpost published by a device; read by the paper and by a device (highest `n` with a matching `h`); tampered copies skipped; delete by `e` refused at every server | as stated; a stale `n` refused `signpost_n` | `sim.test.ts` |
 | 12 | A replaced server that slept through its removal | learns it from peers before any wait and refuses `retired`, destroying its share | `sim.test.ts` |
 | 12 | F6, the helper: seated by `[seat helper→H, redeal]`, repaired by a device and a server | signs kinds 1, 1111, 7, 6, 16, 9734, 20–22, 22242 with a server; other kinds `helper_kind`, dated ahead `dated_ahead`; a device co-signer `helper_round`; as co-signer `helper_never_cosigns`; stopped `helper_stopped` until a lock-approved `helper_resume`; leaves by `[seat helper→null, redeal]` | `sim.test.ts` |
+| 12 | A server idle over 7 days | passive: a `release_request` gets `passive` until a live current peer confirms its seat | `sim.test.ts` |
 
-Not yet covered: paper re-issue, passive servers' 7-day rule, and a
+Not yet covered: paper re-issue,  and a
 recovery whose state includes a stranded redeal.

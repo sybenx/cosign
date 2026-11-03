@@ -89,14 +89,16 @@ export class ServerNode implements Node {
   }
 
   /** Fetch the change set from every live peer (union) before acting (§3.2, §7.1). */
-  async catchUp() {
-    if (!this.co) return;
+  async catchUp(): Promise<boolean> {
+    let confirmed = false;
+    if (!this.co) return false;
     for (const s of [...this.m.members.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub)) {
       if (this.quietSince(s.key)) continue;
       const a = await this.bus.send(this.kp, s.key, msg('changes_get', this.rec!.g, this.rec!.epoch.id, 'ask'), { timeoutMs: 2500 });
-      if (a?.type === 'changes') { this.quiet.delete(s.key); this.takeChanges(a.changes); }
+      if (a?.type === 'changes') { this.quiet.delete(s.key); this.takeChanges(a.changes); if (!this.retired && this.m.members.has(s.key)) confirmed = true; }
       else if (a?.code === 'unreachable') this.quiet.set(s.key, this.now);
     }
+    return confirmed;
   }
   /** Peers that have not answered: skipped for an hour (§6.3, §7.1), then tried again. */
   quiet = new Map<string, number>();
@@ -150,7 +152,11 @@ export class ServerNode implements Node {
     try { return await this.dispatch(from, body, sentAt); }
     catch (e) { return { type: 'error', re: body?.id, code: e instanceof KeykinError ? e.code : 'internal', detail: String(e) }; }
   }
+  passive = false;
+  lastActive = 0;
   private async dispatch(from: string, body: any, sentAt: number): Promise<any> {
+    if (this.lastActive && this.now - this.lastActive > 7 * 86400) this.passive = true;
+    this.lastActive = this.now;
     if (body.type === 'seat_welcome') { this.welcome(body.w); return { type: 'ack' }; }
     if (!this.co) return { type: 'error', code: 'unknown_account' };
     if (this.retired) {
@@ -224,8 +230,12 @@ export class ServerNode implements Node {
         if (body.type === 'release_request' || body.type === 'hold' || (body.type === 'sign' && body.hold !== undefined)) {
           // Before a wait or a release: the change set from every peer (a removal it missed retires it),
           // and its peers' cancels (§6.3, §6.7.5).
-          await this.catchUp();
+          const confirmed = await this.catchUp();
           if (this.retired) return { type: 'error', code: 'retired' };
+          // Passive after 7 days offline (§6.7.5): no waits or releases until a live peer that is itself
+          // a current seat holder confirms, by its change set, that this server still holds its seat.
+          if (this.passive && !confirmed) return { type: 'error', code: 'passive' };
+          this.passive = false;
           await this.fetchCancels();
         }
         const a = this.co.handle(from, body, sentAt);
