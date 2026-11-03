@@ -2,14 +2,15 @@
 // Each node keeps what Core says it keeps; the drivers (`sign`, `submit`, `invite`, …) are what an
 // app would run. Nothing here is a second implementation of a rule: every check is in src/.
 
-import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, refuse, KeykinError } from '../src/bytes.ts';
-import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH } from '../src/codes.ts';
+import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError } from '../src/bytes.ts';
+import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH, what } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
 import { enrollReply } from '../src/serverprofile.ts';
+import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
 import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
@@ -19,7 +20,7 @@ import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { approveRecovery, approveLock } from '../src/approval.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
-import { newKey, schnorrSign, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
+import { newKey, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import type { SoftLock } from '../src/lock.ts';
 import type { Transport, Node } from './bus.ts';
@@ -58,12 +59,97 @@ export class ServerNode implements Node {
   }
 
   /** A seat holder's welcome (§6.7.4): record, changes, state, release seeds, material, and the share if repaired already. */
-  welcome(w: { recEv: NostrEvent; changes: NostrEvent[]; state: string[]; share?: [number, string]; signposts?: string[]; seeds: [string, string][]; items: Item[]; base: Item }) {
+  /** Account admin §3: after a delete, only SHA-256(g), the approved request, the changes that make its
+   *  approver a device, and the epoch record (14.9); every later request gets a host-signed `deleted`. */
+  tombstone: { h: string; request: any; changes: NostrEvent[]; recEv: NostrEvent } | null = null;
+  deletedAnswer() {
+    const t = this.tombstone!;
+    return { type: 'deleted', request: t.request, changes: t.changes, record: t.recEv, host: this.host.pub,
+      host_sig: schnorrSign(sha('keykin-deleted/1', hexToBytes(this.rec?.g ?? t.request.g), jcsBytes(t.request)), this.host.sk) };
+  }
+  private async takeDelete(from: string, body: any) {
+    let proof: { request: any; changes: NostrEvent[] };
+    if (body.type === 'account_delete') proof = this.co!.checkDelete(from, body, this.now);
+    else {
+      // A peer's host-signed `deleted`, from a current seat holder, carrying the request.
+      const peer = [...this.m.members.values()].find((x) => x.kind === 'server' && x.host === body.host);
+      if (!peer || peer.key !== from || !schnorrVerify(body.host_sig, sha('keykin-deleted/1', hexToBytes(this.rec!.g), jcsBytes(body.request)), body.host)) refuse('bad_deleted');
+      proof = { request: body.request, changes: body.changes };
+    }
+    const g = this.rec!.g;
+    this.tombstone = { h: bytesToHex(sha(hexToBytes(g))), request: proof.request, changes: proof.changes, recEv: this.recEv! };
+    const peers = [...this.m.members.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub);
+    // Destroy everything else: share, seeds, material, waits, push addresses, inbox.
+    this.co!.setState({ ids: new Set(), C: this.co!.state.C, shares: new Map() });
+    this.seeds.clear(); this.items = []; this.uploads.clear(); this.base = null; this.inbox = new Inbox();
+    const ans = this.deletedAnswer();
+    for (const p of peers) await this.bus.send(this.kp, p.key, { type: 'deleted', request: proof.request, changes: proof.changes, host: this.host.pub, host_sig: ans.host_sig });
+    return ans;
+  }
+
+  /** Account admin §1.1: creation by DKG. A throwaway DKG key (signed by the host key, destroyed when
+   *  the DKG ends), this server's part of each round, then its enrol reply once `g` exists. The account
+   *  is held provisionally until the device confirms it. */
+  dkg: { key: KeyPair; index?: number; secret?: string; secret2?: string; share?: bigint; g?: string; at: number } | null = null;
+  provisional = false; welcomedAt = 0;
+  private async creation(from: string, body: any): Promise<any> {
+    switch (body.type) {
+      case 'create': {
+        this.dkg = { key: newKey(), at: this.now };
+        return { type: 'create_ok', dkg_key: this.dkg.key.pub, host: this.host.pub, host_sig: schnorrSign(sha('keykin-dkg-key/1', hexToBytes(this.dkg.key.pub)), this.host.sk) };
+      }
+      case 'dkg_1': {
+        if (!this.dkg) refuse('no_dkg');
+        const r = dkg1(body.index, body.max, randomBytes(32));
+        this.dkg!.index = body.index; this.dkg!.secret = r.secret;
+        return { type: 'dkg_1', package: r.package };
+      }
+      case 'dkg_2': {
+        const others = new Map<number, string>(body.round1);
+        const r = dkg2(this.dkg!.secret!, others);
+        this.dkg!.secret = undefined; this.dkg!.secret2 = r.secret;
+        // Packages for other servers are sealed to their throwaway DKG keys; the device can't read them.
+        const out: [number, any][] = [...r.packages].map(([j, pk]) => {
+          const to = body.dkg_keys[j];
+          return [j, to ? { sealed: nip44.v2.encrypt(pk, nip44.v2.utils.getConversationKey(this.dkg!.key.sk, to)), from: this.dkg!.key.pub } : pk];
+        });
+        return { type: 'dkg_2', packages: out };
+      }
+      case 'dkg_3': {
+        const r1 = new Map<number, string>(body.round1);
+        const r2 = new Map<number, string>(body.round2.map(([i, x]: [number, any]) => [i, typeof x === 'string' ? x : nip44.v2.decrypt(x.sealed, nip44.v2.utils.getConversationKey(this.dkg!.key.sk, x.from))]));
+        const r = dkg3(this.dkg!.secret2!, r1, r2);
+        this.dkg!.secret2 = undefined; this.dkg!.share = r.share; this.dkg!.g = r.g;
+        return { type: 'dkg_3', g: r.g, points: [...r.points] };
+      }
+      case 'enroll': {
+        const old = this.kp.pub;
+        const reply = this.enroll(body.g, this.now);
+        this.bus.rekey?.(old, this);
+        return { type: 'enroll_reply', reply };
+      }
+      case 'confirm': {
+        // The device's confirmation, once every server adopted (Account admin §1.1 step 4).
+        if (!this.co || !this.provisional || body.epoch !== this.rec!.epoch.id || !this.m.devices.has(from)) refuse('not_provisional');
+        this.provisional = false; this.dkg = null;
+        return { type: 'ack' };
+      }
+    }
+    // A provisional account not confirmed within an hour is dropped, keeping no record.
+    if (this.provisional && this.now - this.welcomedAt > 3600) { this.co = null; this.rec = null; this.recEv = null; this.provisional = false; this.dkg = null; }
+    return undefined;
+  }
+
+  welcome(w: { recEv: NostrEvent; changes: NostrEvent[]; state: string[]; share?: [number, string]; provisional?: boolean; signposts?: string[]; seeds: [string, string][]; items: Item[]; base: Item }) {
     this.recEv = w.recEv;
     this.rec = checkEpochRecord(w.recEv, { g: w.recEv.pubkey });
     const m = computeMembership(this.rec, w.changes);
     const C = commitmentAt(commitmentFrom(this.rec.commitment), [...m.redeals.values()].filter((x) => w.state.includes(x.r.id)).map((x) => x.r));
-    const shares = new Map<number, bigint>(w.share ? [[w.share[0], scalarFrom(w.share[1])]] : []);
+    let shares = new Map<number, bigint>(w.share ? [[w.share[0], scalarFrom(w.share[1])]] : []);
+    // A DKG creation: this server's own DKG share, for the epoch record's g, at its seat.
+    if (!w.share && this.dkg?.share !== undefined && this.dkg.g === this.rec.g) shares = new Map([[this.dkg.index!, this.dkg.share]]);
+    if (!w.share && shares.size) checkOwnShares(this.rec.g, shares, C, false);
+    if (w.provisional) { this.provisional = true; this.welcomedAt = this.now; }
     if (w.share) checkOwnShares(this.rec.g, shares, C, false);
     this.co = new CoSigner({ me: this.kp, host: this.host, kind: 'server', now: () => this.now, record: this.rec, changes: [...w.changes],
       state: { ids: new Set(w.state), C, shares }, upkeep: (p, mm) => this.upkeep(p, mm),
@@ -171,16 +257,21 @@ export class ServerNode implements Node {
   private async dispatch(from: string, body: any, sentAt: number): Promise<any> {
     if (this.lastActive && this.now - this.lastActive > 7 * 86400) this.passive = true;
     this.lastActive = this.now;
+    const pre = await this.creation(from, body);
+    if (pre !== undefined) return pre;
     if (body.type === 'seat_welcome') {
       // Once per account, from a current device of the welcome's own view, and only if that view seats us (§6.7.4).
-      if (this.co) refuse('already_welcomed');
+      if (this.co && !this.provisional && this.rec!.g === body.w?.recEv?.pubkey) refuse('exists');   // Account admin §1.2: refused: exists
+      if (this.co && !this.provisional) refuse('already_welcomed');
       const rec = checkEpochRecord(body.w.recEv, { g: body.w.recEv.pubkey });
       const view = computeMembership(rec, body.w.changes);
       if (!view.devices.has(from)) refuse('not_device');
       if (![...view.seats.values()].some((x) => x.holder?.key === this.kp.pub)) refuse('not_seated');
       this.welcome(body.w); return { type: 'ack' };
     }
+    if (this.tombstone) return this.deletedAnswer();
     if (!this.co) return { type: 'error', code: 'unknown_account' };
+    if (body.type === 'account_delete' || body.type === 'deleted') return this.takeDelete(from, body);
     if (this.retired) {
       // A forwarding note, served to a request sealed by one of the allowed keys (§6.7.5 route 2).
       if ((body.type === 'forward_get' || body.type === 'changes_get') && this.forwarding!.allowed.has(bytesToHex(sha(hexToBytes(from)))))
@@ -542,6 +633,18 @@ export class DeviceNode implements Node {
       this.paperVerified.set(`${K}:${id}`, true);
       this.kept.delete(id);
     }
+  }
+
+  /** Account admin §3 "Destroy my key": sent to every server; this device destroys its copy only once
+   *  two servers have answered `deleted`. */
+  async deleteAccount(): Promise<number> {
+    const body = msg('account_delete', this.g, this.epochId, 'member', {});
+    const w = what.request('account_delete', body.id, body);
+    const req = { ...body, approval: { lock: { member: this.kp.pub, assertion: this.lock!.assert(this.g, w) } } };
+    let n = 0;
+    for (const s of this.servers()) { const a = await this.bus.send(this.kp, s.key, req); if (a?.type === 'deleted') n++; }
+    if (n >= 2) this.wipe();
+    return n;
   }
 
   /** Run a repair for `participant` with helper members (this device and others), sealing every

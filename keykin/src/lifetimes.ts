@@ -14,7 +14,7 @@ const ALLOWED: Record<string, Cls[]> = {
   challenge: ['ask'], pair_request: ['ask'], pair_sign: ['ask'],
   hold: ['member'], release_request: ['member'], deliver: ['member'],
 };
-const MEMBER = ['helper_stop', 'helper_resume', 'cancel', 'withdraw', 'upload', 'upload_held', 'push_register', 'push_unregister', 'notify_register', 'paper_reissue',
+const MEMBER = ['account_delete', 'deleted', 'helper_stop', 'helper_resume', 'cancel', 'withdraw', 'upload', 'upload_held', 'push_register', 'push_unregister', 'notify_register', 'paper_reissue',
   'delta', 'paper_ck', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack'];
 export const allowedClasses = (type: string): Cls[] => (Object.hasOwn(ALLOWED, type) ? ALLOWED[type] : MEMBER.includes(type) ? ['member'] : ['ask']);
 

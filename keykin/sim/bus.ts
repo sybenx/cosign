@@ -6,7 +6,7 @@ import type { KeyPair, NostrEvent } from '../src/event.ts';
 
 export interface Node { kp: KeyPair; handle(from: string, body: any, sentAt: number): any }
 /** What nodes send through: the in-memory Bus here, or runtime/relay.ts over real relays. */
-export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any, o?: { timeoutMs?: number }): Promise<any>; kill?(pub: string): void }
+export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any, o?: { timeoutMs?: number }): Promise<any>; kill?(pub: string): void; rekey?(oldPub: string, node: Node): void }
 
 export class Bus implements Transport {
   now: number;
@@ -20,6 +20,8 @@ export class Bus implements Transport {
   constructor(now = 1_800_000_000) { this.now = now; }
   add(n: Node) { this.nodes.set(n.kp.pub, n); return n; }
   kill(pub: string) { this.dead.add(pub); }
+  /** A server's member key arrives with its enrol reply (Server profile §4): readdress it. */
+  rekey(oldPub: string, node: Node) { this.nodes.delete(oldPub); this.nodes.set(node.kp.pub, node); }
   revive(pub: string) { this.dead.delete(pub); }
   alive = (pub: string) => this.nodes.has(pub) && !this.dead.has(pub);
   advance(s: number) { this.now += s; }

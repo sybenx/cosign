@@ -34,6 +34,7 @@ export class RelayNet implements Transport {
       h.sub.push(c.subscribe([{ kinds: [KIND_WRAP_LIVE], '#p': [node.kp.pub], since: this.now - 5 }], { onevent: (e) => void this.onWrap(node.kp.pub, e as NostrEvent) }));
     return node;
   }
+  rekey(oldPub: string, node: Node) { this.kill(oldPub); this.add(node); }
   kill(pub: string) { const h = this.hosted.get(pub); if (h) { h.sub.forEach((s) => s.close()); this.hosted.delete(pub); } }
 
   private async publish(from: KeyPair, to: string, body: any) {

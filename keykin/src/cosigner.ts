@@ -189,6 +189,38 @@ export class CoSigner {
     this.answeredRepair.add(k);
   }
 
+  /** Account admin §3: `account_delete {id, approval}`, an approved request (lock, pair or paper with this
+   *  server's own challenge), checked here at first hand. Returns what the tombstone keeps. */
+  checkDelete(from: string, msg: any, now = this.o.now()): { request: any; changes: NostrEvent[] } {
+    const { approval, ...body } = msg;
+    const w = what.request('account_delete', msg.id, body);
+    const dev = this.sender(from);
+    if (dev.kind !== 'device') refuse('not_device');
+    let approvers: string[] = [];
+    if (approval?.lock) {
+      const cur = this.m.locks.get(from);
+      if (approval.lock.member !== from || !cur) refuse('needs_approval');
+      const e = checkAssertion(this.g, cur!, w, approval.lock.assertion); if (e) refuse(e);
+      approvers = [from];
+    } else if (approval?.pair) {
+      const [x, y] = approval.pair;
+      if (x.member === y.member || !this.m.devices.has(x.member) || !this.m.devices.has(y.member)) refuse('approver_not_device');
+      const d = detachedDigest('pair', this.g, { what: bytesToHex(w), r: x.r });
+      if (!schnorrVerify(x.sig, d, x.member) || !schnorrVerify(y.code_sig, d, y.member)) refuse('bad_signature');
+      approvers = [x.member, y.member];
+    } else if (approval?.paper) {
+      const p = approval.paper.find?.((x: any) => x.server === (this.o.host?.pub ?? this.o.me.pub)) ?? approval.paper;
+      if (p.backup !== this.m.backupKey || !this.m.devices.has(p.member)) refuse('not_current_backup');
+      if (!schnorrVerify(p.sig, detachedDigest('paper', this.g, { what: bytesToHex(w) }), p.member)) refuse('bad_signature');
+      if (!schnorrVerify(p.backup_sig, detachedDigest('paper', this.g, { what: bytesToHex(w), challenge: p.challenge }), p.backup)) refuse('bad_signature');
+      if (!this.takeChallenge(p.challenge, p.backup, now)) refuse('stale_challenge');
+      approvers = [p.member];
+    } else refuse('needs_approval', 'a delete needs lock, pair or paper; there is no hold path');
+    // The changes that make each approver a device, so anyone can check the tombstone's proof.
+    const changes = this.m.accepted.filter((p) => p.type === 'add' && approvers.includes((p.c.change as any).add.key)).map((p) => p.ev);
+    return { request: msg, changes };
+  }
+
   /** Help a repair (§4.2 step 3, §6.7.4, §6.7.10): authorised first, and the finish seals only to
    *  what this start authorised. Hosts call these, never the helper directly. */
   #repair = new RepairHelper();
