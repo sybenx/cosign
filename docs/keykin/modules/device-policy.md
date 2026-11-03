@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 15 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 16 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -48,8 +48,10 @@ hold:
   fetches the others' snapshots, for at most 3 seconds, before a judgement that depends on them; if they
   don't arrive, it judges with what it has. A device accepts a snapshot only from a key that is a current device,
   and never a part with a lower number than it has seen for **that part**; part 0 is republished with
-  every change. Part 0 of the current month lists every month still holding live entries,
-  and a reader fetches all of them in one request. So a removed device or the sync service can't forge it or roll
+  every change. Each device also keeps one **index** event, whose `d` doesn't depend on the month
+  (`"keykin-meta-index:" ‖` the same HMAC without month or part), listing every month still holding live
+  entries and each part's number; a reader fetches it first, then those months. Parts beyond the index
+  are ignored, and each part is dated when it is published. So a removed device or the sync service can't forge it or roll
   it back, and out-of-order sync loses nothing.
 - **A device leaving by its own choice** (Remove this device, or a `self` remove, core §4.6) first merges
   its metadata into the snapshot of the device that takes over or approves (if
@@ -118,9 +120,10 @@ in the member app, and other sites', never count against a site.
 | A deletion of one ordinary event another site or the member app signed, or not recorded as this grant's | **Confirm** |
 | A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
 | A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
-| A Blossom `t=delete` token, or a NIP-98 `DELETE` token | **Confirm** ("Let *site* delete this image from *host*?"). Media deletion is rare, and nothing reliably shows whose a blob is |
+| A Blossom `t=delete` token | **Confirm**, with a card that names the number of files, the server ("every server they're on" when it has no `server` tag) and the expiry. A token naming more than 4 files, with no `server` tag, or expiring more than 10 minutes out is **declined**. A site's media deletes arriving within 5 seconds share one card. Media deletion is rare, and nothing reliably shows whose a blob is |
+| A NIP-98 `DELETE` token | **Confirm**, showing the method and the URL |
 | NIP-98 `PUT` and `PATCH`, and Blossom upload, list and get tokens | as Doors and grants §1 says (no card here) |
-| A site's judged list kind (replaceable or addressable) dated more than 5 minutes ahead | declined, so a site can't keep overriding other apps' edits or push Undo back; ordinary clock skew passes |
+| A site's judged list kind (replaceable or addressable), or a deletion of one, dated more than 5 minutes ahead | declined (not counted as the person's decline); ordinary clock skew passes |
 | A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 3 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count, this deletion included, stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, even when servers or a co-signing device refuse, and nothing is signed (a newer token event already supersedes them; the device doesn't check its `del` list). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
 | New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
 | Wallet and mint settings (17375, 37375) changed, or the payment pubkey or mints in 10019 changed, by a site | **Confirm** |
@@ -171,9 +174,8 @@ going to a server instead: on `needs-approval` it shows its own Held card. A hel
 ## 3. Undo
 
 - **Undo is judged.** It signs an earlier version from history as a new event, with a fresh `created_at`
-  later than any deletion it undoes and than the newest version it replaces (if that is dated ahead, the
-  device waits until its time has passed, since a co-signer refuses events dated more than 10 minutes
-  ahead; a waiting Undo is kept in the outbox as the changes it makes, so it survives the app being killed
+  at the newest version's time plus one second, or now if later, so it never loses to a version dated
+  ahead and never waits (at most 5 minutes ahead, which co-signers accept; a waiting Undo is kept in the outbox as the changes it makes, so it survives the app being killed
   and is re-applied to the current version when it is signed, keeping the person's newer edits),
   and goes through §2 against the current version like any change. Additions are never destructive, so
   restoring a bigger list is silent; restoring a smaller one is Confirm; restoring an empty one is Held
@@ -218,7 +220,7 @@ rebased: §4 applies to it.
   *Primal* · Delete". The button offers a deletion, because a signed note can't be unsigned.
 - **Cards** list every event separately with its reason. When one site asks several things at once, the
   destructive ones come first and each needs its own answer.
-- **Declines.** After 3 declined requests from one site in an hour, that site's further requests of the
+- **Declines.** After 3 requests from one site declined by the person in an hour, that site's further requests of the
   same kind are declined without asking for an hour. The site gets `declined`.
 - **Holds started on another device** show on every device that gets the wait notice. Each device fetches
   the held event, checks it against the wait id (`SHA-256("hold" ‖ event id)`, core §6.3) and writes its
@@ -251,6 +253,10 @@ rebased: §4 applies to it.
   convergence; it may come back as an optional module.)
 - **Junk in every profile field.** A site may replace `name`, `picture` and `about` with junk silently,
   since replacing them is ordinary; Undo restores them.
+- **A site's lists dated up to 5 minutes ahead** win at relays over another app's edit made in those
+  minutes; the person's own edits, Undo and rebased drafts are always dated after the newest version, so
+  they never lose.
+- **NIP-98 tokens are judged by method only**, not by what the URL does.
 - **The 7-day window rolls.** A patient site can cut a list by under 10 items, or under 20%, each week, and
   so shrink 430 follows to a handful over a year without a card. Undo everything *site* did still
   reverses it.
@@ -264,6 +270,17 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 16**, from its fourteenth red team (0 critical, 1 high):
+  - a media-delete card names how many files, which server and the expiry; wide tokens (more than 4 files,
+    any server, or a long expiry) are declined (DP14-1).
+
+  The mediums and lows:
+  - Undo, rebased drafts and the person's edits dated after the newest version, the 5-minute site limit
+    stated (DP14-2, DP14-7);
+  - a month-independent index event per device (DP14-3);
+  - one card for a site's media deletes within 5 seconds (DP14-4);
+  - NIP-98 cards show method and URL; automatic declines don't count; method-only judging stated; leftover
+    parts and part dates (lows).
 - **Draft 15**, from its thirteenth red team (0 critical, 1 high):
   - every Blossom and NIP-98 delete is Confirm, and upload claims are no longer recorded (DP13-1, DP13-2).
 

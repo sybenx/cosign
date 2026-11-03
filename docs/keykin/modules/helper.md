@@ -58,8 +58,8 @@ being published, because it is already signed; **Unschedule** asks the publisher
   removed, only with that device's own signature on the entry, and only while the old device is still a
   member; it acknowledges, and the remove is sent only after every regrant is acknowledged, carrying a
   `kept` field (the kept grants' signer key hashes, part of its approved list) so no device ends them. If
-  the helper doesn't answer within 2 minutes, the app offers to remove the device without keeping them. Devices send
-  no tombstone for a grant whose entry has a `was` they know. If the remove then fails, the kept grants
+  the helper doesn't answer within 2 minutes, the app offers to remove the device without keeping them. No device sends
+  the helper a tombstone because of a removal (Doors and grants §2). If the remove then fails, the kept grants
   simply stay under the staying device. A `self` remove keeps them all, since the machine stays. **Report
   lost never offers this**: every helper site that phone set up ends, and the app offers to unschedule
   that phone's scheduled posts. A grant in a helper report that no current device's list names, still unnamed after the next

@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 11 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 12 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -40,7 +40,7 @@ a request needs by looking at what it is.
 
 | Scope | Lets the site | Asked |
 |---|---|---|
-| `sign-in` | `get_public_key`; relay auth (kind 22242); NIP-98 (`GET`, `POST`) and Blossom (`upload`, `list`, `get`, `media`) tokens for the site's **own host**; for any other host, once per host: "Let *site* sign in to *nostr.build* as you?". A Blossom `upload`, `media` or `get` token bound to one blob by an `x` tag is silent, `server` tag or not; a `list` token, or one with no `x` tag, counts as another host | at connect |
+| `sign-in` | `get_public_key`; relay auth (kind 22242); NIP-98 (`GET`, `POST`; `PUT`, `PATCH` under `post`) and Blossom (`upload`, `list`, `get`, `media`) tokens for the site's **own host**; for any other host, once per host: "Let *site* sign in to *nostr.build* as you?". A Blossom `upload`, `media` or `get` token bound to one blob by an `x` tag is silent, `server` tag or not; a `list` token, or one with no `x` tag, counts as another host | at connect |
 | `post` | ordinary events: notes, reactions, reposts, zap requests, deletions (judged by Device policy), articles, app data (kind 30078) except the `keykin-` prefix; **encrypting** to the account's own key; NIP-98 `PUT`/`PATCH` tokens for the site's own host; Blossom `t=delete` and NIP-98 `DELETE` tokens, always a Confirm card (Device policy) | at connect (default on) |
 | `lists` | the profile (0); follows, mutes and other lists (3, 10000, and the other list and set kinds Device policy §2 lists exactly); relay lists (10002, 10050); and decrypting the private items of those lists | the first time it tries |
 | `dms` | NIP-04/NIP-44 encrypt and decrypt **with other people's keys**, NIP-59 unwrap, the person's own sent NIP-17 copies (below), and NIP-55 `decrypt_zap_event` | the first time: "Let *site* read and send your messages?" |
@@ -112,26 +112,34 @@ for listing and re-sending. The wildcard is also published in the ending device'
   64 KB event limit) it is split into `d ‖ ":1"`, `":2"`, …, each part its own encrypted chunk of the
   JCS-encoded set, all with the same `created_at` and a `["parts", n]` tag; the parts count as one
   event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `"keykin-grant-set/1"
-  ‖ g ‖ d ‖ created_at ‖ SHA-256(entries ‖ tombstones)`. The maker publishes at `created_at = max(now,
+  ‖ g ‖ d ‖ created_at ‖ SHA-256(entries ‖ tombstones ‖ ended list)`. The maker publishes at `created_at = max(now,
   last + 1)`.
 - **Every home adopts its own newest event**: at start, at each 5-minute inbox fetch, before each publish
   and before any takeover, it fetches its own newest grant event. It publishes to the account's recorded
-  relays plus its write relays, and **records which relays accepted** each publish (an `OK`); a fetch is
-  good only when more than half of the relays that accepted its last publish answer, leaving out relays
-  silent for 24 hours, and at least two. If none can be had, the device shows one quiet line: "Your relays
+  relays plus its write relays, and **records which relays accepted** each publish (an `OK` for every part).
+  A publish counts only when at least two relays, and more than half, accept it; otherwise it is retried
+  and the old set kept. A fetch is good only when more than half of that set answer, at least two,
+  leaving out relays that failed 10 tries in a row over at least 24 hours (falling back to the account's
+  current relays if fewer than two remain). If none can be had, the device shows one quiet line: "Your relays
   can't be reached; sites signed in here may be asked again." Until the first good fetch it waits up to 3
   seconds for it, then answers grants made since its own last publish and gives other requests
-  `try-later:`, retrying every 10 seconds; a restart of an extension's background worker within 5 minutes
-  of a good fetch doesn't count as a start. It never publishes after a failed fetch. It takes it over **only if it is newer than the home's own last publish**, and
+  `try-later:` (NIP-46 and NIP-07), retrying every 10 seconds. NIP-55 has no such answer, so there the
+  device answers from its own state at once. A restart of an extension's background worker, an Android
+  process or the iOS notification extension within 5 minutes of a good fetch doesn't count as a start. It never publishes after a failed fetch. It takes it over **only if it is newer than the home's own last publish**, and
   then drops only entries **made before** that event that are missing from it; for each entry the higher
   `v` wins (ties as below). So a restored or copied home stops answering an ended
   grant within minutes and never republishes it, a stale relay copy changes nothing, and a grant made a
   moment ago is never dropped.
+- **Grants are stored like shares** (core §7.3): grants, ended lists and signer keys are excluded from
+  restorable backups, so restoring a device from a backup brings back no grant. (A copied browser profile
+  is a copy of a member, as core §10 says.)
 - **A grant that left its maker's event never comes back.** Each device's grant event keeps a compact
-  **ended list** (the 16-byte ids of its grants that ended) for as long as the device is a member, and the
-  welcome carries every device's ended list. Any entry whose id is on its maker's ended list is a
+  **ended list** (the 16-byte ids of its grants that ended, and for helper grants the signer key's hash).
+  Every device also keeps the **union** of all makers' ended lists, the welcome carries it, and a home
+  merges any ids it learns into its own before it publishes. An id is dropped once its grant would have
+  expired anyway. Any entry whose id is on its maker's ended list is a
   resurrection: ignored everywhere, and the maker is sent a tombstone. Re-sends are batched: at most one
-  delivery per maker per day, carrying them all. (A handover keeps the ids, so moved grants are no
+  delivery per maker per day in the first week, then one a week, carrying them all. (A handover keeps the ids, so moved grants are no
   resurrection.)
 - **Tombstones** are kept until the maker's newest event no longer has the entry, and at least 30 days;
   for helper grants, until the helper's report no longer lists them. Each device also applies, for its own
@@ -360,6 +368,19 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 12**, from its eleventh red team (0 critical, 2 high):
+  - grants are stored like shares, excluded from backups; every device keeps the union of ended ids,
+    carried in welcomes and merged before publishing (H1);
+  - a publish counts only when two relays and more than half accept it, with a fallback to the account's
+    relays (H2).
+
+  The mediums and lows:
+  - relays drop out by failed tries, not by the clock (M1);
+  - NIP-55 answered at once, and process restarts (M2);
+  - ended ids dropped at their grant's expiry (M3);
+  - helper signer keys in ended lists (M4);
+  - weekly re-sends after a week (M5);
+  - `maker_sig` covers the ended list, the other-host rule for `PUT`/`PATCH`, wording (lows).
 - **Draft 11**, from its tenth red team (0 critical, 2 high):
   - ended ids kept in each device's own grant event and in welcomes, and a good fetch counted against the
     relays that accepted the last publish (H1);
