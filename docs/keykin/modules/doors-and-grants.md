@@ -98,7 +98,7 @@ connection, the whole site everywhere, or **every site at once**; before that la
 every maker's newest grant event, and also sends each home, the helper included, a **wildcard tombstone**
 `{home, all: true, before: <unix>}` that ends every grant whose `made` is before then (after a takeover,
 `made` is the original's), any not yet published included. Only the home applies it; other devices use it
-for listing and re-sending. The wildcard is also published in the ending device's event.
+for listing. The wildcard is also published in the ending device's event.
 
 ## 2. Keeping and syncing grants
 
