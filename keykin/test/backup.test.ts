@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { backupQR, readBackupQR, accountCard, backupWords, readBackupWords, holderInboxKey, makeHeir, openHeir, checkHeirPiece, heirWaitId } from '../src/backup.ts';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { newKey, pubOf } from '../src/event.ts';
+import { newKey, pubOf, verifyEvent } from '../src/event.ts';
 import { sha, bytesToHex, randomBytes } from '../src/bytes.ts';
 import { mod } from '../src/curve.ts';
 
@@ -81,4 +81,28 @@ test('§4.3 the heir: pinned by F7, waits 180 days, any device stops it without 
     pieces.push([a.x, BigInt('0x' + a.piece)]); record = a.record;
   }
   assert.equal(openHeir(record, acc.g, heir.sk, pieces).secret, bytesToHex(K.sk), 'the heir has the backup key: next, the paper recovery with its 3-day wait');
+});
+
+test('§3 recovery contacts: F7 hands out 2-of-3 SLIP-39 pieces; two friends recover the backup key; then the paper recovery', async () => {
+  const { create, recover } = await import('../sim/account.ts');
+  const { FriendNode } = await import('../sim/nodes.ts');
+  const { combine } = await import('../src/slip39.ts');
+  const { unwrap } = await import('../src/transport.ts');
+  const acc = await create();
+  const friends = [0, 1, 2].map(() => acc.bus.add(new FriendNode(acc.bus)) as InstanceType<typeof FriendNode>);
+  const K = await acc.A.newPaper((l) => acc.A.approveLock(l), { holders: friends });
+  const pc = acc.A.m!.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === K.pub)!;
+  assert.equal((pc.c.change as any).paper.holders.length, 3, 'the holder keys are pinned in the paper change');
+  assert.ok(friends.every((f) => f.pieces.has(K.pub)));
+  // The phone is lost. The new device shows a fresh key; Ana and Carl, in person, seal their pieces to it.
+  acc.bus.kill(acc.A.kp.pub);
+  const fresh = newKey();
+  const got: string[] = [];
+  for (const f of [friends[0], friends[2]]) got.push(unwrap(fresh.sk, await f.giveTo(fresh, K.pub)).body.piece);
+  const sk = combine(got);
+  assert.equal(bytesToHex(sk), bytesToHex(K.sk), 'two pieces give the backup key');
+  // One friend alone gets nothing.
+  assert.throws(() => combine([got[0]]));
+  const { D } = await recover(acc, [acc.A], { sk, pub: K.pub });
+  assert.ok(verifyEvent(await D.sign({ content: 'recovered through two friends' })));
 });

@@ -2,7 +2,7 @@
 // Each node keeps what Core says it keeps; the drivers (`sign`, `submit`, `invite`, …) are what an
 // app would run. Nothing here is a second implementation of a rule: every check is in src/.
 
-import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError } from '../src/bytes.ts';
+import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes } from '../src/bytes.ts';
 import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH, what } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
@@ -10,7 +10,8 @@ import { computeMembership, takenIndices, signpostCount, signpostServers, adopt,
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
 import { enrollReply } from '../src/serverprofile.ts';
-import { makeHeir } from '../src/backup.ts';
+import { makeHeir, pieceAckDigest } from '../src/backup.ts';
+import { backupPieces } from '../src/slip39.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
 import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
@@ -654,17 +655,19 @@ export class DeviceNode implements Node {
   /** F7, a new paper (§6.7.6, §4.3): approve `[paper K, redeal]`, repair the backup seat towards K
    *  with one server, wrap and sign the base under the redeal's release seed, then commit. Returns K
    *  (in real life, printed and read back before step 4). */
-  async newPaper(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void>; heir?: string } = {}): Promise<KeyPair> {
+  async newPaper(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void>; heir?: string; holders?: FriendNode[] } = {}): Promise<KeyPair> {
     this.f7 = true;
     try { return await this.newPaperInner(approve, o); }
     finally { this.f7 = false; }
   }
-  private async newPaperInner(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void>; heir?: string }): Promise<KeyPair> {
+  private async newPaperInner(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void>; heir?: string; holders?: FriendNode[] }): Promise<KeyPair> {
     const K = newKey();
     // Backup §4.1: an heir's envelope of K, its hash pinned in the approved paper change.
     const heir = o.heir ? makeHeir({ g: this.g, setId: K.pub, heirKey: o.heir, secret: K.sk, card: 'card', seats: this.m!.record.seats.servers }) : null;
     this.pendingHeir = heir;
-    const list: Change[] = [{ paper: { key: K.pub, replaces: this.m!.backupKey!, ...(heir ? { heir: heir.recordHash } : {}) } }, { redeal: { dealer: this.kp.pub } }];
+    // Backup §1.1 step 5: the holder keys kept in the set, pinned by hash in the approved change.
+    const holders = o.holders?.map((f) => bytesToHex(sha(hexToBytes(f.kp.pub)))).sort();
+    const list: Change[] = [{ paper: { key: K.pub, replaces: this.m!.backupKey!, ...(heir ? { heir: heir.recordHash } : {}), ...(holders ? { holders } : {}) } }, { redeal: { dealer: this.kp.pub } }];
     const approval = approve(list);
     await this.submit(list, approval, { finish: async (dealt) => {
       const server = this.servers().find((x) => this.bus.alive(x.key))!;
@@ -677,8 +680,19 @@ export class DeviceNode implements Node {
       const repairedAt = [...this.state!.ids].sort();
       const base = baseItem(K, dealt.releaseSeed, shares, this.baseDk, repairedAt);
       shares.clear();
-      await o.duringF7?.();                                  // the person prints and reads back; others go on                                        // the device keeps K only until the read-back
-      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: repairedAt, ...(heir ? { heir: heir.recordHash } : {}) } }, { redeal: dealt.redeal }], material: base };
+      await o.duringF7?.();                                  // the person prints and reads back; others go on
+      // Backup §1.1 step 3: hand every friend its SLIP-39 piece (2 of 3) with the account card, live,
+      // sealed to its pinned holder key; commit only once enough pieces are acknowledged (step 4).
+      if (o.holders) {
+        const pieces = backupPieces(K.sk);
+        let acked = 0;
+        for (const [k, f] of o.holders.entries()) {
+          const a = await this.bus.send(this.kp, f.kp.pub, { type: 'piece', g: this.g, set: K.pub, piece: pieces[k], card: 'card' });
+          if (a?.type === 'piece_ack' && schnorrVerify(a.sig, pieceAckDigest(this.g, K.pub, utf8ToBytes(pieces[k])), f.kp.pub)) acked++;
+        }
+        if (acked < 2) refuse('set_not_recoverable', 'fewer than two pieces acknowledged');
+      }                                        // the device keeps K only until the read-back
+      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: repairedAt, ...(heir ? { heir: heir.recordHash } : {}), ...(holders ? { holders } : {}) } }, { redeal: dealt.redeal }], material: base };
     } });
     await this.reissueMissing();
     if (this.keptSecret) {
@@ -857,3 +871,25 @@ export class PaperHolder implements Node {
   }
 }
 export { sha, hexToBytes, recoveryWaitId, pickSalt, takenIndices, parseCode, baseItem };
+
+// --- a friend holding a recovery piece (Backup §3) ------------------------------------------
+
+export class FriendNode implements Node {
+  kp = newKey();                     // the dedicated holder key, never the friend's everyday nsec
+  pieces = new Map<string, { g: string; piece: string; card: string }>();
+  bus: Transport;
+  constructor(bus: Transport) { this.bus = bus; }
+  handle(from: string, body: any): any {
+    if (body.type === 'piece') {
+      this.pieces.set(body.set, { g: body.g, piece: body.piece, card: body.card });
+      return { type: 'piece_ack', sig: schnorrSign(pieceAckDigest(body.g, body.set, utf8ToBytes(body.piece)), this.kp.sk) };
+    }
+    return { type: 'error', code: 'unsupported' };
+  }
+  /** Recovering (§3): seal the piece for that account to the key the new device shows, scanned in person. */
+  async giveTo(newDeviceKey: KeyPair, set: string) {
+    const p = this.pieces.get(set);
+    if (!p) refuse('no_piece');
+    return wrap(this.kp.sk, newDeviceKey.pub, { type: 'piece', set, piece: p!.piece, card: p!.card });
+  }
+}
