@@ -80,29 +80,31 @@ test('#2 high: once a signpost is co-signed, its delete by e tag is refused', ()
   assert.equal(S3.handle(F.devices[0].kp.pub, del3.request, clock).code, 'machinery');
 });
 
-function seatEvs(F: Fixture, idx: number, replaces: string | null, entry: any) {
+function seatEvs(F: Fixture, idx: number, replaces: string | null, entry: any, expiry = EXP()) {
   const A = F.devices[0];
   const list: Change[] = [{ seat: { seat: `server:${idx}`, new: entry, replaces } }, { redeal: { dealer: A.kp.pub } }];
-  const ap = approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, A.lock!);
+  const ap = approveLock(F.g, F.epochId, list, expiry, A.kp.pub, A.lock!);
   const d = dealRedeal(F.g, A.kp, [], new Map(), F.backup.kp.pub, [5, 6]);
   return [F.change(list[0], list, ap), F.change({ redeal: d.redeal }, list, ap)];
 }
 
-test('#3 high: a host that left one seat may hold another later; only simultaneous holding voids', () => {
+test('#3 / core 14.10: a host approved into another seat days later moved; approved together, both are void', () => {
   const F = fixture();
   const h1 = newKey().pub;
   const y1 = { key: newKey().pub, kind: 'server', shares: [4], host: h1 }, y2 = { key: newKey().pub, kind: 'server', shares: [4], host: newKey().pub };
   const z = { key: newKey().pub, kind: 'server', shares: [7], host: h1 };
-  const evs = [...seatEvs(F, 4, F.servers[0].kp.pub, y1), ...seatEvs(F, 4, y1.key, y2), ...seatEvs(F, 7, F.servers[1].kp.pub, z)];
+  const later = EXP() + 3 * 86400;
+  const evs = [...seatEvs(F, 4, F.servers[0].kp.pub, y1), ...seatEvs(F, 4, y1.key, y2, later), ...seatEvs(F, 7, F.servers[1].kp.pub, z, later)];
   const m = computeMembership(F.rec, evs);
   assert.equal(m.seats.get('server:4')!.holder!.key, y2.key);
   assert.equal(m.seats.get('server:7')!.holder!.key, z.key);
   assert.ok(!m.removed.has(z.key));
-  // Both at once: void, then a void: reseat refills.
+  // Approved within 24 hours of each other: both void, both keys removed; a void: reseat refills.
   const w = { key: newKey().pub, kind: 'server', shares: [7], host: h1 };
   const both = computeMembership(F.rec, [...seatEvs(F, 4, F.servers[0].kp.pub, y1), ...seatEvs(F, 7, F.servers[1].kp.pub, w)]);
   assert.equal(both.seats.get('server:4')!.holder, null);
   assert.equal(both.seats.get('server:7')!.holder, null);
+  assert.ok(both.removed.has(y1.key) && both.removed.has(w.key));
   const v = both.seats.get('server:7')!.voided[0];
   const fresh = { key: newKey().pub, kind: 'server', shares: [7], host: newKey().pub };
   assert.equal(computeMembership(F.rec, [...seatEvs(F, 4, F.servers[0].kp.pub, y1), ...seatEvs(F, 7, F.servers[1].kp.pub, w), ...seatEvs(F, 7, `void:${v}`, fresh)]).seats.get('server:7')!.holder!.key, fresh.key);
@@ -266,20 +268,25 @@ test('review 2 N3: an F7 repair needs the current lock', () => {
   assert.equal(code(() => S.authorizeRepair(A.kp.pub, body(approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, nl)))), 'ok');
 });
 
-test('review 2 N4: after a host conflict, a void: reseat refills the seat and it moves on as usual', () => {
+test('review 2 N4: a void seat refills by void: and moves on; a record host seated twice breaks the invariants', () => {
   const F = fixture();
-  const s1host = F.rec.members.find((m) => m.kind === 'server' && m.shares[0] === 4)!.host!;
-  const clash = { key: newKey().pub, kind: 'server', shares: [7], host: s1host };
-  const e1 = seatEvs(F, 7, F.servers[1].kp.pub, clash);
+  const h = newKey().pub;
+  const a4 = { key: newKey().pub, kind: 'server', shares: [4], host: h }, a7 = { key: newKey().pub, kind: 'server', shares: [7], host: h };
+  const e1 = [...seatEvs(F, 4, F.servers[0].kp.pub, a4), ...seatEvs(F, 7, F.servers[1].kp.pub, a7)];
   const m1 = computeMembership(F.rec, e1);
-  assert.equal(m1.seats.get('server:4')!.holder, null);
-  assert.equal(m1.seats.get('server:7')!.holder, null);
   const v4 = m1.seats.get('server:4')!.voided[0];
-  assert.ok(v4, 'the record holder\'s seat gets a void id to reseat with');
+  assert.ok(v4);
   const y = { key: newKey().pub, kind: 'server', shares: [4], host: newKey().pub };
   const z = { key: newKey().pub, kind: 'server', shares: [4], host: newKey().pub };
   const m2 = computeMembership(F.rec, [...e1, ...seatEvs(F, 4, `void:${v4}`, y), ...seatEvs(F, 4, y.key, z)]);
   assert.equal(m2.seats.get('server:4')!.holder!.key, z.key);
+  // The record's S1 host seated in seat 7 too: no second seat change to void it with, so the view
+  // breaks I2 and members refuse to adopt the change (co-signers refuse it first, I7).
+  const s1host = F.rec.members.find((m) => m.kind === 'server' && m.shares[0] === 4)!.host!;
+  const clash = seatEvs(F, 7, F.servers[1].kp.pub, { key: newKey().pub, kind: 'server', shares: [7], host: s1host });
+  assert.match(String(computeMembership(F.rec, clash).invariantError), /I2/);
+  const S = server(F);
+  assert.equal(S.addChanges(clash), false);
 });
 
 test('review 2 N9: one list can\'t seat one host twice', () => {
@@ -326,4 +333,20 @@ test('core 14.7 §5.2: in a list, each event gets its own nonce pair, at the coo
   const c = server(F, 0).handle(A.kp.pub, t.commitRequest(), clock);
   assert.equal(c.sets.length, 2);
   assert.notEqual(c.sets[0][0].D, c.sets[1][0].D);
+});
+
+test('core 14.9: the backup may help fill a seat with a device, under a paper approval of that change', () => {
+  const F = fixture(); const A = F.devices[0];
+  const Y = { key: newKey().pub, kind: 'server', shares: [8], host: newKey().pub };
+  const list: Change[] = [{ seat: { seat: 'server:8', new: Y, replaces: F.servers[2].kp.pub } }, { redeal: { dealer: A.kp.pub } }];
+  const ap = approvePaper(F.g, F.epochId, list, EXP(), A.kp, F.backup.kp, 'cd'.repeat(16), newKey().pub);
+  const d = dealRedeal(F.g, A.kp, [], new Map(), F.backup.kp.pub, [5, 6]);
+  const evs = [F.change(list[0], list, ap), F.change({ redeal: d.redeal }, list, ap)];
+  const Adev = new CoSigner({ me: A.kp, kind: 'device', now, record: F.rec, changes: evs, state: { ids: new Set(), C: F.commitment, shares: A.shares } });
+  const helpers = [{ key: A.kp.pub, indices: [1, 2, 3] }, { key: F.backup.kp.pub, indices: [5, 6] }];
+  const body = (approval: any) => ({ participant: 8, seal_to: Y.key, why: 'seat', state: S0, helpers, list, approval });
+  assert.equal(code(() => Adev.authorizeRepair(Y.key, body(ap))), 'ok');
+  assert.equal(code(() => Adev.authorizeRepair(Y.key, body(undefined))), 'bad_helpers', 'without the paper approval the backup never helps');
+  const other: Change[] = [{ seat: { seat: 'server:8', new: { ...Y, key: newKey().pub }, replaces: F.servers[2].kp.pub } }, { redeal: { dealer: A.kp.pub } }];
+  assert.equal(code(() => Adev.authorizeRepair(Y.key, { ...body(approvePaper(F.g, F.epochId, other, EXP(), A.kp, F.backup.kp, 'cd'.repeat(16), newKey().pub)), list: other })), 'bad_helpers', 'only for the change being filled');
 });

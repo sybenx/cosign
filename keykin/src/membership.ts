@@ -204,35 +204,24 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
   const seatCh = of('seat');
   const recordKeys = new Set(rec.members.map((m) => m.key));
   const seatIds = [...rec.seats.servers.map((i) => `server:${i}`), 'helper'];
-  const winners = new Map<string, string | null>();       // seat → the list hash that seated its holder
+  // One host in two seats (§6.7.2, core 14.10): two seat changes for different seats with the same
+  // `new.host` are both void when their approvals' expiries are within 24 hours of each other (a host
+  // that moved, I7, was approved apart). It depends only on the two changes, so it is order-free.
+  const expiryOf = (p: Parsed) => p.c.approval.expiry ?? p.ev.created_at;
+  const forced = new Set<string>();
+  for (const x of seatCh) for (const y of seatCh) {
+    const hx = x.ch.seat.new?.host, hy = y.ch.seat.new?.host;
+    if (x !== y && hx && hx === hy && x.ch.seat.seat !== y.ch.seat.seat && Math.abs(expiryOf(x.p) - expiryOf(y.p)) <= 86400) forced.add(x.p.listHash);
+  }
+  for (const { p, ch } of seatCh) if (forced.has(p.listHash) && ch.seat.new) removed.add(ch.seat.new.key);
   for (const sid of seatIds) {
     const first = sid === 'helper' ? rec.members.find((m) => m.kind === 'helper') : rec.members.find((m) => m.kind === 'server' && `server:${m.shares[0]}` === sid);
     const cands = seatCh.filter(({ ch }) => ch.seat.seat === sid)
       .filter(({ ch }) => !ch.seat.new || !(everDevice.has(ch.seat.new.key) || recordKeys.has(ch.seat.new.key) || rec.removed.includes(ch.seat.new.key)))
-      .map(({ p, ch }) => ({ hash: p.listHash, replaces: ch.seat.replaces, newId: ch.seat.new?.key ?? null, value: ch.seat.new as MemberEntry | null }));
+      .map(({ p, ch }) => ({ hash: p.listHash, replaces: ch.seat.replaces, newId: ch.seat.new?.key ?? null, value: ch.seat.new as MemberEntry | null, forceVoid: forced.has(p.listHash) }));
     const same = (a: any, b: any) => a.newId === b.newId || (a.value?.host && a.value?.host === b.value?.host);
     const r = follow({ id: first?.key ?? null, value: first ?? null }, cands, same, 'void', (k) => removed.add(k));
     seats.set(sid, { holder: r.cur.value, voided: r.voided });
-    winners.set(sid, r.cur.value && r.cur.value !== first ? cands.filter((c) => c.newId === r.cur.id).map((c) => c.hash).sort()[0] ?? null : null);
-  }
-  // One host in two seats at once (§6.7.2): both holders' seatings are void. A host that held a seat
-  // before may hold another later (I7), so the rule is on the resulting holders, not on history.
-  const byHost = new Map<string, string[]>();
-  for (const [sid, st] of seats) if (st.holder?.host) byHost.set(st.holder.host, [...(byHost.get(st.holder.host) ?? []), sid]);
-  for (const sids of byHost.values()) if (sids.length > 1) {
-    // The void ids: the seatings that met; a record holder has none of its own, so the other's counts.
-    const ids = sids.map((sid) => winners.get(sid)).filter((x): x is string => !!x);
-    for (const sid of sids) {
-      const st = seats.get(sid)!;
-      removed.add(st.holder!.key);
-      const host = st.holder!.host;
-      // Refill: a `void:<id>` reseat, then the seat moves on as usual.
-      const cands = seatCh.filter(({ ch }) => ch.seat.seat === sid && ch.seat.new?.host !== host && !(ch.seat.new && removed.has(ch.seat.new.key)))
-        .map(({ p, ch }) => ({ hash: p.listHash, replaces: ch.seat.replaces, newId: ch.seat.new?.key ?? null, value: ch.seat.new as MemberEntry | null }))
-        .filter((c) => c.replaces !== null || ids.length === 0);
-      const r = follow({ id: null, value: null }, cands, (a: any, b: any) => a.newId === b.newId, 'void', (k) => removed.add(k), ids);
-      seats.set(sid, { holder: r.cur.value, voided: r.voided });
-    }
   }
 
   // The paper: lowest hash wins a conflict, the loser's key is removed.

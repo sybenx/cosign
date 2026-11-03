@@ -88,11 +88,11 @@ export class CoSigner {
   /** May this member help repair `participant` for `seal_to` (§4.2 step 3, §4.4, §6.7.4)? Throws if not.
    *  The sigma always goes to the index's assigned owner, never to whoever asks. */
   answeredRepair = new Set<string>();
-  authorizeRepair(from: string, body: { participant: number; seal_to: string; why: string; state: string; proof?: any; helpers?: { key: string; indices: number[] }[] }, now = this.o.now()) {
+  authorizeRepair(from: string, body: { participant: number; seal_to: string; why: string; state: string; proof?: any; helpers?: { key: string; indices: number[] }[]; list?: Change[]; approval?: Approval }, now = this.o.now()) {
     const m = this.m;
     if (body.state !== stateOf(this.state)) refuse('stale');
     const p = body.participant;
-    this.checkHelpers(body.helpers, p, body.seal_to);
+    this.checkHelpers(body.helpers, p, body.seal_to, body, now);
     if (body.why === 'paper') return this.authorizePaperRepair(from, body as any, now);
     if (m.record.seats.backup.includes(p)) refuse('backup_seat', 'never repaired by need_repair or a join');
     const owner = [...m.members.values()].find((x) => x.shares.includes(p));
@@ -132,20 +132,33 @@ export class CoSigner {
   /** The helper list is checked against this view, never taken on trust: every entry is a current
    *  member with exactly its own indices, this co-signer is in it with its own, nobody twice, worth at
    *  least 4, and neither the new owner nor the backup helps (they would learn the share). */
-  private checkHelpers(helpers: { key: string; indices: number[] }[] | undefined, participant: number, sealTo: string) {
+  private checkHelpers(helpers: { key: string; indices: number[] }[] | undefined, participant: number, sealTo: string, body: any = {}, now = this.o.now()) {
     if (!Array.isArray(helpers) || !helpers.length) refuse('bad_helpers');
     const seen = new Set<string>();
     let worth = 0;
     for (const h of helpers!) {
       const mem = this.m.members.get(h?.key);
       if (!mem || this.m.removed.has(h.key) || seen.has(h.key)) refuse('bad_helpers', 'helpers are distinct current members');
-      if (mem!.kind === 'backup' && !(this.session()?.backup === h.key)) refuse('bad_helpers', 'the backup helps only in its recovery session');
+      if (mem!.kind === 'backup' && !(this.session()?.backup === h.key) && !this.paperHelps(h.key, helpers!, sealTo, body, now))
+        refuse('bad_helpers', 'the backup helps only in its recovery session, or with a device under a paper approval of the change being filled');
       if (JSON.stringify([...h.indices].sort((a, b) => a - b)) !== JSON.stringify([...mem!.shares].sort((a, b) => a - b))) refuse('bad_helpers', 'each helper lists exactly its own indices');
       if (h.key === sealTo || h.indices.includes(participant)) refuse('bad_helpers', 'the new holder never helps');
       seen.add(h.key); worth += h.indices.length;
     }
     if (!seen.has(this.o.me.pub)) refuse('bad_helpers', 'this co-signer is one of the helpers');
     if (worth < 4) refuse('bad_helpers', 'helpers worth at least 4');
+  }
+
+  /** Core 14.9: the backup may help fill a seat with a current device, under a valid `paper` approval
+   *  (its own key) of the very list that makes `seal_to` the seat's holder. */
+  private paperHelps(backup: string, helpers: { key: string }[], sealTo: string, body: any, now: number): boolean {
+    const a = body.approval, list = body.list;
+    if (!a?.paper || a.paper.backup !== backup || !Array.isArray(list)) return false;
+    if (!list.some((c: any) => c.seat?.new?.key === sealTo)) return false;
+    if (!helpers.some((h) => this.m.devices.has(h.key))) return false;
+    // Every member's check plus the expiry; the paper challenge is the issuing server's to check (§6.2).
+    const { error } = checkApproval(this.m.authority, list, a);
+    return error === null && a.expiry > now && a.expiry <= now + MAX_EXPIRY_S + 30 && a.paper.backup === this.m.backupKey;
   }
 
   /** F7 step 2 (§4.3, §6.7.10): the backup seat repaired towards a new paper key K, only under a
