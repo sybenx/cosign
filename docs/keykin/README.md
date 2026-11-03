@@ -10,9 +10,9 @@ password manager. Every rule must beat that on security **and** on ease of use.
 
 | File | What it is | Status |
 |---|---|---|
-| [core.md](core.md) | Keykin Core, draft 8.3: the short core spec | **Passed red-team round 8** (no critical or high problems). The §4.6 machine rule was added after that; its review is in the next row. |
-| [core.md §4.6](core.md) | One member per machine (a desktop app is the machine's member; extensions relay to it) | Reviewed: 0 critical, 2 high, both gaps in the handover spec. The reviewer said keep the rule. Fixes are proposed in `simplification.md` (last part), not yet applied. |
-| [refresh.md](refresh.md) | "Refresh now", the ceremony for changing servers, helper and paper | **Parked.** Its own red team still found 1 critical and 2 high problems at its seams with the core. The reason is at the top of the file; core §10 says what an account can't do without it. |
+| [core.md](core.md) | Keykin Core, draft 8.4: the short core spec | **Passed red-team round 8** (no critical or high problems), but **not the deliverable without structural change** (user, 2026-11-02). |
+| [core.md §4.6](core.md) | One member per machine (a desktop app is the machine's member; extensions relay to it) | Reviewed: 0 critical, 2 high (handover gaps), verdict keep. Fixes applied in 8.4; quick re-check below. |
+| [refresh.md](refresh.md) | "Refresh now", the ceremony for changing servers, helper and paper | **Required; redesign in progress.** Draft 3's red team found 1 critical and 2 high problems. The user unparked it: structural change must work. The hub's design panel is choosing the approach. |
 | [vectors/](vectors/) | Test vectors: `gen_vectors.py` produces `vectors.json` (computed); `vectors.md` lists the behaviour cases | Computed vectors done. Behaviour cases need a reference implementation to fill in expected outputs. |
 | [interop-plan.md](interop-plan.md) | How to test compatibility: nak must pass, plus a top set chosen by use (Primal, Amethyst, nostr-tools/NDK, Damus) | Plan only. |
 | [simplification.md](simplification.md) | Why the design was cut five times, with the user's answers | Record. |
@@ -33,8 +33,8 @@ of sessions, not in the repo.
 | 6 | draft 6 | 1 | 6 |
 | 7 | core 7 + refresh 1 | 1 | 5 |
 | 8 | core 8 + refresh 2 | 0 | 0 in the core (3 in refresh) |
-| refresh only | refresh 3 | 1 | 2 → parked |
-| machine rule | core 8.3 §4.6 | 0 | 2 → fixes proposed |
+| refresh only | refresh 3 | 1 | 2 → redesign |
+| machine rule | core 8.3 §4.6 | 0 | 2 → fixed in 8.4 |
 
 ## Open by design
 
@@ -43,8 +43,7 @@ of sessions, not in the repo.
 - **Reference implementation**, to produce the behaviour vectors' expected outputs. TypeScript and
   Kotlin should both pass them.
 - **Interop runs** against a prototype (`interop-plan.md`).
-- **The machine-rule fixes** (the next draft).
-- **Refresh**, parked until the core has been lived with.
+- **Structural change** (refresh or its replacement): required, redesign in progress.
 - **Modules** not yet written: Account admin, Server profile, Device policy, Doors and grants, Backup,
   Helper, Key families.
 
