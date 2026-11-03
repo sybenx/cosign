@@ -94,7 +94,9 @@ object Slip39 {
         return (data + checksum(s.ext, data)).joinToString(" ") { words[it] }
     }
     fun decode(mnemonic: String): Share {
-        val idx = mnemonic.trim().split(Regex("\\s+")).map { index[it.lowercase()] ?: refuse("slip39", "not a SLIP-39 word: $it") }
+        // The same separator set as TS: space, tab, line feed, carriage return; refusals name the position.
+        val sep = Regex("[ \\t\\n\\r]+")
+        val idx = mnemonic.replace(Regex("^[ \\t\\n\\r]+|[ \\t\\n\\r]+$"), "").split(sep).mapIndexed { k, w -> index[w.lowercase()] ?: refuse("slip39", "word ${k + 1} is not a SLIP-39 word") }
         if (idx.size < MIN_WORDS) refuse("slip39", "mnemonic too short")
         val pad = (RADIX * (idx.size - META_WORDS - CHECKSUM_WORDS)) % 16
         if (pad > 8) refuse("slip39", "invalid mnemonic length")
@@ -128,10 +130,16 @@ object Slip39 {
     }
     fun generate(gt: Int, groups: List<Pair<Int, Int>>, ms: ByteArray, passphrase: String = "", e: Int = 1, rnd: SecureRandom = SecureRandom()): List<List<String>> {
         if (ms.size * 8 < 128 || ms.size % 2 != 0) refuse("slip39", "master secret length")
+        if (e !in 0..15) refuse("slip39", "iteration exponent")
         if (gt < 1 || gt > groups.size) refuse("slip39", "group threshold")
         if (groups.any { (t, n) -> t == 1 && n > 1 }) refuse("slip39", "a 1-of-N group is not allowed")
         val id = rnd.nextInt(1 shl 15)
         val gs = split(gt, groups.size, encrypt(ms, passphrase, e, id, true), rnd)
         return groups.mapIndexed { gi, (t, n) -> split(t, n, gs[gi], rnd).mapIndexed { mi, v -> encode(Share(id, true, e, gi, gt, groups.size, mi, t, v)) } }
+    }
+    /** Backup module §3's recovery: untrusted pieces must fit backupPieces' profile before any PBKDF2 runs. */
+    fun recoverBackup(pieces: List<String>): ByteArray {
+        for (s in pieces.map(::decode)) if (!s.ext || s.e != 1 || s.gt != 1 || s.g != 1 || s.gi != 0 || s.mt != 2 || s.value.size != 32) refuse("slip39", "not a Keykin backup piece")
+        return combine(pieces)
     }
 }

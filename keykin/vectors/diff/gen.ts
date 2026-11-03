@@ -253,7 +253,7 @@ M('one server seat with host ""', seatEvs('server:4', F.servers[0].kp.pub, srvEn
 
 // SLIP-39 (Backup §3): TS-made shares Kotlin must combine, and corruptions both must refuse alike.
 {
-  const { generate, combine } = await import(`${K}/src/slip39.ts`);
+  const { generate, combine, recoverBackup } = await import(`${K}/src/slip39.ts`);
   const hx = (b: Uint8Array) => Buffer.from(b).toString('hex');
   const S = (name: string, mnemonics: string[], passphrase = '') => P('slip39', name, { mnemonics, passphrase }, res(() => hx(combine(mnemonics, passphrase))));
   const secret = new Uint8Array(32).map((_, i) => i * 7 + 1);
@@ -274,6 +274,23 @@ M('one server seat with host ""', seatEvs('server:4', F.servers[0].kp.pub, srvEn
   S('two groups, wrong passphrase', [g2[0][1], g2[0][0], g2[1][0]], 'trezor');
   S('two groups, one group short a member', [g2[0][1], g2[1][0]], 'TREZOR');
   S('mixing two sets', [p[0], g2[0][0]]);
+  // Review 7: one separator set (space, tab, LF, CR) on both sides.
+  for (const [n, sep] of [['NBSP', '\u00a0'], ['U+2003', '\u2003'], ['U+3000', '\u3000'], ['U+2028', '\u2028'], ['U+FEFF', '\ufeff'], ['U+001C', '\u001c'], ['U+000B', '\u000b'], ['U+0085', '\u0085']])
+    S(`words separated by ${n}`, [p[0].replace(' ', sep), p[1]]);
+  S('a leading BOM', ['\ufeff' + p[0], p[1]]);
+  S('a leading U+001C', ['\u001c' + p[0], p[1]]);
+  S('tabs and CRLF', ['\t' + p[0].replace(/ /g, '\r\n'), p[1]]);
+  // The Backup §3 profile, checked before any PBKDF2 runs.
+  const B = (name: string, mnemonics: string[]) => P('slip39', name, { mnemonics, passphrase: '', backup: true }, res(() => hx(recoverBackup(mnemonics))));
+  const det = (n: number) => new Uint8Array(n).map((_, i) => (i * 29 + 3) & 0xff);
+  B('backup: two pieces', [p[1], p[2]]);
+  const e6 = generate(1, [[2, 3]], secret, '', 6, det)[0];
+  B('backup: pieces with e = 6', [e6[0], e6[1]]);
+  B('backup: two groups', generate(1, [[2, 2], [2, 2]], secret, '', 1, det)[0]);
+  const s16 = generate(1, [[2, 3]], secret.slice(0, 16), '', 1, det)[0];
+  B('backup: a 16-byte value', [s16[0], s16[1]]);
+  const t3 = generate(1, [[3, 3]], secret, '', 1, det)[0];
+  B('backup: 3 of 3', t3);
 }
 
 console.log(JSON.stringify(out, null, 1));

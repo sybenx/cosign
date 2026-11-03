@@ -30,7 +30,7 @@ fun main(args: Array<String>) {
                     .put("backup", m.backup ?: JSONObject.NULL).put("refused", JSONArray(m.refused)).put("invariant", m.invariant)
                     .put("locks", JSONObject().also { s -> m.locks.forEach { (a, b) -> s.put(a, b ?: JSONObject.NULL) } })
             } }
-            "slip39" -> { val o = i as JSONObject; val ms = o.getJSONArray("mnemonics"); res { hex(Slip39.combine((0 until ms.length()).map { ms.getString(it) }, o.getString("passphrase"))) } }
+            "slip39" -> { val o = i as JSONObject; val ms = o.getJSONArray("mnemonics"); val l = (0 until ms.length()).map { ms.getString(it) }; res { hex(if (o.optBoolean("backup")) Slip39.recoverBackup(l) else Slip39.combine(l, o.getString("passphrase"))) } }
             else -> "unknown area"
         }
         out.put(r)

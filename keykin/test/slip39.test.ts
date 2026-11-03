@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { combine, generate, backupPieces, decodeShare, encodeShare, rs1024Verify, rs1024Create, splitSecret, recoverSecret } from '../src/slip39.ts';
+import { combine, recoverBackup, generate, backupPieces, decodeShare, encodeShare, rs1024Verify, rs1024Create, splitSecret, recoverSecret } from '../src/slip39.ts';
 import { WORDS } from '../src/slip39-words.ts';
 import { sha, bytesToHex, randomBytes } from '../src/bytes.ts';
 
@@ -58,4 +58,24 @@ test('Backup §3: three pieces, any two recover the backup secret; one alone doe
   for (const pair of [[0, 1], [0, 2], [1, 2]]) assert.equal(bytesToHex(combine(pair.map((i) => p[i]))), bytesToHex(secret));
   assert.throws(() => combine([p[0]]));
   assert.ok(decodeShare(p[0]).ext && decodeShare(p[0]).e === 1, 'extendable, iteration exponent 1');
+});
+
+test('review 7: one separator set, positions not words in refusals, e range, the backup profile', () => {
+  const secret = randomBytes(32);
+  const p = backupPieces(secret);
+  // Space, tab, line feed and carriage return separate words; nothing else does.
+  assert.equal(bytesToHex(combine([' \t' + p[0].replaceAll(' ', '\r\n') + '\n', p[1]])), bytesToHex(secret));
+  for (const sep of [' ', ' ', '　', ' ', '﻿', '\u001c'])
+    assert.throws(() => combine([p[0].replace(' ', sep), p[1]]), /slip39/, `U+${sep.codePointAt(0)!.toString(16)}`);
+  assert.throws(() => combine(['﻿' + p[0], p[1]]));
+  // The refusal says where, never the piece's words.
+  try { combine([p[0].replaceAll(' ', ' '), p[1]]); assert.fail('accepted'); } catch (e) { assert.match(String(e), /word 1 is not/); assert.ok(!String(e).includes(p[0].split(' ')[1])); }
+  for (const e of [-1, 16, 20, 1.5]) assert.throws(() => generate(1, [[2, 3]], secret, '', e), /iteration exponent/);
+  // Untrusted pieces must fit the Backup §3 profile before PBKDF2 runs.
+  assert.equal(bytesToHex(recoverBackup([p[0], p[1]])), bytesToHex(secret));
+  const e6 = generate(1, [[2, 3]], secret, '', 6)[0];
+  assert.throws(() => recoverBackup([e6[0], e6[1]]), /not a Keykin backup piece/);
+  assert.throws(() => recoverBackup(generate(1, [[2, 2], [2, 2]], secret)[0]), /not a Keykin backup piece/);
+  const short = generate(1, [[2, 3]], randomBytes(16))[0];
+  assert.throws(() => recoverBackup([short[0], short[1]]), /not a Keykin backup piece/);
 });

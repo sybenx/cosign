@@ -86,7 +86,7 @@ test('§4.3 the heir: pinned by F7, waits 180 days, any device stops it without 
 test('§3 recovery contacts: F7 hands out 2-of-3 SLIP-39 pieces; two friends recover the backup key; then the paper recovery', async () => {
   const { create, recover } = await import('../sim/account.ts');
   const { FriendNode } = await import('../sim/nodes.ts');
-  const { combine } = await import('../src/slip39.ts');
+  const { recoverBackup } = await import('../src/slip39.ts');
   const { unwrap } = await import('../src/transport.ts');
   const acc = await create();
   const friends = [0, 1, 2].map(() => acc.bus.add(new FriendNode(acc.bus)) as InstanceType<typeof FriendNode>);
@@ -99,10 +99,10 @@ test('§3 recovery contacts: F7 hands out 2-of-3 SLIP-39 pieces; two friends rec
   const fresh = newKey();
   const got: string[] = [];
   for (const f of [friends[0], friends[2]]) got.push(unwrap(fresh.sk, await f.giveTo(fresh, K.pub)).body.piece);
-  const sk = combine(got);
+  const sk = recoverBackup(got);
   assert.equal(bytesToHex(sk), bytesToHex(K.sk), 'two pieces give the backup key');
   // One friend alone gets nothing.
-  assert.throws(() => combine([got[0]]));
+  assert.throws(() => recoverBackup([got[0]]));
   const { D } = await recover(acc, [acc.A], { sk, pub: K.pub });
   assert.ok(verifyEvent(await D.sign({ content: 'recovered through two friends' })));
 });

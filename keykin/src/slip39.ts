@@ -112,7 +112,9 @@ export function encodeShare(s: Share): string {
 }
 
 export function decodeShare(mnemonic: string): Share {
-  const idx = mnemonic.trim().split(/\s+/).map((w) => { const i = WORD_INDEX.get(w.toLowerCase()); if (i === undefined) refuse('slip39', `not a SLIP-39 word: ${w}`); return i!; });
+  // One explicit separator set on both sides (space, tab, line feed, carriage return), so a typed piece
+  // reads the same in every app; a refusal names the word's position, never the word.
+  const idx = mnemonic.replace(/^[ \t\n\r]+|[ \t\n\r]+$/g, '').split(/[ \t\n\r]+/).map((w, k) => { const i = WORD_INDEX.get(w.toLowerCase()); if (i === undefined) refuse('slip39', `word ${k + 1} is not a SLIP-39 word`); return i!; });
   if (idx.length < MIN_WORDS) refuse('slip39', 'mnemonic too short');
   const padLen = (RADIX * (idx.length - META_WORDS - CHECKSUM_WORDS)) % 16;
   if (padLen > 8) refuse('slip39', 'invalid mnemonic length');
@@ -135,6 +137,7 @@ export function decodeShare(mnemonic: string): Share {
 /** GenerateShares(GT, [(T_i, N_i)], MS, P, e), ext = 1 as the spec now requires. */
 export function generate(gt: number, groups: [number, number][], ms: Uint8Array, passphrase = '', e = 1, rand: (n: number) => Uint8Array = randomBytes): string[][] {
   if (ms.length * 8 < 128 || ms.length % 2) refuse('slip39', 'master secret length');
+  if (!Number.isInteger(e) || e < 0 || e > 15) refuse('slip39', 'iteration exponent');
   if (gt < 1 || gt > groups.length) refuse('slip39', 'group threshold');
   if (groups.some(([t, n]) => t === 1 && n > 1)) refuse('slip39', 'a 1-of-N group is not allowed');
   const idb = rand(2), id = ((idb[0] << 8) | idb[1]) & 0x7fff;
@@ -168,4 +171,11 @@ export function combine(mnemonics: string[], passphrase = ''): Uint8Array {
 
 /** Backup module §3: the backup secret as three friends' pieces, any two of which recover it. */
 export const backupPieces = (secret: Uint8Array) => generate(1, [[2, 3]], secret, '', 1)[0];
+/** Backup module §3's recovery: pieces from friends are untrusted, so they must fit the profile
+ *  backupPieces writes (ext, e = 1, one group, 2 of 3, a 32-byte value) before any PBKDF2 runs. */
+export function recoverBackup(pieces: string[]): Uint8Array {
+  for (const s of pieces.map(decodeShare))
+    if (!s.ext || s.e !== 1 || s.gt !== 1 || s.g !== 1 || s.gi !== 0 || s.mt !== 2 || s.value.length !== 32) refuse('slip39', 'not a Keykin backup piece');
+  return combine(pieces);
+}
 export { sha256 };
