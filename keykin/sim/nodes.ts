@@ -9,6 +9,7 @@ import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
+import { enrollReply } from '../src/serverprofile.ts';
 import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
@@ -42,7 +43,19 @@ export class ServerNode implements Node {
   constructor(bus: Transport, name: string) { this.bus = bus; this.name = name; }
   get now() { return this.bus.now; }
   get m() { return this.co!.m; }
-  entry(idx: number): MemberEntry { return { key: this.kp.pub, kind: 'server', shares: [idx], host: this.host.pub, operator: 'op', own: false, https: `https://${this.name}.test`, relays: ['wss://r.test'] }; }
+  /** Server profile §4: a rotating enrol secret, and the reply that names this seat's keys. */
+  enrolSecret = randomBytes(32);
+  enrollR: any = null;
+  enroll(g: string, now: number) {
+    const r = enrollReply(this.host, this.enrolSecret, '2026-11', g, bytesToHex(randomBytes(16)), { https: `https://${this.name}.test`, relays: ['wss://r.test'], operator: this.host.pub, issued: now });
+    this.kp = { sk: r.memberSk, pub: r.reply.member_key };
+    this.enrollR = r.reply;
+    return r.reply;
+  }
+  entry(idx: number): MemberEntry {
+    return { key: this.kp.pub, kind: 'server', shares: [idx], host: this.host.pub, operator: this.enrollR?.operator ?? 'op', own: false,
+      https: `https://${this.name}.test`, relays: ['wss://r.test'], ...(this.enrollR ? { vapid: this.enrollR.vapid, enroll: this.enrollR } : {}) };
+  }
 
   /** A seat holder's welcome (§6.7.4): record, changes, state, release seeds, material, and the share if repaired already. */
   welcome(w: { recEv: NostrEvent; changes: NostrEvent[]; state: string[]; share?: [number, string]; signposts?: string[]; seeds: [string, string][]; items: Item[]; base: Item }) {

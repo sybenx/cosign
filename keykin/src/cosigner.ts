@@ -18,6 +18,7 @@ import { stateOf, commitmentAt, type State } from './redeal.ts';
 import { verifyRerepair, redealMissing, postListView, postListBackup, type Upload } from './upkeep.ts';
 import { itemHash } from './redeal.ts';
 import { RepairHelper } from './repair.ts';
+import { checkEnroll } from './serverprofile.ts';
 import { takenIndices, signpostCount, signpostServers } from './membership.ts';
 import { jcs } from './bytes.ts';
 import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Waited } from './types.ts';
@@ -116,6 +117,8 @@ export class CoSigner {
         // `need_repair`: the seat's current holder asks, or a current device fills the seat in the
         // foreground (F1); either way the sigma is sealed to the holder. Once per key and index.
         if (!['server', 'helper'].includes(owner!.kind)) refuse('not_assigned');
+        // Repair helpers check the enrol reply's host signature only (Server profile §4).
+        if (owner!.kind === 'server' && owner!.enroll !== undefined) { const e = checkEnroll(owner!, this.g); if (e) refuse(e); }
         if (from !== owner!.key && !(requester?.kind === 'device')) refuse('not_assigned');
         if (this.answeredRepair.has(`${owner!.key}:${p}`)) refuse('already_answered');
         break;
@@ -503,7 +506,9 @@ export class CoSigner {
             const hosts = [...this.m.members.values()].map((x) => x.host).filter(Boolean);
             if (this.m.members.has(n.key) || this.m.removed.has(n.key) || hosts.includes(n.host)) refuse('invariant', 'I7');
           }
-          // The new server's host-signed enroll reply is the Server profile module's (not checked here).
+          // Server profile §4: a server's `new` entry carries its host-signed enrol reply, unexpired at
+          // this co-sign (and, in F3, at the device's approval).
+          if (n && String(ch.seat.seat).startsWith('server:')) { const e = checkEnroll(n, this.g, now); if (e) refuse(e); }
           break;
         }
         case 'paper': {

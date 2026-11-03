@@ -26,11 +26,12 @@ export interface Account { bus: Bus; A: DeviceNode; servers: ServerNode[]; paper
 export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise<Account> {
   const bus = (o.net ?? new Bus()) as Bus;
   const A = bus.add(new DeviceNode(bus, 'A', o.lockless ? null : softLock())) as DeviceNode;
-  const servers = [4, 7, 8].map((_, k) => bus.add(new ServerNode(bus, `S${k + 1}`)) as ServerNode);
   const paper = newKey();
   const nsec = BigInt('0x' + bytesToHex(randomBytes(32)));
   const d = deal(nsec, [1, 2, 3, 4, 7, 8, 5, 6]);
   const g = xOnly(d.commitment[0]);
+  // Pick and enrol the servers (Account admin §1.2 step 3, Server profile §4).
+  const servers = [4, 7, 8].map((_, k) => { const s = new ServerNode(bus, `S${k + 1}`); s.enroll(g, bus.now); return bus.add(s) as ServerNode; });
   const epochId = bytesToHex(randomBytes(16));
   const baseSeed = bytesToHex(randomBytes(32)), baseDk = bytesToHex(randomBytes(32));
   const base = baseItem(paper, baseSeed, new Map([[5, d.shares.get(5)!], [6, d.shares.get(6)!]]), baseDk, []);
@@ -86,7 +87,8 @@ export async function invite(acc: Account, inviter: DeviceNode, approve: (list: 
  *  at the new state by the device and one live server (§6.7.6). */
 export async function replaceServer(acc: Account, dev: DeviceNode, oldIdx: number, approve: (list: Change[]) => Approval): Promise<ServerNode> {
   const { bus } = acc;
-  const Y = bus.add(new ServerNode(bus, `Y${++seq}`)) as ServerNode;
+  const Y0 = new ServerNode(bus, `Y${++seq}`); Y0.enroll(dev.g, bus.now);
+  const Y = bus.add(Y0) as ServerNode;
   const old = dev.m!.seats.get(`server:${oldIdx}`)!.holder;
   const list: Change[] = [{ seat: { seat: `server:${oldIdx}`, new: Y.entry(oldIdx), replaces: old?.key ?? null } }, { redeal: { dealer: dev.kp.pub } }];
   const signed = await dev.submit(list, approve(list), { deliverTo: [...dev.servers().map((s) => s.key), Y.kp.pub, ...(old ? [old.key] : [])] });
@@ -152,7 +154,7 @@ export { sha, stateHash };
 export async function replaceAllServers(acc: Account, A: DeviceNode, B: DeviceNode, approve: (list: Change[]) => Approval): Promise<ServerNode[]> {
   const { bus } = acc;
   const idx = A.m!.record.seats.servers;
-  const Ys = idx.map(() => bus.add(new ServerNode(bus, `Y${++seq}`)) as ServerNode);
+  const Ys = idx.map(() => { const y = new ServerNode(bus, `Y${++seq}`); y.enroll(A.g, bus.now); return bus.add(y) as ServerNode; });
   const list: Change[] = [...idx.map((i, k) => ({ seat: { seat: `server:${i}`, new: Ys[k].entry(i), replaces: A.m!.seats.get(`server:${i}`)!.holder?.key ?? null } }) as Change),
     { redeal: { dealer: A.kp.pub } }];
   const { ListCall } = await import('../src/coordinator.ts');
