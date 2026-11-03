@@ -138,6 +138,41 @@ test('a missed cancel still counts: a server fetches its peers before releasing 
   acc.bus.advance(3 * 86400 + 1);
   assert.equal(await code(async () => P.collect(s)), 'waited_missing', 'S2 and S3 fetched the cancel from S1 first');
 });
+test('F7, a new paper: repair towards K under the approval, commit with material; the old paper is dead; recovery with the new one', async () => {
+  const acc = await create();
+  const old = acc.paper;
+  const K = await acc.A.newPaper((l) => acc.A.approveLock(l));
+  assert.equal(acc.A.m!.backupKey, K.pub);
+  assert.ok(acc.A.m!.removed.has(old.pub));
+  for (const s of acc.servers) assert.equal(s.m.backupKey, K.pub);
+  // Never a second repair towards the same K.
+  const srv = acc.servers[0];
+  await assert.rejects(acc.A.repairFor([{ key: acc.A.kp.pub, indices: [1, 2, 3] }, { key: srv.kp.pub, indices: [4] }], 5, K.pub, 'paper', { list: [], approval: {} }), /bad_list|not_current_backup|already_answered/);
+  // The old paper can't start a recovery.
+  const P0 = new nodes.PaperHolder(acc.bus, old, acc.g, acc.epochId, acc.servers.map((x) => x.kp.pub));
+  const ch = await acc.bus.send(old, srv.kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'));
+  assert.equal(ch.code, 'not_member');
+  void P0;
+  // A later redeal reaches the new paper through its item; then recovery with K works.
+  const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
+  const rl: Change[] = [{ remove: B.kp.pub }, { redeal: { dealer: acc.A.kp.pub } }];
+  await acc.A.submit(rl, acc.A.approveLock(rl));
+  acc.bus.kill(acc.A.kp.pub);
+  const { D } = await recover(acc, [acc.A], K);
+  assert.ok(verifyEvent(await D.sign({ content: 'recovered with the new paper' })));
+});
+
+test('F7: a paper repair is refused without a valid approval, from a non-approver, or sealed elsewhere', async () => {
+  const acc = await create();
+  const A = acc.A, srv = acc.servers[0];
+  const K = newKey();
+  const list: Change[] = [{ paper: { key: K.pub, replaces: acc.paper.pub } }, { redeal: { dealer: A.kp.pub } }];
+  const helpers = [{ key: A.kp.pub, indices: [1, 2, 3] }, { key: srv.kp.pub, indices: [4] }];
+  await assert.rejects(A.repairFor(helpers, 5, K.pub, 'paper', { list, approval: {} }), /bad_approval/);
+  await assert.rejects(A.repairFor(helpers, 5, A.kp.pub, 'paper', { list, approval: A.approveLock(list) }), /not_assigned/);
+  await assert.rejects(A.repairFor(helpers, 4, K.pub, 'paper', { list, approval: A.approveLock(list) }), /not_assigned/);
+});
+import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';
 

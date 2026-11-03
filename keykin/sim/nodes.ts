@@ -163,7 +163,12 @@ export class ServerNode implements Node {
     if (!this.co) return { type: 'error', code: 'unknown_account' };
     const m = this.m;
     switch (body.type) {
-      case 'change': this.takeChanges(body.events); return { type: 'ack' };
+      case 'change': {
+        this.takeChanges(body.events);
+        // A committed paper change's base item (F7 step 4) replaces the material base.
+        if (body.material && this.m.accepted.some((p) => p.type === 'paper' && (p.c.change as any).paper.inner === itemHash(body.material) && (p.c.change as any).paper.key === this.m.backupKey)) this.base = body.material;
+        return { type: 'ack' };
+      }
       case 'changes_get':
         if (this.retired) return { type: 'changes', changes: this.co.changes.filter((e) => JSON.parse(e.content).change?.seat?.replaces === this.kp.pub || true) };
         return { type: 'changes', record: this.recEv, changes: this.co.changes };
@@ -266,7 +271,7 @@ export class DeviceNode implements Node {
 
   // ---- driving ----
   /** Sign an event with the first live server that answers; `stale` brings us forward and retries. */
-  async sign(ev: Partial<Unsigned>, extra: { approval?: Approval; hold?: string; list_events?: NostrEvent[] } = {}): Promise<NostrEvent> {
+  async sign(ev: Partial<Unsigned>, extra: { approval?: Approval; hold?: string; list_events?: NostrEvent[]; material?: Item } = {}): Promise<NostrEvent> {
     const event: Unsigned = { pubkey: this.g, created_at: this.now, kind: 1, tags: [], content: '', ...ev };
     let lastErr = 'no_server';
     for (const s of this.servers()) {
@@ -326,7 +331,9 @@ export class DeviceNode implements Node {
 
   /** Make, co-sign and deliver a list (§6.7.6: one approval, the dealer uploads, one server co-signs,
    *  the dealer destroys δ, everyone applies). `extraView` adds incoming members for the deltas. */
-  async submit(list: Change[], approval: Approval, o: { cosigner?: (ev: Unsigned, extra: object) => Promise<NostrEvent>; dieAfterUpload?: boolean; deliverTo?: string[] } = {}): Promise<NostrEvent[]> {
+  async submit(list: Change[], approval: Approval, o: { cosigner?: (ev: Unsigned, extra: object) => Promise<NostrEvent>; dieAfterUpload?: boolean; deliverTo?: string[];
+    /** After dealing, before the co-sign: fill in the list (F7's paper `inner`/`state`) and the material. */
+    finish?: (dealt: Dealt) => Promise<{ full: Change[]; material?: Item }> } = {}): Promise<NostrEvent[]> {
     const m = this.m!;
     let dealt: Dealt | null = null;
     let full = list;
@@ -344,6 +351,8 @@ export class DeviceNode implements Node {
       full = list.map((c) => ('redeal' in c ? { redeal: dealt!.redeal } : c));
       if (o.dieAfterUpload) { dealt.destroy(); this.bus.kill?.(this.kp.pub); return []; }
     }
+    let material: Item | undefined;
+    if (o.finish && dealt) { const f = await o.finish(dealt); full = f.full; material = f.material; }
     const signed: NostrEvent[] = [];
     try {
       // The redeal is co-signed first; every other change of the list is co-signed beside it (§6.7.2).
@@ -351,13 +360,14 @@ export class DeviceNode implements Node {
       for (const c of order) {
         const content = JSON.stringify({ v: 1, g: this.g, epoch: this.epochId, change: c, list: approvalListOf(list), approval });
         const ev: Unsigned = { pubkey: this.g, created_at: this.now, kind: KIND_CHANGE, tags: [['v', '1'], ['epoch', this.epochId]], content };
-        const extra = signed.length ? { list_events: [...signed] } : {};
+        const extra = { ...(signed.length ? { list_events: [...signed] } : {}), ...('paper' in c && material ? { material } : {}) };
         signed.push(o.cosigner ? await o.cosigner(ev, extra) : await this.sign(ev, extra as any));
       }
     } catch (e) { dealt?.destroy(); throw e; }
     // Deliver the list as one to every server (and live device); then apply our own delta and destroy δ.
     const targets = o.deliverTo ?? [...m.members.values(), ...postListView(m, list).values()].filter((x) => x.kind === 'server').map((x) => x.key);
-    for (const t of new Set(targets)) await this.bus.send(this.kp, t, { type: 'change', events: signed });
+    for (const t of new Set(targets)) await this.bus.send(this.kp, t, { type: 'change', events: signed, ...(material ? { material } : {}) });
+    if (material) this.base = material;
     this.takeChanges(signed);
     if (dealt && !this.wiped) {
       const mine = dealt.deltas.get(this.kp.pub);
@@ -366,6 +376,28 @@ export class DeviceNode implements Node {
       dealt.destroy();
     }
     return signed;
+  }
+
+  /** F7, a new paper (§6.7.6, §4.3): approve `[paper K, redeal]`, repair the backup seat towards K
+   *  with one server, wrap and sign the base under the redeal's release seed, then commit. Returns K
+   *  (in real life, printed and read back before step 4). */
+  async newPaper(approve: (list: Change[]) => Approval): Promise<KeyPair> {
+    const K = newKey();
+    const list: Change[] = [{ paper: { key: K.pub, replaces: this.m!.backupKey! } }, { redeal: { dealer: this.kp.pub } }];
+    const approval = approve(list);
+    await this.submit(list, approval, { finish: async (dealt) => {
+      const server = this.servers().find((x) => this.bus.alive(x.key))!;
+      const helpers = [{ key: this.kp.pub, indices: [...this.state!.shares.keys()] }, { key: server.key, indices: server.shares }];
+      const shares = new Map<number, bigint>();
+      for (const b of this.m!.record.seats.backup) {
+        const ws = await this.repairFor(helpers, b, K.pub, 'paper', { list: approvalListOf(list), approval });
+        shares.set(b, repairShare(this.state!.C, ws.map((w) => unwrap(K.sk, w).body.sigma), b));
+      }
+      const base = baseItem(K, dealt.releaseSeed, shares, this.baseDk, [...this.state!.ids]);
+      shares.clear();                                        // the device keeps K only until the read-back
+      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: [...this.state!.ids].sort() } }, { redeal: dealt.redeal }], material: base };
+    } });
+    return K;
   }
 
   /** Run a repair for `participant` with helper members (this device and others), sealing every
@@ -445,10 +477,16 @@ export class PaperHolder implements Node {
     const items = [...new Map(bs.flatMap((b) => b.items).map((it: Item) => [itemHash(it), it])).values()] as Item[];
     // The servers' state: the redeals the bundles' servers have applied (they agree, or the holder retries).
     const state = new Set<string>([...m.redeals.keys()].filter((id) => seeds.has(id)));
-    const o = openMaterial({ g: this.g, backup: this.kp, pin: rec.backup, base: bs[0].base, baseSeed: seeds.get('base')!, items, seeds,
+    // The pin: the creation record's, or the committed paper change for this key (its base is wrapped
+    // under its list's redeal's release seed, §6.7.2).
+    const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === this.kp.pub);
+    const pin = pc ? (pc.c.change as any).paper.inner : rec.backup;
+    const baseSeed = pc ? seeds.get([...m.redeals.values()].find((x) => x.listHash === pc.listHash)!.r.id)! : seeds.get('base')!;
+    const base = bs.map((b) => b.base as Item).find((b) => itemHash(b) === pin)!;
+    const o = openMaterial({ g: this.g, backup: this.kp, pin, base, baseSeed, items, seeds,
       C0: commitmentFrom(rec.commitment), redeals: [...m.redeals.values()].map((x) => x.r), state });
     this.shares = o.shares; this.C = o.C;
-    return { rec, recEv: bs[0].record as NostrEvent, changes, m, waited: bs.map((b) => b.waited as Waited), state, dk: o.dk, seeds, items, base: bs[0].base as Item };
+    return { rec, recEv: bs[0].record as NostrEvent, changes, m, waited: bs.map((b) => b.waited as Waited), state, dk: o.dk, seeds, items, base };
   }
   approve(list: Change[], waited: Waited[]) { return approveRecovery(this.g, approvalListOf(list), this.kp, { r: this.r }, waited); }
   /** A recovery round: backup (2) plus two servers, two-call form. */

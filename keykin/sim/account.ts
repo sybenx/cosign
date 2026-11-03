@@ -102,11 +102,11 @@ export async function replaceServer(acc: Account, dev: DeviceNode, oldIdx: numbe
 
 /** Paper-only recovery (§6.5, §4.4, F9): wait, open the material, recovery-join a new device, then
  *  report `lost` and redeal under `recovery` approvals the holder co-signs in its session. */
-export async function recover(acc: Account, lost: DeviceNode[]) {
+export async function recover(acc: Account, lost: DeviceNode[], paper: KeyPair = acc.paper) {
   const { bus } = acc;
   const anyServer = acc.servers.find((s) => s.co && !s.retired && bus.alive(s.kp.pub))!;
   const servers = [...anyServer.m.seats.values()].filter((s) => s.holder && bus.alive(s.holder.key)).map((s) => s.holder!);
-  const P = new PaperHolder(bus, acc.paper, acc.g, acc.epochId, servers.map((s) => s.key));
+  const P = new PaperHolder(bus, paper, acc.g, acc.epochId, servers.map((s) => s.key));
   await P.start(servers.map((s) => s.key));
   bus.advance(3 * 86400 + 1);
   const r = await P.collect(servers.map((s) => s.key));

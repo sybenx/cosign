@@ -19,7 +19,7 @@ import { verifyRerepair, redealMissing, postListView, type Upload } from './upke
 import { itemHash } from './redeal.ts';
 import { takenIndices } from './membership.ts';
 import { jcs } from './bytes.ts';
-import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type EpochContent, type MemberEntry, type Waited } from './types.ts';
+import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Waited } from './types.ts';
 
 export const NONCE_TTL_S = 120;
 export const SESSION_S = 7 * 86400;
@@ -93,6 +93,7 @@ export class CoSigner {
     const m = this.m;
     if (body.state !== stateOf(this.state)) refuse('stale');
     const p = body.participant;
+    if (body.why === 'paper') return this.authorizePaperRepair(from, body as any, now);
     if (m.record.seats.backup.includes(p)) refuse('backup_seat', 'never repaired by need_repair or a join');
     const owner = [...m.members.values()].find((x) => x.shares.includes(p));
     if (!owner || m.removed.has(owner.key) || owner.kind === 'backup') refuse('not_assigned', 'no valid change assigns this index');
@@ -128,6 +129,27 @@ export class CoSigner {
       default: refuse('bad_repair');
     }
   }
+  /** F7 step 2 (§4.3, §6.7.10): the backup seat repaired towards a new paper key K, only under a
+   *  valid, fresh approval of `[paper K, redeal]`, by its approving device, sealed to K, once per K. */
+  private authorizePaperRepair(from: string, body: { participant: number; seal_to: string; list: Change[]; approval: Approval }, now: number) {
+    const m = this.m;
+    if (!m.record.seats.backup.includes(body.participant)) refuse('not_assigned');
+    const pc = (body.list ?? []).find((c) => 'paper' in c) as { paper: { key: string; replaces: string } } | undefined;
+    if (!pc) refuse('bad_list', 'a paper repair needs its [paper, redeal] approval');
+    const { error, approvers } = checkApproval(m.authority, body.list, body.approval);
+    if (error) refuse(error);
+    const a = body.approval;
+    if (!(a.expiry! > now && a.expiry! <= now + MAX_EXPIRY_S + 30)) refuse('approval_expired');
+    if (!approvers.includes(from) || !m.devices.has(from)) refuse('not_approver', 'the approving device makes the repair');
+    const K = pc!.paper.key;
+    if (pc!.paper.replaces !== m.backupKey) refuse('not_current_backup');
+    if (body.seal_to !== K) refuse('not_assigned', 'sealed only to the new paper key');
+    if (m.members.has(K) || m.removed.has(K)) refuse('invariant', 'a paper key is a fresh key');
+    const k = `paper:${K}:${body.participant}`;
+    if (this.answeredRepair.has(k)) refuse('already_answered', 'never a second repair towards the same K');
+    this.answeredRepair.add(k);
+  }
+
   /** A `need_repair` answer that succeeded uses up the server's one answer (§6.7.4). */
   repairSucceeded(owner: string, index: number) { this.answeredRepair.add(`${owner}:${index}`); }
 

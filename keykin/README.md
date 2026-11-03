@@ -46,7 +46,7 @@ made here are interim and marked in the code where they appear.
 
 ## Not done
 
-Paper making and replacement (F7) and re-issue, F3 (every server dead), the helper,
+Paper re-issue, F3 (every server dead), the helper,
 `need_seeds`, publishing the signpost, forwarding notes and `seated?`, passive servers, Web Push
 encryption (RFC 8291) and gateways, durable storage (`CoSigner.snapshot()`/`restore()` covers what
 §5.6 requires a server to keep across restarts, but nothing writes it to disk yet), and the Kotlin build.
