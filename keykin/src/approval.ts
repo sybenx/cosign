@@ -61,7 +61,8 @@ export function checkListShape(list: Change[]): void {
 export function placeholderList(list: Change[]): Change[] {
   return list.map((c) => {
     if ('redeal' in c) return { redeal: { dealer: c.redeal.dealer } };
-    if ('paper' in c) return { paper: { key: c.paper.key, replaces: c.paper.replaces } };
+    // A paper change is approved without `inner` and `state`; Backup's `holders` and `heir` are approved (§1.1 step 5).
+    if ('paper' in c) return { paper: { key: c.paper.key, replaces: c.paper.replaces, ...(c.paper.holders ? { holders: c.paper.holders } : {}), ...(c.paper.heir ? { heir: c.paper.heir } : {}) } };
     return c;
   });
 }

@@ -48,3 +48,34 @@ test('§4.1 the heir envelope: pieces at the seats check against C0 and C1; any 
   assert.equal(heirWaitId(heir.pub, setId, '22'.repeat(16)).length, 64);
   assert.equal(holderInboxKey(bytesToHex(randomBytes(32))).length, 32);
 });
+
+test('§4.3 the heir: pinned by F7, waits 180 days, any device stops it without a lock, then two servers release', async () => {
+  const { create } = await import('../sim/account.ts');
+  const { msg } = await import('../sim/nodes.ts');
+  const acc = await create();
+  const heir = newKey();
+  const K = await acc.A.newPaper((l) => acc.A.approveLock(l), { heir: heir.pub });
+  for (const s of acc.servers) assert.ok(s.co!.heirs.has(K.pub), 'every server took its piece');
+  const ask = async (s: any) => {
+    const ch = await acc.bus.send(heir, s.kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'));
+    return acc.bus.send(heir, s.kp.pub, msg('heir_request', acc.g, acc.epochId, 'member', { set: K.pub, request: bytesToHex(randomBytes(16)), challenge: ch.challenge }));
+  };
+  const n = await ask(acc.servers[0]);
+  assert.equal(n.kind, 'heir');
+  // The owner opens the app: a lockless cancel ends it (only heir waits may be cancelled without a lock).
+  assert.equal((await acc.bus.send(acc.A.kp, acc.servers[0].kp.pub, msg('cancel', acc.g, acc.epochId, 'member', { wait: n.wait }))).kind, 'cancelled');
+  assert.equal((await ask(acc.servers[0])).code, 'heir_cooldown', '30 days before a new request');
+  // A real absence: new request after the cooldown at two servers; 180 days later, two pieces open the envelope.
+  acc.bus.advance(31 * 86400);
+  for (const s of acc.servers.slice(0, 2)) assert.equal((await ask(s)).kind, 'heir');
+  assert.equal((await acc.bus.send(heir, acc.servers[1].kp.pub, msg('heir_get', acc.g, acc.epochId, 'ask', { set: K.pub }))).code, 'heir_wait_not_passed');
+  acc.bus.advance(181 * 86400);
+  const pieces: [number, bigint][] = [];
+  let record: any;
+  for (const s of acc.servers.slice(0, 2)) {
+    const a = await acc.bus.send(heir, s.kp.pub, msg('heir_get', acc.g, acc.epochId, 'ask', { set: K.pub }));
+    assert.equal(a.type, 'heir_piece', JSON.stringify(a));
+    pieces.push([a.x, BigInt('0x' + a.piece)]); record = a.record;
+  }
+  assert.equal(openHeir(record, acc.g, heir.sk, pieces).secret, bytesToHex(K.sk), 'the heir has the backup key: next, the paper recovery with its 3-day wait');
+});

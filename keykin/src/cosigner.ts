@@ -13,12 +13,13 @@ import { checkAssertion } from './lock.ts';
 import { eventId, schnorrVerify, verifyEvent, tag, type KeyPair, type NostrEvent, type Unsigned } from './event.ts';
 import { checkApproval, approvalType, approvalHash, placeholderList, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
 import { computeMembership, parseChange, adopt, type Membership } from './membership.ts';
-import { pointFrom, commitmentFrom, type Commitment } from './curve.ts';
+import { pointFrom, commitmentFrom, scalarHex, type Commitment } from './curve.ts';
 import { stateOf, commitmentAt, type State } from './redeal.ts';
 import { verifyRerepair, redealMissing, postListView, postListBackup, type Upload } from './upkeep.ts';
 import { itemHash } from './redeal.ts';
 import { RepairHelper } from './repair.ts';
 import { checkEnroll } from './serverprofile.ts';
+import { checkHeirPiece, heirWaitId, type HeirRecord } from './backup.ts';
 import { takenIndices, signpostCount, signpostServers } from './membership.ts';
 import { jcs } from './bytes.ts';
 import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Waited } from './types.ts';
@@ -322,7 +323,49 @@ export class CoSigner {
   }
   clearStops(ids: string[], now: number) { for (const id of ids) { this.stops.delete(id); this.clearedStops.set(id, now); } }
 
+  // --- Backup module §4: the heir ---------------------------------------------------------
+  heirs = new Map<string, { record: HeirRecord; x: number; piece: bigint; removed?: boolean; cancelledAt?: number }>();
+  heirWaits = new Map<string, { set: string; H: string; start: number; end: number; cancelled: boolean }>();
+  /** Take an heir record and this server's piece, only when a co-signed `paper` change names its hash. */
+  takeHeir(record: HeirRecord, x: number, piece: bigint): string | null {
+    const h = bytesToHex(sha(jcs(record)));
+    const pinned = this.m.accepted.some((p) => p.type === 'paper' && (p.c.change as any).paper.key === record.set && (p.c.change as any).paper.heir === h);
+    if (!pinned) return 'not_pinned';
+    if (record.wait_days < 30) return 'bad_heir';
+    if (!checkHeirPiece(record, x, piece)) return 'bad_piece';
+    this.heirs.set(record.set, { record, x, piece });
+    return null;
+  }
+  private heirFor(from: string, set: string) {
+    const h = this.heirs.get(set);
+    if (!h || h.removed || h.record.H !== from) refuse('no_heir');
+    if (set !== this.m.backupKey) refuse('not_current_set', 'a later paper replaced this set');
+    return h!;
+  }
+
   handlers = {
+    heir_request(this: CoSigner, from: string, msg: any, now: number) {
+      const h = this.heirFor(from, msg.set);
+      if (!this.takeChallenge(msg.challenge, from, now)) refuse('stale_challenge');
+      if (h.cancelledAt !== undefined && now - h.cancelledAt < 30 * 86400) refuse('heir_cooldown');
+      if ([...this.heirWaits.values()].some((w) => w.set === msg.set && !w.cancelled)) refuse('heir_wait_running');
+      const wait = heirWaitId(from, msg.set, msg.request);
+      this.heirWaits.set(wait, { set: msg.set, H: from, start: now, end: now + h.record.wait_days * 86400, cancelled: this.cancelledWaits.has(wait) });
+      return { v: 1, type: 'notice', re: msg.id, kind: 'heir', wait, end: now + h.record.wait_days * 86400 };
+    },
+    heir_get(this: CoSigner, from: string, msg: any, now: number) {
+      const h = this.heirFor(from, msg.set);
+      const w = [...this.heirWaits.entries()].find(([, x]) => x.set === msg.set && x.H === from && !x.cancelled && x.end <= now);
+      if (!w) refuse('heir_wait_not_passed');
+      return { v: 1, type: 'heir_piece', re: msg.id, record: h.record, x: h.x, piece: scalarHex(h.piece) };
+    },
+    heir_remove(this: CoSigner, from: string, msg: any) {
+      if (!this.m.devices.has(from)) refuse('not_device', 'any current device removes the heir');
+      const h = this.heirs.get(msg.set);
+      if (h) { h.removed = true; h.piece = 0n; }
+      for (const w of this.heirWaits.values()) if (w.set === msg.set) w.cancelled = true;
+      return { v: 1, type: 'notice', re: msg.id, kind: 'heir_removed' };
+    },
     helper_stop(this: CoSigner, from: string, msg: any, now: number) {
       this.takeStop(from, { stop: msg.stop, by: msg.by }, now);
       return { v: 1, type: 'notice', re: msg.id, kind: 'helper_stopped', stops: [...this.stops.keys()] };
@@ -714,6 +757,14 @@ export class CoSigner {
   private cancel(from: string, msg: any, now: number) {
     const s = this.sender(from);
     if (s.kind !== 'device') refuse('not_device', 'a helper never cancels');
+    // Backup §4.3: any current device ends an heir wait, lock or not; only heir waits.
+    const hw = this.heirWaits.get(msg.wait);
+    if (hw && !msg.approval) {
+      hw.cancelled = true;
+      const h = this.heirs.get(hw.set); if (h) h.cancelledAt = now;
+      if (!this.cancelledWaits.has(msg.wait)) { this.cancelledWaits.add(msg.wait); this.cancels.push({ wait: msg.wait, approval: { heir_by: from } }); }
+      return { v: 1, type: 'notice', re: msg.id, kind: 'cancelled', wait: msg.wait };
+    }
     if (msg.approval?.lock && msg.approval.lock.member !== from) refuse('needs_approval');
     this.takeCancel({ wait: msg.wait, approval: msg.approval });
     void now;
@@ -726,6 +777,12 @@ export class CoSigner {
   /** Check and apply a cancel, whoever relayed it: its lock assertion or pair is the authority. */
   takeCancel(c: { wait: string; approval: any }) {
     hexN(c.wait, 32, 'wait');
+    if (c.approval?.heir_by && this.m.devices.has(c.approval.heir_by)) {
+      const hw = this.heirWaits.get(c.wait);
+      if (hw) { hw.cancelled = true; const h = this.heirs.get(hw.set); if (h) h.cancelledAt = this.o.now(); }
+      if (!this.cancelledWaits.has(c.wait)) { this.cancelledWaits.add(c.wait); this.cancels.push(c); }
+      return;
+    }
     const w = what.cancel(c.wait);
     const a = c.approval ?? {};
     if (a.lock) {
@@ -752,7 +809,8 @@ export class CoSigner {
   }
 
   private challenge(from: string, msg: any, now: number) {
-    if (!this.m.members.has(from) || this.m.removed.has(from)) refuse('not_member');
+    const isHeir = [...this.heirs.values()].some((h) => h.record.H === from && !h.removed);
+    if ((!this.m.members.has(from) || this.m.removed.has(from)) && !isHeir) refuse('not_member');
     const c = bytesToHex(randomBytes(16));
     this.challenges.set(c, { exp: now + 120 + 30, to: from });
     for (const [k, e] of this.challenges) if (e.exp < now) this.challenges.delete(k);

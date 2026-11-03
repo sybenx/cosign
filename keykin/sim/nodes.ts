@@ -10,6 +10,7 @@ import { computeMembership, takenIndices, signpostCount, signpostServers, adopt,
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
 import { enrollReply } from '../src/serverprofile.ts';
+import { makeHeir } from '../src/backup.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
 import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
@@ -18,7 +19,7 @@ import { repairShare } from '../src/frost.ts';
 import { Inbox } from '../src/inbox.ts';
 import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
-import { approveRecovery, approveLock } from '../src/approval.ts';
+import { approveRecovery, approveLock, placeholderList } from '../src/approval.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
 import { newKey, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
@@ -207,6 +208,13 @@ export class ServerNode implements Node {
     this.co!.addChanges(evs);
     const m = this.m;
     if (m.removed.has(this.kp.pub)) { this.retire(); return; }
+    // Backup §1.1 step 5: an heir record named by a co-signed paper change, with this server's piece.
+    for (const u of this.uploads.values()) {
+      if (!u.heirRecord) continue;
+      const it = u.items.find((x) => x.type === 'heir_piece' && x.to === this.kp.pub);
+      if (!it) continue;
+      try { const b = unwrap(this.kp.sk, it.wrap as NostrEvent).body; this.co!.takeHeir(u.heirRecord as any, b.x, scalarFrom(b.piece)); } catch { /* not ours */ }
+    }
     // Apply every redeal we can, oldest base first.
     for (let again = true; again;) {
       again = false;
@@ -349,7 +357,7 @@ export class ServerNode implements Node {
         if (body.type === 'sign' && (body.event?.kind === KIND_CHANGE || Array.isArray(body.list_events)))
           await this.beforeChangeCosign(body.list_events ? body.list_events.map((x: any) => x.event) : [body.event]);
         // No waited statement or release before fetching peers' deliveries, so a missed cancel counts (§6.3).
-        if (body.type === 'release_request' || body.type === 'hold' || (body.type === 'sign' && body.hold !== undefined)) {
+        if (body.type === 'release_request' || body.type === 'hold' || body.type === 'heir_get' || (body.type === 'sign' && body.hold !== undefined)) {
           // Before a wait or a release: the change set from every peer (a removal it missed retires it),
           // and its peers' cancels (§6.3, §6.7.5).
           const confirmed = await this.catchUp();
@@ -475,6 +483,7 @@ export class DeviceNode implements Node {
     this.applyAll();
   }
   pendingDeltas = new Map<string, any>();
+  pendingHeir: ReturnType<typeof makeHeir> | null = null;
   /** Paper values kept per redeal (§6.7.1 step 3), encrypted at rest in a real app. */
   kept = new Map<string, { b: number[]; d: bigint[]; dk: string; release: string }>();
   f7 = false;
@@ -540,7 +549,11 @@ export class DeviceNode implements Node {
           ...(x.kind !== 'helper' ? { release: dealt!.releaseSeed } : {}),
           ...(x.kind === 'device' ? { dk: dealt!.dkSeed, paper_ck: dealt!.paperCk, paper_item: dealt!.paperItem } : {}) }) }));
       (dealt as any).uploadItems = items;
-      const up = msg('upload', this.g, this.epochId, 'member', { list: approvalListOf(list), approval, redeal: dealt.redeal.id, items, paper_item: dealt.paperItem });
+      // The heir record and each server's piece travel with the list as inert uploads (Backup §1.1 step 5).
+      const h = this.pendingHeir;
+      if (h) for (const x of [...view.values()].filter((y) => y.kind === 'server'))
+        items.push({ type: 'heir_piece', to: x.key, release: false, wrap: wrap(this.kp.sk, x.key, { type: 'heir_piece', x: x.shares[0], piece: scalarHex(h.pieces.get(x.shares[0])!) }) });
+      const up = msg('upload', this.g, this.epochId, 'member', { list: approvalListOf(list), approval, redeal: dealt.redeal.id, items, paper_item: dealt.paperItem, ...(h ? { heir_record: h.record } : {}) });
       for (const s of [...view.values()].filter((x) => x.kind === 'server')) await this.bus.send(this.kp, s.key, up);
       full = list.map((c) => ('redeal' in c ? { redeal: dealt!.redeal } : c));
       if (o.dieAfterUpload) { dealt.destroy(); this.bus.kill?.(this.kp.pub); return []; }
@@ -590,14 +603,17 @@ export class DeviceNode implements Node {
   /** F7, a new paper (§6.7.6, §4.3): approve `[paper K, redeal]`, repair the backup seat towards K
    *  with one server, wrap and sign the base under the redeal's release seed, then commit. Returns K
    *  (in real life, printed and read back before step 4). */
-  async newPaper(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void> } = {}): Promise<KeyPair> {
+  async newPaper(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void>; heir?: string } = {}): Promise<KeyPair> {
     this.f7 = true;
     try { return await this.newPaperInner(approve, o); }
     finally { this.f7 = false; }
   }
-  private async newPaperInner(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void> }): Promise<KeyPair> {
+  private async newPaperInner(approve: (list: Change[]) => Approval, o: { duringF7?: () => Promise<void>; heir?: string }): Promise<KeyPair> {
     const K = newKey();
-    const list: Change[] = [{ paper: { key: K.pub, replaces: this.m!.backupKey! } }, { redeal: { dealer: this.kp.pub } }];
+    // Backup §4.1: an heir's envelope of K, its hash pinned in the approved paper change.
+    const heir = o.heir ? makeHeir({ g: this.g, setId: K.pub, heirKey: o.heir, secret: K.sk, card: 'card', seats: this.m!.record.seats.servers }) : null;
+    this.pendingHeir = heir;
+    const list: Change[] = [{ paper: { key: K.pub, replaces: this.m!.backupKey!, ...(heir ? { heir: heir.recordHash } : {}) } }, { redeal: { dealer: this.kp.pub } }];
     const approval = approve(list);
     await this.submit(list, approval, { finish: async (dealt) => {
       const server = this.servers().find((x) => this.bus.alive(x.key))!;
@@ -611,7 +627,7 @@ export class DeviceNode implements Node {
       const base = baseItem(K, dealt.releaseSeed, shares, this.baseDk, repairedAt);
       shares.clear();
       await o.duringF7?.();                                  // the person prints and reads back; others go on                                        // the device keeps K only until the read-back
-      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: repairedAt } }, { redeal: dealt.redeal }], material: base };
+      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: repairedAt, ...(heir ? { heir: heir.recordHash } : {}) } }, { redeal: dealt.redeal }], material: base };
     } });
     await this.reissueMissing();
     return K;
@@ -697,7 +713,7 @@ export class DeviceNode implements Node {
 
 /** The approval list carried in every change: redeals as placeholders, papers without inner/state. */
 export function approvalListOf(list: Change[]): Change[] {
-  return list.map((c) => ('redeal' in c ? { redeal: { dealer: (c.redeal as any).dealer } } : 'paper' in c ? { paper: { key: c.paper.key, replaces: c.paper.replaces } } : c));
+  return placeholderList(list);
 }
 
 // --- the paper holder --------------------------------------------------------------------

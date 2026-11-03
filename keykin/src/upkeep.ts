@@ -31,7 +31,7 @@ export function postListView(m: Membership, list: Change[]): Map<string, MemberE
 /** The backup key current after the list (`paper_to`). */
 export const postListBackup = (m: Membership, list: Change[]) => (list.find((c) => 'paper' in c) as any)?.paper.key ?? m.backupKey;
 
-export interface Upload { list: Change[]; approval: Approval; redealId: string; items: { type: string; to: string; wrap: unknown; release?: boolean }[]; at: number; paperItem?: Item; held: Set<string> }
+export interface Upload { list: Change[]; approval: Approval; redealId: string; items: { type: string; to: string; wrap: unknown; release?: boolean }[]; at: number; paperItem?: Item; held: Set<string>; heirRecord?: unknown }
 
 /** `upload {list, approval, items}` (§6.7.3): refused without the approval list and its valid
  *  approval, from anyone but the list's dealer (a current device), for a redeal already co-signed,
@@ -44,7 +44,7 @@ export function acceptUpload(m: Membership, from: string, msg: any, now: number,
   if (!ph || ph.redeal.dealer !== from || !m.devices.has(from) || m.removed.has(from)) refuse('not_dealer', 'only the list\'s dealer uploads');
   if (m.redeals.has(msg.redeal)) refuse('already_cosigned');
   if (held && uploadLive(held, now)) refuse('upload_held', 'an upload for this redeal is already held');
-  return { list: msg.list, approval: msg.approval, redealId: msg.redeal, items: msg.items ?? [], at: now, paperItem: msg.paper_item, held: new Set() };
+  return { list: msg.list, approval: msg.approval, redealId: msg.redeal, items: msg.items ?? [], at: now, paperItem: msg.paper_item, held: new Set(), heirRecord: msg.heir_record };
 }
 export const uploadLive = (u: Upload, now: number) => now - u.at <= UPLOAD_TTL_S;
 

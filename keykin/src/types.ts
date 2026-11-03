@@ -27,7 +27,7 @@ export type Change =
   | { remove: string; to?: string }
   | { lock: { member: string; replaces: string | null; new: LockPub } }
   | { seat: { seat: string; new: MemberEntry | null; replaces: string | null } }
-  | { paper: { key: string; replaces: string; inner?: string; state?: string[] } }
+  | { paper: { key: string; replaces: string; inner?: string; state?: string[]; holders?: string[]; heir?: string } }
   | { redeal: Redeal | { dealer: string } };
 
 export interface Redeal {
