@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 14 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 15 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -35,10 +35,8 @@ hold:
   app (Doors and grants §1). Entries are kept while their grant exists and 90 days after; an encrypt
   record, and the record of which grant an event was signed for, are kept as long as that event is
   **current**: for a replaceable or addressable event, until a newer version replaces it; for a regular
-  event, until it is deleted, or while its grant lasts for notes, reactions and reposts. Zap requests and
-  relay sign-ins are never recorded; upload tokens are recorded only as the blob hash (`x`) and host each
-  grant uploaded, and only if nothing else had claimed that hash first (no event of the account signed for
-  another grant or the member app references it, and no other grant recorded it); and encrypt records for messages are kept 90 days.
+  event, until it is deleted, or while its grant lasts for notes, reactions and reposts. Zap requests,
+  relay sign-ins and upload tokens are never recorded, and encrypt records for messages are kept 90 days.
   Snapshots are split at 48 KB, with `d = "keykin-meta:" ‖ hex(HMAC-SHA256(HKDF(base data key,
   "keykin-meta-d/1"), member key ‖ month ‖ part))`, `month` as the ASCII `YYYY-MM` in UTC and `part` as 2
   bytes big-endian, distinct from grant events. Each part has its own sequence number, and part 0 carries a
@@ -50,8 +48,8 @@ hold:
   fetches the others' snapshots, for at most 3 seconds, before a judgement that depends on them; if they
   don't arrive, it judges with what it has. A device accepts a snapshot only from a key that is a current device,
   and never a part with a lower number than it has seen for **that part**; part 0 is republished with
-  every change. A reader fetches the current and the previous month, and older months when a judgement
-  needs them. So a removed device or the sync service can't forge it or roll
+  every change. Part 0 of the current month lists every month still holding live entries,
+  and a reader fetches all of them in one request. So a removed device or the sync service can't forge it or roll
   it back, and out-of-order sync loses nothing.
 - **A device leaving by its own choice** (Remove this device, or a `self` remove, core §4.6) first merges
   its metadata into the snapshot of the device that takes over or approves (if
@@ -120,8 +118,9 @@ in the member app, and other sites', never count against a site.
 | A deletion of one ordinary event another site or the member app signed, or not recorded as this grant's | **Confirm** |
 | A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
 | A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
-| A Blossom `t=delete` token | Silent only when it names exactly one hash and that hash's recorded host, for a blob this grant uploaded (above), within the site's daily deletion budget; otherwise **Confirm** |
-| A NIP-98 `DELETE`, `PUT` or `PATCH` token, or a Blossom token naming several hashes | **Confirm** |
+| A Blossom `t=delete` token, or a NIP-98 `DELETE` token | **Confirm** ("Let *site* delete this image from *host*?"). Media deletion is rare, and nothing reliably shows whose a blob is |
+| NIP-98 `PUT` and `PATCH`, and Blossom upload, list and get tokens | as Doors and grants §1 says (no card here) |
+| A site's judged list kind (replaceable or addressable) dated more than 5 minutes ahead | declined, so a site can't keep overriding other apps' edits or push Undo back; ordinary clock skew passes |
 | A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 3 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count, this deletion included, stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, even when servers or a co-signing device refuse, and nothing is signed (a newer token event already supersedes them; the device doesn't check its `del` list). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
 | New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
 | Wallet and mint settings (17375, 37375) changed, or the payment pubkey or mints in 10019 changed, by a site | **Confirm** |
@@ -265,6 +264,15 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 15**, from its thirteenth red team (0 critical, 1 high):
+  - every Blossom and NIP-98 delete is Confirm, and upload claims are no longer recorded (DP13-1, DP13-2).
+
+  The mediums and lows:
+  - judged lists dated more than 5 minutes ahead are declined (DP13-3);
+  - no card for `PUT`/`PATCH` (DP13-4);
+  - the multi-hash row is gone (DP13-5);
+  - part 0 lists the live months (DP13-6);
+  - lows folded where they still apply.
 - **Draft 14**, from its twelfth red team (0 critical, 1 high):
   - a blob counts as the site's only if nothing else claimed its hash first, with its host, and a silent
     delete names exactly that one hash and host (DP12-1).
