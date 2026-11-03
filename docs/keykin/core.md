@@ -645,7 +645,7 @@ co-signer and any retry), **or** a passed hold:
 - kind 0 whose content has no non-empty `name`, `display_name`, `about` or `picture`;
 - kind 3, 10000–10030 or 30000–30030 with no tags other than `d` **and an empty `content`**;
 - kind 10002 with no `r` tag whose value starts with `wss://` or `ws://`;
-- a key-family release or leaked event (kinds 1245, 1246, Key families module).
+- a key-family release or leaked event (kinds 1245, 1246, Key families module; a site never gets one signed).
 
 These tests are exact: kind 0's content is parsed as a JSON object, and content that isn't one, or has a
 duplicate key, counts as empty; a field is non-empty only if it is a string with a non-whitespace
@@ -1591,7 +1591,7 @@ Each is a short document of its own, and none may weaken anything above.
 - **Backup**: 24 words, recovery contacts, heir. (Finding servers from the paper is the signpost, §6.7.5,
   and the old escape hatch is F3.)
 - **Helper**: the opt-in (joins by a `seat` change, §6.7.6 F6).
-- **Key families**: claim, accept, release; the challenge window; child groups. This is the answer to a
+- **Key families**: family events signed by both keys, NIP-03 timestamps, release and leaked events; child groups. This is the answer to a
   serious leak of the key itself.
 
 ## 13. Open items
