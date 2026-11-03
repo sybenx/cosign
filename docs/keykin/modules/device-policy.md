@@ -142,7 +142,7 @@ keys that each hold a current seat, the wait id is `SHA-256("hold" ‖ event id)
 `end` is within 7 days. Otherwise it refuses with the error code `needs-approval` (core §9.1's `error`).
 Confirm is the coordinator's own job, because any coordinator could claim a Confirm. The coordinator MUST
 show its card before asking any other co-signer for that event, and never drops a co-signer's refusal by
-going to a server instead: on `needs-approval` it shows its own Held card. A helper co-signing applies the same rule; it has no screen and never shows a card.
+going to a server instead: on `needs-approval` it shows its own Held card. A helper never co-signs (core §5.7).
 
 ## 3. Undo
 
