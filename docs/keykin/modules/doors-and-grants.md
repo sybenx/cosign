@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 18 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
+Draft 19 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -121,7 +121,8 @@ for listing. The wildcard is also published in the ending device's event.
   NIP-42 sign-in (the device signs the relay's challenge with the account, as any client does), on three
   tries spread over a day; a dropped relay is retried weekly and counts again once it answers, and the
   device fetches from it before writing to it again. A size refusal makes the device split into smaller
-  parts instead. A relay that accepts writes but never serves reads doesn't count. An answer to a fetch is an `EOSE`, never a `CLOSED` or a
+  parts instead. A relay that accepts writes but never serves reads doesn't count, and one that refuses writes but answers
+  reads counts only for fetches. An answer to a fetch is an `EOSE`, never a `CLOSED` or a
   `NOTICE`. When the set changes, each device republishes its own grant event to a majority of the new
   set; it also re-sends its own event weekly, since an `OK` is not a promise to keep it.
 - **Publishing.** A home stores a change to its grants before it publishes it. A publish counts once **more
@@ -138,9 +139,12 @@ for listing. The wildcard is also published in the ending device's event.
     part of its last publish's set that is still counted**, answer (the current set alone when fewer than
     three of the last set remain, or the device has never published), so any good fetch and any counted
     publish share a relay. Re-sending an unchanged event needs no fetch.
-    A newer own event from any relay is adopted at once; one it can't decrypt or that misses a part counts
-    as a failed fetch for publishing and for answering. If no server answers the catch-up within 2
-    seconds, the device fetches anyway and catches up later.
+    A newer own event from any relay is adopted at once; one it can't decrypt or that misses a part is
+    ignored once the fetch is otherwise good, and the device publishes above it. A device records each
+    event (its parts and date) before sending any part, so a publish cut short never leaves it stuck. A
+    re-send is a publish and moves the last publish's set. If no server answers the catch-up within 2
+    seconds, the device fetches anyway and repeats the catch-up at its next 5-minute fetch. At start it
+    also reads the other devices' ended ids, and republishes when its union grows.
   - Until the first good fetch it waits up to 3 seconds, then answers `get_public_key` and grants made since
     its last publish, gives other requests `try-later:`, retries every 10 seconds, and shows one quiet line
     if relays can't be reached. It never publishes after a failed fetch.
@@ -151,7 +155,8 @@ for listing. The wildcard is also published in the ending device's event.
   - It merges ended ids and tombstones from **any** of its own events, whatever their date. It takes an
     event's entries over **only if it is newer than its own last publish**, and then drops only entries
     **made before** that event that are missing from it; for each entry the higher `v` wins (ties as
-    below). A restart of the background worker within 5 minutes of a good fetch doesn't count as a start.
+    below). A restart of the background worker within 5 minutes of a good fetch, measured by a clock that survives
+    only in memory, doesn't count as a start.
 - **Grants are stored like shares** (core §7.3): grants, ended lists and signer keys are excluded from
   restorable backups, so restoring a device from a backup brings back no grant. An extension keeps them in
   its local storage, never in browser sync storage. (A copied browser profile is a copy of a member, as
@@ -402,6 +407,11 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 19**, from its eighteenth red team (0 critical, 0 high), its medium and lows:
+  - an unreadable newer own event is ignored once a fetch is otherwise good, and events are recorded
+    before any part is sent (M1);
+  - re-sends move the set, other devices' ended ids read at start, write-refusing relays count only for
+    fetches, the worker-restart clock kept in memory, catch-up repeated at the next fetch (lows).
 - **Draft 18**, from its seventeenth red team (0 critical, 1 high):
   - the last publish's set counts only relays still counted, and falls back to the current set, so a device
     that slept through a relay change isn't stuck for good (H1).

@@ -37,7 +37,7 @@ hold:
   **current**: for a replaceable or addressable event, until a newer version replaces it; for a regular
   event, until it is deleted, or while its grant lasts for notes, reactions and reposts. Zap requests,
   relay sign-ins and upload tokens are never recorded, and encrypt records for messages are kept 90 days.
-  Snapshots are split at 48 KB, with `d = "keykin-meta:" ‖ hex(HMAC-SHA256(HKDF(base data key,
+  Snapshots are split once a part's encoded content would pass 24 KB (as Doors and grants does), with `d = "keykin-meta:" ‖ hex(HMAC-SHA256(HKDF(base data key,
   "keykin-meta-d/1"), member key ‖ month ‖ part))`, `month` as the ASCII `YYYY-MM` in UTC and `part` as 2
   bytes big-endian, distinct from grant events. Each part has its own sequence number, and part 0 carries a
   signed list of every part's number and hash, so unchanged parts are never mistaken for rollbacks. A closed month's snapshot is
