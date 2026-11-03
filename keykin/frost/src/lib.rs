@@ -191,3 +191,47 @@ pub fn repair_step3(commitment_json: &str, sigmas_json: &str, participant: &str)
     share.verify().map_err(|_| JsError::new("the repaired share doesn't match the commitment"))?;
     Ok(hex::encode(share.signing_share().serialize()))
 }
+
+// --- Distributed key generation (Account admin §1.1), `frost-core`'s `keys::dkg` -------------
+//
+// One call per participant index; a device runs its five (1, 2, 3 and the backup seat's 5, 6). Secret
+// packages cross this API as hex and never leave the participant. The result is brought to even y as
+// `frost-secp256k1-tr` does, for the share and every share point.
+
+fn ids_pkgs<T, F: Fn(&[u8]) -> Result<T, frost_core::Error<Suite>>>(json: &str, de: F, what: &'static str) -> R<BTreeMap<Identifier, T>> {
+    let v: Vec<(String, String)> = serde_json::from_str(json).map_err(e(what))?;
+    v.iter().map(|(i, h)| Ok((id(i)?, de(&hex::decode(h).map_err(e(what))?).map_err(e(what))?))).collect()
+}
+
+/// Part 1 for one index: `{"secret", "package"}`. `hedge` seeds the polynomial and proof (§5.2's stream).
+#[wasm_bindgen(js_name = dkgPart1)]
+pub fn dkg_part1(i: &str, max_signers: u16, min_signers: u16, hedge: &str) -> R<String> {
+    let rng = Hedged { seed: bytes(hedge, "hedge")?, ctr: 0 };
+    let (secret, package) = frost::keys::dkg::part1(id(i)?, max_signers, min_signers, rng).map_err(e("dkg part 1"))?;
+    Ok(serde_json::json!({ "secret": hex::encode(secret.serialize().map_err(e("dkg"))?), "package": hex::encode(package.serialize().map_err(e("dkg"))?) }).to_string())
+}
+
+/// Part 2: from every other index's round-1 package (`[[i, package], …]`), a round-2 package for each.
+#[wasm_bindgen(js_name = dkgPart2)]
+pub fn dkg_part2(secret: &str, others_json: &str) -> R<String> {
+    let s = frost::keys::dkg::round1::SecretPackage::deserialize(&hex::decode(secret).map_err(e("secret"))?).map_err(e("secret"))?;
+    let others = ids_pkgs(others_json, |b| frost::keys::dkg::round1::Package::deserialize(b), "round 1")?;
+    let (s2, pkgs) = frost::keys::dkg::part2(s, &others).map_err(e("dkg part 2"))?;
+    let out: Vec<(String, String)> = pkgs.iter().map(|(k, p)| Ok((hex::encode(k.serialize()), hex::encode(p.serialize().map_err(e("dkg"))?)))).collect::<R<_>>()?;
+    Ok(serde_json::json!({ "secret": hex::encode(s2.serialize().map_err(e("dkg"))?), "packages": out }).to_string())
+}
+
+/// Part 3: `{"share", "groupX", "points": [[i, P_i], …]}`, even y.
+#[wasm_bindgen(js_name = dkgPart3)]
+pub fn dkg_part3(secret2: &str, round1_json: &str, round2_json: &str) -> R<String> {
+    use frost::keys::EvenY;
+    let s = frost::keys::dkg::round2::SecretPackage::deserialize(&hex::decode(secret2).map_err(e("secret"))?).map_err(e("secret"))?;
+    let r1 = ids_pkgs(round1_json, |b| frost::keys::dkg::round1::Package::deserialize(b), "round 1")?;
+    let r2 = ids_pkgs(round2_json, |b| frost::keys::dkg::round2::Package::deserialize(b), "round 2")?;
+    let (kp, pkp) = frost::keys::dkg::part3(&s, &r1, &r2).map_err(e("dkg part 3"))?;
+    let even = pkp.has_even_y();
+    let (kp, pkp) = (kp.into_even_y(Some(even)), pkp.into_even_y(Some(even)));
+    let vk = pkp.verifying_key().serialize().map_err(e("key"))?;
+    let points: Vec<(String, String)> = pkp.verifying_shares().iter().map(|(k, v)| Ok((hex::encode(k.serialize()), hex::encode(v.serialize().map_err(e("point"))?)))).collect::<R<_>>()?;
+    Ok(serde_json::json!({ "share": hex::encode(kp.signing_share().serialize()), "groupX": hex::encode(&vk[1..]), "points": points }).to_string())
+}

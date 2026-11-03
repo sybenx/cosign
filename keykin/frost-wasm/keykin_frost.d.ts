@@ -13,6 +13,21 @@ export function aggregate(commitment_json: string, msg: string, commits_json: st
 export function commit(commitment_json: string, i: string, share: string, hedge: string): string;
 
 /**
+ * Part 1 for one index: `{"secret", "package"}`. `hedge` seeds the polynomial and proof (§5.2's stream).
+ */
+export function dkgPart1(i: string, max_signers: number, min_signers: number, hedge: string): string;
+
+/**
+ * Part 2: from every other index's round-1 package (`[[i, package], …]`), a round-2 package for each.
+ */
+export function dkgPart2(secret: string, others_json: string): string;
+
+/**
+ * Part 3: `{"share", "groupX", "points": [[i, P_i], …]}`, even y.
+ */
+export function dkgPart3(secret2: string, round1_json: string, round2_json: string): string;
+
+/**
  * Repair step 1 (§4.2 step 3) for one helper index: `[[helper i, delta], …]`, one per helper.
  */
 export function repairStep1(commitment_json: string, helpers_json: string, i: string, share: string, participant: string): string;
