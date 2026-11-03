@@ -21,8 +21,13 @@ test('§1.1 a provisional account unconfirmed for an hour is dropped, keeping no
   void ServerNode;
   const acc = await createByDkg();
   // Simulate a server that never got the confirmation: put it back to provisional and wait.
+  // A server whose peers saw the confirmation keeps the account (review 5 B11)...
   const s = acc.servers[0];
   s.provisional = true; s.welcomedAt = acc.bus.now;
+  acc.bus.advance(3601);
+  assert.equal((await acc.bus.send(acc.A.kp, s.kp.pub, msg('state_get', acc.g, acc.epochId, 'ask'))).type, 'state');
+  // ...and one where nobody saw it drops it.
+  for (const x of acc.servers) { x.provisional = true; x.welcomedAt = acc.bus.now; }
   acc.bus.advance(3601);
   assert.equal((await acc.bus.send(acc.A.kp, s.kp.pub, msg('state_get', acc.g, acc.epochId, 'ask'))).code, 'unknown_account');
 });

@@ -75,7 +75,7 @@ export class ServerNode implements Node {
       // A peer's host-signed `deleted`, from a current seat holder, carrying the request.
       const peer = [...this.m.members.values()].find((x) => x.kind === 'server' && x.host === body.host);
       if (!peer || peer.key !== from || !schnorrVerify(body.host_sig, sha('keykin-deleted/1', hexToBytes(this.rec!.g), jcsBytes(body.request)), body.host)) refuse('bad_deleted');
-      proof = { request: body.request, changes: body.changes };
+      proof = this.co!.checkDelete(from, body.request, this.now, true);
     }
     const g = this.rec!.g;
     this.tombstone = { h: bytesToHex(sha(hexToBytes(g))), request: proof.request, changes: proof.changes, recEv: this.recEv! };
@@ -91,21 +91,24 @@ export class ServerNode implements Node {
   /** Account admin §1.1: creation by DKG. A throwaway DKG key (signed by the host key, destroyed when
    *  the DKG ends), this server's part of each round, then its enrol reply once `g` exists. The account
    *  is held provisionally until the device confirms it. */
-  dkg: { key: KeyPair; index?: number; secret?: string; secret2?: string; share?: bigint; g?: string; at: number } | null = null;
+  dkg: { key: KeyPair; owner: string; index?: number; secret?: string; secret2?: string; share?: bigint; g?: string; at: number } | null = null;
   provisional = false; welcomedAt = 0;
   private async creation(from: string, body: any): Promise<any> {
     switch (body.type) {
       case 'create': {
-        this.dkg = { key: newKey(), at: this.now };
+        if (this.co && !this.provisional) refuse('already_seated');
+        if (this.dkg && this.dkg.owner !== from && this.now - this.dkg.at < 3600) refuse('busy');
+        this.dkg = { key: newKey(), at: this.now, owner: from };
         return { type: 'create_ok', dkg_key: this.dkg.key.pub, host: this.host.pub, host_sig: schnorrSign(sha('keykin-dkg-key/1', hexToBytes(this.dkg.key.pub)), this.host.sk) };
       }
       case 'dkg_1': {
-        if (!this.dkg) refuse('no_dkg');
+        if (!this.dkg || this.dkg.owner !== from) refuse('no_dkg');
         const r = dkg1(body.index, body.max, randomBytes(32));
         this.dkg!.index = body.index; this.dkg!.secret = r.secret;
         return { type: 'dkg_1', package: r.package };
       }
       case 'dkg_2': {
+        if (!this.dkg || this.dkg.owner !== from) refuse('no_dkg');
         const others = new Map<number, string>(body.round1);
         const r = dkg2(this.dkg!.secret!, others);
         this.dkg!.secret = undefined; this.dkg!.secret2 = r.secret;
@@ -117,6 +120,7 @@ export class ServerNode implements Node {
         return { type: 'dkg_2', packages: out };
       }
       case 'dkg_3': {
+        if (!this.dkg || this.dkg.owner !== from) refuse('no_dkg');
         const r1 = new Map<number, string>(body.round1);
         const r2 = new Map<number, string>(body.round2.map(([i, x]: [number, any]) => [i, typeof x === 'string' ? x : nip44.v2.decrypt(x.sealed, nip44.v2.utils.getConversationKey(this.dkg!.key.sk, x.from))]));
         const r = dkg3(this.dkg!.secret2!, r1, r2);
@@ -124,6 +128,9 @@ export class ServerNode implements Node {
         return { type: 'dkg_3', g: r.g, points: [...r.points] };
       }
       case 'enroll': {
+        // A seat's keys never change in place (Server profile §4): this one-account node enrols once.
+        if (this.co || this.enrollR) refuse('already_seated');
+        if (this.dkg && this.dkg.owner !== from) refuse('no_dkg');
         const old = this.kp.pub;
         const reply = this.enroll(body.g, this.now);
         this.bus.rekey?.(old, this);
@@ -136,8 +143,18 @@ export class ServerNode implements Node {
         return { type: 'ack' };
       }
     }
-    // A provisional account not confirmed within an hour is dropped, keeping no record.
-    if (this.provisional && this.now - this.welcomedAt > 3600) { this.co = null; this.rec = null; this.recEv = null; this.provisional = false; this.dkg = null; }
+    if (body.type === 'confirm_status') return { type: 'confirm_status', confirmed: !!this.co && !this.provisional && body.epoch === this.rec?.epoch.id };
+    // A provisional account not confirmed within an hour is dropped, keeping no record, unless a peer
+    // has seen the confirmation (Account admin §1.1 step 4).
+    if (this.provisional && this.now - this.welcomedAt > 3600) {
+      let seen = false;
+      for (const p of [...this.m.members.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub)) {
+        const a = await this.bus.send(this.kp, p.key, { type: 'confirm_status', epoch: this.rec!.epoch.id }, { timeoutMs: 2500 });
+        if (a?.confirmed) seen = true;
+      }
+      if (seen) this.provisional = false;
+      else { this.co = null; this.rec = null; this.recEv = null; this.provisional = false; this.dkg = null; }
+    }
     return undefined;
   }
 
@@ -150,12 +167,16 @@ export class ServerNode implements Node {
     // A DKG creation: this server's own DKG share, for the epoch record's g, at its seat.
     if (!w.share && this.dkg?.share !== undefined && this.dkg.g === this.rec.g) shares = new Map([[this.dkg.index!, this.dkg.share]]);
     if (!w.share && shares.size) checkOwnShares(this.rec.g, shares, C, false);
+    if (w.provisional && !shares.size) refuse('no_share', 'a DKG seat holds its own share before it adopts');
     if (w.provisional) { this.provisional = true; this.welcomedAt = this.now; }
     if (w.share) checkOwnShares(this.rec.g, shares, C, false);
     this.co = new CoSigner({ me: this.kp, host: this.host, kind: 'server', now: () => this.now, record: this.rec, changes: [...w.changes],
       state: { ids: new Set(w.state), C, shares }, upkeep: (p, mm) => this.upkeep(p, mm),
       uploads: { get: (id) => this.uploads.get(id), liveSeatHolders: (view) => [...view.values()].filter((x) => x.kind === 'server' && !this.quietSince(x.key) && this.bus.alive(x.key)).length } });
     for (const id of w.signposts ?? []) this.co.noteSignpost(id);
+    // Helper stops are account state: carried in seat holders' welcomes (core §5.7).
+    for (const [id, x] of (w as any).stops ?? []) this.co.stops.set(id, x);
+    for (const [id, at] of (w as any).cleared ?? []) this.co.clearedStops.set(id, at);
     w.seeds.forEach(([k, v]) => this.seeds.set(k, v));
     this.items = [...w.items]; this.base = w.base;
   }
@@ -232,7 +253,7 @@ export class ServerNode implements Node {
         if (body.release) this.seeds.set(r.id, body.release);
         if (u!.paperItem) this.items.push(u!.paperItem);
         // Release the inert upload: everyone else's items become deliveries.
-        for (const it of u!.items) if (it.to !== this.kp.pub && m.members.has(it.to) && m.members.get(it.to)!.kind === 'device')
+        for (const it of u!.items) if (it.type === 'delta' && it.to !== this.kp.pub && m.members.has(it.to) && ['device', 'helper'].includes(m.members.get(it.to)!.kind))
           try { this.inbox.deliver({ from: r.dealer, to: it.to, wrap: it.wrap as NostrEvent, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey }); } catch { /* full or removed */ }
         again = true;
       }
@@ -269,12 +290,13 @@ export class ServerNode implements Node {
     if (pre !== undefined) return pre;
     if (body.type === 'seat_welcome') {
       // Once per account, from a current device of the welcome's own view, and only if that view seats us (§6.7.4).
-      if (this.co && !this.provisional && this.rec!.g === body.w?.recEv?.pubkey) refuse('exists');   // Account admin §1.2: refused: exists
-      if (this.co && !this.provisional) refuse('already_welcomed');
       const rec = checkEpochRecord(body.w.recEv, { g: body.w.recEv.pubkey });
       const view = computeMembership(rec, body.w.changes);
       if (!view.devices.has(from)) refuse('not_device');
       if (![...view.seats.values()].some((x) => x.holder?.key === this.kp.pub)) refuse('not_seated');
+      if (this.co && !this.provisional && this.rec!.g === rec.g) refuse('exists');   // Account admin §1.2, only after the checks (review 5 B8)
+      if (this.co && !this.provisional) refuse('already_welcomed');
+      if (this.co && this.provisional && this.rec!.g !== rec.g) refuse('provisional_other', 'only a newer record for the same key replaces it');
       this.welcome(body.w); return { type: 'ack' };
     }
     if (this.tombstone) return this.deletedAnswer();
@@ -324,6 +346,12 @@ export class ServerNode implements Node {
         if (!this.items.some((x) => x.kind === "reissue" && x.redeal === r!.id && x.by === from)) this.items.push(body.item);
         return { type: 'ack' };
       }
+      case 'stop_relay': {
+        // A peer passes on a stop (core §5.7); the stopping device must be current in this view.
+        if (!m.members.has(from) || m.members.get(from)!.kind !== 'server') refuse('not_peer');
+        try { this.co.takeStop(body.by, { stop: body.stop, by: body.by }, this.now); } catch { /* already, or not a device */ }
+        return { type: 'ack' };
+      }
       case 'repair_ok': {
         const owner = [...m.members.values()].find((x) => x.shares.includes(body.participant));
         if (owner?.key === from) this.co.repairSucceeded(from, body.participant);
@@ -354,6 +382,12 @@ export class ServerNode implements Node {
         return { type: 'ack' };
       }
       default: {
+        if (body.type === 'helper_stop') {
+          const a = this.co.handle(from, body, sentAt);
+          if (a?.type === 'notice') for (const p of [...m.members.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub))
+            await this.bus.send(this.kp, p.key, { type: 'stop_relay', stop: body.stop, by: body.by }, { timeoutMs: 2500 });
+          return a;
+        }
         if (body.type === 'sign' && (body.event?.kind === KIND_CHANGE || Array.isArray(body.list_events)))
           await this.beforeChangeCosign(body.list_events ? body.list_events.map((x: any) => x.event) : [body.event]);
         // No waited statement or release before fetching peers' deliveries, so a missed cancel counts (§6.3).
@@ -481,6 +515,7 @@ export class DeviceNode implements Node {
       await this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid) }));
     }
     this.applyAll();
+    if (this.notices.some((n) => n.kind === 'bad_paper_item')) await this.reissueMissing();
   }
   pendingDeltas = new Map<string, any>();
   pendingHeir: ReturnType<typeof makeHeir> | null = null;

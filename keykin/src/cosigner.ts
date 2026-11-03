@@ -193,9 +193,12 @@ export class CoSigner {
 
   /** Account admin §3: `account_delete {id, approval}`, an approved request (lock, pair or paper with this
    *  server's own challenge), checked here at first hand. Returns what the tombstone keeps. */
-  checkDelete(from: string, msg: any, now = this.o.now()): { request: any; changes: NostrEvent[] } {
+  checkDelete(from: string, msg: any, now = this.o.now(), relayed = false): { request: any; changes: NostrEvent[] } {
     const { approval, ...body } = msg;
     const w = what.request('account_delete', msg.id, body);
+    // A request relayed in a peer's `deleted` is checked here too, never taken on the peer's word (core
+    // §3.2): its sender is its approving device; only the paper challenge stays the first server's.
+    if (relayed) from = approval?.lock?.member ?? approval?.pair?.[0]?.member ?? (approval?.paper?.member ?? approval?.paper?.[0]?.member);
     const dev = this.sender(from);
     if (dev.kind !== 'device') refuse('not_device');
     let approvers: string[] = [];
@@ -215,11 +218,15 @@ export class CoSigner {
       if (p.backup !== this.m.backupKey || !this.m.devices.has(p.member)) refuse('not_current_backup');
       if (!schnorrVerify(p.sig, detachedDigest('paper', this.g, { what: bytesToHex(w) }), p.member)) refuse('bad_signature');
       if (!schnorrVerify(p.backup_sig, detachedDigest('paper', this.g, { what: bytesToHex(w), challenge: p.challenge }), p.backup)) refuse('bad_signature');
-      if (!this.takeChallenge(p.challenge, p.backup, now)) refuse('stale_challenge');
+      if (!relayed && !this.takeChallenge(p.challenge, p.backup, now)) refuse('stale_challenge');
       approvers = [p.member];
     } else refuse('needs_approval', 'a delete needs lock, pair or paper; there is no hold path');
     // The changes that make each approver a device, so anyone can check the tombstone's proof.
-    const changes = this.m.accepted.filter((p) => p.type === 'add' && approvers.includes((p.c.change as any).add.key)).map((p) => p.ev);
+    // With their lock changes and, for a paper approval, the paper change of that key (review 5 B10).
+    const paperKey = approval?.paper ? (approval.paper.backup ?? approval.paper[0]?.backup) : null;
+    const changes = this.m.accepted.filter((p) => (p.type === 'add' && approvers.includes((p.c.change as any).add.key))
+      || (p.type === 'lock' && approvers.includes((p.c.change as any).lock.member))
+      || (p.type === 'paper' && paperKey && (p.c.change as any).paper.key === paperKey)).map((p) => p.ev);
     return { request: msg, changes };
   }
 

@@ -94,7 +94,10 @@ export async function replaceServer(acc: Account, dev: DeviceNode, oldIdx: numbe
   const signed = await dev.submit(list, approve(list), { deliverTo: [...dev.servers().map((s) => s.key), Y.kp.pub, ...(old ? [old.key] : [])] });
   void signed;
   // The newcomer's welcome (no share yet), then `need_repair` answered by the device and a live server.
-  const wa = await bus.send(dev.kp, Y.kp.pub, { type: 'seat_welcome', w: { recEv: dev.recEv!, changes: dev.changes, state: [...dev.state!.ids], seeds: [...dev.seeds], items: dev.items, base: dev.base! } });
+  // Devices re-send stops to every incoming seat holder (core §5.7): from a live peer's view of them.
+  const peer = acc.servers.find((x) => x.co && !x.retired && bus.alive(x.kp.pub));
+  const stops = peer ? [...peer.co!.stops] : [], cleared = peer ? [...peer.co!.clearedStops] : [];
+  const wa = await bus.send(dev.kp, Y.kp.pub, { type: 'seat_welcome', w: { recEv: dev.recEv!, changes: dev.changes, state: [...dev.state!.ids], seeds: [...dev.seeds], items: dev.items, base: dev.base!, stops, cleared } });
   if (wa?.type !== 'ack') refuse(wa?.code ?? 'welcome_failed', wa?.detail);
   const helper = dev.servers().find((s) => s.key !== Y.kp.pub && bus.alive(s.key))!;
   const sigmas = await dev.repairFor([{ key: dev.kp.pub, indices: [...dev.state!.shares.keys()] }, { key: helper.key, indices: helper.shares }], oldIdx, Y.kp.pub, 'seat');

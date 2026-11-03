@@ -1,7 +1,7 @@
 // Upkeep's server-side rules and proofs (core §6.7.3–§6.7.4, §6.5 step 4, §7.2). Pure.
 
 import { sha, shaHex, bytesToHex, randomBytes, hexToBytes, refuse, u32be } from './bytes.ts';
-import { type Commitment, derivePoint, mul, mod, compBytes, compHex, pointFrom, scalarFrom, scalarHex, G } from './curve.ts';
+import { type Commitment, derivePoint, deriveDelta, mul, mod, compBytes, compHex, pointFrom, scalarFrom, scalarHex, G } from './curve.ts';
 import { checkApproval, approvalHash, type Authority } from './approval.ts';
 import { itemHash, openItem, sealItem, commitmentAt, wrapUnder, unwrapUnder, type Item } from './redeal.ts';
 import * as nip44 from 'nostr-tools/nip44';
@@ -118,7 +118,13 @@ export function openMaterial(o: { g: string; backup: KeyPair; pin: string; base:
     for (const it of cands) {
       try {
         const x = openItem(it, seed!, { backupSk: o.backup.sk });
-        if (it.kind === 'reissue' && !x.d.every((d: string, k: number) => compHex(mul(scalarFrom(d))) === it.clear![k])) continue;
+        // The opened values must be exactly the backup seat's δ(b), on the redeal's commitments (and, for a
+        // re-issue, equal to its clear values); anything else is skipped for the next candidate.
+        const D = r.D.map((h: string) => pointFrom(h));
+        const seat = [...shares.keys()].sort((a2, b2) => a2 - b2);
+        if (!Array.isArray(x.b) || !Array.isArray(x.d) || JSON.stringify([...x.b].sort((a2: number, b2: number) => a2 - b2)) !== JSON.stringify(seat) || x.d.length !== x.b.length) continue;
+        if (!x.b.every((b: number, k: number) => compHex(mul(scalarFrom(x.d[k]))) === compHex(deriveDelta(D, BigInt(b))))) continue;
+        if (it.kind === 'reissue' && !x.d.every((d: string, k: number) => compHex(mul(scalarFrom(d))) === it.clear?.[k])) continue;
         v = x; break;
       } catch { /* try the next */ }
     }
