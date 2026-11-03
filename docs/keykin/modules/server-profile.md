@@ -1,6 +1,6 @@
 # Keykin module: Server profile
 
-Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
 
 This module covers running a Keykin server and being listed as one: the duties as an operator sees them,
 abuse defaults, how a server enrols and announces itself, the signed public list, closing and moving,
@@ -143,6 +143,7 @@ admin §1.1).
     that isn't unexpired at its co-sign. For a list no seat holder co-signs
     (F3), the device makes the same check at approval. Repair helpers and the server itself check only the
     host signature, so a group-signed seat change never becomes unfillable because time passed.
+  - **`enroll` never touches a seat already held**; it only mints keys for a new reply.
   - **A server MUST accept a valid, group-signed seat change carrying one of its replies**, closing or
     not, and fill the seat. It derives the keys from the named enrol secret and **stores them per member
     key** at the first verified upload (below) or seat change naming the reply, so it needs the enrol

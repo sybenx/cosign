@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -39,6 +39,9 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
      restarts at most three times in all; each restart makes new picks, since the device's member key is
      new.
    - Every participant destroys its round-1 and round-2 secret packages when the DKG ends.
+   - A server accepts DKG messages only from the device that sent `create`, and refuses, at the welcome,
+     a provisional seat for which it holds no share of its own, so an outsider's `create` can't leave a
+     "live" account with no server shares.
    - The group key is brought to even y as `frost-secp256k1-tr` does, for every share and the commitment.
    - A server that took part in a DKG that never reached its epoch record drops everything for it after
      one hour.
@@ -57,7 +60,8 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    adopted, the device signs the signpost (core §6.7.5) and delivers its event id and the epoch id to every
    server (core §6.7.10), together with an explicit `confirm {epoch}`, and only after every server
    acknowledges does it publish the signpost; that `confirm` **confirms** the account (a server confirms only the epoch record it adopted), and it registers push (core §8.1), all before the backup question. A server
-   that hasn't seen the confirmation within an hour asks its peers first (`provisional_seen? {g, epoch}`),
+   that hasn't seen the confirmation within an hour asks its peers first (`confirm_status {epoch}` →
+   `{confirmed}`),
    and drops the provisional
    account only if none has seen it, keeping no record. A provisional account never counts for `refused:
    exists`, and a newer group-signed epoch record for the same `g` replaces it. A seat answering "unknown
@@ -207,7 +211,10 @@ the children's followers (Key families module §7).
      `deleted` it received and the servers' endpoints, and sending until each answers.
    - A server accepts it with an approval it checks itself (fresh, with its own challenge for `paper`, every
      approver a current device in its own view, core §3.2), or with a host-signed `deleted` from a peer that
-     is a current seat holder, carrying the request. It then destroys everything for the
+     is a current seat holder, carrying the request, **and only if the carried request's approval checks
+     in its own view**: fully for `lock` and `pair`; for `paper`, both signatures and that the backup key is
+     current, and its own challenge's signature when the request carries one per server (as it does when
+     the device asked every server for a challenge). A peer's word alone never deletes anything. It then destroys everything for the
      account (its share, seeds, material, waits, push addresses, notice channels, heir record), keeps only
      `SHA-256(g)`, the approved request and the changes that make its approver a device (core §2), and
      answers every later request for `g` with a host-signed `deleted` and those, which devices check. It
@@ -244,7 +251,7 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 |---|---|---|
 | `create` / `create_ok {dkg_key, host_sig}` (`host_sig` over `SHA-256("keykin-dkg-key/1" ‖ dkg_key)`) | device → server / back | `ask` |
 | `dkg_1 {index, max}` → `{package}`; `dkg_2 {round1: [[i, package]…], dkg_keys: {i: key}}` → `{packages: [[j, package \| {sealed, from}]…]}` (sealed NIP-44 to the other server's DKG key); `dkg_3 {round1, round2}` → `{g, points}`; `dkg_abort {culprit}` | device ↔ server (relayed) | `ask` |
-| `confirm {epoch}` / `provisional_seen? {g, epoch}` | device → servers / server → peers | `member` / `ask` |
+| `confirm {epoch}` / `confirm_status {epoch}` → `{confirmed}` | device → servers / server → peers | `member` / `ask` |
 | `refused: exists` | server → device (an `error`) | — |
 | `account_delete {id, approval}` / `deleted {request, changes, host_sig}` (`host_sig` over `SHA-256("keykin-deleted/1" ‖ g ‖ JCS(request))`) | device → servers, server → server / back | `member` |
 

@@ -1,6 +1,6 @@
 # Keykin module: Helper
 
-Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
 
 A **helper** is a family member's or friend's always-on box that holds the helper seat (3 shares, core
 §3.1, I6). With one server it can post for the account while every one of the person's devices sleeps.

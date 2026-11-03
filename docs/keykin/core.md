@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.12 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.13 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -646,7 +646,7 @@ It stops **the helper seat**, whoever holds it. A server that has any stop in fo
 the helper coordinates or takes part in.
 - **Stops are account state, not requests.** A server keeps every stop in force for as long as it is in
   force (core §2 item 6), and every **cleared** stop id too, carries both in seat holders' welcomes, and
-  passes them to its peers; they never expire. A stop whose id is cleared never comes back in force.
+  passes them to its peers with `stop_relay {stop, by}` (each peer checks `by` against its own view); they never expire. A stop whose id is cleared never comes back in force.
   Devices re-send stops to every incoming seat holder, and are told about resumes. Servers list the stop
   ids in force (in `inbox_get`'s answer) to current devices, so any device can resume a stop another device
   sent. Cleared ids are kept for a year. A member may have at
@@ -1479,6 +1479,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `ecdh` / `ecdh_partial` | device → co-signer / back | 5.5 |
 | `hold` | device → servers | 5.8 |
 | `helper_stop` / `helper_resume` | device → servers | 5.7 |
+| `stop_relay` | server → peers | 5.7 |
 | `kept_done` / `kept_new` | device → devices (delivery) | 4.3 |
 | `repair_ok` | new owner → repair helpers | 6.7.4 |
 | `pair_request` / `pair_sign` | first device → second device (via `deliver`) / back | 6.2 |
@@ -2006,3 +2007,8 @@ verification only by the device running an F7, and the "verified" bit is per bac
 only after F7 step 5, checked against the current backup key (M2); a server answering `deleted` or
 "unknown account" for a day brings the F1 card on its own (M3); servers list stop ids in force to devices,
 and keep cleared ids a year (M4, L5).
+
+## Changes in draft 14.13
+
+From the reference implementation's batch 5: `stop_relay {stop, by}` carries helper stops between
+servers.
