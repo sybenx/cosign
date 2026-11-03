@@ -81,6 +81,17 @@ Plus, for each client, the failure cases that matter in real use:
 - the device asleep for 30 s before answering (iPhone-like): the client waits or retries, rather
   than failing silently.
 
+Plus, for each client, the Keykin-side events a site must never notice (core §6.7):
+
+- **a server swap mid-session** (F1: one server stopped, its seat moved to a new one, with a redeal):
+  the client keeps signing with no reconnect and no new sign-in;
+- **a device reported lost** while the client is connected through another device: signing goes on,
+  and the reported device's own connections stop;
+- **a new paper** made while the client is connected: no effect at all.
+
+These run against the prototype's Upkeep, not against the clients, but they are listed here because
+"sites change nothing" is exactly what they check.
+
 ## Output
 
 One line per client per check, `ok` / `FAIL` / `skip (reason)`, timings, and the error codes seen,
