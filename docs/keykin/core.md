@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.2 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.3 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -252,10 +252,12 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
   signature, the approver's membership and the structure. (The co-signer's signature is the evidence
   that the check was made.) The window between an approver's removal and the news reaching a server
   is a stated limit (§10).
-- **Requests with no co-signer** (`account_delete`, `take_out`, removing a notice channel) have no such
-  evidence, so **every** receiver checks them itself: a server or device accepts one only if each
-  approver is a current device in its own view, after fetching changes from its peers; and a server takes a
-  peer's `deleted` only from a current seat holder.
+- **Requests with no co-signer** (`account_delete`, `take_out`, `helper_resume`, removing a notice
+  channel) have no such evidence, so **every** receiver checks them itself: a server or device accepts one
+  only if each approver is a current device in its own view, after fetching changes from its peers (a peer
+  that hasn't answered for an hour is skipped, as in §6.3); and a server takes a peer's `deleted` only from
+  a current seat holder. A device keeps re-sending such a request until each server answers; a server
+  that never answers is treated as dead after 7 days (§6.7.6 F1).
 - Changes never expire. Every server keeps the whole set for ever (about 10 KB a year) and gives it out
   (`changes_get` → `changes`). A member catching up asks **every** server and takes the union, so one
   server leaving out a removal changes nothing. `changes_get` from a removed key always returns the
@@ -582,7 +584,7 @@ Every request carries `cls`. Each message type allows only some classes:
 
 Types not in the table: deliveries and requests a sender repeats until answered (`cancel`, `withdraw`,
 `upload`, `upload_held`, `push_register`, `push_unregister`, `notify_register`, `paper_reissue`,
-`helper_stop`, `account_delete`) are
+`helper_stop`, `helper_resume`, `account_delete`) are
 `member`; every other request (`changes_get`, `inbox_get`, `need_repair`, `rerepair`, `need_seeds`,
 `state_get`, `seated?`, `forward_get`, `take_out`) is `ask`.
 
@@ -620,8 +622,8 @@ Before giving a partial, a co-signer MUST check that:
 7. the stateless destructive rule (§5.8);
 8. if the coordinator is the **helper**: the helper is not stopped (below), and the event is one of kind 1
    (notes and replies), 1111 (comments), 7 (reactions), 6 and 16 (reposts), 9734 (zap requests), 20, 21
-   and 22 (media posts) or 22242 (relay auth, only for a relay in the account's own relay lists, kinds
-   10002 and 10050). Anything else is refused. A helper never co-signs, and a
+   and 22 (media posts) or 22242 (relay auth). Anything else is refused. (Servers can't see the account's
+   relay lists, so the helper's relay sign-in isn't limited here; the Helper module says so.) A helper never co-signs, and a
    device never co-signs a round the helper coordinates, so every helper round has a server in it.
 
 **Stopping the helper.** Any current device may send `helper_stop {key, by, n}`, naming the helper's member
@@ -1233,10 +1235,13 @@ Pinned from the reference implementation (batch 2):
   makes it the owner) and `state`.
 - **`rerepair` proof:** Schnorr over `e = H("keykin-rerepair/1" ‖ g ‖ owner key ‖ i (4 bytes) ‖ P_i^{S_old}
   ‖ R ‖ challenge)`, with a challenge the server issued to that owner.
-- **Challenges** are bound to the key they were issued to and are used once.
-- **A list is co-signed redeal first.** The list's redeal is co-signed first; every other change of the
-  list is co-signed only with the group-signed redeal of the same list hash presented beside it
-  (`list_events` in the `sign` request). So a `seat` or `remove` never commits without its redeal.
+- **Challenges** are bound to the key they were issued to (for a `paper` approval, the backup key) and
+  are used once per request id: a retry of the same request may reuse it, a new request may not.
+- **A list is co-signed in one request.** Every event of a list travels in one `sign` request
+  (`list_events`). The co-signer checks the approval and the trial (below) once, at the pre-redeal state,
+  and gives partials for every event or for none. No member applies a list's redeal until it holds every
+  event of that list group-signed. So a `seat` or `remove` never commits without its redeal, nor a redeal
+  without them.
 - **A paper change's material** travels in the `sign` request as `material` (the base item), checked as
   `SHA-256(item) == inner`, addressed to `K` and signed by `K`.
 - **Uploads** (§6.7.3) are accepted only from the list's `{redeal: {dealer}}`, a current device, once per
@@ -1560,7 +1565,8 @@ The signpost (kind 30078) is the one Core event published on relays (§6.7.5); m
   in the same storage, which is the bar. An extension never has a lock.
 - **Until the paper is printed**, the device that made it holds 5 points (§4.3). On a lockless device
   whose person declined a paper, that lasts until a second device joins: whoever copies that browser
-  profile has the whole key **and** every approval a paper gives, deleting the account included.
+  profile in that time has the whole key **and** every approval a paper gives, deleting the account
+  included, and keeps that paper power until a new paper replaces the backup key.
 - **iPhone push.** Waking an iPhone needs Apple and the app maker's gateway. The gateway sees when each
   phone is woken and by which servers, not why. If it is down, signing still works when the app is
   opened, from other devices, or through any other Keykin app; notices are what suffer.
@@ -1873,3 +1879,15 @@ From the reference implementation's batch 2 (items 18–27), in the new §6.7.10
 to the index's owner and who may ask, the `rerepair` proof, single-use bound challenges, redeal-first list
 co-signing, the `material` field, who may upload, signpost ids delivered to servers, one key one member,
 and the co-signer's trial of a change; "one host in two seats" means at once (§6.7.2).
+
+## Changes in draft 14.3
+
+From the red team of 14 to 14.2 (0 critical, 1 high):
+
+- A list is co-signed in **one** request, all or nothing, at the pre-redeal state, and no member applies its
+  redeal before every event is signed (H1; replaces 14.2's redeal-first rule).
+- Requests with no co-signer skip a silent peer after an hour, are re-sent until answered, and include
+  `helper_resume` (M1, M2).
+- Challenges are reused only by a retry of the same request (M3).
+- The helper's relay sign-in can't be limited by servers; the module says so (M4).
+- §10 says a copied kept secret keeps paper power until a new paper (M5).

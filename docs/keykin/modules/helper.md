@@ -1,6 +1,6 @@
 # Keykin module: Helper
 
-Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.2 · not built
+Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.3 · not built
 
 A **helper** is a family member's or friend's always-on box that holds the helper seat (3 shares, core
 §3.1, I6). With one server it can post for the account while every one of the person's devices sleeps.
@@ -28,7 +28,9 @@ What the core lets a helper do, and nothing more (core §5.7 item 8):
   device co-signs its rounds, so every helper round has a server in it;
 - never get decryption answers, the data key or release seeds, so it can't read or write messages,
   private lists or wallets. (Relay auth lets it sign in to relays as the person, which can show it a
-  private relay group's posts and who writes to the person, though not message contents.)
+  private relay group's posts and who writes to the person, though not message contents. An honest helper
+  signs in only to the account's own relays; servers can't enforce that, so a dishonest one can sign in
+  anywhere.)
 - never send `hold`, `cancel`, `push_register`, `notify_register`, `need_seeds`, `take_out` or `ecdh`;
   servers refuse them from a helper.
 
