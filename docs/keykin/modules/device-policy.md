@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 17 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 18 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -51,7 +51,8 @@ hold:
   every change. Each device also keeps one **index** event, whose `d` doesn't depend on the month
   (`"keykin-meta-index:" ‖` the same HMAC without month or part), listing every month still holding live
   entries and each part's number, with its own sequence number that never goes down; a reader fetches it
-  first, then those months, and ignores any part the index doesn't list. Each part and the index are
+  first, then those months, and ignores any part the index doesn't list or that is older than the
+  index names; the index is republished with every part. Each part and the index are
   dated `max(now, last + 1)`. So a removed device or the sync service can't forge it or roll
   it back, and out-of-order sync loses nothing.
 - **A device leaving by its own choice** (Remove this device, or a `self` remove, core §4.6) first merges
@@ -122,8 +123,8 @@ edits after the newest version (as Undo does, §3).
 | A deletion of one ordinary event another site or the member app signed, or not recorded as this grant's | **Confirm** |
 | A site's 21st and later single deletion in a day, counted across all devices from the synced metadata (reference) | **Confirm** |
 | A deletion with 2–4 targets, or a target still not found after the lookup, or any other target of a judged kind (an older version of a list) | **Confirm** |
-| A Blossom `t=delete` token, or a NIP-98 `DELETE` token | **Confirm**, with a card that names the number of files (or the method and URL), the server ("every server they're on" when a Blossom token has no `server` tag) and the expiry. A Blossom token naming more than 4 files, or with no expiry or one more than 10 minutes out, is **declined**. A site's media deletes arriving within 5 seconds share one card, which shows the totals; **once a card is on screen its contents never change**, and later tokens go to a new card. An Allow also covers tokens for those same files on other servers for 10 minutes. Media deletion is rare, and nothing reliably shows whose a blob is |
-| NIP-98 `PUT` and `PATCH`, and Blossom upload, list and get tokens | as Doors and grants §1 says (no card here) |
+| A Blossom `t=delete` token, or a NIP-98 `DELETE` token | **Confirm**, with a card that names the number of files (or the method and full URL), the server ("every server they're on" when a Blossom token has no `server` tag) and the expiry. A Blossom delete naming more than 4 files, naming none (`x`), or with no expiry or one more than 10 minutes out, is **declined**. The card is drawn after one quiet second, so a site's deletes arriving together share it; it shows the totals and, for a deleted post, which post's files. NIP-98 deletes are batched only when the URL ends in a file hash; any other gets its own card with the full URL. **Once a card is on screen its contents never change**; later tokens go to a new card. An Allow covers only the files named on the card, and only on the servers it named (all of them, if it said every server), for 10 minutes. Media deletion is rare, and nothing reliably shows whose a blob is |
+| NIP-98 `PUT` and `PATCH`, and Blossom upload, list, get and media tokens | as Doors and grants §1 says (no card here) |
 | A site's judged list kind (replaceable or addressable), or a deletion of one, dated more than 5 minutes ahead | declined (not counted as the person's decline); ordinary clock skew passes |
 | A **wallet deletion**: every target is a token, history or quote event (7375, 7376, 7374), from a site with the `wallet` scope | Silent with at most 3 targets, while the site has made at most 3 such deletions in 10 minutes and the account's burst count, this deletion included, stays at 3 or below, leaving room for ordinary deletions; **anything else gets a quiet `try-later:`**, never a card, even when servers or a co-signing device refuse, and nothing is signed (a newer token event already supersedes them; the device doesn't check its `del` list). This row wins over the stricter rows of this table; it never signs what core §5.8 would hold |
 | New token, history and quote events (7375, 7376, 7374) by a site with the `wallet` scope | Silent |
@@ -176,8 +177,8 @@ going to a server instead: on `needs-approval` it shows its own Held card. A hel
 
 - **Undo is judged.** It signs an earlier version from history as a new event, with a fresh `created_at`
   at one second after the newest version and after any deletion naming it (by `e` or `a`), or now if later,
-  so it never loses to a version or deletion dated ahead. Co-signers accept up to 10 minutes ahead; past
-  that, it waits. An Undo not yet signed is kept in
+  so it never loses to a version or deletion dated ahead (an `a` deletion included). Co-signers accept up to
+  10 minutes ahead; Undo, rebased drafts and the person's own edits stay within 9, and past that wait. An Undo not yet signed is kept in
   the outbox as the changes it makes, so it survives the app being killed and is re-applied to the current
   version when it is signed, keeping the person's newer edits;
   and goes through §2 against the current version like any change. Additions are never destructive, so
@@ -222,10 +223,12 @@ rebased: §4 applies to it.
 - **Background signing** shows an honest, quiet notice where the platform needs one: "Signed a note for
   *Primal* · Delete". The button offers a deletion, because a signed note can't be unsigned.
 - **Cards** list every event separately with its reason. When one site asks several things at once, the
-  destructive ones come first and each needs its own answer.
+  destructive ones come first and each needs its own answer, except media deletes, which share a card
+  (§2).
 - **Declines.** After 3 requests from one site declined by the person in an hour, that site's further requests
   **of the same row of §2's table** are declined without asking for an hour (so declining delete cards never
-  blocks uploads or follows). The site gets `declined`.
+  blocks uploads or follows), and after 6 in an hour across all rows, everything from that site that needs a
+  card is declined for an hour. An Undo of a site's change counts as a decline. The site gets `declined`.
 - **Holds started on another device** show on every device that gets the wait notice. Each device fetches
   the held event, checks it against the wait id (`SHA-256("hold" ‖ event id)`, core §6.3) and writes its
   **own** plain-words reason from the event, never one supplied by the starting device. Each shows a Stop
@@ -261,6 +264,8 @@ rebased: §4 applies to it.
   minutes; the person's own edits, Undo and rebased drafts are always dated after the newest version, so
   they never lose.
 - **NIP-98 tokens are judged by method only**, not by what the URL does.
+- **A device whose clock once ran fast** keeps its later metadata parts dated after that time, so other
+  devices may see its newer metadata only once real time catches up.
 - **The 7-day window rolls.** A patient site can cut a list by under 10 items, or under 20%, each week, and
   so shrink 430 follows to a handful over a year without a card. Undo everything *site* did still
   reverses it.
@@ -274,6 +279,12 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 18**, from its sixteenth red team (0 critical, 0 high), its mediums and lows:
+  - NIP-98 deletes batched only for file URLs, others shown in full (DP16-1);
+  - an Allow covers only the files and servers on the card (DP16-2);
+  - the card drawn after one quiet second, naming the post's files (DP16-3);
+  - batch cards in §6, `a` deletions and the 9-minute margin, the index's freshness, a fast clock stated,
+    a per-site cap on cards and Undo counting as a decline, `media` tokens, deletes naming no file (lows).
 - **Draft 17**, from its fifteenth red team (0 critical, 1 high):
   - a card's contents never change once it is on screen; later tokens go to a new card (DP15-1).
 
