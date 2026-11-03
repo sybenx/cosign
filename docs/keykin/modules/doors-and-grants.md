@@ -41,7 +41,7 @@ a request needs by looking at what it is.
 |---|---|---|
 | `sign-in` | `get_public_key`; relay auth (kind 22242); NIP-98 auth for a URL on the calling origin (NIP-07) or any URL (other doors) with `GET`/`POST`; Blossom upload and list auth (24242) | at connect |
 | `post` | ordinary events: notes, reactions, reposts, zap requests, deletions (judged by Device policy), articles, app data (kind 30078) except the `keykin-` prefix; **encrypting** to the account's own key; Blossom `t=delete` and NIP-98 `DELETE`/`PUT` tokens, judged as deletions | at connect (default on) |
-| `lists` | the profile (0); follows, mutes and other lists (3, 10000–10030 except 10019, 30000–30030); relay lists (10002, 10050); and decrypting the private items of those lists | the first time it tries |
+| `lists` | the profile (0); follows, mutes and other lists (3, 10000–10030 except 10019, 10063, 30000–30030, 39089); relay lists (10002, 10050); and decrypting the private items of those lists | the first time it tries |
 | `dms` | NIP-04/NIP-44 encrypt and decrypt **with other people's keys**, NIP-59 unwrap, the person's own sent NIP-17 copies (below), and NIP-55 `decrypt_zap_event` | the first time: "Let *site* read and send your messages?" |
 | `wallet` | NIP-60/61 wallet events (17375, 37375, 7375, 7376, 7374), payment targets (10019), and decrypting them | the first time: "Let *site* use your ecash wallet?" |
 | `private-data` | any other **decrypt** of something encrypted to the account's own key (notes, private app data) | the first time: "Let *site* read your private notes and app data?" |
