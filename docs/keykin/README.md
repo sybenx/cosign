@@ -12,7 +12,7 @@ manager. Every rule must beat that on security **and** on ease of use.
 
 | File | What it is | Status |
 |---|---|---|
-| [core.md](core.md) | **Keykin Core, draft 14.14**: the core spec, including Upkeep (§6.7: replacing servers, the helper and the paper), one member per machine (§4.6), the helper's limits (§5.7 item 8) and the encodings the reference implementation pinned (§6.7.10) | Core round 13 was clean; the later changes were reviewed in core rounds 14–18 (18 clean). The final seam review across core and modules found **no critical or high** problems. |
+| [core.md](core.md) | **Keykin Core, draft 14.15**: the core spec, including the strict JSON profile (§9.5), including Upkeep (§6.7: replacing servers, the helper and the paper), one member per machine (§4.6), the helper's limits (§5.7 item 8) and the encodings the reference implementation pinned (§6.7.10) | Core round 13 was clean; the later changes were reviewed in core rounds 14–18 (18 clean). The final seam review across core and modules found **no critical or high** problems. |
 | [modules/server-profile.md](modules/server-profile.md) | Running and listing a server: duties, abuse limits, enrol replies and per-seat keys, the signed public list, closing and moving | **Done**, draft 7 (round 6 clean) |
 | [modules/device-policy.md](modules/device-policy.md) | How a device judges what it signs: lists, profile, relays, wallet, deletions and media, Undo, drafts | **Done**, draft 18 (round 16 clean) |
 | [modules/doors-and-grants.md](modules/doors-and-grants.md) | NIP-07, NIP-55, NIP-46 and QRST; site grants and scopes; syncing, ending and watching; borrowed computers | **Done**, draft 19 (round 18 clean) |
