@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.14 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.15 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module

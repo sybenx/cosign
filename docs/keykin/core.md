@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.14 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.15 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -129,8 +129,8 @@ would.
    the commitments to the envelope key) and its own piece of the envelope key;
 9. the newest public server list it has verified, and its own seat keys, enrol secrets and the inert
    uploads for incoming seats (Server profile module);
-10. after an account is deleted (Account admin module), only `SHA-256(g)` and the approved
-   `account_delete`.
+10. after an account is deleted (Account admin module), only `SHA-256(g)`, the approved `account_delete`
+   and the changes that make its approver a device (its add and lock changes).
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
 co-signs, checks approvals, enforces the two waits and the stateless destructive rule (§5.8), sends
@@ -702,7 +702,8 @@ by `lock`, `pair` and `paper`; `detached(type, body)` below means a BIP-340 sign
   <host key>, "backup_sig": … }`: a device together with the paper, the backup key signing the change hash
   over a fresh `challenge` from the named server. `sig` is `detached("paper", {"what": hex(what)})` by the
   device; `backup_sig` is `detached("paper", {"list": list hash, "challenge": challenge})` by the backup
-  key. A device and the paper are 5 points, already the key.
+  key, or, for a request that isn't a list (`take_out`, `account_delete`, a notice channel), `detached("paper",
+  {"what": hex(what), "challenge": challenge})`. A device and the paper are 5 points, already the key.
 - **`recovery`**: `{ "release_request": …, "waited": [<statement>, <statement>], "backup": <backup key>,
   "backup_sig": … }`: the paper alone, in a recovery session (§6.5), after two servers' waits. The backup
   key signs **this change's** hash, `detached("recovery", {"list": list hash})`, and servers take it only
@@ -1750,9 +1751,9 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
 
-## Changes in drafts 13.2 to 13.14
+## Changes in drafts 13.2 to 13.15
 
 Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
-and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11); encodings and rules pinned from the reference implementation's first batch: the approval `expiry` field, the `pair`, `paper`, `recovery` and `release_request` signatures, `ecdh_partial`, `rs`/`dk` as seed hashes, the hedge stream, a list in every change event, lifetime classes, approvers, duplicate-key adds, kind 5 skew, list-hash ordering, and recovery changes co-signed only by the holder (13.12); heir waits in `inbox_get` and §2's table, and heir lookups (13.13); a removed key's holder destroys what it holds under that key (13.14).
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11); encodings and rules pinned from the reference implementation's first batch: the approval `expiry` field, the `pair`, `paper`, `recovery` and `release_request` signatures, `ecdh_partial`, `rs`/`dk` as seed hashes, the hedge stream, a list in every change event, lifetime classes, approvers, duplicate-key adds, kind 5 skew, list-hash ordering, and recovery changes co-signed only by the holder (13.12); heir waits in `inbox_get` and §2's table, and heir lookups (13.13); a removed key's holder destroys what it holds under that key (13.14); a `paper` approval of a request that isn't a list, and the delete tombstone keeps its approver's changes (13.15).
