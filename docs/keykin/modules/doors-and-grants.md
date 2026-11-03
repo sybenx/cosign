@@ -120,7 +120,7 @@ for listing and re-sending. The wildcard is also published in the ending device'
   half answer. Until the first good fetch it answers grants made since its own last publish, and gives
   other requests `try-later:`, retrying the fetch every 10 seconds; it never publishes after a failed one. It takes it over **only if it is newer than the home's own last publish**, and
   then drops only entries **made before** that event that are missing from it; for each entry the higher
-  `v` wins (for equal `v`, the later event's copy). So a restored or copied home stops answering an ended
+  `v` wins (ties as below). So a restored or copied home stops answering an ended
   grant within minutes and never republishes it, a stale relay copy changes nothing, and a grant made a
   moment ago is never dropped.
 - **A grant that left its maker's event never comes back.** Every device remembers the names `(by, id)`
