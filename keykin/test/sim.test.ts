@@ -121,7 +121,7 @@ test('a recovery wait cancelled by a locked device stops the release', async () 
   await P.start(s);
   const { recoveryWaitId, what } = codesMod;
   const wait = recoveryWaitId(acc.paper.pub, acc.epochId, P.r);
-  for (const x of s) assert.equal((await acc.bus.send(acc.A.kp, x, msg('cancel', acc.g, acc.epochId, 'ask', { wait, approval: { lock: { member: acc.A.kp.pub, assertion: acc.A.lock!.assert(acc.g, what.cancel(wait)) } } }))).kind, 'cancelled');
+  for (const x of s) assert.equal((await acc.bus.send(acc.A.kp, x, msg('cancel', acc.g, acc.epochId, 'member', { wait, approval: { lock: { member: acc.A.kp.pub, assertion: acc.A.lock!.assert(acc.g, what.cancel(wait)) } } }))).kind, 'cancelled');
   acc.bus.advance(3 * 86400 + 1);
   assert.equal(await code(async () => await P.collect(s)), 'waited_missing');
 });
@@ -132,7 +132,7 @@ test('a missed cancel still counts: a server fetches its peers before releasing 
   await P.start(s);
   const wait = codesMod.recoveryWaitId(acc.paper.pub, acc.epochId, P.r);
   acc.bus.kill(s[1]); acc.bus.kill(s[2]);                 // only S1 hears the cancel
-  const cancel = msg('cancel', acc.g, acc.epochId, 'ask', { wait, approval: { lock: { member: acc.A.kp.pub, assertion: acc.A.lock!.assert(acc.g, codesMod.what.cancel(wait)) } } });
+  const cancel = msg('cancel', acc.g, acc.epochId, 'member', { wait, approval: { lock: { member: acc.A.kp.pub, assertion: acc.A.lock!.assert(acc.g, codesMod.what.cancel(wait)) } } });
   assert.equal((await acc.bus.send(acc.A.kp, s[0], cancel)).kind, 'cancelled');
   acc.bus.revive(s[1]); acc.bus.revive(s[2]);
   acc.bus.advance(3 * 86400 + 1);

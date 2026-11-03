@@ -25,13 +25,11 @@ export function destructive(e: Ev, recentUnapproved = 0): boolean {
     return n >= MASS_TARGETS || recentUnapproved + n > MASS_TARGETS;
   }
   if (k === 0) {
-    let c: any;
-    try { c = JSON.parse(e.content ?? ''); } catch { return true; }
-    if (!c || typeof c !== 'object') return true;
-    return !['name', 'display_name', 'about', 'picture'].some((f) => typeof c[f] === 'string' && c[f].length > 0);
+    const c = profileObject(e.content ?? '');
+    return !c || !['name', 'display_name', 'about', 'picture'].some((f) => typeof c[f] === 'string' && /\S/.test(c[f]));
   }
-  if (k === 10002 && !e.tags.some((t) => t[0] === 'r')) return true;
-  if (k === 3 || (k >= 10000 && k <= 10030) || (k >= 30000 && k <= 30030)) return e.tags.every((t) => t[0] === 'd');
+  if (k === 10002 && !e.tags.some((t) => t[0] === 'r' && /^wss?:\/\//.test(t[1] ?? ''))) return true;
+  if (k === 3 || (k >= 10000 && k <= 10030) || (k >= 30000 && k <= 30030)) return e.tags.every((t) => t[0] === 'd') && (e.content ?? '') === '';
   return false;
 }
 
@@ -40,4 +38,35 @@ export class BurstCounter {
   private log: { at: number; n: number }[] = [];
   recent(now: number) { this.log = this.log.filter((x) => now - x.at < BURST_WINDOW_S); return this.log.reduce((a, x) => a + x.n, 0); }
   add(now: number, n: number) { if (n > 0) this.log.push({ at: now, n }); }
+}
+
+/** §5.8 (13.8): a kind 0 content as a JSON object, or null if it isn't one or repeats a key at any level. */
+export function profileObject(text: string): Record<string, unknown> | null {
+  let v: unknown;
+  try { v = JSON.parse(text); } catch { return null; }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  return hasDuplicateKey(text) ? null : (v as Record<string, unknown>);
+}
+
+/** Scan valid JSON for an object that names one key twice (JSON.parse silently keeps the last). */
+function hasDuplicateKey(text: string): boolean {
+  const stack: (Set<string> | null)[] = [];
+  let i = 0, expectKey = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      const str = JSON.parse(text.slice(i, j + 1));
+      const top = stack[stack.length - 1];
+      if (expectKey && top) { if (top.has(str)) return true; top.add(str); expectKey = false; }
+      i = j + 1; continue;
+    }
+    if (ch === '{') { stack.push(new Set()); expectKey = true; }
+    else if (ch === '[') stack.push(null);
+    else if (ch === '}' || ch === ']') stack.pop();
+    else if (ch === ',') expectKey = stack[stack.length - 1] instanceof Set;
+    i++;
+  }
+  return false;
 }

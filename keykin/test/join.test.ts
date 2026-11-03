@@ -96,3 +96,42 @@ test('case 4: drops and refusals', () => {
   assert.equal(code(() => jn.finish({ from: A.kp.pub, welcome: { ...welcome, changes: [] }, sigmas })), 'no_add');
   void sOnWire;
 });
+
+test('#17: an attacker welcome naming its own helpers and sigma fails; nothing is stored', () => {
+  const { F, A, jn, addEv, sigmas, indices } = join('invite');
+  const x = newKey();
+  const forged = indices.map((i) => ({ from: x.pub, index: i, sigma: sigmas[0].sigma, state: sigmas[0].state }));
+  const welcome = { record: F.recEv, changes: [addEv], state: [], helpers: [x.pub], need: 1 } as any;
+  // Sealed by the attacker: refused before anything else.
+  assert.equal(code(() => jn.finish({ from: x.pub, welcome, sigmas: forged })), 'not_sealed_by_m');
+  // Even claiming to be the inviter: `helpers`/`need` are never read, the inviter's and a server's
+  // sigmas are required, and the sum must lie on the group's polynomial.
+  assert.equal(code(() => jn.finish({ from: A.kp.pub, welcome, sigmas: forged })), 'sigma_missing');
+  assert.equal(code(() => jn.finish({ from: A.kp.pub, welcome, sigmas: [...forged.map((f) => ({ ...f, from: A.kp.pub })), ...sigmas.filter((s) => s.from !== A.kp.pub)] })), 'repair_failed');
+  // A welcome for a different group key than the scanned invite is refused outright.
+  const G = fixture();
+  assert.equal(code(() => jn.finish({ from: A.kp.pub, welcome: { ...welcome, record: G.recEv }, sigmas })), 'wrong_group');
+  assert.equal(jn.finish({ from: A.kp.pub, welcome, sigmas }).shares.size, 3, 'the honest parts still work');
+});
+
+test('join-code direction: an attacker answering the shown code wins nothing', () => {
+  // The new device shows its hello code; the attacker scans it first and offers its own account.
+  const F = fixture(), evil = fixture();
+  const nk = newKey(), E = evil.devices[0];
+  const jn = new Joiner({ n: nk.pub, now });
+  const sc = parseCode(jn.helloCode([])) as any;
+  const attacker = new Inviter({ g: evil.g, m: E.kp.pub, now, scanned: sc });
+  const honest = new Inviter({ g: F.g, m: F.devices[0].kp.pub, now, scanned: sc });
+  const h = jn.onOffer(E.kp.pub, attacker.offer().msg, now);
+  attacker.onHello(nk.pub, h.msg, now);
+  jn.onNonce(E.kp.pub, attacker.accepted ? { t: attacker.accepted.t } : {});
+  // The honest offer is dropped; the honest inviter never gets a hello, so its typed check can't match.
+  assert.equal(code(() => jn.onOffer(F.devices[0].kp.pub, honest.offer().msg, now)), 'already_accepted');
+  assert.equal(honest.typed(jn.check), false);
+  // The device is bound to the attacker's group key, which it shows as the account it joined (§1.1
+  // item 2), so a welcome for the person's real account is refused outright.
+  assert.equal(jn.g, evil.g);
+  assert.equal(code(() => jn.finish({ from: E.kp.pub, welcome: { record: F.recEv, changes: [], state: [] }, sigmas: [] })), 'wrong_group');
+  // A second key of the attacker cannot answer the nonce either: only the key the hello went to.
+  assert.equal(code(() => jn.onNonce(newKey().pub, { t: '33'.repeat(16) })), 'wrong_sender');
+});

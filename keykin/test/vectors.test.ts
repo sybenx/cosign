@@ -124,3 +124,16 @@ test('seated_reply_digest', () => {
   const c = V.seated_reply_digest;
   assert.equal(bytesToHex(codes.seatedDigest(c.H_key, hexToBytes(c.challenge), sha('sealed-reply-ciphertext'))), c.digest);
 });
+
+test('core 13.8: the §5.8 tests are exact', () => {
+  const ev = (kind: number, content: string, tags: string[][] = []) => ({ kind, content, tags, created_at: 0 });
+  assert.equal(destructive(ev(0, '{"name":"x","name":"y"}')), true, 'a duplicate key counts as empty');
+  assert.equal(destructive(ev(0, '{"about":{"a":1,"a":2},"name":"x"}')), true);
+  assert.equal(destructive(ev(0, '["name"]')), true, 'not an object');
+  assert.equal(destructive(ev(0, '{"name":"   "}')), true, 'whitespace only');
+  assert.equal(destructive(ev(0, '{"name":"a\\"b"}')), false);
+  assert.equal(destructive(ev(10000, 'encrypted private items')), false, 'a list with private items is not empty');
+  assert.equal(destructive(ev(3, '')), true);
+  assert.equal(destructive(ev(10002, '', [['r', 'https://x']])), true, 'an r tag that is not a relay URL');
+  assert.equal(destructive(ev(10002, '', [['r', 'wss://x']])), false);
+});

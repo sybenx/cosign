@@ -100,7 +100,7 @@ test('case 9: future-dated replaceables and deletions are refused, notes may be 
 test('case 9 + 5: destructive events need a lock approval or a passed hold; one approval works at any co-signer', () => {
   const F = fixture(); const S = server(F, 0), S2 = server(F, 1);
   const A = F.devices[0];
-  const wipe = note(F, { kind: 3, tags: [] });
+  const wipe = note(F, { kind: 3, tags: [], content: '' });
   const r = new OneCall(ctx(F), dev(F), { key: F.servers[0].kp.pub, indices: [4] }, wipe);
   assert.equal(ask(S, F, A.kp.pub, r.request).code, 'needs_approval');
   const approval = { lock: { member: A.kp.pub, assertion: A.lock!.assert(F.g, what.sign(r.eventId)) } };
@@ -141,7 +141,7 @@ test('case 6: a hold: wait W, then sign with hold; a locked device cancels; a re
   // Cancel by lock.
   const vanish2 = note(F, { kind: 62, content: 'again' });
   const n2 = ask(S, F, A.kp.pub, { ...holdReq, id: bytesToHex(randomBytes(16)), event: vanish2 });
-  const cancel = { v: 1, type: 'cancel', g: F.g, epoch: F.epochId, id: bytesToHex(randomBytes(16)), cls: 'ask', wait: n2.wait,
+  const cancel = { v: 1, type: 'cancel', g: F.g, epoch: F.epochId, id: bytesToHex(randomBytes(16)), cls: 'member', wait: n2.wait,
     approval: { lock: { member: A.kp.pub, assertion: A.lock!.assert(F.g, what.cancel(n2.wait)) } } };
   assert.equal(ask(S, F, A.kp.pub, cancel).kind, 'cancelled');
   clock += 3 * 86400;
@@ -268,4 +268,23 @@ test('§5.6: answered ids survive a restart; nonces do not', () => {
   assert.equal(ask(S2, F, A.kp.pub, { ...r.request, event: note(F, { content: 'x' }) }).code, 'id_reused');
   t.took(F.servers[1].kp.pub, { type: 'commitments', commitments: [{ i: 7, D: t.commitments[0].D, E: t.commitments[0].E }] });
   assert.equal(ask(S2, F, A.kp.pub, t.signRequest()).code, 'unknown_after', 'two-call nonces are gone after a restart');
+});
+
+test('#16: decryption answers must cover exactly the partner\'s indices, with proofs', () => {
+  const F = fixture(); const S = server(F);
+  const peer = secp256k1.utils.randomSecretKey();
+  const Q = '02' + bytesToHex(secp256k1.getPublicKey(peer, true)).slice(2);
+  const co = { key: F.servers[0].kp.pub, indices: [4] };
+  const req = ecdhRequest(ctx(F), [1, 2, 3], co, [Q]);
+  const ans = ask(S, F, F.devices[0].kp.pub, req);
+  const fin = (a: any, indices = [4]) => () => ecdhFinish(ctx(F), req, dev(F), { ...co, indices }, a);
+  assert.throws(fin({ ...ans, answers: [[]] }), /bad_answer/, 'empty parts');
+  assert.throws(fin({ ...ans, answers: [] }), /bad_answer/, 'no answer for the point');
+  assert.throws(fin({ type: 'ecdh_partial' }), /bad_answer/, 'no answers at all');
+  assert.throws(fin(ans, [4, 7]), /bad_answer/, 'a missing index');
+  const dup = structuredClone(ans); dup.answers[0].push(dup.answers[0][0]);
+  assert.throws(fin(dup, [4, 4]), /bad_answer|repeated_index/, 'duplicates refused even when the claimed set repeats');
+  const noProof = structuredClone(ans); delete noProof.answers[0][0].z; delete noProof.answers[0][0].R1;
+  assert.throws(fin(noProof), /bad_proof/, 'proofs are mandatory');
+  assert.ok(fin(ans)().length === 1);
 });

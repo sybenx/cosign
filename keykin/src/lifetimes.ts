@@ -6,15 +6,17 @@ export type Cls = 'sign' | 'ask' | 'member';
 export const LIFETIME_S: Record<Cls, number> = { sign: 60, ask: 120, member: 7 * 86400 };
 export const SKEW_S = 30;
 
-/** Which classes a request type may carry (§5.6's table). "Approvals" are the pair messages;
- *  "deliveries" is `deliver`. Types the table does not name are given `ask` and `member`, the
- *  reference choice (reported to the spec session). */
+/** Which classes a request type may carry (§5.6). "Approvals" are the pair messages; "deliveries"
+ *  `deliver` and the redeal deliveries. Types outside the table: those a sender repeats until answered
+ *  are `member`; every other request is `ask` (core 13.12). */
 const ALLOWED: Record<string, Cls[]> = {
   sign: ['sign', 'ask'], commit: ['sign', 'ask'], ecdh: ['sign', 'ask'],
   challenge: ['ask'], pair_request: ['ask'], pair_sign: ['ask'],
   hold: ['member'], release_request: ['member'], deliver: ['member'],
 };
-export const allowedClasses = (type: string): Cls[] => ALLOWED[type] ?? ['ask', 'member'];
+const MEMBER = ['cancel', 'withdraw', 'upload', 'upload_held', 'push_register', 'push_unregister', 'notify_register', 'paper_reissue',
+  'delta', 'paper_ck', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack'];
+export const allowedClasses = (type: string): Cls[] => ALLOWED[type] ?? (MEMBER.includes(type) ? ['member'] : ['ask']);
 
 /** Null when fresh; otherwise the refusal code. `sentAt` is the rumor's `created_at`; `inboxAge`
  *  the inbox's `age` (§8.2), whichever makes the request older wins. */
