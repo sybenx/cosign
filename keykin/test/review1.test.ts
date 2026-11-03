@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { fixture, type Fixture } from './helpers.ts';
 import { create } from '../sim/account.ts';
 import { CoSigner } from '../src/cosigner.ts';
-import { OneCall, TwoCall } from '../src/coordinator.ts';
+import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
 import { computeMembership, parseChange } from '../src/membership.ts';
 import { approveLock, approvePair, approvePaper, approveSelf, checkListShape } from '../src/approval.ts';
 import { deal as dealRedeal } from '../src/redeal.ts';
@@ -30,6 +30,12 @@ const signChange = (S: CoSigner, F: Fixture, change: Change, list: Change[], app
   return S.handle(F.devices[0].kp.pub, { ...r.request, ...extra }, clock);
 };
 const EXP = () => clock + 3600;
+/** Co-sign a whole list in one request (§6.7.10). `changes` are the full changes, in list order. */
+const signList = (S: CoSigner, F: Fixture, changes: Change[], list: Change[], approval: any, extra: any = {}) => {
+  const evs = changes.map((change) => ({ pubkey: F.g, created_at: clock, kind: 24302, tags: [['v', '1'], ['epoch', F.epochId]], content: JSON.stringify({ v: 1, g: F.g, epoch: F.epochId, change, list, approval }) }));
+  const r = new ListCall(ctx(F), dev(F), { key: F.servers[0].kp.pub, indices: [4] }, evs, extra);
+  return S.handle(F.devices[0].kp.pub, r.request, clock);
+};
 
 test('#1 critical: a repair is never sealed to anyone but the index\'s owner', async () => {
   const acc = await create({ lockless: true });
@@ -110,14 +116,13 @@ test('#4/#5 medium: the co-signer tries the change; paper keys, stale lock chang
   const pc: Change = { paper: { key: A.kp.pub, replaces: F.backup.kp.pub, inner: '00'.repeat(32), state: [] } };
   const d = dealRedeal(F.g, A.kp, [], new Map(), A.kp.pub, [5, 6]);
   const ap = approveLock(F.g, F.epochId, pl, EXP(), A.kp.pub, A.lock!);
-  const rdEv = F.change({ redeal: d.redeal }, pl, ap);
-  assert.match(String(signChange(S, F, pc, pl, ap, { list_events: [rdEv] }).code), /invariant|bad_material/);
+  assert.match(String(signList(S, F, [pc, { redeal: d.redeal }], pl, ap).code), /invariant|bad_material/);
   // A fresh paper key, but no material with the request.
   const K = newKey();
   const pl2: Change[] = [{ paper: { key: K.pub, replaces: F.backup.kp.pub } }, { redeal: { dealer: A.kp.pub } }];
   const ap2 = approveLock(F.g, F.epochId, pl2, EXP(), A.kp.pub, A.lock!);
   const d2 = dealRedeal(F.g, A.kp, [], new Map(), K.pub, [5, 6]);
-  assert.equal(signChange(S, F, { paper: { key: K.pub, replaces: F.backup.kp.pub, inner: '11'.repeat(32), state: [] } }, pl2, ap2, { list_events: [F.change({ redeal: d2.redeal }, pl2, ap2)] }).code, 'bad_material');
+  assert.equal(signList(S, F, [{ paper: { key: K.pub, replaces: F.backup.kp.pub, inner: '11'.repeat(32), state: [] } }, { redeal: d2.redeal }], pl2, ap2).code, 'bad_material');
   // A lock change naming the wrong old lock.
   const b = newKey();
   const addB: Change[] = [{ add: { key: b.pub, kind: 'device', lock: null, salt: 0 } }];
@@ -190,7 +195,7 @@ test('#11: request types named after prototype keys are unsupported, not a crash
 test('#12: a paper approval\'s challenge is used once and only by whom it was issued to', () => {
   const F = fixture(); const A = F.devices[0];
   const S = server(F);
-  const ch = S.handle(A.kp.pub, { v: 1, type: 'challenge', g: F.g, epoch: F.epochId, id: bytesToHex(randomBytes(16)), cls: 'ask' }, clock).challenge;
+  const ch = S.handle(F.backup.kp.pub, { v: 1, type: 'challenge', g: F.g, epoch: F.epochId, id: bytesToHex(randomBytes(16)), cls: 'ask' }, clock).challenge;
   const mk = () => { const k = newKey().pub; const l: Change[] = [{ add: { key: k, kind: 'device', lock: null, salt: 0 } }];
     return [l, approvePaper(F.g, F.epochId, l, EXP(), A.kp, F.backup.kp, ch, F.servers[0].host.pub)] as const; };
   const [l1, a1] = mk();
@@ -199,11 +204,20 @@ test('#12: a paper approval\'s challenge is used once and only by whom it was is
   assert.equal(signChange(S, F, l2[0], l2, a2).code, 'stale_challenge');
 });
 
-test('#14: a seat change is co-signed only beside its list\'s co-signed redeal', () => {
+test('#14 / 14.3: a list is co-signed whole, in one request, and takes effect only whole', () => {
   const F = fixture(); const A = F.devices[0];
-  const S = server(F);
+  const S = server(F, 0, [], { uploads: { get: () => undefined, liveSeatHolders: () => 3 } });
   const list: Change[] = [{ seat: { seat: 'server:8', new: { key: newKey().pub, kind: 'server', shares: [8], host: newKey().pub }, replaces: F.servers[2].kp.pub } }, { redeal: { dealer: A.kp.pub } }];
-  assert.equal(signChange(S, F, list[0], list, approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, A.lock!)).code, 'list_redeal_first');
+  const ap = approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, A.lock!);
+  assert.equal(signChange(S, F, list[0], list, ap).code, 'list_in_one_request');
+  assert.equal(signList(S, F, [list[0]], list, ap).code, 'list_incomplete', 'the redeal is missing from the request');
+  // A member holding only part of a list applies none of it.
+  const d = dealRedeal(F.g, A.kp, [], new Map(), F.backup.kp.pub, [5, 6]);
+  const seatEv = F.change(list[0], list, ap), rdEv = F.change({ redeal: d.redeal }, list, ap);
+  const part = computeMembership(F.rec, [seatEv]);
+  assert.equal(part.seats.get('server:8')!.holder!.key, F.servers[2].kp.pub);
+  assert.equal(computeMembership(F.rec, [rdEv]).redeals.size, 0, 'nor the redeal alone');
+  assert.notEqual(computeMembership(F.rec, [seatEv, rdEv]).seats.get('server:8')!.holder!.key, F.servers[2].kp.pub);
   void parseChange;
 });
 
@@ -223,7 +237,7 @@ test('#15: a two-call co-signer that leaves out an index is named', () => {
 test('review 2 N2: a paper-approved list commits (one challenge serves every change of the list)', async () => {
   const acc = await create({ lockless: true });
   const P = acc.paper;
-  const ch = async () => (await acc.bus.send(acc.A.kp, acc.servers[0].kp.pub, { v: 1, type: 'challenge', g: acc.g, epoch: acc.epochId, id: bytesToHex(randomBytes(16)), cls: 'ask' })).challenge;
+  const ch = async () => (await acc.bus.send(acc.paper, acc.servers[0].kp.pub, { v: 1, type: 'challenge', g: acc.g, epoch: acc.epochId, id: bytesToHex(randomBytes(16)), cls: 'ask' })).challenge;
   const c1 = await ch();
   const { invite } = await import('../sim/account.ts');
   const B = await invite(acc, acc.A, (l) => approvePaper(acc.g, acc.epochId, l, acc.bus.now + 3600, acc.A.kp, P, c1, acc.servers[0].host.pub));
@@ -275,6 +289,21 @@ test('review 2 N9: one list can\'t seat one host twice', () => {
   const list: Change[] = [{ seat: { seat: 'server:7', new: { key: newKey().pub, kind: 'server', shares: [7], host: h }, replaces: F.servers[1].kp.pub } },
     { seat: { seat: 'server:8', new: { key: newKey().pub, kind: 'server', shares: [8], host: h }, replaces: F.servers[2].kp.pub } }, { redeal: { dealer: A.kp.pub } }];
   const ap = approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, A.lock!);
-  const rd = F.change({ redeal: dealRedeal(F.g, A.kp, [], new Map(), F.backup.kp.pub, [5, 6]).redeal }, list, ap);
-  assert.equal(signChange(S, F, list[0], list, ap, { list_events: [rd] }).code, 'invariant');
+  const rd = dealRedeal(F.g, A.kp, [], new Map(), F.backup.kp.pub, [5, 6]).redeal;
+  assert.equal(signList(S, F, [list[0], list[1], { redeal: rd }], list, ap).code, 'invariant');
+});
+
+test('review 3 #1 critical: repair_finish seals only to the seal_to its start authorised', async () => {
+  const acc = await create({ lockless: true });
+  const A = acc.A, S1 = acc.servers[0], S2 = acc.servers[1];
+  const { tag } = await import('../src/event.ts');
+  const st = stateHash([...A.state!.ids]);
+  const helpers = [{ key: A.kp.pub, indices: [1, 2, 3] }, { key: S1.kp.pub, indices: [4] }];
+  const start = await acc.bus.send(A.kp, S1.kp.pub, { type: 'repair_start', participant: 7, seal_to: S2.kp.pub, why: 'seat', state: st, rid: 'ab'.repeat(16), helpers });
+  assert.equal(start.type, 'repair_delta');
+  const fin = await acc.bus.send(A.kp, S1.kp.pub, { type: 'repair_finish', participant: 7, rid: 'ab'.repeat(16), seal_to: A.kp.pub, deltas: [] });
+  assert.equal(tag(fin.wrap, 'p'), S2.kp.pub, 'sealed to the authorised owner, whatever the finish says');
+  // A finish for a start someone else made is unknown.
+  const other = await acc.bus.send(acc.servers[2].kp, S1.kp.pub, { type: 'repair_finish', participant: 7, rid: 'ab'.repeat(16), deltas: [] });
+  assert.equal(other.code, 'unknown_repair');
 });

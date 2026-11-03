@@ -178,12 +178,14 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
     pending = next;
   }
   for (const p of pending) refused.push({ id: p.ev.id, code: checkApproval(authority(), p.c.list, p.c.approval).error! });
-  // A seat, remove or paper change applies only beside its list's redeal (§6.7.2, §6.7.10): until the
-  // group-signed redeal of the same list hash is here, the others wait (they are not lost).
-  const redealLists = new Set(accepted.filter((p) => p.type === 'redeal').map((p) => p.listHash));
-  for (const p of [...accepted]) if (p.type !== 'redeal' && p.c.list.some((x) => 'redeal' in x) && !redealLists.has(p.listHash)) {
-    accepted.splice(accepted.indexOf(p), 1);
-    refused.push({ id: p.ev.id, code: 'redeal_missing' });
+  // A list takes effect only whole (§6.7.10, 14.3): until every event of the list is here,
+  // group-signed, none of them applies, its redeal included. They wait; they are not lost.
+  const byList = new Map<string, Parsed[]>();
+  for (const p of accepted) if (p.c.list.length > 1) byList.set(p.listHash, [...(byList.get(p.listHash) ?? []), p]);
+  for (const ps of byList.values()) {
+    const got = new Set(ps.map((p) => jcs(placeholderList([p.c.change])[0])));
+    if (ps[0].c.list.every((x) => got.has(jcs(x)))) continue;
+    for (const p of ps) { accepted.splice(accepted.indexOf(p), 1); refused.push({ id: p.ev.id, code: 'list_incomplete' }); }
   }
   const auth = authority();
 

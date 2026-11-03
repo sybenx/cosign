@@ -54,7 +54,7 @@ test('report lost by lock: [remove, redeal]; everyone moves to the new state; th
 test('a lockless single device cannot report another, but pair with a second device can', async () => {
   const acc = await create({ lockless: true });
   const P = acc.paper;
-  const ch = (await acc.bus.send(acc.A.kp, acc.servers[0].kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'))).challenge;
+  const ch = (await acc.bus.send(acc.paper, acc.servers[0].kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'))).challenge;
   const B = await invite(acc, acc.A, (l) => approvePaper(acc.g, acc.epochId, l, acc.bus.now + 3600, acc.A.kp, P, ch, acc.servers[0].host.pub));
   const C = await invite(acc, acc.A, (l) => approvePair(acc.g, acc.epochId, l, acc.bus.now + 3600, acc.A.kp, B.kp, bytesToHex(randomBytes(16))));
   const list: Change[] = [{ remove: C.kp.pub }, { redeal: { dealer: acc.A.kp.pub } }];

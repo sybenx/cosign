@@ -8,10 +8,10 @@ import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
-import { OneCall, TwoCall } from '../src/coordinator.ts';
+import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
 import { deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
-import { repairStart, repairFinish } from '../src/repair.ts';
+import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
 import { Inbox } from '../src/inbox.ts';
 import { wrap, unwrap } from '../src/transport.ts';
@@ -26,26 +26,6 @@ import type { Transport, Node } from './bus.ts';
 const rid = () => bytesToHex(randomBytes(16));
 export const msg = (type: string, g: string, epoch: string, cls: string, extra: object = {}) => ({ v: 1, type, g, epoch, id: rid(), cls, ...extra });
 
-/** Repair helper state shared by servers and devices: deltas kept in memory between start and finish. */
-class RepairHelper {
-  kept = new Map<string, string[]>();
-  start(kp: KeyPair, C: Commitment, shares: Map<number, bigint>, body: any) {
-    const r = repairStart(C, body.helpers, { key: kp.pub, shares }, body.participant);
-    this.kept.set(`${body.participant}:${body.rid}`, r.kept);
-    const out: Record<string, NostrEvent> = {};
-    for (const [k, ds] of r.out) out[k] = wrap(kp.sk, k, { type: 'repair_delta', participant: body.participant, rid: body.rid, deltas: ds });
-    return { type: 'repair_delta', out };
-  }
-  finish(kp: KeyPair, body: any, state: string, seal_to: string) {
-    const kept = this.kept.get(`${body.participant}:${body.rid}`);
-    if (!kept) refuse('unknown_repair');
-    this.kept.delete(`${body.participant}:${body.rid}`);
-    const received = (body.deltas as NostrEvent[]).map((w) => unwrap(kp.sk, w).body.deltas as string[]);
-    const sigma = repairFinish(kept!, received);
-    return { type: 'repair_sigma', wrap: wrap(kp.sk, seal_to, { type: 'repair_sigma', index: body.participant, sigma, state }) };
-  }
-}
-
 // --- servers ------------------------------------------------------------------------------
 
 export class ServerNode implements Node {
@@ -56,7 +36,6 @@ export class ServerNode implements Node {
   inbox = new Inbox();
   seeds = new Map<string, string>();
   items: Item[] = []; base: Item | null = null;
-  repair = new RepairHelper();
   answeredRepair = new Set<string>();
   retired = false;
   bus: Transport; name: string;
@@ -96,14 +75,16 @@ export class ServerNode implements Node {
   }
 
   /** Before co-signing a change: fetch live peers (§6.7.3), and for a redeal collect `upload_held`. */
-  private async beforeChangeCosign(ev: Unsigned) {
+  private async beforeChangeCosign(evs: Unsigned[]) {
     await this.catchUp();
-    let c: any; try { c = JSON.parse(ev.content); } catch { return; }
+    for (const ev of evs) {
+    let c: any; try { c = JSON.parse(ev.content); } catch { continue; }
     const r = c?.change?.redeal; const u = r && this.uploads.get(r.id);
-    if (!u) return;
+    if (!u) continue;
     for (const s of [...postListView(this.m, c.list).values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub && !this.quietSince(x.key))) {
       const a = await this.bus.send(this.kp, s.key, { type: 'upload_status', redeal: r.id }, { timeoutMs: 2500 });
       if (a?.held) u.held.add(s.key);
+    }
     }
   }
 
@@ -220,7 +201,7 @@ export class ServerNode implements Node {
       case 'inbox_get': if (m.removed.has(from)) refuse('removed'); return { type: 'inbox', items: this.inbox.get(from, this.now) };
       case 'inbox_ack': this.inbox.ack(from, body.iids); return { type: 'ack' };
       case 'repair_start': return this.repairStart(from, body);
-      case 'repair_finish': return this.repair.finish(this.kp, body, stateOf(this.co.state), body.seal_to);
+      case 'repair_finish': return this.co.repairFinish(from, body);
       case 'repair_sigma': {                                  // we are the participant (a seat being filled)
         const o = unwrap(this.kp.sk, body.wrap); void o; return { type: 'ack' };
       }
@@ -236,7 +217,8 @@ export class ServerNode implements Node {
         return { type: 'ack' };
       }
       default: {
-        if (body.type === 'sign' && body.event?.kind === KIND_CHANGE) await this.beforeChangeCosign(body.event);
+        if (body.type === 'sign' && (body.event?.kind === KIND_CHANGE || Array.isArray(body.list_events)))
+          await this.beforeChangeCosign(body.list_events ? body.list_events.map((x: any) => x.event) : [body.event]);
         // No waited statement or release before fetching peers' deliveries, so a missed cancel counts (§6.3).
         if (body.type === 'release_request' || body.type === 'hold' || (body.type === 'sign' && body.hold !== undefined)) {
           // Before a wait or a release: the change set from every peer (a removal it missed retires it),
@@ -257,8 +239,7 @@ export class ServerNode implements Node {
 
   private repairStart(from: string, body: any) {
     if (body.state !== stateOf(this.co!.state)) return { type: 'stale', ids: [...this.co!.state.ids].sort() };
-    this.co!.authorizeRepair(from, body, this.now);
-    return this.repair.start(this.kp, this.co!.state.C, this.co!.state.shares, body);
+    return this.co!.repairStart(from, body, this.now);
   }
 }
 
@@ -327,6 +308,22 @@ export class DeviceNode implements Node {
     throw new KeykinError(lastErr, this.lastDetail);
   }
 
+  /** A whole list with the first live server that answers (§6.7.10). */
+  async signList(evs: Unsigned[], extra: { material?: Item } = {}): Promise<NostrEvent[]> {
+    let lastErr = 'no_server';
+    for (const s of this.servers()) {
+      if (!this.bus.alive(s.key)) { lastErr = 'unreachable'; continue; }
+      for (let tries = 0; tries < 2; tries++) {
+        const r = new ListCall(this.ctx(), this.me(), { key: s.key, indices: s.shares }, evs, extra);
+        const a = await this.bus.send(this.kp, s.key, r.request);
+        if (a?.type === 'stale') { r.abandon(); await this.fetch(); continue; }
+        if (a?.type !== 'partial') { r.abandon(); lastErr = a?.code ?? 'no_answer'; this.lastDetail = a?.detail; break; }
+        return r.finish(a);
+      }
+    }
+    throw new KeykinError(lastErr, this.lastDetail);
+  }
+
   /** Catch up: the union of every server's change set, then every server's inbox (§3.2, §8.2). */
   async fetch() {
     for (const s of this.servers()) {
@@ -371,7 +368,7 @@ export class DeviceNode implements Node {
 
   /** Make, co-sign and deliver a list (§6.7.6: one approval, the dealer uploads, one server co-signs,
    *  the dealer destroys δ, everyone applies). `extraView` adds incoming members for the deltas. */
-  async submit(list: Change[], approval: Approval, o: { cosigner?: (ev: Unsigned, extra: object) => Promise<NostrEvent>; dieAfterUpload?: boolean; deliverTo?: string[];
+  async submit(list: Change[], approval: Approval, o: { cosigner?: (evs: Unsigned[], extra: object) => Promise<NostrEvent[]>; dieAfterUpload?: boolean; deliverTo?: string[];
     /** After dealing, before the co-sign: fill in the list (F7's paper `inner`/`state`) and the material. */
     finish?: (dealt: Dealt) => Promise<{ full: Change[]; material?: Item }> } = {}): Promise<NostrEvent[]> {
     const m = this.m!;
@@ -394,16 +391,13 @@ export class DeviceNode implements Node {
     }
     let material: Item | undefined;
     if (o.finish && dealt) { const f = await o.finish(dealt); full = f.full; material = f.material; }
-    const signed: NostrEvent[] = [];
+    let signed: NostrEvent[];
     try {
-      // The redeal is co-signed first; every other change of the list is co-signed beside it (§6.7.2).
-      const order = [...full.filter((c) => 'redeal' in c), ...full.filter((c) => !('redeal' in c))];
-      for (const c of order) {
-        const content = JSON.stringify({ v: 1, g: this.g, epoch: this.epochId, change: c, list: approvalListOf(list), approval });
-        const ev: Unsigned = { pubkey: this.g, created_at: this.now, kind: KIND_CHANGE, tags: [['v', '1'], ['epoch', this.epochId]], content };
-        const extra = { ...(signed.length ? { list_events: [...signed] } : {}), ...('paper' in c && material ? { material } : {}) };
-        signed.push(o.cosigner ? await o.cosigner(ev, extra) : await this.sign(ev, extra as any));
-      }
+      // Every event of the list in one request, each with its own nonces (§6.7.10, §5.2).
+      const evs: Unsigned[] = full.map((c) => ({ pubkey: this.g, created_at: this.now, kind: KIND_CHANGE, tags: [['v', '1'], ['epoch', this.epochId]],
+        content: JSON.stringify({ v: 1, g: this.g, epoch: this.epochId, change: c, list: approvalListOf(list), approval }) }));
+      const extra = material ? { material } : {};
+      signed = o.cosigner ? await o.cosigner(evs, extra) : evs.length === 1 ? [await this.sign(evs[0], extra as any)] : await this.signList(evs, extra);
     } catch (e) { dealt?.destroy(); throw e; }
     // Deliver the list as one to every server (and live device); then apply our own delta and destroy δ.
     const targets = o.deliverTo ?? [...m.members.values(), ...postListView(m, list).values()].filter((x) => x.kind === 'server').map((x) => x.key);
@@ -466,14 +460,14 @@ export class DeviceNode implements Node {
     const start = { type: 'repair_start', participant, helpers, state: st, rid: rid_, why, seal_to, ...extra };
     const outs = new Map<string, Record<string, NostrEvent>>();
     for (const h of helpers) {
-      const a = h.key === this.kp.pub ? this.repair.start(this.kp, this.state!.C, this.state!.shares, start) : await this.bus.send(this.kp, h.key, start);
+      const a = h.key === this.kp.pub ? this.repair.start(this.kp, this.state!.C, this.state!.shares, this.kp.pub, start, st) : await this.bus.send(this.kp, h.key, start);
       if (a?.type !== 'repair_delta') throw new KeykinError(a?.code ?? 'repair_refused', `${h.key.slice(0, 8)}: ${a?.detail ?? ''}`);
       outs.set(h.key, a.out);
     }
     const out: NostrEvent[] = [];
     for (const h of helpers) {
       const fin = { type: 'repair_finish', participant, rid: rid_, seal_to, deltas: helpers.filter((x) => x.key !== h.key).map((x) => outs.get(x.key)![h.key]) };
-      const a = h.key === this.kp.pub ? this.repair.finish(this.kp, fin, st, seal_to) : await this.bus.send(this.kp, h.key, fin);
+      const a = h.key === this.kp.pub ? this.repair.finish(this.kp, this.kp.pub, fin, st) : await this.bus.send(this.kp, h.key, fin);
       if (a?.type !== 'repair_sigma') throw new KeykinError(a?.code ?? 'repair_refused');
       out.push(a.wrap as NostrEvent);
     }
@@ -486,8 +480,8 @@ export class DeviceNode implements Node {
         case 'join_hello': return this.inviter!.onHello(from, body, this.now).msg;
         case 'join_nonce': this.joiner!.onNonce(from, body); return { type: 'ack' };
         case 'welcome_offer': return this.joiner!.onOffer(from, body, this.now).msg;
-        case 'repair_start': this.co!.authorizeRepair(from, body, this.now); return this.repair.start(this.kp, this.state!.C, this.state!.shares, body);
-        case 'repair_finish': return this.repair.finish(this.kp, body, stateOf(this.state!), body.seal_to);
+        case 'repair_start': return this.co!.repairStart(from, body, this.now);
+        case 'repair_finish': return this.co!.repairFinish(from, body);
         case 'change': this.takeChanges(body.events); return { type: 'ack' };
         case 'delta_push': this.takeDelivery(body.wrap); this.applyAll(); return { type: 'ack' };
         case 'need_seeds': {
@@ -559,13 +553,17 @@ export class PaperHolder implements Node {
   approve(list: Change[], waited: Waited[]) { return approveRecovery(this.g, approvalListOf(list), this.kp, { r: this.r }, waited); }
   /** A recovery round: backup (2) plus two servers, two-call form. */
   async cosign(ev: Unsigned, servers: MemberEntry[], state: Set<string>, extra: object = {}): Promise<NostrEvent> {
+    return (await this.cosignAll([ev], servers, state, extra))[0];
+  }
+  async cosignAll(evs: Unsigned[], servers: MemberEntry[], state: Set<string>, extra: object = {}): Promise<NostrEvent[]> {
+    const ev = evs.length === 1 ? evs[0] : evs;
     const ctx = { g: this.g, epochId: this.epochId, state: stateHash(state), C: this.C! };
     const t = new TwoCall(ctx, { key: this.kp.pub, indices: [...this.shares!.keys()], shares: this.shares! }, servers.map((s) => ({ key: s.key, indices: s.shares })), ev);
     for (const s of servers) t.took(s.key, await this.bus.send(this.kp, s.key, t.commitRequest()));
     const req = { ...t.signRequest(), ...extra };
     const parts = new Map<string, any>();
     for (const s of servers) parts.set(s.key, await this.bus.send(this.kp, s.key, req));
-    return t.finish(parts);
+    return t.finishAll(parts);
   }
 }
 export { sha, hexToBytes, recoveryWaitId, pickSalt, takenIndices, parseCode, baseItem };

@@ -3,7 +3,7 @@
 // member asks it, adding its own policy. Storage (deliveries, inboxes, the change set) is the
 // host's; this class keeps only what Core says a co-signer keeps, and takes the clock as input.
 
-import { bytesToHex, randomBytes, sha, jcsBytes, hexN, refuse, KeykinError } from './bytes.ts';
+import { bytesToHex, randomBytes, sha, jcsBytes, hexN, refuse, KeykinError, concatBytes, u32be } from './bytes.ts';
 import { holdWaitId, recoveryWaitId, what, detachedDigest, stateHash, signpostD, signpostH } from './codes.ts';
 import { checkLifetime, bodyHash, ReplayCache, type Cls } from './lifetimes.ts';
 import { futureDateOk, destructive, deletionTargets, BurstCounter, type Ev } from './destructive.ts';
@@ -11,12 +11,13 @@ import { commit, signShare, hedge, type SignCommit, type Nonces } from './frost.
 import { ecdhAnswer } from './ecdh.ts';
 import { checkAssertion } from './lock.ts';
 import { eventId, schnorrVerify, verifyEvent, tag, type KeyPair, type NostrEvent, type Unsigned } from './event.ts';
-import { checkApproval, approvalType, approvalHash, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
+import { checkApproval, approvalType, approvalHash, placeholderList, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
 import { computeMembership, parseChange, adopt, type Membership } from './membership.ts';
 import { pointFrom, commitmentFrom, type Commitment } from './curve.ts';
 import { stateOf, commitmentAt, type State } from './redeal.ts';
 import { verifyRerepair, redealMissing, postListView, type Upload } from './upkeep.ts';
 import { itemHash } from './redeal.ts';
+import { RepairHelper } from './repair.ts';
 import { takenIndices, signpostCount, signpostServers } from './membership.ts';
 import { jcs } from './bytes.ts';
 import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Waited } from './types.ts';
@@ -55,7 +56,7 @@ export class CoSigner {
   recoveries = new Map<string, Recovery>();
   challenges = new Map<string, { exp: number; to: string }>();   // challenge hex → expiry, and who asked
   signpostIds = new Set<string>();
-  #twoCall = new Map<string, { nonces: Nonces[]; mine: SignCommit[]; at: number; used: boolean; from: string; signers: number[] }>();
+  #twoCall = new Map<string, { nonces: Nonces[][]; mine: SignCommit[][]; at: number; used: boolean; from: string; signers: number[] }>();
 
   constructor(o: CoSignerOpts) {
     this.o = o; this.state = o.state; this.changes = o.changes ?? [];
@@ -166,6 +167,15 @@ export class CoSigner {
     if (this.answeredRepair.has(k)) refuse('already_answered', 'never a second repair towards the same K');
     this.answeredRepair.add(k);
   }
+
+  /** Help a repair (§4.2 step 3, §6.7.4, §6.7.10): authorised first, and the finish seals only to
+   *  what this start authorised. Hosts call these, never the helper directly. */
+  #repair = new RepairHelper();
+  repairStart(from: string, body: any, now = this.o.now()) {
+    this.authorizeRepair(from, body, now);
+    return this.#repair.start(this.o.me, this.state.C, this.state.shares, from, body, stateOf(this.state));
+  }
+  repairFinish(from: string, body: any) { return this.#repair.finish(this.o.me, from, body, stateOf(this.state)); }
 
   /** A `need_repair` answer that succeeded uses up the server's one answer (§6.7.4). */
   repairSucceeded(owner: string, index: number) { this.answeredRepair.add(`${owner}:${index}`); }
@@ -312,7 +322,7 @@ export class CoSigner {
     if (ev.kind === 5 && ev.tags.some((t) => (t[0] === 'e' && this.signpostIds.has(t[1])) || (t[0] === 'a' && [...signpostDs].some((d) => t[1] === `${KIND_SIGNPOST}:${this.g}:${d}`))))
       refuse('machinery', 'a signpost delete is always refused');
     if (ev.kind === KIND_SIGNPOST && signpostDs.has(tag(ev, 'd') ?? '')) { this.checkSignpost(from, ev); return { evId, lockApproved: false, signpost: true }; }
-    if (ev.kind === KIND_CHANGE) { this.checkChangeToSign(from, ev, mode, now, msg); return { evId, lockApproved: false }; }
+    if (ev.kind === KIND_CHANGE) { this.checkListToSign(from, [ev], mode, now, msg); return { evId, lockApproved: false }; }
     if (mode === 'recovery') refuse('recovery_session', 'only recovery-approved changes in a session');
     // The stateless destructive rule (item 7).
     let lockApproved = false;
@@ -353,7 +363,7 @@ export class CoSigner {
       if (a.paper!.server !== (this.o.host?.pub ?? this.o.me.pub)) refuse('wrong_challenge_server');
       const prior = this.usedChallenges.get(a.paper!.challenge);
       if (prior !== undefined) { if (prior !== use) refuse('stale_challenge'); }
-      else if (!this.takeChallenge(a.paper!.challenge, [a.paper!.member, a.paper!.backup], now)) refuse('stale_challenge');
+      else if (!this.takeChallenge(a.paper!.challenge, a.paper!.backup, now)) refuse('stale_challenge');   // bound to the backup key (14.3)
       else this.usedChallenges.set(a.paper!.challenge, use);
     }
     if (t === 'recovery') {
@@ -365,94 +375,95 @@ export class CoSigner {
     }
   }
 
-  /** §5.7 item 5 for a change: valid, fresh, and safe to add to this co-signer's membership. */
-  private checkChangeToSign(from: string, ev: Unsigned, mode: 'everyday' | 'recovery', now: number, msg: any) {
-    const self = { ...ev, id: eventId(ev), sig: '' } as NostrEvent;
-    const p = parseChange(this.o.record, self, false);
-    const a = p.c.approval;
+  /** §5.7 item 5 for a list of changes: every event of the list, in one request (§6.7.10), checked
+   *  once at the pre-redeal state: valid, fresh, and safe to add to this co-signer's membership. */
+  private checkListToSign(from: string, evs: Unsigned[], mode: 'everyday' | 'recovery', now: number, msg: any) {
+    const selves = evs.map((ev) => ({ ...ev, id: eventId(ev), sig: '' }) as NostrEvent);
+    const ps = selves.map((e) => parseChange(this.o.record, e, false));
+    const p0 = ps[0];
+    if (ps.some((p) => p.listHash !== p0.listHash)) refuse('bad_list', 'one list per request');
+    // Every entry of the list exactly once.
+    const want = p0.c.list.map((x) => jcs(x));
+    const got = ps.map((p) => jcs(placeholderList([p.c.change])[0]));
+    if (want.length !== got.length || want.some((w) => got.filter((g) => g === w).length !== want.filter((x) => x === w).length))
+      refuse('list_incomplete', 'every event of a list travels in one request');
+    if (ps.some((p) => jcs(p.c.approval) !== jcs(p0.c.approval))) refuse('bad_list', 'one approval per list');
+    const a = p0.c.approval;
     const t = approvalType(a);
-    this.checkFresh(from, p.c.list, a, now, p.listHash);
+    this.checkFresh(from, p0.c.list, a, now, p0.listHash);
     if (mode === 'recovery' && t !== 'recovery') refuse('recovery_session', 'only recovery-approved changes');
     // F3 (§6.7.2): a seat list no current seat holder co-signs, here a device co-signing it, needs
     // `pair`, `paper` or `recovery`, never a lock alone.
-    if (this.o.kind !== 'server' && p.c.list.some((x) => 'seat' in x) && !(t === 'pair' || t === 'paper' || t === 'recovery')) refuse('approval_not_allowed', 'F3 needs pair, paper or recovery');
-    // A list is co-signed as one: its redeal first, then each other change with the signed redeal
-    // presented beside it, so a seat or remove never applies without its redeal (§6.7.2).
-    const listEvents: NostrEvent[] = [];
-    if (p.type !== 'redeal' && p.c.list.some((x) => 'redeal' in x)) {
-      const rd = (msg.list_events ?? []).find((e: NostrEvent) => {
-        try { const q = parseChange(this.o.record, e); return q.type === 'redeal' && q.listHash === p.listHash; } catch { return false; }
-      });
-      if (!rd) refuse('list_redeal_first', 'present the co-signed redeal of this list');
-      listEvents.push(rd);
-    }
+    if (this.o.kind !== 'server' && p0.c.list.some((x) => 'seat' in x) && !(t === 'pair' || t === 'paper' || t === 'recovery')) refuse('approval_not_allowed', 'F3 needs pair, paper or recovery');
     // Across the list: no two seats to one key or host, and the paper key is nobody else's.
-    const seatNews = p.c.list.flatMap((x: any) => (x.seat?.new ? [x.seat.new] : []));
+    const seatNews = p0.c.list.flatMap((x: any) => (x.seat?.new ? [x.seat.new] : []));
     if (new Set(seatNews.map((n: any) => n.key)).size !== seatNews.length || new Set(seatNews.map((n: any) => n.host)).size !== seatNews.length) refuse('invariant', 'one key or host in two seats');
-    const paperKey = (p.c.list.find((x: any) => 'paper' in x) as any)?.paper.key;
+    const paperKey = (p0.c.list.find((x: any) => 'paper' in x) as any)?.paper.key;
     if (paperKey && seatNews.some((n: any) => n.key === paperKey)) refuse('invariant', 'a paper key is a fresh key');
-    // The change must leave a valid membership: try it (§3.3).
-    const ch: any = p.c.change;
-    const trial = computeMembership(this.o.record, [...this.changes, ...listEvents], this.W, [self]);
-    if (trial.refused.some((x) => x.id === self.id)) refuse(trial.refused.find((x) => x.id === self.id)!.code);
+    // The list must leave a valid membership: try it (§3.3).
+    const trial = computeMembership(this.o.record, this.changes, this.W, selves);
+    for (const e of selves) { const r = trial.refused.find((x) => x.id === e.id); if (r) refuse(r.code); }
     if (trial.invariantError) refuse('invariant', trial.invariantError);
-    const leaving = new Set<string>(p.c.list.flatMap((x: any) => ('remove' in x ? [x.remove] : 'seat' in x ? [this.m.seats.get(x.seat.seat)?.holder?.key ?? ''] : 'paper' in x ? [x.paper.replaces] : [])));
+    const leaving = new Set<string>(p0.c.list.flatMap((x: any) => ('remove' in x ? [x.remove] : 'seat' in x ? [this.m.seats.get(x.seat.seat)?.holder?.key ?? ''] : 'paper' in x ? [x.paper.replaces] : [])));
     for (const k of this.m.members.keys()) if (!trial.members.has(k) && !leaving.has(k)) refuse('invariant', 'the change would drop a member it does not name');
-    switch (p.type) {
-      case 'add': {
-        if (this.m.removed.has(ch.add.key) || this.m.members.has(ch.add.key)) refuse('key_removed');
-        const taken = takenIndices(this.m);
-        if (trial.voidAdds.has(ch.add.key) || trial.members.get(ch.add.key)?.shares.some((i) => taken.has(i))) refuse('index_taken');
-        break;
-      }
-      case 'remove': {
-        if (!this.m.devices.has(ch.remove)) refuse('remove_not_device');
-        if (ch.to !== undefined && (!this.m.devices.has(ch.to) || ch.to === ch.remove)) refuse('bad_self_remove');
-        break;
-      }
-      case 'lock': {
-        if (!this.m.devices.has(ch.lock.member)) refuse('not_member');
-        const cur = this.m.locks.get(ch.lock.member)?.pub ?? null;
-        if (ch.lock.replaces !== cur && !(cur === null && String(ch.lock.replaces).startsWith('void:'))) refuse('lock_conflict', 'replaces is not the current lock');
-        if (jcs(trial.locks.get(ch.lock.member)) !== jcs(ch.lock.new)) refuse('lock_conflict');
-        break;
-      }
-      case 'seat': {
-        const cur = this.m.seats.get(ch.seat.seat);
-        const holder = cur?.holder?.key ?? null;
-        const okReplaces = ch.seat.replaces === holder || (holder === null && cur!.voided.some((v) => ch.seat.replaces === `void:${v}`)) || (holder === null && !cur!.voided.length && ch.seat.replaces === null);
-        if (!okReplaces) refuse('seat_conflict', 'replaces is not the current holder');
-        const n = ch.seat.new;
-        if (n) {
-          const hosts = [...this.m.members.values()].map((x) => x.host).filter(Boolean);
-          if (this.m.members.has(n.key) || this.m.removed.has(n.key) || hosts.includes(n.host)) refuse('invariant', 'I7');
+    for (const p of ps) {
+      const ch: any = p.c.change;
+      switch (p.type) {
+        case 'add': {
+          if (this.m.removed.has(ch.add.key) || this.m.members.has(ch.add.key)) refuse('key_removed');
+          const taken = takenIndices(this.m);
+          if (trial.voidAdds.has(ch.add.key) || trial.members.get(ch.add.key)?.shares.some((i) => taken.has(i))) refuse('index_taken');
+          break;
         }
-        // The new server's host-signed enroll reply is the Server profile module's (not checked here).
-        break;
-      }
-      case 'paper': {
-        if (ch.paper.replaces !== this.m.backupKey) refuse('not_current_backup');
-        if (this.m.members.has(ch.paper.key) || this.m.removed.has(ch.paper.key)) refuse('invariant', 'a paper key is a fresh key');
-        // The base material item travels with the request: its hash is `inner`, signed by K (§6.7.3).
-        const it = msg.material;
-        if (!it || itemHash(it) !== ch.paper.inner || it.to !== ch.paper.key || !schnorrVerify(it.sig, sha(itemHash(it)), ch.paper.key)) refuse('bad_material');
-        break;
-      }
-      case 'redeal': {
-        const r = ch.redeal;
-        if (r.abandons.some((x: string) => this.m.redeals.get(x)?.withRemove)) refuse('abandons_remove_redeal');
-        if (r.base.some((b: string) => this.m.abandoned.has(b))) refuse('abandoned');
-        if (this.m.abandoned.has(r.id)) refuse('abandoned');
-        if (this.o.kind === 'server') {
-          if (!this.o.uploads) refuse('no_upload_store');
-          const view = postListView(this.m, p.c.list);
-          const missing = redealMissing(this.m, p.c.list, r, this.o.uploads!.get(r.id), this.o.uploads!.liveSeatHolders(view));
-          if (missing.length) refuse('missing', missing.join(','));
+        case 'remove': {
+          if (!this.m.devices.has(ch.remove)) refuse('remove_not_device');
+          if (ch.to !== undefined && (!this.m.devices.has(ch.to) || ch.to === ch.remove)) refuse('bad_self_remove');
+          break;
         }
-        break;
+        case 'lock': {
+          if (!this.m.devices.has(ch.lock.member)) refuse('not_member');
+          const cur = this.m.locks.get(ch.lock.member)?.pub ?? null;
+          if (ch.lock.replaces !== cur && !(cur === null && String(ch.lock.replaces).startsWith('void:'))) refuse('lock_conflict', 'replaces is not the current lock');
+          if (jcs(trial.locks.get(ch.lock.member)) !== jcs(ch.lock.new)) refuse('lock_conflict');
+          break;
+        }
+        case 'seat': {
+          const cur = this.m.seats.get(ch.seat.seat);
+          const holder = cur?.holder?.key ?? null;
+          const okReplaces = ch.seat.replaces === holder || (holder === null && cur!.voided.some((v) => ch.seat.replaces === `void:${v}`)) || (holder === null && !cur!.voided.length && ch.seat.replaces === null);
+          if (!okReplaces) refuse('seat_conflict', 'replaces is not the current holder');
+          const n = ch.seat.new;
+          if (n) {
+            const hosts = [...this.m.members.values()].map((x) => x.host).filter(Boolean);
+            if (this.m.members.has(n.key) || this.m.removed.has(n.key) || hosts.includes(n.host)) refuse('invariant', 'I7');
+          }
+          // The new server's host-signed enroll reply is the Server profile module's (not checked here).
+          break;
+        }
+        case 'paper': {
+          if (ch.paper.replaces !== this.m.backupKey) refuse('not_current_backup');
+          if (this.m.members.has(ch.paper.key) || this.m.removed.has(ch.paper.key)) refuse('invariant', 'a paper key is a fresh key');
+          // The base material item travels with the request: its hash is `inner`, signed by K (§6.7.10).
+          const it = msg.material;
+          if (!it || itemHash(it) !== ch.paper.inner || it.to !== ch.paper.key || !schnorrVerify(it.sig, sha(itemHash(it)), ch.paper.key)) refuse('bad_material');
+          break;
+        }
+        case 'redeal': {
+          const r = ch.redeal;
+          if (r.abandons.some((x: string) => this.m.redeals.get(x)?.withRemove)) refuse('abandons_remove_redeal');
+          if (r.base.some((b: string) => this.m.abandoned.has(b))) refuse('abandoned');
+          if (this.m.abandoned.has(r.id)) refuse('abandoned');
+          if (this.o.kind === 'server') {
+            if (!this.o.uploads) refuse('no_upload_store');
+            const view = postListView(this.m, p.c.list);
+            const missing = redealMissing(this.m, p.c.list, r, this.o.uploads!.get(r.id), this.o.uploads!.liveSeatHolders(view));
+            if (missing.length) refuse('missing', missing.join(','));
+          }
+          break;
+        }
       }
+      this.o.upkeep?.(p, this.m);
     }
-    this.o.upkeep?.(p, this.m);
   }
 
   /** §6.7.5: a signpost only from a device, with the right `n` and an `h` matching this view. */
@@ -462,45 +473,75 @@ export class CoSigner {
     if (tag(ev, 'h') !== signpostH(this.m.epochId, signpostServers(this.m))) refuse('signpost_h');
   }
 
+  /** `sign` (§5.1): one event, or every event of a list (`list_events`, §6.7.10), each with its own
+   *  commitments, nonces and partials (one nonce pair never signs two events, §5.2). Partials for
+   *  every event or for none. */
   private sign(from: string, msg: any, now: number) {
     this.sender(from);
     const st = this.stale(msg); if (st) return st;
     const twoCall = msg.after !== undefined;
     const parts = this.participants(msg.signers, from, twoCall);
     const mode = this.coordinator(from, parts, now);
+    const isList = msg.list_events !== undefined;
+    const items: { event: Unsigned; commitments: SignCommit[] }[] = isList ? msg.list_events : [{ event: msg.event, commitments: msg.commitments }];
+    if (!Array.isArray(items) || !items.length || items.length > 16) refuse('malformed');
     const mine = this.myIndices;
-    let nonces: Nonces[], myCommits: SignCommit[];
+    let kept: { nonces: Nonces[][]; mine: SignCommit[][] } | null = null;
     if (!twoCall) {
-      this.checkCommitments(msg.commitments, this.m.members.get(from)!.shares);
+      for (const it of items) this.checkCommitments(it.commitments, this.m.members.get(from)!.shares);
       if (mode === 'recovery') refuse('two_call', 'a recovery round has more than one co-signer');
     } else {
       const k = `${from}:${msg.after}`;
-      const kept = this.#twoCall.get(k);
-      if (!kept || now - kept.at > NONCE_TTL_S) refuse('unknown_after');
-      if (kept!.used) refuse('after_used');
-      kept!.used = true;
-      this.checkCommitments(msg.commitments, msg.signers);
-      if (JSON.stringify(kept!.signers) !== JSON.stringify(msg.signers)) refuse('bad_signers', 'differs from the commit');
-      for (const c of kept!.mine) {
-        const x = (msg.commitments as SignCommit[]).find((y) => y.i === c.i);
-        if (!x || x.D !== c.D || x.E !== c.E) refuse('bad_commitments', 'not the commitments returned for after');
-      }
+      const kk = this.#twoCall.get(k);
+      if (!kk || now - kk.at > NONCE_TTL_S) refuse('unknown_after');
+      if (kk!.used) refuse('after_used');
+      kk!.used = true;
+      if (JSON.stringify(kk!.signers) !== JSON.stringify(msg.signers)) refuse('bad_signers', 'differs from the commit');
+      if (kk!.nonces.length !== items.length) refuse('bad_commitments', 'one set per event, as committed');
+      items.forEach((it, e) => {
+        this.checkCommitments(it.commitments, msg.signers);
+        for (const c of kk!.mine[e]) {
+          const x = it.commitments.find((y) => y.i === c.i);
+          if (!x || x.D !== c.D || x.E !== c.E) refuse('bad_commitments', 'not the commitments returned for after');
+        }
+      });
+      kept = kk!;
     }
-    const { evId, lockApproved, signpost } = this.checkEvent(from, msg, mode, now) as { evId: string; lockApproved: boolean; signpost?: boolean };
-    if (!twoCall) {
-      const ctx = sha(jcsBytes(msg));
-      const cs = mine.map((i) => commit(this.state.C, i, this.state.shares.get(i)!, hedge(this.state.shares.get(i)!, ctx)));
-      nonces = cs.map((c) => c.nonces); myCommits = cs.map((c) => c.commit);
+    // The checks: a list once, as a whole; a single event by §5.7.
+    const evs = items.map((it) => it.event);
+    let single: { evId: string; lockApproved: boolean; signpost?: boolean } | null = null;
+    if (isList) {
+      if (evs.some((e) => !e || e.pubkey !== this.g || e.kind !== KIND_CHANGE)) refuse('bad_list', 'a list is account changes');
+      evs.forEach((e) => { if (!futureDateOk(e as Ev, now)) refuse('dated_ahead'); });
+      this.checkListToSign(from, evs, mode, now, msg);
     } else {
-      const kept = this.#twoCall.get(`${from}:${msg.after}`)!;
-      nonces = kept.nonces; myCommits = kept.mine;
-      this.#twoCall.delete(`${from}:${msg.after}`);
+      if (msg.event?.kind === KIND_CHANGE) {
+        let c: any; try { c = JSON.parse(msg.event.content); } catch { /* parse refuses below */ }
+        if (Array.isArray(c?.list) && c.list.length > 1) refuse('list_in_one_request', 'every event of a list travels in one request');
+      }
+      single = this.checkEvent(from, msg, mode, now) as { evId: string; lockApproved: boolean; signpost?: boolean };
     }
-    const all = twoCall ? (msg.commitments as SignCommit[]) : [...msg.commitments, ...myCommits];
-    const z = nonces.map((n) => ({ i: n.i, z: signShare(this.state.C, n.i, this.state.shares.get(n.i)!, n, evId, all) }));
-    if (msg.event.kind === 5 && !lockApproved && msg.hold === undefined) this.burst.add(now, deletionTargets(msg.event));
-    if (signpost) this.noteSignpost(evId);
-    return { v: 1, type: 'partial', re: msg.id, commitments: twoCall ? [] : myCommits, z };
+    // Nonces: fresh per event (one-call) or the ones kept for `after` (two-call).
+    const ctx = sha(jcsBytes(msg));
+    const out = items.map((it, e) => {
+      const evId = eventId(it.event);
+      let nonces: Nonces[], myCommits: SignCommit[];
+      if (kept) { nonces = kept.nonces[e]; myCommits = kept.mine[e]; }
+      else {
+        const cs = mine.map((i) => commit(this.state.C, i, this.state.shares.get(i)!, hedge(this.state.shares.get(i)!, concatBytes(ctx, u32be(e)))));
+        nonces = cs.map((c) => c.nonces); myCommits = cs.map((c) => c.commit);
+      }
+      const all = kept ? it.commitments : [...it.commitments, ...myCommits];
+      const z = nonces.map((n) => ({ i: n.i, z: signShare(this.state.C, n.i, this.state.shares.get(n.i)!, n, evId, all) }));
+      return { commitments: kept ? [] : myCommits, z };
+    });
+    if (twoCall) this.#twoCall.delete(`${from}:${msg.after}`);
+    if (single) {
+      if (msg.event.kind === 5 && !single.lockApproved && msg.hold === undefined) this.burst.add(now, deletionTargets(msg.event));
+      if (single.signpost) this.noteSignpost(single.evId);
+      return { v: 1, type: 'partial', re: msg.id, ...out[0] };
+    }
+    return { v: 1, type: 'partial', re: msg.id, events: out };
   }
 
   private commitTwoCall(from: string, msg: any, now: number) {
@@ -508,11 +549,15 @@ export class CoSigner {
     const st = this.stale(msg); if (st) return st;
     const parts = this.participants(msg.signers, from, true);
     this.coordinator(from, parts, now);
+    const count = msg.count ?? 1;
+    if (!Number.isSafeInteger(count) || count < 1 || count > 16) refuse('malformed', 'count');
     for (const [k, v] of this.#twoCall) if (now - v.at > NONCE_TTL_S) this.#twoCall.delete(k);
     const ctx = sha(jcsBytes(msg));
-    const cs = this.myIndices.map((i) => commit(this.state.C, i, this.state.shares.get(i)!, hedge(this.state.shares.get(i)!, ctx)));
-    this.#twoCall.set(`${from}:${msg.id}`, { nonces: cs.map((c) => c.nonces), mine: cs.map((c) => c.commit), at: now, used: false, from, signers: msg.signers });
-    return { v: 1, type: 'commitments', re: msg.id, commitments: cs.map((c) => c.commit) };
+    const sets = Array.from({ length: count }, (_, e) => this.myIndices.map((i) => commit(this.state.C, i, this.state.shares.get(i)!, hedge(this.state.shares.get(i)!, concatBytes(ctx, u32be(e))))));
+    this.#twoCall.set(`${from}:${msg.id}`, { nonces: sets.map((cs) => cs.map((c) => c.nonces)), mine: sets.map((cs) => cs.map((c) => c.commit)), at: now, used: false, from, signers: msg.signers });
+    return count === 1 && msg.count === undefined
+      ? { v: 1, type: 'commitments', re: msg.id, commitments: sets[0].map((c) => c.commit) }
+      : { v: 1, type: 'commitments', re: msg.id, sets: sets.map((cs) => cs.map((c) => c.commit)) };
   }
 
   private ecdh(from: string, msg: any, now: number) {

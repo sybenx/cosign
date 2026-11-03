@@ -53,46 +53,96 @@ export class OneCall {
   abandon() { for (const n of this.#nonces) if (!n.used) n.take(); }
 }
 
-/** Two-call round (§5.1), for rounds with more than one co-signer (a recovery round). */
+/** One-call round for a whole list (§6.7.10): every event in one `sign`, each with its own nonces. */
+export class ListCall {
+  readonly id = newId();
+  readonly request: any;
+  readonly events: Unsigned[];
+  #ids: string[]; #nonces: Nonces[][]; #shares: Map<number, bigint>; #ctx: RoundContext; #co: Signer;
+  constructor(ctx: RoundContext, me: { indices: number[]; shares: Map<number, bigint> }, co: Signer, events: Unsigned[], extra: { material?: unknown; cls?: Cls } = {}) {
+    if (events.some((e) => e.pubkey !== ctx.g)) refuse('wrong_pubkey');
+    this.#ctx = ctx; this.#co = co; this.#shares = me.shares; this.events = events;
+    this.#ids = events.map(eventId);
+    const signers = [...me.indices, ...co.indices].sort((a, b) => a - b);
+    const cs = this.#ids.map((evId) => me.indices.map((i) => commit(ctx.C, i, me.shares.get(i)!,
+      hedge(me.shares.get(i)!, concatBytes(hexToBytes(evId), u32s(signers), hexToBytes(this.id), hexToBytes(co.key))))));
+    this.#nonces = cs.map((x) => x.map((c) => c.nonces));
+    this.request = { v: 1, type: 'sign', g: ctx.g, epoch: ctx.epochId, id: this.id, cls: extra.cls ?? 'ask', state: ctx.state, signers,
+      list_events: events.map((event, e) => ({ event, commitments: cs[e].map((c) => c.commit) })), ...(extra.material ? { material: extra.material } : {}) };
+  }
+  finish(partial: any): NostrEvent[] {
+    if (partial?.type !== 'partial' || !Array.isArray(partial.events) || partial.events.length !== this.events.length)
+      throw new KeykinError(partial?.code ?? 'no_partial', `from ${this.#co.key.slice(0, 8)}`);
+    return this.events.map((ev, e) => {
+      const theirs: SignCommit[] = partial.events[e].commitments ?? [];
+      const zs = partial.events[e].z ?? [];
+      const want = JSON.stringify([...this.#co.indices].sort((a, b) => a - b));
+      if (JSON.stringify(theirs.map((c) => c.i).sort((a, b) => a - b)) !== want || JSON.stringify(zs.map((z: any) => z.i).sort((a: number, b: number) => a - b)) !== want) refuse('bad_partial', `member ${this.#co.key}`);
+      const commits = [...this.request.list_events[e].commitments, ...theirs];
+      for (const z of zs) if (!verifyShare(this.#ctx.C, this.#ids[e], commits, z.i, z.z)) refuse('bad_partial', `member ${this.#co.key}`);
+      const mine = this.#nonces[e].map((n) => ({ i: n.i, z: signShare(this.#ctx.C, n.i, this.#shares.get(n.i)!, n, this.#ids[e], commits) }));
+      return { ...ev, id: this.#ids[e], sig: aggregate(this.#ctx.C, this.#ids[e], commits, [...mine, ...zs]) };
+    });
+  }
+  abandon() { for (const ns of this.#nonces) for (const n of ns) if (!n.used) n.take(); }
+}
+
+/** Two-call round (§5.1), for rounds with more than one co-signer (a recovery round). Several
+ *  events (a list) take one commitment set each (`commit {count}`, §6.7.10). */
 export class TwoCall {
   readonly commitId = newId();
   readonly signId = newId();
   readonly eventId: string;
   readonly signers: number[];
-  #nonces: Nonces[]; #shares: Map<number, bigint>; #ctx: RoundContext; #cos: Signer[]; #mine: SignCommit[];
-  #theirs = new Map<string, SignCommit[]>();
+  readonly events: Unsigned[];
+  #ids: string[];
+  #nonces: Nonces[][]; #shares: Map<number, bigint>; #ctx: RoundContext; #cos: Signer[]; #mine: SignCommit[][];
+  #theirs = new Map<string, SignCommit[][]>();
   readonly event: Unsigned;
-  constructor(ctx: RoundContext, me: { key: string; indices: number[]; shares: Map<number, bigint> }, cos: Signer[], event: Unsigned) {
-    this.#ctx = ctx; this.#cos = cos; this.#shares = me.shares; this.event = event;
-    this.eventId = eventId(event);
+  constructor(ctx: RoundContext, me: { key: string; indices: number[]; shares: Map<number, bigint> }, cos: Signer[], event: Unsigned | Unsigned[]) {
+    this.#ctx = ctx; this.#cos = cos; this.#shares = me.shares;
+    this.events = Array.isArray(event) ? event : [event];
+    this.event = this.events[0];
+    this.#ids = this.events.map(eventId);
+    this.eventId = this.#ids[0];
     this.signers = [...me.indices, ...cos.flatMap((c) => c.indices)].sort((a, b) => a - b);
-    const context = concatBytes(hexToBytes(this.eventId), u32s(this.signers), hexToBytes(this.commitId), utf8ToBytes('two-call'));
-    const cs = me.indices.map((i) => commit(ctx.C, i, me.shares.get(i)!, hedge(me.shares.get(i)!, context)));
-    this.#nonces = cs.map((c) => c.nonces); this.#mine = cs.map((c) => c.commit);
+    const sets = this.#ids.map((evId) => me.indices.map((i) => commit(ctx.C, i, me.shares.get(i)!,
+      hedge(me.shares.get(i)!, concatBytes(hexToBytes(evId), u32s(this.signers), hexToBytes(this.commitId), utf8ToBytes('two-call'))))));
+    this.#nonces = sets.map((x) => x.map((c) => c.nonces)); this.#mine = sets.map((x) => x.map((c) => c.commit));
   }
-  commitRequest(cls: Cls = 'ask') { return { v: 1, type: 'commit', g: this.#ctx.g, epoch: this.#ctx.epochId, id: this.commitId, cls, state: this.#ctx.state, signers: this.signers, event: this.event }; }
+  get isList() { return this.events.length > 1; }
+  commitRequest(cls: Cls = 'ask') {
+    return { v: 1, type: 'commit', g: this.#ctx.g, epoch: this.#ctx.epochId, id: this.commitId, cls, state: this.#ctx.state, signers: this.signers,
+      ...(this.isList ? { count: this.events.length } : { event: this.event }) };
+  }
   took(co: string, answer: any) {
     if (answer?.type !== 'commitments') throw new KeykinError(answer?.code ?? 'no_commitments', co);
-    this.#theirs.set(co, answer.commitments);
+    this.#theirs.set(co, this.isList ? answer.sets : [answer.commitments]);
   }
-  get commitments(): SignCommit[] { return [...this.#mine, ...this.#cos.flatMap((c) => this.#theirs.get(c.key) ?? [])]; }
-  signRequest(cls: Cls = 'ask', extra: { approval?: Approval } = {}) {
-    return { v: 1, type: 'sign', g: this.#ctx.g, epoch: this.#ctx.epochId, id: this.signId, cls, state: this.#ctx.state, event: this.event,
-      signers: this.signers, commitments: this.commitments, after: this.commitId, ...extra };
+  commitmentsFor(e: number): SignCommit[] { return [...this.#mine[e], ...this.#cos.flatMap((c) => this.#theirs.get(c.key)?.[e] ?? [])]; }
+  get commitments(): SignCommit[] { return this.commitmentsFor(0); }
+  signRequest(cls: Cls = 'ask', extra: { approval?: Approval; material?: unknown } = {}) {
+    const base = { v: 1, type: 'sign', g: this.#ctx.g, epoch: this.#ctx.epochId, id: this.signId, cls, state: this.#ctx.state, signers: this.signers, after: this.commitId, ...extra };
+    return this.isList ? { ...base, list_events: this.events.map((event, e) => ({ event, commitments: this.commitmentsFor(e) })) }
+      : { ...base, event: this.event, commitments: this.commitments };
   }
-  finish(partials: Map<string, any>): NostrEvent {
-    const commits = this.commitments;
-    const zs: { i: number; z: string }[] = [];
-    for (const co of this.#cos) {
-      const p = partials.get(co.key);
-      if (p?.type !== 'partial') refuse(p?.code ?? 'no_partial', `member ${co.key}`);
-      const got = (p.z ?? []).map((z: any) => z.i).sort((a: number, b: number) => a - b);
-      if (JSON.stringify(got) !== JSON.stringify([...co.indices].sort((a, b) => a - b))) refuse('bad_partial', `member ${co.key}`);
-      for (const z of p.z) { if (!co.indices.includes(z.i) || !verifyShare(this.#ctx.C, this.eventId, commits, z.i, z.z)) refuse('bad_partial', `member ${co.key}`); zs.push(z); }
-    }
-    for (const n of this.#nonces) zs.push({ i: n.i, z: signShare(this.#ctx.C, n.i, this.#shares.get(n.i)!, n, this.eventId, commits) });
-    return { ...this.event, id: this.eventId, sig: aggregate(this.#ctx.C, this.eventId, commits, zs) };
+  finishAll(partials: Map<string, any>): NostrEvent[] {
+    return this.events.map((ev, e) => {
+      const commits = this.commitmentsFor(e);
+      const zs: { i: number; z: string }[] = [];
+      for (const co of this.#cos) {
+        const p = partials.get(co.key);
+        if (p?.type !== 'partial') refuse(p?.code ?? 'no_partial', `member ${co.key}`);
+        const mineZ = this.isList ? p.events?.[e]?.z : p.z;
+        const got = (mineZ ?? []).map((z: any) => z.i).sort((a: number, b: number) => a - b);
+        if (JSON.stringify(got) !== JSON.stringify([...co.indices].sort((a, b) => a - b))) refuse('bad_partial', `member ${co.key}`);
+        for (const z of mineZ) { if (!verifyShare(this.#ctx.C, this.#ids[e], commits, z.i, z.z)) refuse('bad_partial', `member ${co.key}`); zs.push(z); }
+      }
+      for (const n of this.#nonces[e]) zs.push({ i: n.i, z: signShare(this.#ctx.C, n.i, this.#shares.get(n.i)!, n, this.#ids[e], commits) });
+      return { ...ev, id: this.#ids[e], sig: aggregate(this.#ctx.C, this.#ids[e], commits, zs) };
+    });
   }
+  finish(partials: Map<string, any>): NostrEvent { return this.finishAll(partials)[0]; }
 }
 
 /** A decryption request (§5.5) and the coordinator's own part. */

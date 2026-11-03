@@ -139,7 +139,7 @@ export async function recover(acc: Account, lost: DeviceNode[], paper: KeyPair =
   // F9: report the lost devices and redeal, approved by `recovery`; D deals, the holder co-signs.
   if (lost.length) {
     const list: Change[] = [...lost.map((l) => ({ remove: l.kp.pub }) as Change), { redeal: { dealer: D.kp.pub } }];
-    await D.submit(list, P.approve(list, r.waited), { cosigner: (ev, extra) => P.cosign(ev, two, r.state, extra) });
+    await D.submit(list, P.approve(list, r.waited), { cosigner: (evs, extra) => P.cosignAll(evs, two, r.state, extra) });
   }
   // The recovery app destroys the backup's shares and the release bundle (§6.5 step 6).
   P.shares = null; P.bundles.clear();
@@ -155,9 +155,9 @@ export async function replaceAllServers(acc: Account, A: DeviceNode, B: DeviceNo
   const Ys = idx.map(() => bus.add(new ServerNode(bus, `Y${++seq}`)) as ServerNode);
   const list: Change[] = [...idx.map((i, k) => ({ seat: { seat: `server:${i}`, new: Ys[k].entry(i), replaces: A.m!.seats.get(`server:${i}`)!.holder?.key ?? null } }) as Change),
     { redeal: { dealer: A.kp.pub } }];
-  const { OneCall } = await import('../src/coordinator.ts');
-  await A.submit(list, approve(list), { deliverTo: Ys.map((y) => y.kp.pub), cosigner: async (ev, extra) => {
-    const r = new OneCall(A.ctx(), A.me(), { key: B.kp.pub, indices: [...B.state!.shares.keys()] }, ev, extra as any);
+  const { ListCall } = await import('../src/coordinator.ts');
+  await A.submit(list, approve(list), { deliverTo: Ys.map((y) => y.kp.pub), cosigner: async (evs, extra) => {
+    const r = new ListCall(A.ctx(), A.me(), { key: B.kp.pub, indices: [...B.state!.shares.keys()] }, evs, extra as any);
     return r.finish(await bus.send(A.kp, B.kp.pub, r.request));
   } });
   for (const [k, Y] of Ys.entries()) {
