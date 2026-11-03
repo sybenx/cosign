@@ -20,6 +20,9 @@ test('§2 the QR: kkbak1 bech32, upper case, round trip; the card has no secret'
   const cc = readBackupQR(accountCard(c));
   assert.equal(cc.sk, null); assert.deepEqual(cc.card, c);
   assert.equal(code(() => backupQR(new Uint8Array(32), c)), 'bad_backup', 'zero is not a secret');
+  // Long relay lists fit: TLV lengths are 2 bytes (Backup §2, spec item 38).
+  const long = { ...c, servers: [{ host: newKey().pub, https: 'https://s1.test', relays: Array.from({ length: 12 }, (_, k) => `wss://relay-${k}.example.org`) }] };
+  assert.deepEqual(readBackupQR(backupQR(k.sk, long)).card, long);
 });
 
 test('§2 the 24 words: Keykin checksum, not BIP-39; a wallet seed is recognised', () => {

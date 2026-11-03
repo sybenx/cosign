@@ -9,7 +9,8 @@ import { verifyDleq } from '../src/ecdh.ts';
 import { futureDateOk, destructive } from '../src/destructive.ts';
 import { checkLifetime } from '../src/lifetimes.ts';
 
-const V = JSON.parse(readFileSync(new URL('../../docs/keykin/vectors/vectors.json', import.meta.url), 'utf8')).cases;
+// The spec's vectors: the newest the spec branch has (KEYKIN_VECTORS), else this branch's copy.
+const V = JSON.parse(readFileSync(process.env.KEYKIN_VECTORS ?? new URL('../../docs/keykin/vectors/vectors.json', import.meta.url), 'utf8')).cases;
 
 test('join_check', () => {
   for (const c of V.join_check) assert.equal(codes.joinCheck(c.g, c.m, c.n, c.s, c.t), c.code);
@@ -136,4 +137,11 @@ test('core 13.8: the §5.8 tests are exact', () => {
   assert.equal(destructive(ev(3, '')), true);
   assert.equal(destructive(ev(10002, '', [['r', 'https://x']])), true, 'an r tag that is not a relay URL');
   assert.equal(destructive(ev(10002, '', [['r', 'wss://x']])), false);
+});
+
+test('enrol_keys (Server profile §4)', { skip: !V.enrol_keys && 'not in this copy of vectors.json' }, async () => {
+  const { deriveMemberSk, deriveVapidSk } = await import('../src/serverprofile.ts');
+  const c = V.enrol_keys;
+  assert.equal(bytesToHex(deriveMemberSk(hexToBytes(c.enrol_secret), c.g, c.nonce)), c.member_sk);
+  assert.equal(bytesToHex(deriveVapidSk(hexToBytes(c.enrol_secret), c.g, c.nonce)), c.vapid_sk);
 });

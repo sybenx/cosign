@@ -19,10 +19,11 @@ function checkSecret(sk: Uint8Array) {
 
 export interface Card { g: string; epoch: string; servers: { host: string; https: string; relays: string[] }[]; holderInbox: string }
 
-/** TLV as NIP-19: type, length, value. Server entries (type 3) are 32-byte host ‖ JSON {https, relays}. */
+/** TLV: 1-byte type, 2-byte big-endian length (Backup §2, unlike NIP-19's 1 byte), value. Server
+ *  entries (type 3) are 32-byte host ‖ UTF-8 JSON {https, relays}. */
 function tlv(sk: Uint8Array | null, c: Card): Uint8Array {
   const parts: Uint8Array[] = [];
-  const put = (t: number, v: Uint8Array) => { if (v.length > 255) refuse('too_long'); parts.push(new Uint8Array([t, v.length]), v); };
+  const put = (t: number, v: Uint8Array) => { if (v.length > 0xffff) refuse('too_long'); parts.push(new Uint8Array([t, v.length >> 8, v.length & 0xff]), v); };
   if (sk) put(0, sk);
   put(1, hexN(c.g, 32, 'g')); put(2, hexN(c.epoch, 16, 'epoch id'));
   for (const s of c.servers) put(3, concatBytes(hexN(s.host, 32, 'host'), utf8ToBytes(JSON.stringify({ https: s.https, relays: s.relays }))));
@@ -32,7 +33,7 @@ function tlv(sk: Uint8Array | null, c: Card): Uint8Array {
 function untlv(b: Uint8Array): { sk: Uint8Array | null; card: Card } {
   let sk: Uint8Array | null = null; const card: Card = { g: '', epoch: '', servers: [], holderInbox: '' };
   for (let i = 0; i < b.length;) {
-    const t = b[i], l = b[i + 1], v = b.slice(i + 2, i + 2 + l); i += 2 + l;
+    const t = b[i], l = (b[i + 1] << 8) | b[i + 2], v = b.slice(i + 3, i + 3 + l); i += 3 + l;
     if (v.length !== l) refuse('bad_backup', 'truncated');
     if (t === 0) sk = v; else if (t === 1) card.g = bytesToHex(v); else if (t === 2) card.epoch = bytesToHex(v);
     else if (t === 3) card.servers.push({ host: bytesToHex(v.slice(0, 32)), ...JSON.parse(new TextDecoder().decode(v.slice(32))) });
