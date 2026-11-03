@@ -18,9 +18,10 @@ import { stateOf, commitmentAt, type State } from './redeal.ts';
 import { verifyRerepair, redealMissing, postListView, postListBackup, type Upload } from './upkeep.ts';
 import { itemHash } from './redeal.ts';
 import { RepairHelper } from './repair.ts';
+import { requestApprovers } from './requests.ts';
 import { checkEnroll } from './serverprofile.ts';
 import { checkHeirPiece, heirWaitId, type HeirRecord } from './backup.ts';
-import { takenIndices, signpostCount, signpostServers, servers as seatedServers } from './membership.ts';
+import { takenIndices, signpostCount, signpostServers } from './membership.ts';
 import { jcs } from './bytes.ts';
 import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Waited } from './types.ts';
 
@@ -194,29 +195,16 @@ export class CoSigner {
   /** Account admin §3: `account_delete {id, approval}`, an approved request (lock, pair or paper with this
    *  server's own challenge), checked here at first hand. Returns what the tombstone keeps. */
   checkDelete(from: string, msg: any, now = this.o.now(), relayed = false): { request: any; changes: NostrEvent[] } {
-    const { approval, ...body } = msg;
-    const w = what.request('account_delete', msg.id, body);
+    const { approval } = msg;
     // A request relayed in a peer's `deleted` is checked here too, never taken on the peer's word (core
-    // §3.2): its sender is its approving device; only the paper challenge stays the first server's.
+    // §3.2): its sender is its approving device; only the first server took its own paper challenge.
     if (relayed) from = approval?.lock?.member ?? approval?.pair?.[0]?.member ?? approval?.paper?.member;
     const dev = this.sender(from);
     if (dev.kind !== 'device') refuse('not_device');
-    let approvers: string[] = [];
-    if (approval?.lock) {
-      const cur = this.m.locks.get(from);
-      if (approval.lock.member !== from || !cur) refuse('needs_approval');
-      const e = checkAssertion(this.g, cur!, w, approval.lock.assertion); if (e) refuse(e);
-      approvers = [from];
-    } else if (approval?.pair) {
-      const [x, y] = approval.pair;
-      if (x.member === y.member || !this.m.devices.has(x.member) || !this.m.devices.has(y.member)) refuse('approver_not_device');
-      const d = detachedDigest('pair', this.g, { what: bytesToHex(w), r: x.r });
-      if (!schnorrVerify(x.sig, d, x.member) || !schnorrVerify(y.code_sig, d, y.member)) refuse('bad_signature');
-      approvers = [x.member, y.member];
-    } else if (approval?.paper) {
-      approvers = [this.checkRequestPaper(approval.paper, w, now, relayed)];
-      if (approvers[0] !== from) refuse('needs_approval', 'the paper approval is by the requesting device');
-    } else refuse('needs_approval', 'a delete needs lock, pair or paper; there is no hold path');
+    if (!approval?.lock && !approval?.pair && !approval?.paper) refuse('needs_approval', 'a delete needs lock, pair or paper; there is no hold path');
+    const me = this.o.host?.pub ?? this.o.me.pub;
+    const approvers = requestApprovers(this.m, this.g, 'account_delete', msg, { from: approval?.pair ? undefined : from, me,
+      take: relayed ? undefined : (c, b) => this.takeChallenge(c, b, now) });
     // The changes that make each approver a device, so anyone can check the tombstone's proof.
     // With their lock changes and, for a paper approval, the paper change of that key (review 5 B10).
     const paperKey = approval?.paper ? approval.paper.backup : null;
@@ -224,30 +212,6 @@ export class CoSigner {
       || (p.type === 'lock' && approvers.includes((p.c.change as any).lock.member))
       || (p.type === 'paper' && paperKey && (p.c.change as any).paper.key === paperKey)).map((p) => p.ev);
     return { request: msg, changes };
-  }
-
-  /** A paper approval on a request every server checks (core §6.2: `account_delete`, `helper_resume`):
-   *  `{member, sig, backup, challenges: [{server, challenge, backup_sig}]}`. The device must be current and
-   *  the backup key the current one; this server's own entry is checked and its challenge used up. A
-   *  delete relayed in a peer's `deleted` has had our challenge used already, or never reached us: then
-   *  any entry from a current server, validly signed, stands (the first server took its own challenge).
-   *  Returns the approving device. */
-  private checkRequestPaper(p: any, w: Uint8Array, now: number, relayed = false): string {
-    if (!p || typeof p !== 'object' || !Array.isArray(p.challenges) || !p.challenges.length) refuse('malformed', 'a paper request approval carries challenges');
-    if (p.backup !== this.m.backupKey || !this.m.devices.has(p.member)) refuse('not_current_backup');
-    const what = bytesToHex(w);
-    if (!schnorrVerify(p.sig, detachedDigest('paper', this.g, { what }), p.member)) refuse('bad_signature');
-    const me = this.o.host?.pub ?? this.o.me.pub;
-    const hosts = new Set(seatedServers(this.m).map((s) => s.host));
-    const signed = (c: any) => typeof c?.challenge === 'string' && schnorrVerify(c.backup_sig, detachedDigest('paper', this.g, { what, challenge: c.challenge }), p.backup);
-    const mine = p.challenges.filter((c: any) => c?.server === me);
-    if (mine.length > 1) refuse('malformed', 'one challenge per server');
-    if (!relayed) {
-      if (mine.length !== 1) refuse('stale_challenge', 'no challenge from this server');
-      if (!signed(mine[0])) refuse('bad_signature');
-      if (!this.takeChallenge(mine[0].challenge, p.backup, now)) refuse('stale_challenge');
-    } else if (!p.challenges.some((c: any) => hosts.has(c?.server) && signed(c))) refuse('bad_signature');
-    return p.member;
   }
 
   /** Help a repair (§4.2 step 3, §6.7.4, §6.7.10): authorised first, and the finish seals only to
@@ -398,22 +362,13 @@ export class CoSigner {
       return { v: 1, type: 'notice', re: msg.id, kind: 'helper_stopped', stops: [...this.stops.keys()] };
     },
     helper_resume(this: CoSigner, from: string, msg: any, now: number) {
-      // An approval over the request (§6.1: type ‖ id ‖ SHA-256(JCS(body without the approval))).
-      const { approval, ...body } = msg;
-      const w = what.request('helper_resume', msg.id, body);
+      // An approval over the request (§6.1: type ‖ id ‖ SHA-256(JCS(body without the approval))): lock,
+      // two devices, or the paper with this server's own challenge (core §6.2).
       const dev = this.sender(from);
       if (dev.kind !== 'device') refuse('not_device');
-      if (approval?.lock) {
-        if (approval.lock.member !== from || !dev.lock) refuse('needs_approval');
-        const e = checkAssertion(this.g, dev.lock!, w, approval.lock.assertion); if (e) refuse(e);
-      } else if (approval?.pair) {
-        const [x, y] = approval.pair;
-        if (x.member === y.member || !this.m.devices.has(x.member) || !this.m.devices.has(y.member)) refuse('approver_not_device');
-        const d = detachedDigest('pair', this.g, { what: bytesToHex(w), r: x.r });
-        if (!schnorrVerify(x.sig, d, x.member) || !schnorrVerify(y.code_sig, d, y.member)) refuse('bad_signature');
-      } else if (approval?.paper) {
-        if (this.checkRequestPaper(approval.paper, w, now) !== from) refuse('needs_approval', 'the paper approval is by the requesting device');
-      } else refuse('needs_approval', 'a resume needs lock, pair or paper');
+      const a = msg.approval;
+      if (!a?.lock && !a?.pair && !a?.paper) refuse('needs_approval', 'a resume needs lock, pair or paper');
+      requestApprovers(this.m, this.g, 'helper_resume', msg, { from: a?.pair ? undefined : from, me: this.o.host?.pub ?? this.o.me.pub, take: (c, b) => this.takeChallenge(c, b, now) });
       if (!Array.isArray(msg.ids)) refuse('malformed');
       this.clearStops(msg.ids, now);
       return { v: 1, type: 'notice', re: msg.id, kind: 'helper_resumed', stops: [...this.stops.keys()] };

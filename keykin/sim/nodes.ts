@@ -21,6 +21,8 @@ import { Inbox } from '../src/inbox.ts';
 import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList } from '../src/approval.ts';
+import { deletedDigest, verifyDeleted } from '../src/requests.ts';
+import { F1Watch } from '../src/f1.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
 import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
@@ -67,7 +69,7 @@ export class ServerNode implements Node {
   deletedAnswer() {
     const t = this.tombstone!;
     return { type: 'deleted', request: t.request, changes: t.changes, record: t.recEv, host: this.host.pub,
-      host_sig: schnorrSign(sha('keykin-deleted/1', hexToBytes(this.rec?.g ?? t.request.g), jcsBytes(t.request)), this.host.sk) };
+      host_sig: schnorrSign(deletedDigest(this.rec?.g ?? t.request.g, t.request), this.host.sk) };
   }
   private async takeDelete(from: string, body: any) {
     let proof: { request: any; changes: NostrEvent[] };
@@ -756,6 +758,31 @@ export class DeviceNode implements Node {
     return out;
   }
 
+  /** Core §6.7.7: this device's own view of which seated servers are dead, from what each answers. */
+  #f1: F1Watch | null = null;
+  f1(): F1Watch {
+    if (!this.#f1) { this.#f1 = new F1Watch(this.g); for (const s of this.servers()) this.#f1.seat(s.host!, this.now); }
+    return this.#f1;
+  }
+  /** Ask every seated server for the account's state and return the F1 card's seats. A `deleted` that
+   *  verifies destroys this device's copy (Account admin §3) and returns null; one that doesn't, like
+   *  "unknown account", counts as a denial. */
+  async checkServers(): Promise<{ seat: string; host: string; why: string }[] | null> {
+    const w = this.f1();
+    const seats = [...this.m!.seats.entries()].filter(([k, x]) => k.startsWith('server:') && x.holder).map(([seat, x]) => ({ seat, host: x.holder!.host!, key: x.holder!.key }));
+    for (const s of seats) {
+      w.seat(s.host, this.now);
+      const a = await this.bus.send(this.kp, s.key, msg('state_get', this.g, this.epochId, 'ask'));
+      if (a?.type === 'state') w.saw(s.host, 'serving', this.now);
+      else if (a?.type === 'deleted') {
+        if (verifyDeleted(this.m!, this.g, a)) { this.wipe(); return null; }
+        w.saw(s.host, 'denied', this.now);
+      } else if (a?.code === 'unknown_account') w.saw(s.host, 'denied', this.now);
+      else w.saw(s.host, 'silent', this.now);
+    }
+    return w.card(seats, this.now);
+  }
+
   /** Run a repair for `participant` with helper members (this device and others), sealing every
    *  sigma to `seal_to`. Returns the sealed sigmas, for forwarding. */
   async repairFor(helpers: { key: string; indices: number[] }[], participant: number, seal_to: string, why: string, extra: object = {}): Promise<NostrEvent[]> {
@@ -781,6 +808,7 @@ export class DeviceNode implements Node {
   async handle(from: string, body: any, sentAt: number): Promise<any> {
     try {
       switch (body.type) {
+        case 'notice': if ('shutdown' in body) this.f1().notice(body); return { type: 'ack' };
         case 'join_hello': return this.inviter!.onHello(from, body, this.now).msg;
         case 'join_nonce': this.joiner!.onNonce(from, body); return { type: 'ack' };
         case 'welcome_offer': return this.joiner!.onOffer(from, body, this.now).msg;
