@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.4 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.5 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -123,9 +123,10 @@ would.
 5. push addresses and notice channels (§8.1), and the inbox, including deliveries kept until
    acknowledged (§7.1);
 6. answered request ids until each expires (§5.6), and its own counters for §5.8.
-7. if the person opted in, the account's NIP-46 signer public keys, for watching (below);
-8. if the person set up an heir (Backup module), the heir envelope, its own piece of the envelope key and
-   the heir's public key;
+7. if the person opted in, the account's NIP-46 signer public keys, each with its client public key,
+   relays and home device, for watching (below);
+8. if the person set up an heir (Backup module), the heir record (the envelope, the heir's public key and
+   the commitments to the envelope key) and its own piece of the envelope key;
 9. the newest public server list it has verified (Server profile module).
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
@@ -133,7 +134,8 @@ co-signs, checks approvals, enforces the two waits and the stateless destructive
 wake-up pushes, and helps with repair (`need_repair`, `rerepair`). That is all.
 
 **Watching for NIP-46 (opt-in).** If the person turns it on for a server (default off), that server
-MAY keep a list of the account's NIP-46 signer **public** keys, watch its relays for kind 24133 events
+MAY keep a list of the account's NIP-46 signer **public** keys (with each one's client key, relays and
+home device), watch those relays for kind 24133 events
 addressed to them, keep each one in the inbox of the device that holds the grant (about 2 minutes,
 `ask` class), and push that device. It never holds a signer key or a grant, so it can't read the
 requests, only see when a site is talking to the account. This is how a sleeping iPhone answers a
@@ -1507,7 +1509,7 @@ Each is a short document of its own, and none may weaken anything above.
   announcements (kind 30243/10243), the operator notice.
 - **Device policy**: the destructive check, Undo from the device's own history, re-confirming staged
   events (a staged replaceable event older than the newest known is destructive), honest quiet notices.
-- **Doors and grants**: NIP-07, NIP-46 (per-site signer keys, bunker://, auth_url), NIP-55, the QRST
+- **Doors and grants**: NIP-07, NIP-46 (per-site signer keys, bunker://, watching), NIP-55, the QRST
   signer-ticket, the same-device door on iPhone, grants and scopes, the iOS push appendix.
 - **Backup**: 24 words, recovery contacts, heir. (Finding servers from the paper is the signpost, §6.7.5,
   and the old escape hatch is F3.)
@@ -1706,3 +1708,10 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - A `self` remove carries a redeal dealt by the app (M7).
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
+
+## Changes in drafts 13.2 to 13.5
+
+Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
+seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
+grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5).
