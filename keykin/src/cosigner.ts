@@ -27,6 +27,7 @@ export const NONCE_TTL_S = 120;
 /** §5.7 item 8: what the helper may coordinate. */
 export const HELPER_KINDS = new Set([1, 1111, 7, 6, 16, 9734, 20, 21, 22, 22242]);
 export const MAX_STOPS_PER_MEMBER = 3;
+export const HELPER_NEVER = new Set(['hold', 'cancel', 'push_register', 'notify_register', 'need_seeds', 'take_out', 'ecdh']);
 export const SESSION_S = 7 * 86400;
 export const MAX_HOLDS = 10;
 export const STATEMENT_MAX_AGE_S = 7 * 86400;
@@ -283,6 +284,8 @@ export class CoSigner {
     if (!id || msg.v !== 1) return ERR(id, 'malformed');
     if (msg.g !== this.g) return ERR(id, 'wrong_group');
     if (msg.epoch !== this.m.epochId) return ERR(id, 'wrong_epoch');
+    // Helper module §1: a helper never sends these.
+    if (this.m.members.get(from)?.kind === 'helper' && HELPER_NEVER.has(msg.type)) return ERR(id, 'helper_refused');
     if (typeof msg.type !== 'string' || !Object.hasOwn(this.handlers, msg.type)) return ERR(id, 'unsupported');
     const life = checkLifetime(msg.type, msg.cls, sentAt, now, meta.inboxAge ?? 0);
     if (life) return ERR(id, life);
@@ -541,6 +544,13 @@ export class CoSigner {
           // Server profile §4: a server's `new` entry carries its host-signed enrol reply, unexpired at
           // this co-sign (and, in F3, at the device's approval).
           if (n && String(ch.seat.seat).startsWith('server:')) { const e = checkEnroll(n, this.g, now); if (e) refuse(e); }
+          // Helper module §3.1: the helper's operator never runs a server (helper + one dishonest server is the key).
+          if (n) {
+            const helperOp = ch.seat.seat === 'helper' ? n.operator : this.m.seats.get('helper')?.holder?.operator;
+            const serverOps = new Set([...this.m.seats.entries()].filter(([k, x]) => k.startsWith('server:') && x.holder && k !== ch.seat.seat).map(([, x]) => x.holder!.operator));
+            if (ch.seat.seat !== 'helper') serverOps.add(n.operator);
+            if (helperOp && serverOps.has(helperOp)) refuse('helper_operator', 'the helper\'s operator may not run a server');
+          }
           break;
         }
         case 'paper': {

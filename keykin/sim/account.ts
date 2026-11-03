@@ -173,12 +173,12 @@ export async function replaceAllServers(acc: Account, A: DeviceNode, B: DeviceNo
 
 /** F6, the helper (§6.7.6): `[seat helper→H, redeal]` with one approval, then the device and one
  *  server repair the helper's three seat indices, sealed to H. (The typed join check is §4.1's.) */
-export async function addHelper(acc: Account, dev: DeviceNode, approve: (list: Change[]) => Approval): Promise<DeviceNode> {
+export async function addHelper(acc: Account, dev: DeviceNode, approve: (list: Change[]) => Approval, operator = newKey().pub): Promise<DeviceNode> {
   const { bus } = acc;
   const H = bus.add(new DeviceNode(bus, `H${++seq}`, null)) as DeviceNode;
   H.role = 'helper';
   const seat = dev.m!.record.seats.helper;
-  const entry: MemberEntry = { key: H.kp.pub, kind: 'helper', shares: seat, host: newKey().pub };
+  const entry: MemberEntry = { key: H.kp.pub, kind: 'helper', shares: seat, host: newKey().pub, operator };
   const list: Change[] = [{ seat: { seat: 'helper', new: entry, replaces: dev.m!.seats.get('helper')?.holder?.key ?? null } }, { redeal: { dealer: dev.kp.pub } }];
   await dev.submit(list, approve(list));
   const server = dev.servers().find((x) => bus.alive(x.key))!;

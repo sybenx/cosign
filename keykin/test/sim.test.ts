@@ -274,6 +274,9 @@ test('F6, the helper: seated and repaired; signs everyday posts with a server; n
   const H = await addHelper(acc, acc.A, (l) => acc.A.approveLock(l));
   assert.equal(H.m!.seats.get('helper')!.holder!.key, H.kp.pub);
   assert.ok(verifyEvent(await H.sign({ content: 'gm from the helper' })), 'helper (3) + server (1) signs, by design');
+  // Helper module §1: a helper never holds, cancels, registers push or asks for seeds or decryption.
+  for (const type of ['hold', 'cancel', 'push_register', 'need_seeds', 'ecdh'])
+    assert.equal((await acc.bus.send(H.kp, acc.servers[0].kp.pub, msg(type, acc.g, acc.epochId, 'member', {}))).code, 'helper_refused', type);
   assert.ok(verifyEvent(await H.sign({ kind: 7, content: '+', tags: [['e', '00'.repeat(32)]] })));
   await assert.rejects(H.sign({ kind: 0, content: '{"name":"x"}' }), /helper_kind/);
   await assert.rejects(H.sign({ content: 'later', created_at: acc.bus.now + 3600 }), /dated_ahead/);
@@ -344,6 +347,13 @@ test('§6.7.6 re-issue: a redeal applied during an F7 reaches the new paper by a
   acc.bus.kill(acc.A.kp.pub); acc.bus.kill(B.kp.pub);
   const { D } = await recover(acc, [acc.A, B], K);
   assert.ok(verifyEvent(await D.sign({ content: 'recovered through a re-issued item' })));
+});
+test('Helper module §3.1: the helper\'s operator never runs a server', async () => {
+  const acc = await create();
+  const { addHelper } = await import('../sim/account.ts');
+  const serverOp = acc.servers[0].enrollR.operator;
+  await assert.rejects(addHelper(acc, acc.A, (l) => acc.A.approveLock(l), serverOp), /helper_operator/);
+  await addHelper(acc, acc.A, (l) => acc.A.approveLock(l));
 });
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
