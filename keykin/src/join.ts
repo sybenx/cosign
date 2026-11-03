@@ -111,6 +111,8 @@ export class Joiner {
     if (o.from !== sealer) refuse('not_sealed_by_m', 'a welcome from a stranger');
     const rec = checkEpochRecord(o.welcome.record, { g: this.g! });
     const mem = computeMembership(rec, o.welcome.changes);
+    if (mem.invariantError) refuse('invariant', mem.invariantError);
+    if (o.recovery && o.recovery.backup !== mem.backupKey) refuse('not_current_backup');
     const me = mem.members.get(this.n);
     if (!me || me.kind !== 'device') refuse('no_add', 'no valid change adds this key');
     const addP = mem.accepted.find((p) => p.type === 'add' && (p.c.change as any).add.key === this.n)!;
@@ -124,11 +126,13 @@ export class Joiner {
     const servers = new Set([...mem.members.values()].filter((x) => x.kind === 'server').map((x) => x.key));
     const shares = new Map<number, bigint>();
     for (const i of me!.shares) {
-      const parts = o.sigmas.filter((s) => s.index === i && s.state === sh);
-      const fromHelper = parts.filter((s) => s.from === sealer);
-      const fromServers = parts.filter((s) => servers.has(s.from));
-      if (!fromHelper.length) refuse('sigma_missing', 'the inviter\'s sigma');
-      if (o.recovery ? new Set(fromServers.map((s) => s.from)).size < 2 : !fromServers.length) refuse('sigma_missing', 'a server\'s sigma');
+      // Exactly the sealer's sigma and the servers' (one; two in a recovery join): stray parts are ignored.
+      const at = o.sigmas.filter((s) => s.index === i && s.state === sh);
+      const fromHelper = at.find((s) => s.from === sealer);
+      const serverKeys = [...new Set(at.filter((s) => servers.has(s.from)).map((s) => s.from))].slice(0, o.recovery ? 2 : 1);
+      if (!fromHelper) refuse('sigma_missing', 'the inviter\'s sigma');
+      if (serverKeys.length < (o.recovery ? 2 : 1)) refuse('sigma_missing', 'a server\'s sigma');
+      const parts = [fromHelper!, ...serverKeys.map((k) => at.find((s) => s.from === k)!)];
       shares.set(i, repairShare(C, parts.map((p) => p.sigma), i));
     }
     return { membership: mem, shares, C };

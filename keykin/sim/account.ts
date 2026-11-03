@@ -139,7 +139,7 @@ export async function recover(acc: Account, lost: DeviceNode[]) {
   // F9: report the lost devices and redeal, approved by `recovery`; D deals, the holder co-signs.
   if (lost.length) {
     const list: Change[] = [...lost.map((l) => ({ remove: l.kp.pub }) as Change), { redeal: { dealer: D.kp.pub } }];
-    await D.submit(list, P.approve(list, r.waited), { cosigner: (ev) => P.cosign(ev, two, r.state) });
+    await D.submit(list, P.approve(list, r.waited), { cosigner: (ev, extra) => P.cosign(ev, two, r.state, extra) });
   }
   // The recovery app destroys the backup's shares and the release bundle (§6.5 step 6).
   P.shares = null; P.bundles.clear();

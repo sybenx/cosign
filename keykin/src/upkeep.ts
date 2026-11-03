@@ -30,11 +30,17 @@ export const postListBackup = (m: Membership, list: Change[]) => (list.find((c) 
 
 export interface Upload { list: Change[]; approval: Approval; redealId: string; items: { type: string; to: string; wrap: unknown; release?: boolean }[]; at: number; paperItem?: Item; held: Set<string> }
 
-/** `upload {list, approval, items}` (§6.7.3): refused without the approval list and its valid approval. */
-export function acceptUpload(auth: Authority, msg: any, now: number): Upload {
-  const { error } = checkApproval(auth, msg.list, msg.approval);
+/** `upload {list, approval, items}` (§6.7.3): refused without the approval list and its valid
+ *  approval, from anyone but the list's dealer (a current device), for a redeal already co-signed,
+ *  or to replace an upload already held. */
+export function acceptUpload(m: Membership, from: string, msg: any, now: number, held?: Upload): Upload {
+  const { error } = checkApproval(m.authority, msg.list, msg.approval);
   if (error) refuse(error, 'upload without a valid approval');
   if (msg.approval.expiry !== undefined && msg.approval.expiry < now) refuse('approval_expired');
+  const ph = (msg.list as Change[]).find((c) => 'redeal' in c) as { redeal: { dealer: string } } | undefined;
+  if (!ph || ph.redeal.dealer !== from || !m.devices.has(from) || m.removed.has(from)) refuse('not_dealer', 'only the list\'s dealer uploads');
+  if (m.redeals.has(msg.redeal)) refuse('already_cosigned');
+  if (held && uploadLive(held, now)) refuse('upload_held', 'an upload for this redeal is already held');
   return { list: msg.list, approval: msg.approval, redealId: msg.redeal, items: msg.items ?? [], at: now, paperItem: msg.paper_item, held: new Set() };
 }
 export const uploadLive = (u: Upload, now: number) => now - u.at <= UPLOAD_TTL_S;
@@ -55,19 +61,19 @@ export function redealMissing(m: Membership, list: Change[], r: Redeal, u: Uploa
 
 // --- rerepair proofs (§6.7.4) ---------------------------------------------------------------
 
-/** A Schnorr proof of knowledge of the share at index `i` at an earlier state, bound to a server
- *  challenge: `e = H("keykin-rerepair/1" ‖ g ‖ i ‖ P ‖ R ‖ challenge)`. */
-export function rerepairProof(g: string, i: number, s: bigint, challenge: string) {
+/** A Schnorr proof of knowledge of the share at index `i` at an earlier state, bound to the owner's
+ *  member key and a server challenge issued to it: `e = H("keykin-rerepair/1" ‖ g ‖ key ‖ i ‖ P ‖ R ‖ challenge)`. */
+export function rerepairProof(g: string, key: string, i: number, s: bigint, challenge: string) {
   const k = mod(BigInt('0x' + bytesToHex(randomBytes(32))));
   const R = mul(k), P = mul(s);
-  const e = mod(BigInt('0x' + bytesToHex(sha('keykin-rerepair/1', hexToBytes(g), u32be(i), compBytes(P), compBytes(R), hexToBytes(challenge)))));
+  const e = mod(BigInt('0x' + bytesToHex(sha('keykin-rerepair/1', hexToBytes(g), hexToBytes(key), u32be(i), compBytes(P), compBytes(R), hexToBytes(challenge)))));
   return { i, R: compHex(R), z: scalarHex(mod(k + e * s)) };
 }
 /** Verify against `P_i` derived from the commitment of the claimed earlier state. */
-export function verifyRerepair(g: string, C: Commitment, challenge: string, p: { i: number; R: string; z: string }): boolean {
+export function verifyRerepair(g: string, key: string, C: Commitment, challenge: string, p: { i: number; R: string; z: string }): boolean {
   try {
     const P = derivePoint(C, BigInt(p.i)), R = pointFrom(p.R), z = scalarFrom(p.z);
-    const e = mod(BigInt('0x' + bytesToHex(sha('keykin-rerepair/1', hexToBytes(g), u32be(p.i), compBytes(P), compBytes(R), hexToBytes(challenge)))));
+    const e = mod(BigInt('0x' + bytesToHex(sha('keykin-rerepair/1', hexToBytes(g), hexToBytes(key), u32be(p.i), compBytes(P), compBytes(R), hexToBytes(challenge)))));
     return mul(z).equals(R.add(mul(e, P)));
   } catch { return false; }
 }

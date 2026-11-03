@@ -31,10 +31,14 @@ test('an upload without a valid approval is refused', () => {
   const m = computeMembership(F.rec, []);
   const list: Change[] = [{ remove: A.kp.pub }, { redeal: { dealer: A.kp.pub } }];
   const now = Math.floor(Date.now() / 1000);
-  assert.equal(code(() => acceptUpload(m.authority, { list, approval: {}, items: [] }, now)), 'bad_approval');
+  assert.equal(code(() => acceptUpload(m, A.kp.pub, { list, approval: {}, items: [] }, now)), 'bad_approval');
   const ap = approveLock(F.g, F.epochId, list, now + 3600, A.kp.pub, A.lock!);
-  assert.equal(code(() => acceptUpload(m.authority, { list, approval: ap, items: [] }, now)), 'ok');
-  assert.equal(code(() => acceptUpload(m.authority, { list, approval: ap, items: [] }, now + 7200)), 'approval_expired');
+  assert.equal(code(() => acceptUpload(m, A.kp.pub, { list, approval: ap, items: [] }, now)), 'ok');
+  assert.equal(code(() => acceptUpload(m, A.kp.pub, { list, approval: ap, items: [] }, now + 7200)), 'approval_expired');
+  // Review 1 #6: only the list's dealer uploads, once.
+  assert.equal(code(() => acceptUpload(m, F.servers[0].kp.pub, { list, approval: ap, items: [] }, now)), 'not_dealer');
+  const held = acceptUpload(m, A.kp.pub, { list, approval: ap, items: [], redeal: 'ab'.repeat(16) }, now);
+  assert.equal(code(() => acceptUpload(m, A.kp.pub, { list, approval: ap, items: [], redeal: 'ab'.repeat(16) }, now, held)), 'upload_held');
 });
 
 test('backup material: the base must match its pin and the sum must land on P_b', () => {

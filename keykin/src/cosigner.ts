@@ -11,10 +11,14 @@ import { commit, signShare, hedge, type SignCommit, type Nonces } from './frost.
 import { ecdhAnswer } from './ecdh.ts';
 import { checkAssertion } from './lock.ts';
 import { eventId, schnorrVerify, tag, type KeyPair, type NostrEvent, type Unsigned } from './event.ts';
-import { checkApproval, approvalType, checkWaited, signWaited, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
+import { checkApproval, approvalType, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
 import { computeMembership, parseChange, type Membership } from './membership.ts';
-import { pointFrom, type Commitment } from './curve.ts';
-import { stateOf, type State } from './redeal.ts';
+import { pointFrom, commitmentFrom, type Commitment } from './curve.ts';
+import { stateOf, commitmentAt, type State } from './redeal.ts';
+import { verifyRerepair, redealMissing, postListView, type Upload } from './upkeep.ts';
+import { itemHash } from './redeal.ts';
+import { takenIndices } from './membership.ts';
+import { jcs } from './bytes.ts';
 import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type EpochContent, type MemberEntry, type Waited } from './types.ts';
 
 export const NONCE_TTL_S = 120;
@@ -33,6 +37,9 @@ export interface CoSignerOpts {
   policy?: (event: Unsigned, from: string) => boolean;
   /** Upkeep duties a host adds before co-signing a redeal or seat change (§6.7.3). Throws to refuse. */
   upkeep?: (parsed: ReturnType<typeof parseChange>, m: Membership) => void;
+  /** A server's upload store (§6.7.3): required for `kind: 'server'`, so a redeal is never
+   *  co-signed without its deliveries held. */
+  uploads?: { get(redealId: string): Upload | undefined; liveSeatHolders(view: Map<string, MemberEntry>): number };
 }
 
 const ERR = (re: string, code: string) => ({ v: 1, type: 'error', re, code });
@@ -46,7 +53,7 @@ export class CoSigner {
   burst = new BurstCounter();
   holds = new Map<string, Hold>();
   recoveries = new Map<string, Recovery>();
-  challenges = new Map<string, number>();         // challenge hex → expiry
+  challenges = new Map<string, { exp: number; to: string }>();   // challenge hex → expiry, and who asked
   signpostIds = new Set<string>();
   #twoCall = new Map<string, { nonces: Nonces[]; mine: SignCommit[]; at: number; used: boolean; from: string; signers: number[] }>();
 
@@ -61,10 +68,71 @@ export class CoSigner {
   /** Take changes (a delivery, `changes`, a catch-up union): the membership is recomputed. */
   addChanges(evs: NostrEvent[]) {
     const ids = new Set(this.changes.map((e) => e.id));
-    for (const e of evs) if (!ids.has(e.id)) { this.changes.push(e); ids.add(e.id); }
-    this.m = computeMembership(this.o.record, this.changes, this.W);
+    const next = [...this.changes, ...evs.filter((e) => !ids.has(e.id))];
+    const m = computeMembership(this.o.record, next, this.W);
+    // A member refuses to adopt a view that breaks an invariant (§3.3), and shows it.
+    if (m.invariantError) { this.refusedBatches.push({ events: evs, why: m.invariantError }); return false; }
+    this.changes = next; this.m = m;
+    return true;
   }
+  refusedBatches: { events: NostrEvent[]; why: string }[] = [];
   setState(s: State) { this.state = s; }
+
+  /** Use up a challenge this co-signer issued to `to` (one of `to`), if fresh (§6.1, §6.5). */
+  takeChallenge(c: string, to: string | string[], now = this.o.now()): boolean {
+    const x = this.challenges.get(c);
+    if (!x || x.exp < now || !(Array.isArray(to) ? to : [to]).includes(x.to)) return false;
+    this.challenges.delete(c);
+    return true;
+  }
+
+  /** May this member help repair `participant` for `sealTo` (§4.2 step 3, §4.4, §6.7.4)? Throws if not.
+   *  The sigma always goes to the index's assigned owner, never to whoever asks. */
+  answeredRepair = new Set<string>();
+  authorizeRepair(from: string, body: { participant: number; sealTo: string; why: string; state: string; proof?: any }, now = this.o.now()) {
+    const m = this.m;
+    if (body.state !== stateOf(this.state)) refuse('stale');
+    const p = body.participant;
+    if (m.record.seats.backup.includes(p)) refuse('backup_seat', 'never repaired by need_repair or a join');
+    const owner = [...m.members.values()].find((x) => x.shares.includes(p));
+    if (!owner || m.removed.has(owner.key) || owner.kind === 'backup') refuse('not_assigned', 'no valid change assigns this index');
+    if (body.sealTo !== owner!.key) refuse('not_assigned', 'a repair is sealed only to the index\'s owner');
+    const requester = this.m.members.get(from);
+    switch (body.why) {
+      case 'add': {
+        // A join: the inviting device, or the backup holder in a recovery session (§4.4).
+        if (owner!.kind !== 'device' || !m.accepted.some((x) => x.type === 'add' && (x.c.change as any).add.key === owner!.key)) refuse('not_assigned');
+        const okFrom = (requester?.kind === 'device' && from !== owner!.key) || (requester?.kind === 'backup' && this.session(now)?.backup === from);
+        if (!okFrom) refuse('not_inviter');
+        break;
+      }
+      case 'seat': {
+        // `need_repair`: the seat's current holder asks, or a current device fills the seat in the
+        // foreground (F1); either way the sigma is sealed to the holder. Once per key and index.
+        if (!['server', 'helper'].includes(owner!.kind)) refuse('not_assigned');
+        if (from !== owner!.key && !(requester?.kind === 'device')) refuse('not_assigned');
+        if (this.answeredRepair.has(`${owner!.key}:${p}`)) refuse('already_answered');
+        break;
+      }
+      case 'rerepair': {
+        // The owner proves its share at an earlier state of its own chain, over a challenge issued to it.
+        const pr = body.proof;
+        if (!pr || !this.takeChallenge(pr.challenge, owner!.key, now)) refuse('stale_challenge');
+        const oldIds = new Set<string>(pr.state ?? []);
+        if ([...oldIds].some((i) => !m.redeals.has(i))) refuse('unknown_state');
+        const C = commitmentAt(commitmentFrom(m.record.commitment), [...m.redeals.values()].filter((x) => oldIds.has(x.r.id)).map((x) => x.r));
+        if (pr.proof?.i !== p || !verifyRerepair(m.g, owner!.key, C, pr.challenge, pr.proof)) refuse('bad_proof');
+        if (!requester || requester.kind === 'backup') refuse('not_member');
+        break;
+      }
+      default: refuse('bad_repair');
+    }
+  }
+  /** A `need_repair` answer that succeeded uses up the server's one answer (§6.7.4). */
+  repairSucceeded(owner: string, index: number) { this.answeredRepair.add(`${owner}:${index}`); }
+
+  /** The current signpost's event id (§6.7.5), from co-signing it or from a welcome: its delete is refused. */
+  noteSignpost(id: string) { this.signpostIds.add(id); }
 
   /** What a server keeps across a restart (§2, §5.6): answered ids, waits, cancels, challenges.
    *  Never nonces: a restart loses every round in flight (§5.2). Shares are the host's to store. */
@@ -99,7 +167,7 @@ export class CoSigner {
     if (!id || msg.v !== 1) return ERR(id, 'malformed');
     if (msg.g !== this.g) return ERR(id, 'wrong_group');
     if (msg.epoch !== this.m.epochId) return ERR(id, 'wrong_epoch');
-    if (!(msg.type in this.handlers)) return ERR(id, 'unsupported');
+    if (typeof msg.type !== 'string' || !Object.hasOwn(this.handlers, msg.type)) return ERR(id, 'unsupported');
     const life = checkLifetime(msg.type, msg.cls, sentAt, now, meta.inboxAge ?? 0);
     if (life) return ERR(id, life);
     const hash = bodyHash(msg);
@@ -107,7 +175,7 @@ export class CoSigner {
     if ('answer' in seen) return seen.answer;
     if ('reused' in seen) return ERR(id, 'id_reused');
     if ('full' in seen) return ERR(id, 'too_many_requests');
-    this.replay.claim(from, id, hash, msg.cls as Cls, now);
+    this.replay.claim(from, id, hash, msg.cls as Cls, now, sentAt);
     let answer: any;
     try { answer = (this.handlers as any)[msg.type].call(this, from, msg, now); }
     catch (e) { answer = ERR(id, e instanceof KeykinError ? e.code : 'internal'); (answer as any).detail = String((e as Error).message ?? e); }
@@ -191,8 +259,8 @@ export class CoSigner {
     const signpostDs = new Set(this.m.backupKeys.map(signpostD));
     if (ev.kind === 5 && ev.tags.some((t) => (t[0] === 'e' && this.signpostIds.has(t[1])) || (t[0] === 'a' && [...signpostDs].some((d) => t[1] === `${KIND_SIGNPOST}:${this.g}:${d}`))))
       refuse('machinery', 'a signpost delete is always refused');
-    if (ev.kind === KIND_SIGNPOST && signpostDs.has(tag(ev, 'd') ?? '')) { this.checkSignpost(from, ev); return { evId, lockApproved: false }; }
-    if (ev.kind === KIND_CHANGE) { this.checkChangeToSign(from, ev, mode, now); return { evId, lockApproved: false }; }
+    if (ev.kind === KIND_SIGNPOST && signpostDs.has(tag(ev, 'd') ?? '')) { this.checkSignpost(from, ev); return { evId, lockApproved: false, signpost: true }; }
+    if (ev.kind === KIND_CHANGE) { this.checkChangeToSign(from, ev, mode, now, msg); return { evId, lockApproved: false }; }
     if (mode === 'recovery') refuse('recovery_session', 'only recovery-approved changes in a session');
     // The stateless destructive rule (item 7).
     let lockApproved = false;
@@ -213,8 +281,9 @@ export class CoSigner {
   }
 
   /** §5.7 item 5 for a change: valid, fresh, and safe to add to this co-signer's membership. */
-  private checkChangeToSign(from: string, ev: Unsigned, mode: 'everyday' | 'recovery', now: number) {
-    const p = parseChange(this.o.record, { ...ev, id: eventId(ev), sig: '' }, false);
+  private checkChangeToSign(from: string, ev: Unsigned, mode: 'everyday' | 'recovery', now: number, msg: any) {
+    const self = { ...ev, id: eventId(ev), sig: '' } as NostrEvent;
+    const p = parseChange(this.o.record, self, false);
     const a = p.c.approval;
     const t = approvalType(a);
     const { error, approvers } = checkApproval(this.m.authority, p.c.list, a);
@@ -225,11 +294,25 @@ export class CoSigner {
       if (!(a.expiry! > now && a.expiry! <= now + MAX_EXPIRY_S + 30)) refuse('approval_expired');
     }
     for (const k of approvers) if (this.m.removed.has(k) || !this.m.devices.has(k)) refuse('approver_removed');
+    // Only the current lock counts here (every member accepts any lock the device ever had, §3.2).
+    if (t === 'lock') {
+      const cur = this.m.locks.get(a.lock!.member);
+      if (!cur || checkAssertion(this.g, cur, changeWhat(this.g, this.m.epochId, p.c.list, a.expiry!), a.lock!.assertion)) refuse('not_current_lock');
+    }
+    // A list is co-signed as one: its redeal first, then each other change with the signed redeal
+    // presented beside it, so a seat or remove never applies without its redeal (§6.7.2).
+    const listEvents: NostrEvent[] = [];
+    if (p.type !== 'redeal' && p.c.list.some((x) => 'redeal' in x)) {
+      const rd = (msg.list_events ?? []).find((e: NostrEvent) => {
+        try { const q = parseChange(this.o.record, e); return q.type === 'redeal' && q.listHash === p.listHash; } catch { return false; }
+      });
+      if (!rd) refuse('list_redeal_first', 'present the co-signed redeal of this list');
+      listEvents.push(rd);
+    }
     if (t === 'paper') {
       if (a.paper!.backup !== this.m.backupKey) refuse('not_current_backup');
       if (a.paper!.server !== (this.o.host?.pub ?? this.o.me.pub)) refuse('wrong_challenge_server');
-      const exp = this.challenges.get(a.paper!.challenge);
-      if (!exp || exp < now) refuse('stale_challenge');
+      if (!this.takeChallenge(a.paper!.challenge, [a.paper!.member, a.paper!.backup], now)) refuse('stale_challenge');
     }
     if (t === 'recovery') {
       const r = a.recovery!;
@@ -238,11 +321,18 @@ export class CoSigner {
       if (!sess || sess.backup !== from) refuse('no_recovery_session');
       if (r.waited.some((w: Waited) => now > w.end + STATEMENT_MAX_AGE_S)) refuse('statement_too_old');
     }
-    // The change must leave a valid membership.
+    // The change must leave a valid membership: try it (§3.3).
     const ch: any = p.c.change;
+    const trial = computeMembership(this.o.record, [...this.changes, ...listEvents], this.W, [self]);
+    if (trial.refused.some((x) => x.id === self.id)) refuse(trial.refused.find((x) => x.id === self.id)!.code);
+    if (trial.invariantError) refuse('invariant', trial.invariantError);
+    const leaving = new Set<string>(p.c.list.flatMap((x: any) => ('remove' in x ? [x.remove] : 'seat' in x ? [this.m.seats.get(x.seat.seat)?.holder?.key ?? ''] : 'paper' in x ? [x.paper.replaces] : [])));
+    for (const k of this.m.members.keys()) if (!trial.members.has(k) && !leaving.has(k)) refuse('invariant', 'the change would drop a member it does not name');
     switch (p.type) {
       case 'add': {
         if (this.m.removed.has(ch.add.key) || this.m.members.has(ch.add.key)) refuse('key_removed');
+        const taken = takenIndices(this.m);
+        if (trial.voidAdds.has(ch.add.key) || trial.members.get(ch.add.key)?.shares.some((i) => taken.has(i))) refuse('index_taken');
         break;
       }
       case 'remove': {
@@ -252,6 +342,9 @@ export class CoSigner {
       }
       case 'lock': {
         if (!this.m.devices.has(ch.lock.member)) refuse('not_member');
+        const cur = this.m.locks.get(ch.lock.member)?.pub ?? null;
+        if (ch.lock.replaces !== cur && !(cur === null && String(ch.lock.replaces).startsWith('void:'))) refuse('lock_conflict', 'replaces is not the current lock');
+        if (jcs(trial.locks.get(ch.lock.member)) !== jcs(ch.lock.new)) refuse('lock_conflict');
         break;
       }
       case 'seat': {
@@ -264,10 +357,15 @@ export class CoSigner {
           const hosts = [...this.m.members.values()].map((x) => x.host).filter(Boolean);
           if (this.m.members.has(n.key) || this.m.removed.has(n.key) || hosts.includes(n.host)) refuse('invariant', 'I7');
         }
+        // The new server's host-signed enroll reply is the Server profile module's (not checked here).
         break;
       }
       case 'paper': {
         if (ch.paper.replaces !== this.m.backupKey) refuse('not_current_backup');
+        if (this.m.members.has(ch.paper.key) || this.m.removed.has(ch.paper.key)) refuse('invariant', 'a paper key is a fresh key');
+        // The base material item travels with the request: its hash is `inner`, signed by K (§6.7.3).
+        const it = msg.material;
+        if (!it || itemHash(it) !== ch.paper.inner || it.to !== ch.paper.key || !schnorrVerify(it.sig, sha(itemHash(it)), ch.paper.key)) refuse('bad_material');
         break;
       }
       case 'redeal': {
@@ -275,6 +373,12 @@ export class CoSigner {
         if (r.abandons.some((x: string) => this.m.redeals.get(x)?.withRemove)) refuse('abandons_remove_redeal');
         if (r.base.some((b: string) => this.m.abandoned.has(b))) refuse('abandoned');
         if (this.m.abandoned.has(r.id)) refuse('abandoned');
+        if (this.o.kind === 'server') {
+          if (!this.o.uploads) refuse('no_upload_store');
+          const view = postListView(this.m, p.c.list);
+          const missing = redealMissing(this.m, p.c.list, r, this.o.uploads!.get(r.id), this.o.uploads!.liveSeatHolders(view));
+          if (missing.length) refuse('missing', missing.join(','));
+        }
         break;
       }
     }
@@ -315,7 +419,7 @@ export class CoSigner {
         if (!x || x.D !== c.D || x.E !== c.E) refuse('bad_commitments', 'not the commitments returned for after');
       }
     }
-    const { evId, lockApproved } = this.checkEvent(from, msg, mode, now);
+    const { evId, lockApproved, signpost } = this.checkEvent(from, msg, mode, now) as { evId: string; lockApproved: boolean; signpost?: boolean };
     if (!twoCall) {
       const ctx = sha(jcsBytes(msg));
       const cs = mine.map((i) => commit(this.state.C, i, this.state.shares.get(i)!, hedge(this.state.shares.get(i)!, ctx)));
@@ -328,6 +432,7 @@ export class CoSigner {
     const all = twoCall ? (msg.commitments as SignCommit[]) : [...msg.commitments, ...myCommits];
     const z = nonces.map((n) => ({ i: n.i, z: signShare(this.state.C, n.i, this.state.shares.get(n.i)!, n, evId, all) }));
     if (msg.event.kind === 5 && !lockApproved && msg.hold === undefined) this.burst.add(now, deletionTargets(msg.event));
+    if (signpost) this.noteSignpost(evId);
     return { v: 1, type: 'partial', re: msg.id, commitments: twoCall ? [] : myCommits, z };
   }
 
@@ -421,10 +526,10 @@ export class CoSigner {
   }
 
   private challenge(from: string, msg: any, now: number) {
-    if (from !== this.m.backupKey && !this.m.devices.has(from)) refuse('not_member');
+    if (!this.m.members.has(from) || this.m.removed.has(from)) refuse('not_member');
     const c = bytesToHex(randomBytes(16));
-    this.challenges.set(c, now + 120 + 30);
-    for (const [k, e] of this.challenges) if (e < now) this.challenges.delete(k);
+    this.challenges.set(c, { exp: now + 120 + 30, to: from });
+    for (const [k, e] of this.challenges) if (e.exp < now) this.challenges.delete(k);
     return { v: 1, type: 'challenge', re: msg.id, challenge: c, server: this.o.host?.pub ?? this.o.me.pub };
   }
 
@@ -437,9 +542,7 @@ export class CoSigner {
     const wait = recoveryWaitId(from, this.m.epochId, r);
     const existing = this.recoveries.get(wait);
     if (!existing) {
-      const exp = this.challenges.get(challenge);
-      if (!exp || exp < now) refuse('stale_challenge');
-      this.challenges.delete(challenge);
+      if (!this.takeChallenge(challenge, from, now)) refuse('stale_challenge');
       if (!schnorrVerify(sig, detachedDigest('release_request', this.g, { r, challenge }), from)) refuse('bad_signature');
       const rec: Recovery = { wait, backup: from, r, start: now, end: now + this.W, cancelled: this.cancelledWaits.has(wait), withdrawn: false };
       this.recoveries.set(wait, rec);

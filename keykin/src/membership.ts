@@ -113,8 +113,8 @@ export interface Membership {
  *  lowest change hash winning. When candidates disagree: `void` empties the chain until a
  *  `void:<id>` change, `lowest` takes the lowest hash (paper changes). */
 function follow<N>(first: { id: string | null; value: N | null }, cands: { hash: string; replaces: string | null; newId: string | null; value: N | null; forceVoid?: boolean }[],
-  same: (a: any, b: any) => boolean, onConflict: 'void' | 'lowest', retired: (id: string) => void) {
-  let cur = first, voided: string[] = [];
+  same: (a: any, b: any) => boolean, onConflict: 'void' | 'lowest', retired: (id: string) => void, voided0: string[] = []) {
+  let cur = first, voided: string[] = voided0;
   const used = new Set<string>();
   for (let guard = 0; guard < 10_000; guard++) {
     const step = cands.filter((c) => !used.has(c.hash) && (cur.id !== null ? c.replaces === cur.id : voided.length ? voided.some((v) => c.replaces === `void:${v}`) : c.replaces === null));
@@ -137,15 +137,16 @@ function follow<N>(first: { id: string | null; value: N | null }, cands: { hash:
   return { cur, voided };
 }
 
-export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W_DEFAULT): Membership {
+/** `proposed` are changes not yet group-signed (a co-signer's trial of what it is asked to sign). */
+export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W_DEFAULT, proposed: NostrEvent[] = []): Membership {
   const g = rec.g, epochId = rec.epoch.id;
   const refused: { id: string; code: string }[] = [];
   const parsed: Parsed[] = [];
   const seenIds = new Set<string>();
-  for (const ev of events) {
+  for (const ev of [...events, ...proposed]) {
     if (seenIds.has(ev?.id)) continue;
     seenIds.add(ev?.id);
-    try { parsed.push(parseChange(rec, ev)); } catch (e) { refused.push({ id: ev?.id, code: e instanceof KeykinError ? e.code : 'malformed' }); }
+    try { parsed.push(parseChange(rec, ev, !proposed.includes(ev))); } catch (e) { refused.push({ id: ev?.id, code: e instanceof KeykinError ? e.code : 'malformed' }); }
   }
   const recDevices = rec.members.filter((m) => m.kind === 'device');
   const recBackup = rec.members.find((m) => m.kind === 'backup')?.key ?? null;
@@ -192,18 +193,31 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
   // Seats.
   const seats = new Map<string, SeatState>();
   const seatCh = of('seat');
-  const hostOfNew = new Map<string, string[]>();
-  for (const { p, ch } of seatCh) if (ch.seat.new?.host) hostOfNew.set(ch.seat.new.host, [...(hostOfNew.get(ch.seat.new.host) ?? []), `${ch.seat.seat}|${p.listHash}`]);
   const recordKeys = new Set(rec.members.map((m) => m.key));
   const seatIds = [...rec.seats.servers.map((i) => `server:${i}`), 'helper'];
+  const winners = new Map<string, string | null>();       // seat → the list hash that seated its holder
   for (const sid of seatIds) {
     const first = sid === 'helper' ? rec.members.find((m) => m.kind === 'helper') : rec.members.find((m) => m.kind === 'server' && `server:${m.shares[0]}` === sid);
     const cands = seatCh.filter(({ ch }) => ch.seat.seat === sid)
       .filter(({ ch }) => !ch.seat.new || !(everDevice.has(ch.seat.new.key) || recordKeys.has(ch.seat.new.key) || rec.removed.includes(ch.seat.new.key)))
-      .map(({ p, ch }) => ({ hash: p.listHash, replaces: ch.seat.replaces, newId: ch.seat.new?.key ?? null, value: ch.seat.new as MemberEntry | null,
-        forceVoid: !!ch.seat.new?.host && new Set((hostOfNew.get(ch.seat.new.host) ?? []).map((x) => x.split('|')[0])).size > 1 }));
+      .map(({ p, ch }) => ({ hash: p.listHash, replaces: ch.seat.replaces, newId: ch.seat.new?.key ?? null, value: ch.seat.new as MemberEntry | null }));
     const same = (a: any, b: any) => a.newId === b.newId || (a.value?.host && a.value?.host === b.value?.host);
     const r = follow({ id: first?.key ?? null, value: first ?? null }, cands, same, 'void', (k) => removed.add(k));
+    seats.set(sid, { holder: r.cur.value, voided: r.voided });
+    winners.set(sid, r.cur.value && r.cur.value !== first ? cands.filter((c) => c.newId === r.cur.id).map((c) => c.hash).sort()[0] ?? null : null);
+  }
+  // One host in two seats at once (§6.7.2): both holders' seatings are void. A host that held a seat
+  // before may hold another later (I7), so the rule is on the resulting holders, not on history.
+  const byHost = new Map<string, string[]>();
+  for (const [sid, st] of seats) if (st.holder?.host) byHost.set(st.holder.host, [...(byHost.get(st.holder.host) ?? []), sid]);
+  for (const sids of byHost.values()) if (sids.length > 1) for (const sid of sids) {
+    const st = seats.get(sid)!;
+    removed.add(st.holder!.key);
+    const w = winners.get(sid);
+    // A `void:<id>` reseat can fill it again.
+    const cands = seatCh.filter(({ ch }) => ch.seat.seat === sid && String(ch.seat.replaces).startsWith('void:') && ch.seat.new?.host !== st.holder!.host)
+      .map(({ p, ch }) => ({ hash: p.listHash, replaces: ch.seat.replaces, newId: ch.seat.new?.key ?? null, value: ch.seat.new as MemberEntry | null }));
+    const r = follow({ id: null, value: null }, cands, (a: any, b: any) => a.newId === b.newId, 'void', (k) => removed.add(k), w ? [w] : []);
     seats.set(sid, { holder: r.cur.value, voided: r.voided });
   }
 
@@ -222,7 +236,8 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
   for (const { ch } of of('add')) {
     const a = ch.add, indices = deviceIndices(g, epochId, a.key, a.salt);
     const prev = adds.get(a.key) ?? [];
-    if (!prev.some((x) => x.salt === a.salt)) prev.push({ salt: a.salt, lock: a.lock, indices });
+    // The same add twice counts once; two different adds of one key (salt or lock) void it (§3.2).
+    if (!prev.some((x) => x.salt === a.salt && jcs(x.lock) === jcs(a.lock))) prev.push({ salt: a.salt, lock: a.lock, indices });
     adds.set(a.key, prev);
     indices.forEach((i) => claim(i, a.key));
   }
@@ -255,17 +270,21 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
     x.r.abandons.forEach((a) => abandoned.add(a));
   }
 
-  // The membership.
+  // The membership. One key is one member: a key that would hold two entries breaks the invariants.
+  const entries: MemberEntry[] = [];
+  for (const m of recDevices) if (!removed.has(m.key)) entries.push({ ...m, lock: locks.get(m.key) ?? null });
+  for (const [k, l] of adds) if (!voidAdds.has(k) && !removed.has(k)) entries.push({ key: k, kind: 'device', shares: l[0].indices, lock: locks.get(k) ?? null });
+  for (const s of seats.values()) if (s.holder && !removed.has(s.holder.key)) entries.push(s.holder);
+  if (backupKey && !removed.has(backupKey)) entries.push({ key: backupKey, kind: 'backup', shares: rec.seats.backup });
+  for (const m of rec.members) if (!['device', 'server', 'helper', 'backup'].includes(m.kind) && !removed.has(m.key)) entries.push(m);
   const members = new Map<string, MemberEntry>();
-  for (const m of recDevices) if (!removed.has(m.key)) members.set(m.key, { ...m, lock: locks.get(m.key) ?? null });
-  for (const [k, l] of adds) if (!voidAdds.has(k) && !removed.has(k)) members.set(k, { key: k, kind: 'device', shares: l[0].indices, lock: locks.get(k) ?? null });
-  for (const s of seats.values()) if (s.holder && !removed.has(s.holder.key)) members.set(s.holder.key, s.holder);
-  if (backupKey && !removed.has(backupKey)) members.set(backupKey, { key: backupKey, kind: 'backup', shares: rec.seats.backup });
-  for (const m of rec.members) if (!['device', 'server', 'helper', 'backup'].includes(m.kind) && !removed.has(m.key)) members.set(m.key, m);
+  let dupKey: string | null = null;
+  for (const e of entries) { if (members.has(e.key)) dupKey = e.key; else members.set(e.key, e); }
   const devices = new Set([...members.values()].filter((m) => m.kind === 'device').map((m) => m.key));
 
   let invariantError: string | null = null;
-  try { checkInvariants(g, [...members.values()], rec.seats, removed); } catch (e) { invariantError = (e as Error).message; }
+  try { checkInvariants(g, entries, rec.seats, removed); } catch (e) { invariantError = (e as Error).message; }
+  if (dupKey && !invariantError) invariantError = `invariant: member: ${dupKey.slice(0, 8)} holds two entries`;
 
   const recordHosts = new Set(rec.members.filter((m) => m.kind === 'server').map((m) => m.host));
   const uncosigned = [...new Set(seatCh.map(({ p }) => p).filter((p) => !p.c.cosig || !recordHosts.has(p.c.cosig.host) && !auth.hostKeys.has(p.c.cosig.host)).map((p) => p.listHash))];

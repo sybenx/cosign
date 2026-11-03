@@ -16,12 +16,12 @@ const ALLOWED: Record<string, Cls[]> = {
 };
 const MEMBER = ['cancel', 'withdraw', 'upload', 'upload_held', 'push_register', 'push_unregister', 'notify_register', 'paper_reissue',
   'delta', 'paper_ck', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack'];
-export const allowedClasses = (type: string): Cls[] => ALLOWED[type] ?? (MEMBER.includes(type) ? ['member'] : ['ask']);
+export const allowedClasses = (type: string): Cls[] => (Object.hasOwn(ALLOWED, type) ? ALLOWED[type] : MEMBER.includes(type) ? ['member'] : ['ask']);
 
 /** Null when fresh; otherwise the refusal code. `sentAt` is the rumor's `created_at`; `inboxAge`
  *  the inbox's `age` (§8.2), whichever makes the request older wins. */
 export function checkLifetime(type: string, cls: string, sentAt: number, now: number, inboxAge = 0): string | null {
-  if (!(cls in LIFETIME_S) || !allowedClasses(type).includes(cls as Cls)) return 'bad_class';
+  if (!Object.hasOwn(LIFETIME_S, cls) || !allowedClasses(type).includes(cls as Cls)) return 'bad_class';
   if (sentAt - now > SKEW_S) return 'dated_ahead';
   const age = Math.max(now - sentAt, inboxAge);
   if (age > LIFETIME_S[cls as Cls] + SKEW_S) return 'expired';
@@ -49,8 +49,9 @@ export class ReplayCache {
     return { fresh: true };
   }
   /** Claim before answering (so a concurrent duplicate is `id_reused`), then record the answer. */
-  claim(sender: string, id: string, hash: string, cls: Cls, now: number) {
-    this.seen.set(`${sender}:${id}`, { hash, answer: undefined, until: now + LIFETIME_S[cls] + SKEW_S });
+  claim(sender: string, id: string, hash: string, cls: Cls, now: number, sentAt = now) {
+    // Kept until the request could no longer be fresh: a request dated ahead stays fresh longer.
+    this.seen.set(`${sender}:${id}`, { hash, answer: undefined, until: Math.max(now, sentAt) + LIFETIME_S[cls] + SKEW_S });
   }
   answer(sender: string, id: string, answer: unknown) {
     const v = this.seen.get(`${sender}:${id}`); if (v) v.answer = answer;

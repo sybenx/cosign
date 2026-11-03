@@ -69,7 +69,7 @@ export class Reassembler {
     const { of, k, m } = body;
     if (!Number.isSafeInteger(k) || !Number.isSafeInteger(m) || k < 0 || k >= m || m > Math.ceil(MAX_MESSAGE / PART_BYTES) + 1) refuse('bad_part');
     const key = `${from}:${of}`;
-    const cls: Cls = body.cls in LIFETIME_S ? body.cls : 'sign';
+    const cls: Cls = Object.hasOwn(LIFETIME_S, body.cls) ? body.cls : 'sign';
     const p = this.#open.get(key) ?? { first: at, cls, got: Array.from({ length: m }, () => undefined), size: 0 };
     if (p.got.length !== m) refuse('bad_part');
     const data = new Uint8Array(Buffer.from(String(body.data), 'base64'));

@@ -189,21 +189,19 @@ test('a server down during the redeal catches up by rerepair, with a proof at it
   const { rerepairProof } = await import('../src/upkeep.ts');
   const S1 = acc.servers[0];
   const ch = await acc.bus.send(S2.kp, S1.kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'));
-  void ch;
   await B.fetch();
-  const chB = await acc.bus.send(B.kp, S1.kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'));
-  const proof = rerepairProof(acc.g, 7, S2.co!.state.shares.get(7)!, chB.challenge);
+  const proof = rerepairProof(acc.g, S2.kp.pub, 7, S2.co!.state.shares.get(7)!, ch.challenge);
   const sigmas = await B.repairFor([{ key: B.kp.pub, indices: [...B.state!.shares.keys()] }, { key: S1.kp.pub, indices: [4] }], 7, S2.kp.pub, 'rerepair',
-    { for: S2.kp.pub, proof: { challenge: chB.challenge, state: [], proof } });
+    { proof: { challenge: ch.challenge, state: [], proof } });
   await acc.bus.send(B.kp, S2.kp.pub, { type: 'seat_fill', sigmas, state: [...B.state!.ids] });
   assert.deepEqual([...S2.co!.state.ids], [...B.state!.ids]);
   acc.bus.kill(S1.kp.pub); acc.bus.kill(acc.servers[2].kp.pub);
   assert.ok(verifyEvent(await B.sign({ content: 'via the rerepaired S2' })));
-  // A forged proof is refused.
-  const bad = { ...rerepairProof(acc.g, 7, 12345n, chB.challenge) };
+  // A forged proof is refused (and the challenge, used once, can't be replayed).
+  const bad = { ...rerepairProof(acc.g, S2.kp.pub, 7, 12345n, ch.challenge) };
   acc.bus.revive(S1.kp.pub);
   assert.match(await code(async () => await B.repairFor([{ key: B.kp.pub, indices: [...B.state!.shares.keys()] }, { key: S1.kp.pub, indices: [4] }], 7, S2.kp.pub, 'rerepair',
-    { for: S2.kp.pub, proof: { challenge: chB.challenge, state: [], proof: bad } })), /bad_proof|stale_challenge/);
+    { proof: { challenge: ch.challenge, state: [], proof: bad } })), /bad_proof|stale_challenge/);
 });
 
 test('one host cannot be repaired into two seats; the backup seat is never repaired by need_repair', async () => {

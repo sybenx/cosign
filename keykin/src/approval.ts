@@ -51,7 +51,7 @@ export function checkListShape(list: Change[]): void {
   if (!needs && types.includes('redeal') && list.length !== 1) refuse('bad_list');
   if (types.filter((t) => t === 'paper').length > 1) refuse('bad_list', 'one paper per list');
   const self = list.filter((c) => 'remove' in c && (c as any).to !== undefined);
-  if (self.length && (self.length !== 1 || types.filter((t) => t === 'remove').length !== 1)) refuse('bad_list', 'a self remove travels alone with its redeal');
+  if (self.length && (self.length !== 1 || list.length !== 2 || !types.includes('redeal'))) refuse('bad_list', 'a self remove is exactly [remove, redeal]');
 }
 
 /** The list as approved: redeals as `{dealer}` placeholders, papers without `inner` and `state`. */

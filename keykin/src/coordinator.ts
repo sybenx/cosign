@@ -26,7 +26,7 @@ export class OneCall {
   #ctx: RoundContext;
   #co: Signer;
   readonly event: Unsigned;
-  constructor(ctx: RoundContext, me: { indices: number[]; shares: Map<number, bigint> }, co: Signer, event: Unsigned, extra: { approval?: Approval; hold?: string; cls?: Cls } = {}) {
+  constructor(ctx: RoundContext, me: { indices: number[]; shares: Map<number, bigint> }, co: Signer, event: Unsigned, extra: { approval?: Approval; hold?: string; cls?: Cls; list_events?: NostrEvent[] } = {}) {
     if (event.pubkey !== ctx.g) refuse('wrong_pubkey');
     this.#ctx = ctx; this.#co = co; this.#shares = me.shares; this.event = event;
     this.eventId = eventId(event);
@@ -35,7 +35,7 @@ export class OneCall {
     const cs = me.indices.map((i) => commit(ctx.C, i, me.shares.get(i)!, hedge(me.shares.get(i)!, context)));
     this.#nonces = cs.map((c) => c.nonces);
     this.request = { v: 1, type: 'sign', g: ctx.g, epoch: ctx.epochId, id: this.id, cls: extra.cls ?? 'sign', state: ctx.state, event,
-      signers, commitments: cs.map((c) => c.commit), ...(extra.approval ? { approval: extra.approval } : {}), ...(extra.hold ? { hold: extra.hold } : {}) };
+      signers, commitments: cs.map((c) => c.commit), ...(extra.approval ? { approval: extra.approval } : {}), ...(extra.hold ? { hold: extra.hold } : {}), ...(extra.list_events ? { list_events: extra.list_events } : {}) };
   }
   /** Finish with the co-signer's `partial`: the signed event, or a refusal naming the member. */
   finish(partial: any): NostrEvent {
@@ -86,6 +86,8 @@ export class TwoCall {
     for (const co of this.#cos) {
       const p = partials.get(co.key);
       if (p?.type !== 'partial') refuse(p?.code ?? 'no_partial', `member ${co.key}`);
+      const got = (p.z ?? []).map((z: any) => z.i).sort((a: number, b: number) => a - b);
+      if (JSON.stringify(got) !== JSON.stringify([...co.indices].sort((a, b) => a - b))) refuse('bad_partial', `member ${co.key}`);
       for (const z of p.z) { if (!co.indices.includes(z.i) || !verifyShare(this.#ctx.C, this.eventId, commits, z.i, z.z)) refuse('bad_partial', `member ${co.key}`); zs.push(z); }
     }
     for (const n of this.#nonces) zs.push({ i: n.i, z: signShare(this.#ctx.C, n.i, this.#shares.get(n.i)!, n, this.eventId, commits) });
