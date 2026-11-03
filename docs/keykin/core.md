@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.15 · 2026-11-03 · `draft` `optional` · not built
+Draft 14 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -122,7 +122,8 @@ would.
    and recovery sessions (§6);
 5. push addresses and notice channels (§8.1), and the inbox, including deliveries kept until
    acknowledged (§7.1);
-6. answered request ids until each expires (§5.6), and its own counters for §5.8.
+6. answered request ids until each expires (§5.6), its own counters for §5.8, and whether the helper is
+   stopped (§5.7).
 7. if the person opted in, the account's NIP-46 signer public keys, each with its client public key,
    relays and home device, for watching (below);
 8. if the person set up an heir (Backup module), the heir record (the envelope, the heir's public key and
@@ -147,7 +148,7 @@ borrowed computer or a desktop site.
 | | device | helper | server | backup |
 |---|---|---|---|---|
 | Coordinate everyday signing | yes | yes | no | only in a recovery session (§6.5) |
-| Co-sign for others | yes | yes | yes | no |
+| Co-sign for others | yes | **no** | yes | no |
 | Get decryption answers (§5.5) | yes | no | no | no |
 | Approve an account change (§6.2) | with its lock, with a second device, or with the paper | **no** | no | with a device, or in a recovery |
 | Cancel a wait | with its lock, or with a second device (an heir wait with neither, Backup module) | **no** | no | no (the holder withdraws its own) |
@@ -268,7 +269,8 @@ change that breaks one, and every member MUST refuse to adopt one.
 - **I5.** Any set of members that contains no `device` and no `server` is worth less than 4, with
   `backup` shares counted as 0 (they are unreadable until a server releases them after its wait,
   §7.2). One consequence: at most one `helper`.
-- **I6.** A helper holds exactly the helper seat.
+- **I6.** A helper holds exactly the helper seat. Its member entry names its `host` key, and no host holds
+  both the helper seat and a server seat (checked like I2's host rule).
 - **I7.** A seat's `new` holder is not a current member key or host and is not in `removed`. A host that
   held a seat before may be seated again, in any seat, with a fresh member key.
 
@@ -567,7 +569,8 @@ Every request carries `cls`. Each message type allows only some classes:
 | `member` | 7 days | `hold`, `release_request`, deliveries |
 
 Types not in the table: deliveries and requests a sender repeats until answered (`cancel`, `withdraw`,
-`upload`, `upload_held`, `push_register`, `push_unregister`, `notify_register`, `paper_reissue`) are
+`upload`, `upload_held`, `push_register`, `push_unregister`, `notify_register`, `paper_reissue`,
+`helper_stop`) are
 `member`; every other request (`changes_get`, `inbox_get`, `need_repair`, `rerepair`, `need_seeds`,
 `state_get`, `seated?`, `forward_get`, `take_out`) is `ask`.
 
@@ -602,7 +605,15 @@ Before giving a partial, a co-signer MUST check that:
    refused; and a device MUST never sign
    one on a site's request (an epoch record is made only at creation);
 6. if the round is a recovery round (I4), the recovery session's rules are met (§6.5);
-7. the stateless destructive rule (§5.8).
+7. the stateless destructive rule (§5.8);
+8. if the coordinator is the **helper**: the helper is not stopped (below), and the event is one of kind 1
+   (notes and replies), 1111 (comments), 7 (reactions), 6 and 16 (reposts), 9734 (zap requests), 20, 21
+   and 22 (media posts) or 22242 (relay auth). Anything else is refused. A helper never co-signs.
+
+**Stopping the helper.** Any current device may send `helper_stop {}`, with no approval, as a delivery to
+every server: it only takes power away. A server that has it refuses every round the helper coordinates
+or takes part in, until a seat change for the helper seat (a new holder, or `null`) clears it. Every
+device is told.
 
 A device co-signing for another device-class member also applies its own destructive policy (Device
 policy module) and refuses when that says to; it never prompts, because nobody may be looking at it.
@@ -727,6 +738,7 @@ second device or the paper. A helper never approves anything.
 | Remove or replace a notice channel (§8.1) | `lock`, `pair` or `paper` |
 | Delete the account (`account_delete`, Account admin module) | `lock`, `pair` or `paper` |
 | Add a notice channel | any device, no approval (refused during a recovery wait) |
+| Stop the helper (`helper_stop`, §5.7) | any device, no approval |
 
 ### 6.3 Waits
 
@@ -1116,7 +1128,8 @@ phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
   forced) and a redeal. The recovery app's new device deals the redeal, once it has joined (§4.4), but
   every `recovery`-approved change is **co-signed only in a round the holder coordinates** (the backup
   plus two servers, two-call form, §6.5 step 5), never in an everyday round of the new device.
-- **F10, the group key leaks.** A new npub (key families, later).
+- **F10, the group key leaks.** A new npub; followers can move to it if a key family was settled before
+  the leak (Key families module).
 - **F11, paper-only recovery after changes.**
   1. The holder finds the current servers (§6.7.5) and runs §6.5.
   2. After the wait it receives every release seed of the servers' state and the material items.
@@ -1188,7 +1201,8 @@ There are no aborts, no busy state, no leases and no clock that matters.
   server seals its share to that device and tells every member.
 - A server treats a group as a child only if it adopted, first-hand at the group's creation, a first
   epoch record that says `role: child` (Key families module). An account made by importing a 0.12
-  account's nsec (§11.2) is always `master`.
+  account's nsec (§11.2) is `master`, unless the person imports it as the child of a new master (Key
+  families module), in which case its first epoch record says `role: child` and `origin: import`.
 - An export is permanent.
 
 ## 7. Keeping what you hold
@@ -1354,6 +1368,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `sign` / `partial` | coordinator → co-signer / back | 5.1 |
 | `ecdh` / `ecdh_partial` | device → co-signer / back | 5.5 |
 | `hold` | device → servers | 5.8 |
+| `helper_stop` | device → servers | 5.7 |
 | `pair_request` / `pair_sign` | first device → second device (via `deliver`) / back | 6.2 |
 | `change` | any member → members (a signed change) | 3.2 |
 | `changes_get` / `changes` | member → server / back | 3.2 |
@@ -1413,7 +1428,8 @@ The signpost (kind 30078) is the one Core event published on relays (§6.7.5); m
   it. Every device of that time knows `δ` (its 3 values plus `δ(0) = 0`), as do the three servers
   together, and the paper plus one server. So a stolen paper plus one current server plus one retired
   server from an older state can be the key, with no wait. Prompt replacement and a new paper narrow
-  this; only key families end it.
+  this; nothing in the core ends it. Key families (a module) let followers move to a new master set up
+  beforehand, ideally on other servers' operators; the old key stays usable to whoever holds it.
 - **A paper reaches every state since it was printed**, through its paper items. A stolen paper is
   dangerous until it is replaced, and the app cannot know it was exposed.
 - **A lone device has no second checker** of its own paper item; a mistake surfaces only at an optional
@@ -1474,7 +1490,8 @@ The signpost (kind 30078) is the one Core event published on relays (§6.7.5); m
   still only sign everyday events and start holds.
 - **A change approved just before its approver's removal reached a server stays valid.** The window is
   how long a `remove` takes to arrive.
-- **Helper plus one server** signs, by design: the person opted in to that.
+- **Helper plus one server** signs, by design: the person opted in to that. It signs only the kinds of §5.7
+  item 8, and any one device can stop it at once.
 - **A lock accepts any enrolled biometric**, a partner's finger included, as the phone itself does.
 - **Locks are unattested.** Servers cannot tell a hardware, biometric-only key from a software one, and a
   tampered app can make its own "lock".
@@ -1757,3 +1774,16 @@ Small clarifications from the module reviews, none a new mechanism: the host-sig
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
 and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11); encodings and rules pinned from the reference implementation's first batch: the approval `expiry` field, the `pair`, `paper`, `recovery` and `release_request` signatures, `ecdh_partial`, `rs`/`dk` as seed hashes, the hedge stream, a list in every change event, lifetime classes, approvers, duplicate-key adds, kind 5 skew, list-hash ordering, and recovery changes co-signed only by the holder (13.12); heir waits in `inbox_get` and §2's table, and heir lookups (13.13); a removed key's holder destroys what it holds under that key (13.14); a `paper` approval of a request that isn't a list, and the delete tombstone keeps its approver's changes (13.15).
+
+## Changes in draft 14
+
+From the user's answers on the Helper and Key families modules (2026-11-03):
+
+- A round the helper coordinates is co-signed only for notes, replies, comments, reactions, reposts, zap
+  requests, media posts and relay auth (§5.7 item 8).
+- Any one device stops the helper at once with `helper_stop`, no approval; servers keep one flag until the
+  helper seat changes (§5.7, §2 item 6, §6.2).
+- The helper's entry names its host, and no host holds both the helper seat and a server seat (I6).
+- A helper never co-signs for others (§2 table).
+- §10 and F10 say plainly what key families do and don't do.
+- An imported 0.12 account may be a child of a new master (§6.8).

@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.15 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -159,6 +159,9 @@ digest. Android apps on the phone share the one member (core §4.6).
   - After a grant ends, its home keeps the signer key for 30 days, inactive, only to answer every request
     with `revoked:`, so the site stops sending.
   - If the home is removed, its grants end (§2), and the site signs in again from another device.
+  - A grant's home may be the account's **helper** instead of a device (Helper module §2): the helper mints
+    the link, holds the signer key and answers, only for posting kinds; devices list its grants from its
+    reports and deliver their tombstones to it.
 - **Connecting:**
   - A `bunker://` link minted on a device, naming only relays that answered in the last minute. Its
     secret binds to the first client key that uses it and expires after 10 minutes if unused. That same
