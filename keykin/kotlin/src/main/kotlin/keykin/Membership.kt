@@ -1,0 +1,271 @@
+// Epoch records (core §3.1, §3.4), invariants (§3.3), approvals (§6.1, §6.2) and the order-free
+// membership (§3.2, §6.7.2): a port of keykin/src/record.ts, approval.ts and membership.ts.
+package keykin
+
+import org.json.JSONArray
+import org.json.JSONObject
+import java.math.BigInteger
+
+private fun ints(a: JSONArray) = (0 until a.length()).map { a.getLong(it) }
+private fun strs(a: JSONArray?) = if (a == null) emptyList() else (0 until a.length()).map { a.getString(it) }
+private fun isHex(s: Any?, n: Int) = s is String && s.length == 2 * n && s.all { it in "0123456789abcdef" }
+private fun need(ok: Boolean, code: String, msg: String? = null) { if (!ok) refuse(code, msg) }
+
+data class Member(val key: String, val kind: String, val shares: List<Long>, val lock: JSONObject?, val host: String?, val operator: String?, val raw: JSONObject)
+fun member(o: JSONObject) = Member(o.getString("key"), o.getString("kind"), ints(o.getJSONArray("shares")), o.optJSONObject("lock"), o.optString("host").ifEmpty { null }, o.optString("operator").ifEmpty { null }, o)
+
+object Record {
+    /** §3.3 */
+    fun invariants(g: String, members: List<Member>, seats: JSONObject, removed: Set<String>) {
+        fun bad(rule: String, why: String): Nothing = refuse("invariant", "$rule: $why")
+        val servers = ints(seats.getJSONArray("servers")); val backup = ints(seats.getJSONArray("backup")); val helper = ints(seats.getJSONArray("helper"))
+        if (servers.size != 3 || servers.toSet().size != 3) bad("seats", "exactly 3 server seats")
+        if (backup.size != 2) bad("seats", "the backup seat is 2 indices")
+        if (helper != Codes.helperSeat(g)) bad("seats", "the helper seat is the hashed reservation")
+        val seatIdx = servers + backup + helper
+        if (seatIdx.toSet().size != seatIdx.size) bad("seats", "seats overlap")
+        val keys = HashSet<String>(); val hosts = HashSet<String>(); val owner = HashMap<Long, String>()
+        var weak = 0; var backups = 0; var helpers = 0
+        for (m in members) {
+            if (!keys.add(m.key)) bad("member", "a key appears twice")
+            if (m.key in removed) bad("removed", "${m.key.take(8)} is removed")
+            if (m.shares.size > 3) bad("I1", "more than 3 shares")
+            for (i in m.shares) { if (i < 1) bad("index", "indices are integers ≥ 1"); if (owner.put(i, m.key) != null) bad("index", "index $i held twice") }
+            val kind = if (m.kind in setOf("device", "helper", "server", "backup")) m.kind else "unknown"
+            if (kind == "device") { if (m.shares.size != 3) bad("device", "a device holds exactly 3 shares"); if (m.shares.any { it in seatIdx }) bad("device", "a device index collides with a seat") }
+            if (kind == "server" || kind == "unknown") {
+                if (m.shares.size != 1 || m.shares[0] !in servers) bad("I2", "a server holds exactly one server seat")
+                if (kind == "server") { if (m.host == null) bad("I2", "a server names its host"); if (!hosts.add(m.host)) bad("I2", "one host in two seats") }
+            }
+            if (kind == "backup") { backups++; if (m.shares.sorted() != backup.sorted()) bad("I3", "the backup holds exactly the backup seat") }
+            if (kind == "helper") { helpers++; if (m.shares != helper) bad("I6", "the helper holds exactly the helper seat") }
+            if (kind == "helper" || kind == "unknown") weak += m.shares.size
+        }
+        if (backups > 1) bad("I3", "one backup"); if (helpers > 1) bad("I5", "at most one helper")
+        if (weak >= 4) bad("I5", "members with no device and no server are worth 4")
+    }
+    /** §3.4 */
+    fun check(ev: Event, g: String): JSONObject {
+        need(ev.kind == 30242, "not_a_record", "kind")
+        need(ev.tag("d") in setOf("keykin", "cosign", "frost"), "not_a_record", "d tag")
+        val c = try { JSONObject(ev.content) } catch (_: Exception) { refuse("not_a_record", "content") }
+        need(c.has("v"), "not_a_record", "content")
+        need(c.opt("v") == 1, "unsupported_version")
+        need(ev.tag("v") == c.get("v").toString() && ev.tag("epoch") == c.optJSONObject("epoch")?.opt("n")?.toString(), "bad_record", "tags disagree with the content")
+        need(ev.pubkey == g && c.optString("g") == g, "wrong_group")
+        need(verifyEvent(ev), "bad_signature")
+        need(c.isNull("prev") && c.getJSONObject("epoch").getInt("n") == 1, "bad_record")
+        need(isHex(c.getJSONObject("epoch").opt("id"), 16), "malformed")
+        need(c.optInt("t") == 4, "bad_record", "t")
+        need(c.optString("role") in setOf("master", "child") && c.optString("origin") in setOf("dkg", "import"), "bad_record")
+        val C = strs(c.getJSONArray("commitment")).map(::point); need(C.size == 4, "malformed")
+        need(C[0] == liftXHex(g), "bad_record", "C0 is not the group point")
+        val members = (0 until c.getJSONArray("members").length()).map { member(c.getJSONArray("members").getJSONObject(it)) }
+        invariants(g, members, c.getJSONObject("seats"), strs(c.optJSONArray("removed")).toSet())
+        val held = members.filter { it.kind == "server" }.map { it.shares[0] }.toSet()
+        need(ints(c.getJSONObject("seats").getJSONArray("servers")).all { it in held }, "invariant", "every server seat is held at creation")
+        need(members.any { it.kind == "backup" }, "invariant", "the paper is made at creation")
+        need(members.any { it.kind == "device" }, "invariant", "a device creates the account")
+        return c
+    }
+}
+
+/** What every member knows about who may approve (§3.2). */
+class Authority(val g: String, val epochId: String, val devices: Set<String>, val locks: Map<String, List<JSONObject>>, val backupKeys: Set<String>, val hostKeys: Set<String>, val w: Long)
+
+object Approvals {
+    fun type(c: JSONObject) = c.keys().asSequence().first { it != "to" }
+    fun placeholder(list: JSONArray): JSONArray = JSONArray((0 until list.length()).map { k ->
+        val c = list.getJSONObject(k)
+        when {
+            c.has("redeal") -> JSONObject().put("redeal", JSONObject().put("dealer", c.getJSONObject("redeal").getString("dealer")))
+            c.has("paper") -> { val p = c.getJSONObject("paper"); val o = JSONObject().put("key", p.getString("key")).put("replaces", p.getString("replaces"))
+                if (p.has("holders")) o.put("holders", p.get("holders")); if (p.has("heir")) o.put("heir", p.get("heir")); JSONObject().put("paper", o) }
+            else -> c
+        }
+    })
+    fun hash(list: JSONArray) = Codes.listHash(Jcs.of(placeholder(list)))
+    fun detached(type: String, g: String, body: Any) = sha(utf8("keykin-$type/1"), unhex(g), utf8(Jcs.of(body)))
+    fun shape(list: JSONArray) {
+        need(list.length() > 0, "bad_list", "empty")
+        val types = (0 until list.length()).map { type(list.getJSONObject(it)) }
+        need(types.all { it in setOf("add", "remove", "lock", "seat", "paper", "redeal") }, "bad_list", "unknown change")
+        if (("add" in types || "lock" in types) && types.size != 1) refuse("bad_list", "add and lock travel alone")
+        val redeals = types.count { it == "redeal" }; val needs = types.any { it in setOf("seat", "remove", "paper") }
+        if (needs && redeals != 1) refuse("mandatory_redeal")
+        if (!needs && "redeal" in types && types.size != 1) refuse("bad_list")
+        if (types.count { it == "paper" } > 1) refuse("bad_list", "one paper per list")
+        val dealer = (0 until list.length()).map { list.getJSONObject(it) }.firstOrNull { it.has("redeal") }?.getJSONObject("redeal")?.getString("dealer")
+        if (dealer != null && (0 until list.length()).any { list.getJSONObject(it).optString("remove") == dealer }) refuse("bad_list", "a removed device never deals the redeal")
+        val self = (0 until list.length()).map { list.getJSONObject(it) }.filter { it.has("remove") && it.has("to") }
+        if (self.isNotEmpty() && (self.size != 1 || types.size != 2 || "redeal" !in types)) refuse("bad_list", "a self remove is exactly [remove, redeal]")
+    }
+    fun allowed(list: JSONArray): Set<String> {
+        val types = (0 until list.length()).map { type(list.getJSONObject(it)) }
+        if (types == listOf("add")) return setOf("lock", "pair", "paper", "recovery")
+        if (types == listOf("lock")) return setOf("pair", "paper", "recovery")
+        if ((0 until list.length()).any { list.getJSONObject(it).has("remove") && list.getJSONObject(it).has("to") }) return setOf("self")
+        return setOf("lock", "pair", "paper", "recovery")
+    }
+    /** §6.2: null when valid in every member's eyes, else the code. */
+    fun check(a: Authority, list: JSONArray, ap: JSONObject): String? {
+        val present = listOf("lock", "pair", "paper", "recovery", "self").filter { ap.has(it) }
+        if (present.size != 1) return "bad_approval"
+        val t = present[0]
+        if (t !in allowed(list)) return "approval_not_allowed"
+        val exp = ap.optLong("expiry", -1)
+        if (t in setOf("lock", "pair", "paper") && exp < 0) return "bad_approval"
+        val w = if (t in setOf("lock", "pair", "paper")) Codes.whatChange(hash(list), a.epochId, exp) else ByteArray(0)
+        fun dev(k: String?) = k != null && k in a.devices
+        return when (t) {
+            "lock" -> { val l = ap.getJSONObject("lock"); val m = l.getString("member")
+                if (!dev(m)) "approver_not_device" else { val errs = a.locks[m].orEmpty().map { checkAssertion(a.g, it.getString("pub"), it.getString("rp"), w, l.getJSONObject("assertion")) }
+                    if (errs.isEmpty()) "no_lock" else if (null in errs) null else errs[0] } }
+            "pair" -> { val p = ap.getJSONArray("pair"); if (p.length() != 2) "bad_approval" else {
+                val x = p.getJSONObject(0); val y = p.getJSONObject(1)
+                when { !dev(x.getString("member")) || !dev(y.getString("member")) -> "approver_not_device"; x.getString("member") == y.getString("member") -> "pair_same_device"
+                    else -> { val d = detached("pair", a.g, JSONObject().put("what", hex(w)).put("r", x.getString("r")))
+                        if (schnorrVerify(x.getString("sig"), d, x.getString("member")) && schnorrVerify(y.getString("code_sig"), d, y.getString("member"))) null else "bad_signature" } } } }
+            "paper" -> { val p = ap.getJSONObject("paper")
+                when { !dev(p.getString("member")) -> "approver_not_device"; p.getString("backup") !in a.backupKeys -> "not_backup_key"
+                    !schnorrVerify(p.getString("sig"), detached("paper", a.g, JSONObject().put("what", hex(w))), p.getString("member")) -> "bad_signature"
+                    !schnorrVerify(p.getString("backup_sig"), detached("paper", a.g, JSONObject().put("list", hash(list)).put("challenge", p.getString("challenge"))), p.getString("backup")) -> "bad_signature"
+                    else -> null } }
+            else -> "unsupported_approval"   // recovery and self: not in these vectors yet
+        }
+    }
+}
+
+data class MembershipView(val devices: List<String>, val removed: List<String>, val seats: Map<String, String?>, val backup: String?, val refused: List<String>, val invariant: Boolean)
+
+/** §3.2, §6.7.2: the membership as a function of the record and the *set* of changes. */
+object Membership {
+    private class Parsed(val ev: Event, val c: JSONObject, val change: JSONObject, val type: String, val listHash: String, val list: JSONArray)
+
+    private fun parse(rec: JSONObject, ev: Event): Parsed {
+        need(ev.kind == 24302, "not_a_change", "kind")
+        val c = try { JSONObject(ev.content) } catch (_: Exception) { refuse("not_a_change", "content") }
+        need(c.has("v") && c.has("change"), "not_a_change", "content"); need(c.opt("v") == 1, "unsupported_version")
+        need(ev.tag("v") == "1" && ev.tag("epoch") == c.optString("epoch"), "bad_change", "tags disagree with the content")
+        need(c.optString("g") == rec.getString("g") && ev.pubkey == rec.getString("g"), "wrong_group")
+        need(c.optString("epoch") == rec.getJSONObject("epoch").getString("id"), "wrong_epoch")
+        need(verifyEvent(ev), "bad_signature")
+        val list = c.getJSONArray("list"); Approvals.shape(list)
+        need(Jcs.of(Approvals.placeholder(list)) == Jcs.of(list), "bad_list", "the list is carried in its placeholder form")
+        val ch = c.getJSONObject("change")
+        val ph = Jcs.of(Approvals.placeholder(JSONArray().put(ch)).getJSONObject(0))
+        need((0 until list.length()).any { Jcs.of(list.get(it)) == ph }, "bad_list", "the change is not in its list")
+        val type = Approvals.type(ch)
+        when (type) {
+            "add" -> { val a = ch.getJSONObject("add"); need(isHex(a.opt("key"), 32), "malformed"); need(a.optString("kind") == "device", "bad_change"); need(a.optLong("salt", -1) >= 0, "bad_change") }
+            "remove" -> need(isHex(ch.opt("remove"), 32), "malformed")
+            "seat" -> { val s = ch.getJSONObject("seat"); val id = s.getString("seat"); val servers = ints(rec.getJSONObject("seats").getJSONArray("servers"))
+                need(id == "helper" || (id.startsWith("server:") && id.removePrefix("server:").toLongOrNull() in servers), "bad_change", "no such seat") }
+            "paper" -> { val p = ch.getJSONObject("paper"); need(isHex(p.opt("inner"), 32), "malformed"); need(p.has("state"), "bad_change") }
+            "redeal" -> { val r = ch.getJSONObject("redeal"); need(isHex(r.opt("id"), 16), "malformed"); need(r.getJSONArray("D").length() == 3, "bad_change") }
+        }
+        return Parsed(ev, c, ch, type, Approvals.hash(list), list)
+    }
+
+    /** Follow a chain from its first holder along changes naming it in `replaces` (§3.2, §6.7.2). */
+    private class Cand(val hash: String, val replaces: String?, val newId: String?, val value: JSONObject?, val forceVoid: Boolean = false)
+    private fun follow(firstId: String?, firstVal: JSONObject?, cands: List<Cand>, same: (Cand, Cand) -> Boolean, lowest: Boolean, retired: (String) -> Unit): Triple<String?, JSONObject?, List<String>> {
+        var cur = firstId; var curV = firstVal; var voided = listOf<String>(); val used = HashSet<String>()
+        repeat(10_000) {
+            val step = cands.filter { it.hash !in used && (if (cur != null) it.replaces == cur else if (voided.isNotEmpty()) voided.any { v -> it.replaces == "void:$v" } else it.replaces == null) }.sortedBy { it.hash }
+            if (step.isEmpty()) return Triple(cur, curV, voided)
+            step.forEach { used.add(it.hash) }
+            val win = step[0]; val allSame = step.all { same(it, win) } && step.none { it.forceVoid }
+            cur?.let(retired)
+            if (allSame || lowest) { step.drop(1).forEach { if (it.newId != null && it.newId != win.newId) retired(it.newId) }; cur = win.newId; curV = win.value; voided = emptyList() }
+            else { step.forEach { c -> c.newId?.let(retired) }; cur = null; curV = null; voided = step.map { it.hash } }
+        }
+        return Triple(cur, curV, voided)
+    }
+
+    fun compute(rec: JSONObject, events: List<Event>): MembershipView {
+        val g = rec.getString("g"); val epoch = rec.getJSONObject("epoch").getString("id")
+        val refused = ArrayList<String>(); val parsed = ArrayList<Parsed>(); val seen = HashSet<String>()
+        for (e in events) { if (!seen.add(e.id)) continue; try { parsed += parse(rec, e) } catch (x: KeykinException) { refused += x.code } }
+        val recMembers = (0 until rec.getJSONArray("members").length()).map { member(rec.getJSONArray("members").getJSONObject(it)) }
+        val recDevices = recMembers.filter { it.kind == "device" }
+        val recBackup = recMembers.firstOrNull { it.kind == "backup" }?.key
+        val accepted = ArrayList<Parsed>()
+        fun authority(): Authority {
+            val adds = accepted.filter { it.type == "add" }.map { it.change.getJSONObject("add") }
+            val devices = (recDevices.map { it.key } + adds.map { it.getString("key") }).toSet()
+            val locks = HashMap<String, MutableList<JSONObject>>()
+            recDevices.forEach { m -> m.lock?.let { locks.getOrPut(m.key) { mutableListOf() }.add(it) } }
+            adds.forEach { a -> a.optJSONObject("lock")?.let { locks.getOrPut(a.getString("key")) { mutableListOf() }.add(it) } }
+            accepted.filter { it.type == "lock" }.forEach { val l = it.change.getJSONObject("lock"); locks.getOrPut(l.getString("member")) { mutableListOf() }.add(l.getJSONObject("new")) }
+            val backups = (listOfNotNull(recBackup) + accepted.filter { it.type == "paper" }.map { it.change.getJSONObject("paper").getString("key") }).toSet()
+            val hosts = (recMembers.filter { it.kind == "server" }.mapNotNull { it.host } + accepted.filter { it.type == "seat" }.mapNotNull { it.change.getJSONObject("seat").optJSONObject("new")?.optString("host") }).toSet()
+            return Authority(g, epoch, devices, locks, backups, hosts, 3 * 86400)
+        }
+        var pending = parsed.toList(); var progress = true
+        while (progress && pending.isNotEmpty()) {
+            progress = false; val a = authority(); val next = ArrayList<Parsed>()
+            for (p in pending) if (Approvals.check(a, p.list, p.c.getJSONObject("approval")) == null) { accepted += p; progress = true } else next += p
+            pending = next
+        }
+        pending.forEach { refused += Approvals.check(authority(), it.list, it.c.getJSONObject("approval"))!! }
+        // A list takes effect only whole (core 14.3).
+        for ((_, ps) in accepted.filter { it.list.length() > 1 }.groupBy { it.listHash }) {
+            val got = ps.map { Jcs.of(Approvals.placeholder(JSONArray().put(it.change)).getJSONObject(0)) }.toSet()
+            if ((0 until ps[0].list.length()).all { Jcs.of(ps[0].list.get(it)) in got }) continue
+            ps.forEach { accepted.remove(it); refused += "list_incomplete" }
+        }
+        val auth = authority()
+        val removed = HashSet(strs(rec.optJSONArray("removed")))
+        for (p in accepted.filter { it.type == "remove" }) { val k = p.change.getString("remove"); if (k !in auth.devices) refused += "remove_not_device" else removed += k }
+        // Seats, with the one-host-two-seats rule on approvals within 24 hours (core 14.10).
+        val seatCh = accepted.filter { it.type == "seat" }
+        val recordKeys = recMembers.map { it.key }.toSet()
+        val expiryOf = { p: Parsed -> p.c.getJSONObject("approval").optLong("expiry", p.ev.createdAt) }
+        val forced = HashSet<String>()
+        for (x in seatCh) for (y in seatCh) {
+            val hx = x.change.getJSONObject("seat").optJSONObject("new")?.optString("host"); val hy = y.change.getJSONObject("seat").optJSONObject("new")?.optString("host")
+            if (x !== y && hx != null && hx == hy && x.change.getJSONObject("seat").getString("seat") != y.change.getJSONObject("seat").getString("seat") && kotlin.math.abs(expiryOf(x) - expiryOf(y)) <= 86400) forced += x.listHash
+        }
+        seatCh.filter { it.listHash in forced }.forEach { p -> p.change.getJSONObject("seat").optJSONObject("new")?.let { removed += it.getString("key") } }
+        val servers = ints(rec.getJSONObject("seats").getJSONArray("servers"))
+        val seats = LinkedHashMap<String, String?>(); val seatEntries = HashMap<String, JSONObject?>()
+        for (sid in servers.map { "server:$it" } + "helper") {
+            val first = if (sid == "helper") recMembers.firstOrNull { it.kind == "helper" } else recMembers.firstOrNull { it.kind == "server" && "server:${it.shares[0]}" == sid }
+            val cands = seatCh.filter { it.change.getJSONObject("seat").getString("seat") == sid }.filter { val n = it.change.getJSONObject("seat").optJSONObject("new")
+                n == null || !(n.getString("key") in auth.devices || n.getString("key") in recordKeys || n.getString("key") in strs(rec.optJSONArray("removed"))) }
+                .map { val s = it.change.getJSONObject("seat"); Cand(it.listHash, if (s.isNull("replaces")) null else s.getString("replaces"), s.optJSONObject("new")?.getString("key"), s.optJSONObject("new"), it.listHash in forced) }
+            val (cur, v, _) = follow(first?.key, first?.raw, cands, { a, b -> a.newId == b.newId || (a.value?.optString("host")?.isNotEmpty() == true && a.value.optString("host") == b.value?.optString("host")) }, false) { removed += it }
+            seats[sid] = cur; seatEntries[sid] = v
+        }
+        val paperCands = accepted.filter { it.type == "paper" }.map { val p = it.change.getJSONObject("paper"); Cand(it.listHash, p.getString("replaces"), p.getString("key"), null) }
+        val backupKey = follow(recBackup, null, paperCands, { a, b -> a.newId == b.newId }, true) { removed += it }.first
+        // Adds: hashed indices; any index claimed twice voids every add claiming it.
+        val claims = HashMap<Long, MutableSet<String>>()
+        fun claim(i: Long, who: String) { claims.getOrPut(i) { HashSet() }.add(who) }
+        recMembers.forEach { m -> m.shares.forEach { claim(it, m.key) } }
+        (servers + ints(rec.getJSONObject("seats").getJSONArray("backup")) + ints(rec.getJSONObject("seats").getJSONArray("helper"))).forEach { claim(it, "seat") }
+        val adds = LinkedHashMap<String, MutableList<Pair<Long, List<Long>>>>(); val addLocks = HashMap<String, String>()
+        for (p in accepted.filter { it.type == "add" }) {
+            val a = p.change.getJSONObject("add"); val k = a.getString("key"); val salt = a.getLong("salt"); val idx = Codes.deviceIndices(g, epoch, k, salt)
+            val lockJ = Jcs.of(a.opt("lock")); val prev = adds.getOrPut(k) { mutableListOf() }
+            if (prev.none { it.first == salt && addLocks["$k:$salt"] == lockJ }) { prev += salt to idx; addLocks["$k:$salt"] = lockJ }
+            idx.forEach { claim(it, k) }
+        }
+        val voidAdds = HashSet<String>()
+        for ((k, l) in adds) { if (l.size > 1 || k in recordKeys) { voidAdds += k; continue }
+            if (l[0].second.any { (claims[it]?.size ?: 0) > 1 } || l[0].second.toSet().size != 3) voidAdds += k }
+        removed += voidAdds
+        // The membership: one key, one member.
+        val entries = ArrayList<Member>()
+        recDevices.filter { it.key !in removed }.forEach { entries += it }
+        for ((k, l) in adds) if (k !in voidAdds && k !in removed) entries += Member(k, "device", l[0].second, null, null, null, JSONObject())
+        for ((sid, k) in seats) if (k != null && k !in removed) entries += member(seatEntries[sid]!!)
+        if (backupKey != null && backupKey !in removed) entries += Member(backupKey, "backup", ints(rec.getJSONObject("seats").getJSONArray("backup")), null, null, null, JSONObject())
+        var invariant = false
+        try { Record.invariants(g, entries, rec.getJSONObject("seats"), removed) } catch (_: KeykinException) { invariant = true }
+        if (entries.map { it.key }.toSet().size != entries.size) invariant = true
+        return MembershipView(entries.filter { it.kind == "device" }.map { it.key }.distinct().sorted(), removed.sorted(),
+            seats.mapValues { (_, v) -> if (v != null && v in removed) null else v }, backupKey, refused.sorted(), invariant)
+    }
+}
