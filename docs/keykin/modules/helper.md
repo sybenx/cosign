@@ -1,6 +1,6 @@
 # Keykin module: Helper
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.6 · not built
+Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.7 · not built
 
 A **helper** is a family member's or friend's always-on box that holds the helper seat (3 shares, core
 §3.1, I6). With one server it can post for the account while every one of the person's devices sleeps.
@@ -49,9 +49,13 @@ being published, because it is already signed; **Unschedule** asks the publisher
 - **Every helper grant is also an entry in the grant list of the device that asked for it** (Doors and
   grants §2, `by` = that device, marked `helper`), and the helper records which device asked. The helper
   itself ends every grant whose asking device is no longer in the membership (it follows the changes as
-  any member does), and a wildcard sign-out sent to it ends all its grants. When the person removes a
-  device, the app offers **Keep *n* helper sites**, which re-signs those grants under the removing device
-  instead. A grant in a helper report that no current device's list names, still unnamed after the next
+  any member does), and a wildcard sign-out sent to it ends every grant made before its time (Doors and
+  grants §1). Only when the person **retires a device they still have** (Remove this device, or a `self`
+  remove, core §4.6) does the app offer to keep its helper sites: one unticked box per site, showing when
+  and from which device it was set up. Kept grants are re-signed under the device that stays, with `was`,
+  the helper is sent `helper_regrant {id, by}` for each, and no old-name tombstone is sent for them. A
+  `self` remove keeps them all, since the machine stays. **Report lost never offers this**: every helper
+  site that phone set up ends. A grant in a helper report that no current device's list names, still unnamed after the next
   report plus two hours, gets the warning of §4: "Your helper answers a site none of your devices set
   up." 
 - A helper grant has only the kinds of §1. It never widens: for more, the person connects the site to a
@@ -71,8 +75,9 @@ being published, because it is already signed; **Unschedule** asks the publisher
    package) and picks **Be a helper**. It shows a join code (core §4.1) carrying its host key, and tells
    the friend: "Your npub will be listed in *name*'s account." Once its welcome names the account, it
    checks the machine (its own apps, and extensions over native messaging); if a member of that account
-   is on it, it refuses to serve and asks the person's devices to remove it ("This machine also runs your
-   extension; remove one of them"). It never takes a handover from an extension (core §4.6). Afterwards any
+   is on it, it refuses to serve (answering its sites `declined: stopped`) and sends the person's devices
+   `helper_conflict {}` ("This machine also runs your extension; remove one of them"). Until one is removed,
+   that machine holds 6 points; the app says so. It never takes a handover from an extension (core §4.6). Afterwards any
    Keykin app **or browser extension** on that machine (extensions ask the helper app over native
    messaging) refuses to join this account as a device.
 2. On a device, the person picks **Add a helper**. The opt-in screen says, once and plainly: "*Name*'s
@@ -113,8 +118,9 @@ helper** (`helper_resume`) with an approval (a lock, two devices, or the paper).
 - **Reports.** The helper keeps **one cumulative report per device**, `helper_report {event ids, grants,
   last_used, logouts}`, at most 64 KB, sealed, as a delivery that replaces its earlier one, updated once an
   hour or every 50 events. When it is full, the oldest event ids give way to a count and a time span
-  (`dropped {count, from, to}`); a report starts afresh after each acknowledgement, and devices compare
-  the count with what they find in that span. A device fetches the events by id from relays, checks each (`pubkey == g`, the
+  (`dropped {count, from, to}`); a report starts afresh after each acknowledgement, which a device sends
+  only after fetching the report's events, and devices compare the count with what they find in that
+  span. Reports also list the ids of posts scheduled on the box, so any device can show them. A device fetches the events by id from relays, checks each (`pubkey == g`, the
   signature) and writes Device policy's metadata for them (Device policy §1), marking the attribution as
   the helper's. Devices show it quietly: "*Helper* signed 12 notes for *Bot*."
 - **Signing nobody reported.** A device that fetches account events (of kinds relays keep, so not zap
@@ -144,16 +150,20 @@ They can't read messages, private lists or wallet content. The opt-in screen lin
 | `helper_report {event ids, grants, last_used, logouts}` | helper → devices (delivery, replacing) | `member` |
 | `helper_connect {nostrconnect}` | device → helper | `ask` |
 | `publish_later {event}` / `unpublish {id}` | device → helper | `member` |
+| `helper_regrant {id, by}` | device → helper | `member` |
+| `helper_conflict {}` | helper → devices (delivery) | `member` |
 
 ## 7. Limits, said plainly
 
-- **The helper plus one server** can post notes, replies, reactions, reposts and media as the person,
+- **The helper plus one server** can post notes, replies, comments, reactions, reposts, zap requests and
+  media as the person, never dated ahead,
   silently, until any device stops it (core §10). A dishonest friend or a stolen box can post spam or
   worse in the person's name.
 - **The helper plus one dishonest server is the whole key** (3 + 1 = 4 points, core §10), offline and with
   no kind limit. That is why the helper's operator may never run one of the servers. An off-list server
   whose operator is unknown can't be checked: when a helper exists, adding one shows "We can't tell who
-  runs this server. If it's the same person as your helper, they hold your whole key."
+  runs this server. If it's the same person as your helper, they hold your whole key." The same warning
+  shows when a helper is added to an account that already has such a server.
 - **The machine checks are between honest apps.** A dishonest friend can install anything.
 - **The helper alone signs nothing**, and the helper plus the paper is worth nothing without a server's
   wait (core §7.2, I5).
@@ -164,6 +174,16 @@ They can't read messages, private lists or wallet content. The opt-in screen lin
 
 ## Changes
 
+- **Draft 6**, from its fifth red team (0 critical, 1 high):
+  - helper sites are kept only when the person retires a device they still have, per site and unticked;
+    Report lost ends them all (H1).
+
+  The mediums and lows:
+  - `helper_regrant`, and no old-name tombstones for kept grants (M1);
+  - a helper seat change names the stops it clears (M2, core 14.7);
+  - helper rounds never dated ahead (M3, core 14.7);
+  - capped stop counters (core 14.7), the wildcard by `made`, `declined: stopped`, `helper_conflict`,
+    the full kind list, acknowledgement after fetching, scheduled ids in reports (lows).
 - **Draft 5**, from its fourth red team (0 critical, 2 high):
   - a stop always applies and stops the helper seat, whoever holds it (H1, core 14.4);
   - the helper ends grants whose asking device left, and a wildcard sign-out ends all its grants (H2).

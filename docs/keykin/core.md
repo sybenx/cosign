@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.6 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.7 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -538,6 +538,8 @@ naming the same `after`.
   co-signer key`. It seeds a stream: the random input to the `k`-th call of `nonce_generate` (FROST calls it
   twice per index, for the hiding and the binding nonce) is `SHA-256(hedge ‖ k)`, `k` a 4-byte big-endian
   counter from 0, so the two nonces never coincide.
+- **One nonce pair signs one event.** A member MUST NOT use a nonce pair for more than one event, in any
+  request: a list's events each get their own (§6.7.10).
 - A coordinator MUST compute its own signature shares at most once per nonce. A retry uses fresh nonces
   under a new request id.
 
@@ -630,7 +632,8 @@ Before giving a partial, a co-signer MUST check that:
 7. the stateless destructive rule (§5.8);
 8. if the coordinator is the **helper**: the helper is not stopped (below), and the event is one of kind 1
    (notes and replies), 1111 (comments), 7 (reactions), 6 and 16 (reposts), 9734 (zap requests), 20, 21
-   and 22 (media posts) or 22242 (relay auth). Anything else is refused. (Servers can't see the account's
+   and 22 (media posts) or 22242 (relay auth), dated no more than 10 minutes ahead (a helper never needs
+   future dates; scheduled posts are signed by devices). Anything else is refused. (Servers can't see the account's
    relay lists, so the helper's relay sign-in isn't limited here; the Helper module says so.) A helper never co-signs, and a
    device never co-signs a round the helper coordinates, so every helper round has a server in it.
 
@@ -641,8 +644,10 @@ part in.
 - **A stop always applies**, whatever its counter. Only `helper_resume {n}` with an approval (`lock`,
   `pair` or `paper`) clears stops, and only those with a counter **lower** than its own; a resume's
   counter must be above every stop counter its device has seen, and servers tell devices the highest
-  counter they hold. A seat change made after a stop also clears it. So a late or missed message can
-  only leave the helper stopped, never running.
+  counter they hold. A server records a stop's counter as at most one above the highest it held, so a
+  thief's huge counter can't block every resume. A **helper seat** change clears only the stop counters it
+  names (`clears_stops: n`), as a resume does; no other seat change touches a stop. So a late or missed
+  message can only leave the helper stopped, never running.
 - Servers pass stops and resumes to their peers as deliveries. A device shows "Stopped" only once a server
   confirms it, and the helper is told.
 - A stopped helper still receives redeals; only removing it cuts its pieces off.
@@ -1154,8 +1159,10 @@ phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
      the base item and signs it with K. A is worth 5 points for this moment (§4.3).
   3. The person prints or writes the paper and reads it back. The screen says "Keep your old paper until
      this app says the new one is ready."
-  4. A sends the paper change with `inner`, the base item and `state` (the state the repair in step 2 was
-     done at); the co-signer checks and co-signs. Devices re-issue items only for redeals outside that
+  4. A deals the list's redeal now (§6.7.3), then sends the paper change with `inner`, the base item and
+     `state` (the state the repair in step 2 was done at) and the redeal together, as one list; the
+     co-signer checks and co-signs. If the redeal's co-sign fails, A deals a fresh one under the same
+     approval, without a new paper. Devices re-issue items only for redeals outside that
      `state`.
   5. After a check against every live server, for conflicting paper changes and for redeals whose items
      went to the old paper, the screen says "You can destroy the old paper", and servers end any wait on
@@ -1251,8 +1258,10 @@ Pinned from the reference implementation (batch 2):
 - **Challenges** are bound to the key they were issued to (for a `paper` approval, the backup key) and
   are used once per request id: a retry of the same request may reuse it, a new request may not.
 - **A list is co-signed in one request.** Every event of a list travels in one `sign` request
-  (`list_events`). The co-signer checks the approval and the trial (below) once, at the pre-redeal state,
-  and gives partials for every event or for none. No member applies a list's redeal until it holds every
+  (`list_events`), each with **its own** nonce commitments from the coordinator; the co-signer answers
+  with one commitment pair and one partial per event and index (in the two-call form, `commit {count}`
+  asks for that many pairs first). The co-signer checks the approval and the trial (below) once, at the
+  pre-redeal state, and gives partials for every event or for none. No member applies a list's redeal until it holds every
   event of that list group-signed. So a `seat` or `remove` never commits without its redeal, nor a redeal
   without them.
 - **A paper change's material** travels in the `sign` request as `material` (the base item), checked as
@@ -1445,6 +1454,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `ecdh` / `ecdh_partial` | device → co-signer / back | 5.5 |
 | `hold` | device → servers | 5.8 |
 | `helper_stop` / `helper_resume` | device → servers | 5.7 |
+| `kept_done` | device → devices (delivery) | 4.3 |
 | `pair_request` / `pair_sign` | first device → second device (via `deliver`) / back | 6.2 |
 | `change` | any member → members (a signed change) | 3.2 |
 | `changes_get` / `changes` | member → server / back | 3.2 |
@@ -1921,3 +1931,14 @@ and `kept_done` destroys every copy.
 From Account admin's fifth red team: a lock counts as registered only once its device has finished joining
 (welcome acknowledged); the kept secret always follows the current backup key; `kept_done` names its
 trigger and comes only from a current device; a new paper is suggested afterwards.
+
+## Changes in draft 14.7
+
+From the red team of 14.2 to 14.5 (0 critical, 1 high) and Helper's fifth:
+
+- A list's events each get their own nonce commitments and partials, and one nonce pair signs one event,
+  ever (§5.2, §6.7.10; H1).
+- F7 deals its redeal with the paper change, as one list, and retries the redeal without a new paper (M1).
+- A helper seat change clears only the stop counters it names; stop counters are capped (M4).
+- Helper rounds are never dated ahead.
+- `kept_done` is in the message table.
