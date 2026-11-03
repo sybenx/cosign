@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 2 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.11 · not built
+Draft 2 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.12 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any

@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.11 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.12 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -231,14 +231,17 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
 - **Indices without coordination.** An added device's three indices are
   `2^16 + (int(SHA-256("keykin-index/1" ‖ g ‖ epoch id ‖ key ‖ salt ‖ j)[0..4], big-endian) mod 2^30)`
   for `j = 0, 1, 2` (`salt` and `j` as 4-byte big-endian integers). The inviting device picks the lowest `salt` whose indices collide with nothing it
-  knows, the seats included. If two changes of the epoch ever claim the same index, both adds are void and the new
+  knows, the seats included. If two changes of the epoch ever claim the same index, or add the same key with different salts, every such add is void (an identical add twice counts once) and the new
   devices join again. Every index, here and in epoch records, is a FROST identifier given as a 32-byte
   big-endian scalar (`frost-core`'s `Identifier::deserialize`), not the 16-bit constructor.
 - **Order does not matter.** The membership is the epoch record's members, plus every valid add,
   minus every key in a valid remove or in `removed`. A remove always wins over an add of the same key.
 - A change is **valid** when it is signed by `g`, names the current epoch, and its approval names
   `device` members (never a helper) who were in the membership (the epoch record's members or devices
-  added by changes of that epoch), with signatures every member verifies. A later removal of the approver does not undo it, so every member reaches the same answer
+  added by changes of that epoch), with signatures every member verifies. An approver is any key with a
+  group-signed add, void or not, and a lock assertion verifies under any lock that device ever had, so
+  validity never depends on the order changes arrive in. (The co-signer's one freshness check uses the
+  lock current in its view.) A later removal of the approver does not undo it, so every member reaches the same answer
   whatever order changes arrive in.
 - **Freshness is the co-signer's job, once.** Only a server co-signing a change checks that its
   approval is fresh: the challenge, the waited statements' age, that the approver is not already
@@ -506,9 +509,11 @@ naming the same `after`.
   only, and use each once. Nonces MUST NOT be written to disk, shared storage, logs or anything a
   snapshot, a restore or a second process could bring back. After a restart, every round in flight is
   lost.
-- **Hedged randomness.** The random input to `nonce_generate` MUST be
-  `SHA-256(fresh OS randomness ‖ share ‖ context)`, where context is, for a co-signer, the SHA-256 of the
-  request; and for a coordinator, `event id ‖ signers ‖ request id ‖ co-signer key`.
+- **Hedged randomness.** The hedge is `SHA-256(fresh OS randomness ‖ share ‖ context)`, where context is,
+  for a co-signer, the SHA-256 of the request; and for a coordinator, `event id ‖ signers ‖ request id ‖
+  co-signer key`. It seeds a stream: the random input to the `k`-th call of `nonce_generate` (FROST calls it
+  twice per index, for the hiding and the binding nonce) is `SHA-256(hedge ‖ k)`, `k` a 4-byte big-endian
+  counter from 0, so the two nonces never coincide.
 - A coordinator MUST compute its own signature shares at most once per nonce. A retry uses fresh nonces
   under a new request id.
 
@@ -539,7 +544,9 @@ e = H("keykin/ecdh-dleq/1" ‖ g ‖ epoch id ‖ state ‖ i ‖ W_i ‖ Q ‖ 
 z = k + e·λ_i·s_i       verify: z·G == R1 + e·W_i  and  z·Q == R2 + e·Y
 ```
 
-(`H` is SHA-256; points 33-byte compressed, integers 4-byte big-endian, scalars 32 bytes.)
+(`H` is SHA-256; points 33-byte compressed, integers 4-byte big-endian, scalars 32 bytes.) The answer is
+`ecdh_partial {answers}`, where `answers[q]` lists, for the `q`-th point, one `{i, Y, R1, R2, z}` per index
+of the co-signer.
 
 - Because the answer is weighted for a set that includes the asker's indices, it is useless unless the
   asker adds its own 3 points' worth. A member key with no shares learns nothing.
@@ -558,6 +565,11 @@ Every request carries `cls`. Each message type allows only some classes:
 | `sign` | 60 s (receivers MAY use 45 s) | `sign`, `commit`, `ecdh` |
 | `ask` | 120 s | `sign`, `commit`, `ecdh`, `challenge`, approvals |
 | `member` | 7 days | `hold`, `release_request`, deliveries |
+
+Types not in the table: deliveries and requests a sender repeats until answered (`cancel`, `withdraw`,
+`upload`, `upload_held`, `push_register`, `push_unregister`, `notify_register`, `paper_reissue`) are
+`member`; every other request (`changes_get`, `inbox_get`, `need_repair`, `rerepair`, `need_seeds`,
+`state_get`, `seated?`, `forward_get`, `take_out`) is `ask`.
 
 - A receiver measures age with its own clock from the rumor's `created_at` (when the request was sent),
   or from the inbox's `age` (§8.2) if that is larger. It MUST refuse a request older than its lifetime
@@ -582,7 +594,7 @@ Before giving a partial, a co-signer MUST check that:
 4. `event.pubkey` is `g`, and, for a **replaceable or addressable** kind (0, 3, 10000–19999,
    30000–39999), the event's `created_at` is no more than 10 minutes ahead of its own clock: a version
    dated ahead would block every later change until that date. A deletion (kind 5) may not be dated
-   ahead either, since under NIP-09 it would delete future versions of its targets. Other kinds may be
+   ahead either (the same 10 minutes), since under NIP-09 it would delete future versions of its targets. Other kinds may be
    dated ahead, so a person can schedule a post;
 5. if the event is **kind 30242 or kind 24302, whatever its tags, or a kind 30078 with the account's
    signpost `d`, or a kind 5 targeting a signpost**, it is account machinery: it MUST be a valid change
@@ -672,19 +684,30 @@ An account change (a change of §3.2 or a list of them, §6.7.2; an export) is a
 in its `approval`. Signed items carry **detached** BIP-340 signatures by the signer's member key over
 `SHA-256("keykin-<type>/1" ‖ g ‖ JCS(body))`, because a NIP-59 seal proves nothing to a third party.
 
+Every approval of a change also carries `"expiry": <unix>`, the expiry in the lock's `what` (§6.1), shared
+by `lock`, `pair` and `paper`; `detached(type, body)` below means a BIP-340 signature over
+`SHA-256("keykin-<type>/1" ‖ g ‖ JCS(body))`.
+
 - **`lock`**: `{ "member": <key>, "assertion": … }`, the asking device's lock (§6.1).
 - **`pair`**: `[ { "member": <key>, "sig": … }, { "member": <key>, "code_sig": … } ]` from two distinct
   devices, each after asking its person (§1.1). The first device shows a 6-digit code,
   `int(SHA-256("keykin-pair/1" ‖ g ‖ change hash ‖ r)[0..8]) mod 10^6` with a fresh 16-byte `r` it sends
   along; the person **types** it on the second device, which signs only if it matches. For adding a
   device, the code is the join check shown on the new device (§4.1). Two devices are 6 points, already
-  the key, but the typed code proves the person can see both.
-- **`paper`**: `{ "member": <device key>, "sig": …, "backup_sig": … }`: a device together with the
-  paper, the backup key signing the change hash over a fresh server `challenge`. A device and the paper
-  are 5 points, already the key.
-- **`recovery`**: `{ "release_request": …, "waited": [<statement>, <statement>], "backup_sig": … }`: the
-  paper alone, in a recovery session (§6.5), after two servers' waits. The backup key signs **this
-  change's** hash, and servers take it only from the backup holder's own connection in that session.
+  the key, but the typed code proves the person can see both. `r` travels in the first entry
+  (`{member, sig, r}`); the code itself never travels. Both `sig` and `code_sig` are
+  `detached("pair", {"what": hex(what), "r": r})`, with `what` as a lock would sign it (§6.1). A `cancel`
+  by two devices uses the same encoding.
+- **`paper`**: `{ "member": <device key>, "sig": …, "backup": <backup key>, "challenge": …, "server":
+  <host key>, "backup_sig": … }`: a device together with the paper, the backup key signing the change hash
+  over a fresh `challenge` from the named server. `sig` is `detached("paper", {"what": hex(what)})` by the
+  device; `backup_sig` is `detached("paper", {"list": list hash, "challenge": challenge})` by the backup
+  key. A device and the paper are 5 points, already the key.
+- **`recovery`**: `{ "release_request": …, "waited": [<statement>, <statement>], "backup": <backup key>,
+  "backup_sig": … }`: the paper alone, in a recovery session (§6.5), after two servers' waits. The backup
+  key signs **this change's** hash, `detached("recovery", {"list": list hash})`, and servers take it only
+  in a round the backup holder coordinates in that session (F9). A `release_request`'s own signature is
+  `detached("release_request", {"r": r, "challenge": challenge})`.
 
 There is **no "wait instead"**: a device with no lock, on its own, cannot make account changes. It uses a
 second device or the paper. A helper never approves anything.
@@ -857,7 +880,7 @@ They are changes of §3.2 (kind 24302, group-signed, valid in any order).
     lock does (§3.2). `new: null` empties the seat (removing a server or the helper without replacing
     it).
   - Two seat changes for one seat with the same `new`, or with the same host under different member keys,
-    count as one (the lower change hash's `new` wins; the losing member key goes into `removed`). Otherwise, with different `new`, both are void and
+    count as one (the lower list hash's `new` wins; the losing member key goes into `removed`). Otherwise, with different `new`, both are void and
     the seat stays empty until a `void:<id>` reseat. Two seat changes that would put **one host in two
     seats** are both void too.
   - The helper leaves only by `seat helper→null`; a `remove` never names a seat holder.
@@ -865,7 +888,7 @@ They are changes of §3.2 (kind 24302, group-signed, valid in any order).
     and gets the removal notice (§6.4).
 - **`paper`**: `{"paper": {"key": K, "replaces": <old backup key>, "inner": <hash>, "state": <sorted redeal
   ids in its base>}}`. Its co-signer checks that `replaces` is the current backup key. A co-signed paper
-  change puts `replaces` into `removed`. If two paper changes conflict, the lowest change hash wins and the
+  change puts `replaces` into `removed`. If two paper changes conflict, the lowest list hash wins and the
   loser's key goes into `removed`. `paper` approvals, `challenge` / `release_request` and recovery
   sessions are accepted **only from the current backup key**, and servers end any wait on a replaced key
   at the co-sign.
@@ -874,8 +897,8 @@ They are changes of §3.2 (kind 24302, group-signed, valid in any order).
   carrying the dealer's detached signature. `D0` is
   the identity and is implicit. A `D` that contains the identity, or a `δ` that is all zero, is refused.
   `paper_to` is the backup key that is current **after** the list the redeal is in (in
-  `[paper K', redeal]` it is K'). `rs` is the hash of the sealed new release seed, `dk` of the data-key
-  seed, and `paper_item` of the new material item (§7.2). In a `[paper, redeal]` list, the new paper's
+  `[paper K', redeal]` it is K'). `rs` is `SHA-256` of the new release seed itself, `dk` of the data-key
+  seed (each seed is sealed separately to each recipient, so the hash is of the seed), and `paper_item` of the new material item (§7.2). In a `[paper, redeal]` list, the new paper's
   base item is wrapped under that redeal's release seed. At creation, a creation release seed wraps the
   base item, and it travels with the other seeds.
 
@@ -893,6 +916,10 @@ and its redeal, a remove and its redeal, a paper change and its redeal.
   approves (§6.7.6 F7).
 - The changes of one list are co-signed together and delivered as one. A `remove` and its redeal never
   travel apart.
+- **Each change event carries its list.** Every kind 24302 event of a list has `"list": [...]` in its
+  content, in the approved (placeholder) form, so a member holding one event can recompute the list hash.
+  The event's `change` MUST match one entry of the list (a redeal by its `dealer`, a paper without
+  `inner` and `state`).
 
 Further rules:
 
@@ -1083,7 +1110,9 @@ phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
 - **F8, data key and release seeds.** Every redeal moves both on. A bare `[redeal]` exists but is never
   needed by hand.
 - **F9, after a paper-only recovery.** `recovery` approvals cover reseats, a new paper (offered, not
-  forced) and a redeal. The recovery app's new device deals it, once it has joined (§4.4).
+  forced) and a redeal. The recovery app's new device deals the redeal, once it has joined (§4.4), but
+  every `recovery`-approved change is **co-signed only in a round the holder coordinates** (the backup
+  plus two servers, two-call form, §6.5 step 5), never in an everyday round of the new device.
 - **F10, the group key leaks.** A new npub (key families, later).
 - **F11, paper-only recovery after changes.**
   1. The holder finds the current servers (§6.7.5) and runs §6.5.
@@ -1719,9 +1748,9 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
 
-## Changes in drafts 13.2 to 13.11
+## Changes in drafts 13.2 to 13.12
 
 Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
-and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11).
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11); encodings and rules pinned from the reference implementation's first batch: the approval `expiry` field, the `pair`, `paper`, `recovery` and `release_request` signatures, `ecdh_partial`, `rs`/`dk` as seed hashes, the hedge stream, a list in every change event, lifetime classes, approvers, duplicate-key adds, kind 5 skew, list-hash ordering, and recovery changes co-signed only by the holder (13.12).
