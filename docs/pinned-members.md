@@ -1,301 +1,277 @@
-# When one of your devices may believe in another — draft 2
+# When one of your devices may believe in another — draft 3
 
-> **Status after its own independent red team (`~/igloo/cosign-pinned-members-redteam.md`,
-> 2026-11-02): not buildable as written — buildable with three changes.** The shape is right
-> (derive the point, prove the scalar, pin the kind first-hand) and **§2.2's share proof is safe**:
-> the reviewer could not get a chosen value into `e`, could not reuse `R`, and could not combine
-> proofs across indices — and executed the control, which is that the *same* construction with
-> `idx` and `P_idx` removed from the challenge **does** forge a group signature. The per-index
-> binding is load-bearing, and §2.2 should say so beside the challenge.
->
-> What breaks is underneath it. **§2.1 never names what it derives from**, and the only anchor it
-> cites — 0.12.8's `sound()` — is forgeable by the author of the list: `vss_commitment` constrains
-> a weighted *sum* of the first `threshold` points, so an attacker holding three of four solves the
-> fourth and the check passes (executed, full chain). Anchored on the device's **own** `s·G` points
-> the same attack is refused 200 times out of 200 — but `onMembers` overwrites the phone's own
-> points from the server's list today. **Two own points are enough to re-enable the forgery**, and
-> the path that has two is a paper recovery, not a corner case; every co-signer and server holds
-> one and can never anchor §2.1 at all, so §2.1 is device-only and its claim to be "0.12.8's fix
-> applied where it was left undone" is backwards. And **§2.3's handoff channel is not authenticated
-> by the user's scan** — see live finding 17, which is a critical hole in the join handshake in its
-> own right, found under this document and not caused by it.
->
-> **The change to make instead of §2.1's candidate search: pin the polynomial commitment, not
-> points.** It is first-hand at DKG, at dealing and at every refresh, needs no anchor and no
-> candidate search, works for a member holding one share, and deletes the §9.1 open question
-> outright. It is the useful half of §6's epoch record without the signing round. Draft 3 is that.
->
-> §7 — remove the `site_key` receiver — is verified and still right, so site-dms stays parked
-> whatever else changes.
+**Status: proposal, for review. Nothing here is built.** Third draft. The problem has not moved
+since draft 1; the answer has, twice, because both earlier answers were broken by their reviews.
 
-**Status: proposal, for review — superseded in part, see above.** It replaces
-[`device-evidence.md`](device-evidence.md), whose mechanism was rejected by its red team
-(`~/igloo/cosign-device-evidence-redteam.md`, 2026-10-28) — not the problem, which is real and
-was found three times in one week, and not §1's rule, which survives word for word. What was
-wrong was the evidence scheme underneath it.
+- [`device-evidence.md`](device-evidence.md) (draft 1) asked *what counts as evidence* and built a
+  ledger of beliefs. Its review broke all three kinds.
+- Draft 2 asked the better question — can a device work out for itself which key holds which
+  shares — and answered it with a candidate search over the member list. Its review
+  (`~/igloo/cosign-pinned-members-redteam.md`) **confirmed the share proof is safe**, executed the
+  control that shows why, and then broke the search: the rebuild constrains a weighted *sum* of the
+  first `threshold` points, so three points in hand solve the fourth. Draft 2's §2.1 never said the
+  three had to be the device's own, and the code makes them not be.
+- This draft keeps the share proof, drops the search, and **pins the polynomial commitment
+  instead of points.** That was the reviewer's own recommendation, it is first-hand at every moment
+  that matters, and it removes the two criticals rather than patching them.
 
-The reviewer's verdict in four lines:
+What survives from draft 1 untouched: §1's rule, and §9's recommendation that per-site mailbox keys
+are not copied between devices at all.
 
-- Evidence (b) — "a verified partial" — **was forgeable by exactly the server it was meant to
-  exclude**, and they executed it against this repository's own FROST build. Fixed server-side in
-  0.12.8 (`Sig.sound`), still live on the phone and in the extension.
-- Evidence (b) **can never be earned about a device**: `partners()` is servers only, and both
-  `sign_req` and `ecdh_req` accept a round only from a server. The member it exists to prove is
-  the one a device never exchanges a partial with.
-- **Nothing authenticates which member key holds which share indices.** Whichever half of that
-  mapping a device records, the server supplies the other — and §2(b)'s "record the indices, not
-  the key" turned the stricter-looking rule into a direct key-exfiltration path.
-- Making `vouching` durable, which draft 1 proposed, **permanently widens `onRepair`**:
-  `vouchedFor` is its only gate (`Phone.kt:1420`).
+**One prerequisite, and it is not optional.** Draft 2's enrollment handoff rides a channel the
+user's scan does not authenticate, and the reviewer found that this is a critical hole in the join
+handshake in its own right — any watcher of the invite's relays can enroll a joining phone into a
+key it holds alone. That is **live finding 17**, it is written up with its fix, and §2.3's
+bootstrap depends on it being closed. Nothing here is buildable before it is.
 
-So draft 1 asked the wrong question. It asked *what counts as evidence*, and built a ledger of
-beliefs. The question is narrower and has an answer: **a device must be able to work out, for
-itself, which key holds which shares.** Three mechanisms do that, and none of them is a ledger.
-
-## 1. The rule — unchanged
+## 1. The rule — unchanged since draft 1
 
 > **A device MUST NOT seal a secret to, or accept a secret from, a member it knows only because a
 > server said so.**
 
-This is the device-side twin of `mayAct` (`group.ts:101`). A server's gate cannot stand in for it,
-because the secret never passes through a server.
+The device-side twin of `mayAct` (`group.ts:101`). A server's gate cannot stand in for it, because
+the secret never passes through a server.
 
-What is new is everything about how a device decides it knows a member otherwise.
+## 2. The pinned commitment
 
-## 2. Three mechanisms
+### 2.1 What is pinned
 
-### 2.1 Points are derived, never taken from a list
+A weighted FROST key is a polynomial `f` of degree `threshold − 1`. Its **commitment** is the list
+of coefficient points `[f(0)·G, a₁·G, … a_{t−1}·G]` — the group key and the rest. The commitment
+determines *every* share point: `f(k)·G = Σ Cⱼ·kʲ`. Nothing else is needed.
 
-> **A device MUST compute every share point from the group key, and MUST NOT use a point that
-> arrived in a message.** If the points it holds cannot rebuild the polynomial, it MUST refuse
-> rather than fall back to the list.
+> **A member MUST store the group's commitment, and MUST derive every share point from it.** It
+> MUST NOT read a share point from a message, from a member list, or from its own stored copy of
+> one. A member that has no pinned commitment has no points, and MUST refuse rather than fall back
+> to a list.
 
-This is 0.12.8's server-side fix (`Sig.sound`, `server/sign.ts:53`) applied where it was left
-undone. The device side is where it matters most: `groupJson` flattens `g.members.flatMap { it.points }`
-into the group JSON a partial is verified against, and `onMembers` (`Phone.kt:1455`) replaces the
-member list wholesale.
+This is draft 2's §2.1 with the search deleted. The candidate search existed only to get from
+points back to a commitment; pinning the commitment means never making that trip. Three things fall
+out at once:
 
-`FrostNative.sharePubAt` is already bound (`core/FrostNative.kt:23`), and it goes through
-`vss_commitment`, which refuses unless the rebuilt polynomial's constant term is the group key. A
-device holds 3 points against a threshold of 4, so it needs one trusted fourth: form a candidate
-group of its own 3 points plus one point from the list and call `sharePubAt`. The degree-3
-polynomial through 3 correct points is an injective function of the fourth, so exactly one
-candidate passes. Once one does, derive every other index from that group and ignore the list's
-points for ever after. Both halves of this were demonstrated by the reviewer.
+- **The weighted-sum attack has nothing to stand on.** It needed `threshold − 1` free points to
+  solve the last; here there is no basis to choose and no point taken from anyone.
+- **It is sound for a member holding one share.** Draft 2's construction needed `threshold − 1` own
+  points, which made it device-only and made its claim to be "0.12.8's fix applied where it was
+  left undone" backwards. A co-signer with one share derives from a pinned commitment exactly as a
+  device does.
+- **Draft 2's weakest open question disappears** rather than being answered. There is no "device
+  with one share" case, because the commitment is not reconstructed from holdings.
 
-This alone makes a partial mean something again. It does not say **who** holds the share.
+### 2.2 How it is carried forward — first-hand, by arithmetic
 
-### 2.2 A share proof says who
+A refresh moves every share. It does **not** move the group key, and it does not need a list:
 
-A new primitive, and the smallest one that answers the question draft 1 could not.
+> **A member MUST recompute the commitment at each refresh from the dealers' commitments it has
+> already verified, and MUST NOT take a point, or a commitment, from the plan.**
 
-> **A member MAY prove it holds the share at an index by publishing a proof of knowledge of that
-> share's scalar, bound to the index, the point, its own member key, its kind, the group and the
-> epoch.** A device MAY treat a member as holding exactly those indices for which it has verified
-> such a proof against a point it derived itself.
+Each dealer picks `g` of degree `threshold − 1` with `g(0) = 0` and publishes commitments to g's
+coefficients; every member already checks its own deltas against them
+(`core/Refresh.kt:88`, `checkDelta`). Since `f' = f + Σ g_d`:
+
+```
+  C'₀ = C₀                    (the group key, unchanged — which is the point of a refresh)
+  C'ₖ = Cₖ + Σ_d C_{d,k}      for k ≥ 1
+```
+
+So a member that pinned `C` computes `C'` from data it has verified itself, and every new point
+follows. This is not an improvement in strength only — it deletes the laundering the draft-2 review
+found, where `finish()` takes **other** holders' old points from the plan
+(`core/Refresh.kt:72`) and so writes a forged holder's point forward into something the device
+derived. With a pinned commitment there is no slot for a supplied point to occupy.
+
+> **A plan whose `holders` contain an index the recomputed commitment does not account for MUST be
+> refused**, and `refresh_plan` MUST be accepted only from a server — including when it arrives
+> inside a `mail` wrapper, which currently re-dispatches with a sender the wrapper names
+> (`Phone.kt` `onRefreshMsg`). The role check must be applied to the inner sender, not the outer.
+
+### 2.3 How it is bootstrapped — three moments, all first-hand
+
+The commitment has to enter a member once. Every honest route is a moment the user is present for:
+
+1. **This device made the key.** In the weighted flow the phone computes the polynomial itself, so
+   the commitment is its own by construction. Pin it there.
+2. **This device was dealt its shares by a device the user scanned.** The share material arrives in
+   `sigma` from the voucher (`Phone.kt:1451`); the commitment rides with it. **This is the route
+   that needs finding 17 closed first** — today the joining device takes the whole group from
+   whichever `welcome` arrives, from any sender, so "the channel the person authenticated by
+   scanning" is not what that channel is. With finding 17's two conditions in place (a sigma from
+   the scanned inviter, and the resulting share lying on the group's polynomial) the channel is
+   what draft 2 claimed it was, and the commitment can ride it.
+3. **This member was enrolled as a co-signer**, which is a different trust question and out of
+   scope here: a co-signer is not a party any device seals a secret to (§9).
+
+> **A member MUST pin the commitment at one of those moments and never re-bootstrap.** There is no
+> "re-anchor if it looks wrong" rule, because both readings of one are bad: refusing for ever
+> bricks a legitimate recovery, and accepting a new anchor is the hole re-opened. §6 is the complete
+> list of changes a pinned commitment may undergo, and anything else is refused and shown.
+
+## 3. The share proof says who holds which index
+
+Unchanged from draft 2 except where its review asked for a MUST. The reviewer attacked it hard and
+it held: no chosen value into the challenge, no reuse of the nonce commitment, no combining across
+indices or epochs.
+
+> **A member MAY prove it holds the share at an index by proving knowledge of that share's scalar,
+> bound to the index, the point, its own member key, its kind, the group and the epoch.** A device
+> MAY treat a member as holding exactly those indices for which it has verified such a proof against
+> a point derived from the pinned commitment.
 
 ```
   e = H(tag "cosign/share-proof" ‖ groupX ‖ epoch ‖ idx ‖ P_idx ‖ member_pk ‖ kind)
   R = k·G,  z = k + e·s_idx
-  verify:  z·G == R + e·P_idx,   with P_idx derived per §2.1
+  verify:  z·G == R + e·P_idx,   P_idx from §2.1
 ```
 
-Four properties matter, and each is doing a specific job:
+> **`idx` and `P_idx` in the challenge are load-bearing and MUST NOT be removed.** The reviewer
+> executed the control: four λ-weighted proofs of this construction do **not** make a group
+> signature, and the *identical* construction with those two fields taken out **does**. A later
+> tidy-up that drops them looks harmless and hands an attacker a quorum-free forgery primitive. This
+> paragraph exists so that nobody does it.
 
-- **A member without the share cannot produce one.** It is a proof of knowledge of the discrete
-  log of a point the verifier derived. Nothing in it is taken on anyone's word.
-- **The member key is inside the challenge**, so a proof is worthless attached to any other key.
-  This is the binding draft 1 did not have, and it is what closes the exfiltration path: a server
-  cannot list proven indices against its own `pk`, because the proof names the `pk`.
-- **It is non-interactive, so a server can carry it and cannot forge it.** This is what kills the
-  reviewer's C3 outright. No device-to-device round, no §5.5, no awake-peer discovery, no change
-  to who signs: a device emits its proofs once per epoch, servers relay them exactly as they relay
-  a member list, and a new device verifies them whenever it likes. Replay is not a threat, because
-  a replayed proof asserts a true statement about a real holder.
-- **It is epoch-bound, so a refresh invalidates it** — which is the honest answer to draft 1's open
-  question 2, and one that costs nothing: each member re-emits after a refresh, automatically, so
-  "re-earn each epoch" no longer means a quiet device goes unproven.
+> **`k` MUST be fresh for every proof, from a CSPRNG, and MUST NOT be derived from any field of
+> `e`.** Every field of `e` is stable within an epoch, which invites an implementer to cache or
+> derive the nonce per epoch. Two challenges under one nonce return the share scalar — the reviewer
+> executed that too.
 
-The primitive is not new work so much as a strict simplification of one we shipped in 0.12.7:
-`ecdhProve`/`ecdhVerify` (`server/frost.ts:187`) is the same shape with a second base and a second
-response. Drop `R2` and `Q` and this is what is left, with its own domain tag.
+The primitive is a strict simplification of 0.12.7's `ecdhProve`/`ecdhVerify`
+(`server/frost.ts:187`): drop the second base and the second response. It is non-interactive, so a
+server can carry it and cannot forge it — which is what makes it obtainable about a device at all,
+and the reason draft 1's evidence (b) could not be.
 
-### 2.3 Kind is pinned by the device that dealt the shares
+## 4. Kind comes from the count, not from the claim
 
-A share proof says "this key holds index 7". It does not say whether index 7 is a phone or a
-co-signer, and it cannot: a co-signer that genuinely holds index 7 can prove it, and if its own
-proof is also where its kind comes from, a dishonest one calls itself a device and collects
-whatever devices send each other. Self-assertion is enough for `attended`
-(`claude/devices-and-cosigners` §2), where the worst case is a worse choice of signer. It is not
-enough here, where the worst case is the account's secrets.
+Draft 2 pinned `kind` at the moment the shares were dealt, because a co-signer that genuinely holds
+its index can prove it and would otherwise call itself a device. The reviewer showed the weaker
+half of that — one holder emits two valid proofs, one saying device and one saying cosigner — and
+also the cheaper answer, which is that the weight table already separates them:
 
-So kind comes from the one place a server is not: **the moment the user's own device dealt the
-shares.**
+> **A member's kind MUST be read from the number of indices it has proven, under the group's weight
+> table, and MUST NOT be read from its own claim.** A device holds 3, a paper backup 2, a co-signer
+> 1. `kind` stays inside the challenge so that a proof is bound to the claim its maker made, and a
+> verifier ignores it.
 
-> **A device MUST keep a pinned table of `(member key, indices, kind)` for every member it learned
-> first-hand, and MUST refuse a member list that re-points a pinned index to a different key, or
-> changes a pinned member's kind, except by one of the resolutions in §4.**
+> **An unproven member has no kind.** It MUST NOT default to `device`, which is what the code does
+> today in several places and is the direction that loses. No proofs, no standing, nothing sealed —
+> §5.
 
-A device learns a member first-hand in exactly two ways:
+This needs the weight table written down as a rule the code enforces rather than a convention it
+happens to follow, and that is §11's first open item.
 
-1. **It dealt the shares.** `onRepair` already knows both halves — `newPk` and `ks` — at the moment
-   it sends the sigmas (`Phone.kt:1412-1453`), having checked `making?.pk == newPk`, which is set by
-   a code the person scanned on *this* device and unlocked. Nothing a server says is involved.
-   Writing the pin there is three lines.
-2. **The device that dealt them handed over its table**, during enrollment, over the channel the
-   person authenticated by scanning. A new device receives its share material from the voucher in
-   the `sigma` message (`Phone.kt:1451`); the voucher's pinned table rides along in it.
-
-The second is draft 1's evidence (c) with the machinery taken out. There is no standing credential,
-no signature format, no chain-length rule, no expiry, and no "enrollment key" — a credential draft
-1 named and the reviewer could not find, because it does not exist. There is a one-time table copy
-over a channel whose authentication is the user's own scan, and a device that was never handed a
-table simply has a smaller one.
-
-> **A pinned entry MUST be dropped when the member leaves the list, and `vouching` MUST stay
-> short-lived.** Draft 1 proposed making it durable; `vouchedFor` is the only gate on `onRepair`,
-> so a durable vouch is a permanent licence to mint share material to a key the user may have
-> retired. Standing lives in the pinned table, which authorizes nothing by itself.
-
-## 3. What a device does with no standing for a member
-
-Unchanged from draft 1 §3, with the storage the reviewer asked for:
+## 5. What a device does with no standing for a member
 
 > **It does not send, and it does not fail.** A secret that cannot be sealed yet is **held, not
 > dropped**, and sealed when the proof arrives. Nothing is shown to the person.
 
 > Held secrets MUST live in the signer process only, encrypted at rest, and never in `group` or
-> `membership`. Absence of a member from a list MUST purge everything held for it and every pin of
-> it. **Removal MUST be positive** — a `removed` entry, not inferred from a member being missing,
-> because the list that is missing it is a server's to choose. A proof MUST be current-epoch at the
+> `membership`. **Removal MUST be positive** — a `removed` entry, not inferred from a member being
+> absent from a list, because the list that is missing it is a server's to choose. Removal MUST
+> purge everything held for that member and every proof of it. A proof MUST be current-epoch at the
 > moment of sealing, not at the moment it was verified.
 
 > **A device MUST NOT ask a server to carry a secret to a member it cannot verify**, and MUST NOT
 > fall back to a weaker check when a server says the member is real. Concretely: `sharedX`'s
-> fall-through to unverified `points` (`Phone.kt:1801-1817`) must go, and a `points`-only answer
-> must count as that server failing rather than succeeding.
+> fall-through to unverified `points` must go (`Phone.kt:1801-1817`), and so must the server's
+> (finding 16(a)) — a `points`-only answer is that partner failing, not succeeding.
 
-## 4. The re-pointings that are legitimate
+## 6. The changes a pinned commitment may undergo
 
-§2.3's refusal breaks the account unless these are enumerated, because each of them does exactly
-what it forbids. A device MAY accept a change to a pinned entry when, and only when:
+This is the complete list. Anything else is refused, and shown to the person, because by here
+nothing honest produces it.
 
-- **A refresh it took part in** moved the points. Every point is recomputed from the dealers'
-  commitments, so this is first-hand by construction — provided the plan's old points are taken
-  from the plan for this device's own indices only and derived for every other
-  (`core/Refresh.kt:31` currently validates only its own, which is how a forged holder is laundered
-  through a refresh and comes out self-consistent). A plan whose holders contain an index that does
-  not derive MUST be refused, and `refresh_plan` MUST be accepted only from a server.
-- **A paper recovery it witnessed** promoted a backup to a device: the key against those indices
-  changes legitimately. The server-side rule already distinguishes a server that saw the recovery
-  from one repeating what it was told (`group.ts:1262`); the device needs the same distinction, and
-  has it when the recovery passed through this device's own unlock.
-- **A device growing its shares** after such a recovery (`group.ts:1270`): the indices against a
-  pinned key change, the key does not.
+- **A refresh this member took part in**, recomputed as §2.2. The group key is unchanged; if a
+  recomputation would change `C₀`, the plan is refused.
+- **A paper recovery this member witnessed**, where a backup's indices come to belong to a new key.
+  The commitment does not change at all — only which member proves which index — so this is not a
+  change to the pin, and the proofs carry it on their own. (The server-side rule already
+  distinguishes a server that saw the recovery from one repeating what it was told,
+  `group.ts:1262`; the device needs the same distinction and has it when the recovery passed
+  through its own unlock.)
+- **A device growing its shares** after such a recovery: again no change to the commitment, and
+  the new indices are proven like any other.
 
-Everything else — a pinned index appearing against a new key, a pinned key appearing with new
-indices, a pinned kind changing — is refused, and **shown to the person**, because by here nothing
-honest produces it.
+That is the whole of it, and it is shorter than draft 2's §4 because pinning a commitment rather
+than a table of points makes two of the three cases stop being changes.
 
-## 5. Against the review, item by item
+## 7. Against the two reviews
 
-| | Draft 1 | Draft 2 |
-|---|---|---|
-| C1 forgeable partial | the mechanism | §2.1 derives the point; server side shipped in 0.12.8 |
-| C2 `viaServer` cleared early | cited as the sound precedent | fixed in 0.12.8; `mergeMembers` still copies a peer's `sharePub` (`group.ts:1270`) and must derive it |
-| C3 (b) unobtainable about a device | claimed free | §2.2 is non-interactive; no device-to-device round |
-| C4 no key↔indices binding | made worse by the MUST | §2.2 puts the member key in the challenge |
-| H1 durable vouch widens `onRepair` | proposed durability | §2.3 keeps `vouching` short-lived |
-| H2 removal undone from the device's side | queue unplaced | §3 places it and makes removal positive |
-| H3 refresh launders a forgery | unaddressed | §4 derives every point but this device's own |
-| H4 `site_key` receiver injects signing authority | §4 said remove it | still: remove it (§7) |
-| M1 an injected "server" stops signing | unaddressed | §2.1 fails it at verification; wrap the aggregate per partner |
-| M2 `parts` optional on the wire | forbidden in prose, present in code | §3 makes it a failure |
-| L1 "enrollment key" does not exist | named it | §2.3 does not need one |
+| | Draft 1 | Draft 2 | Draft 3 |
+|---|---|---|---|
+| forgeable partial | the mechanism | derive the point | derive from a pinned commitment |
+| rebuild is a weighted sum | not seen | **the critical** | no basis to choose; §2.1 |
+| fewer than `threshold − 1` own points | — | **the critical**; device-only | sound at one share; §2.1 |
+| no key↔indices binding | made worse | the member key in the challenge | unchanged, and confirmed safe |
+| (b) unobtainable about a device | claimed free | non-interactive proof | unchanged |
+| handoff channel unauthenticated | — | **the critical** | finding 17, a prerequisite; §2.3 |
+| `kind` self-asserted | — | pinned at dealing | from the proven count; §4 |
+| unproven defaults to `device` | — | not seen | forbidden; §4 |
+| nonce unspecified | — | not stated | MUST be fresh; §3 |
+| refresh launders a forgery | — | derive all but own | no slot for a supplied point; §2.2 |
+| `refresh_plan` server-only bypassed by `mail` | — | not seen | inner sender; §2.2 |
+| durable vouch widens `onRepair` | proposed it | keep it short-lived | unchanged |
+| `site_key` receiver | remove it | remove it | remove it; §9 |
 
-## 6. Why not the epoch record
+## 8. Why not the epoch record
 
-The reviewer's own recommendation was the signed epoch record — kind 30242, `d="frost"`, specified
-in `COSIGN.md:149` and `NIP-XX.md:47` and built nowhere. It is the better long-term answer for a
-different question, and it is not the cheaper answer for this one.
+The epoch record — kind 30242, specified in `COSIGN.md:149` and `NIP-XX.md:47`, built nowhere —
+authenticates key↔indices by being signed with the group key, which takes four points and which no
+single server can raise. It is the better long-term answer to a wider question and we should have
+it.
 
-It authenticates key↔indices by being signed with the group key, which takes four points, which no
-single server can raise. That is a strong property and we should have it. But: it needs a signing
-round on **every** membership change and every refresh; its content is encrypted "under a random
-group secret that every member holds", which a device being added does not hold yet, so the
-record cannot be the thing that tells a new device who the members are; and `epoch.id`, which its
-own schema requires, appears in no source file — the counter is all that exists.
+A pinned commitment is the useful half of it without the cost: no signing round on every membership
+change and every refresh, no group secret that a device being added does not yet hold, and no
+`epoch.id`, which the record's own schema requires and which appears in no source file. The record
+would additionally authenticate labels, roles and removals; the commitment plus proofs is what makes
+the *secrets* safe. If the record is built later, §2.3's bootstrap can be seeded from it — a
+simplification to look forward to, not a prerequisite.
 
-A share proof needs no quorum, no new encryption key, no new event kind, and no publishing
-discipline, and it answers the question the secrets depend on. The two are complementary, not
-rival: the record would authenticate labels, roles and removals, and the proof would still be what
-says a key holds a share. If the record gets built, §2.3's pinned table can be seeded from it
-instead of from a handoff — which is a simplification to look forward to, not a prerequisite.
+## 9. What is still the recommendation
 
-## 7. What is still the recommendation
-
-Unchanged, and it is the part of draft 1 that survived review intact:
+Verified by both reviewers and unchanged:
 
 > **`claude/per-site-signer-keys` MUST drop `changed()`'s copying loop and the `site_key` receiver
 > before it ships.** Not gate them: remove them.
 
-The reason is stronger than draft 1 gave. `Bunker.adopt` (`core/Bunker.kt:115`, on that branch) dedupes on the
-mailbox public key alone — it does not check `origin`, does not check `by`, and keeps the sender's
-`client`, which is the NIP-46 client key authorized to use that mailbox. So the receiver does not
-leak mailboxes; it **installs a signing door into the account through the user's own phone**, and
-one colluding server is enough to answer the grant. A rule about who a secret may come from does
-not make that safe, even when the rule works.
+`Bunker.adopt` on that branch dedupes on the mailbox public key alone — it does not check `origin`,
+does not check `by`, and keeps the sender's `client`, the NIP-46 client key authorized to use that
+mailbox. So the receiver does not leak mailboxes; it installs a **signing door** into the account
+through the user's own phone, and one colluding server answers the grant. No rule about who a secret
+may come from makes that safe, including the rules in this document.
 
-And draft 1's description of the cost was wrong in the user's favour. It is not "signed in on the
-phone, not on the laptop". It is, in the DM spec's own words, that a site is answered only while
-its home device can be reached — an intermittent signer error, the least legible failure there
-is — plus a residual on a lost device that cannot be revoked. The recommendation stands anyway.
-It is just not free.
+## 10. Attack this first
 
-## 8. Attack this first
+For whoever reviews draft 3. Draft 2's list is spent; these are the new joints.
 
-For whoever reviews it. These are the places I would expect it to break, named so that a reviewer
-does not have to find them before starting:
+1. **The bootstrap is now the whole trust root.** §2.3 has three moments and one of them depends on
+   finding 17 being fixed. Is finding 17's fix sufficient to make route 2 sound, or does an
+   attacker still have a path into a joining device's commitment?
+2. **The refresh recomputation.** `C'ₖ = Cₖ + Σ C_{d,k}` is right if every dealer's commitment is
+   verified and the dealer set is authentic. Who decides the dealer set, and can a member be made to
+   recompute from a dealer list it did not agree to? `onRefreshMsg` dispatches on any member pk
+   today.
+3. **Never re-bootstrapping.** A member whose pinned commitment is wrong — a bug, a restore from
+   backup, a half-finished refresh — has no way out but re-scanning. Is there a state where a real
+   user is stuck and the only honest answer is "set this device up again"?
+4. **Kind from the count.** Does any code path give a co-signer more than one share, or a device
+   fewer than three, in a way that makes the weight table a bad discriminator? A paper backup's two
+   is adjacent to nothing today, but it is one weight change away from a device.
+5. **Storage.** The commitment is a small public value, but it is now the thing everything derives
+   from. What does an attacker who can *write* the member's storage get that it did not have before?
 
-1. **Does the share proof leak anything a FROST partial does not?** `z = k + e·s` with a fresh `k`
-   is a textbook Schnorr proof of knowledge, but a FROST partial is `z = k + λ·c·s` over the same
-   share. Nothing attacker-chosen enters `e` as specified — every field is the prover's own or the
-   group's — but if a reviewer can get a chosen value into `e`, or can reuse a proof's `R` as a
-   signing commitment, the proof becomes a partial-signature oracle. This is the one that would
-   make the design worse than the problem.
-2. **Is the §2.1 candidate derivation actually injective** in practice as well as in argument, and
-   what does a device do when it holds fewer than `threshold - 1` points — a device with one share,
-   or a browser member?
-3. **The handoff is a table from another device.** It arrives in `sigma`, which is sealed to the
-   new device's key, from a voucher the person scanned. What does a hostile voucher get? (The
-   person chose it, so the honest answer may be "everything, and that is the trust model" — but it
-   should be said rather than assumed.)
-4. **Kind pinning and the `attended` decision.** `claude/devices-and-cosigners` makes `attended`
-   self-asserted. Is there a path where a member's self-asserted `attended` plus a pinned kind of
-   `cosigner` still gets it treated as a device by some caller?
-5. **§4's three resolutions are where the account bricks.** A first honest paper recovery that the
-   second device did not witness: what does it see, and can it ever recover without the user
-   re-scanning?
-6. **The extension.** It lives in `~/marble/extension` since the split, keeps points it already
-   knows but takes the server's point for any index it does not (`src/member/device.ts:221`), has
-   no equivalent of the phone's `list.none { it.idx == m.idx }` guard, and verifies partials not at
-   all. Everything here has to be true there too, in a different repository and a service worker
-   that dies.
+## 11. Still open
 
-## 9. Still open
-
-1. **A device with one share.** §2.1 needs `threshold - 1` honest points to pin the candidate. A
-   member with fewer must get its first point some other way, and the only first-hand one it has is
-   the enrollment handoff — which means the handoff carries points as well as the table, and a
-   device that was never handed one cannot derive at all. This is the weakest joint in the design.
-2. **Where the proofs are carried.** A member message relayed by servers is the obvious place and
-   needs no new kind. Publishing them as a replaceable event per member would also let a device
-   fetch them without any server being awake. I have not chosen.
-3. **Whether `mergeMembers` should derive as well.** It copies a peer's `sharePub` today
-   (`group.ts:1270`), which was half of C2. 0.12.8 fixed what verification does with that copy, not
-   the copy. Deriving it there is a two-line change and I think it should happen regardless of this
-   document.
-4. **What the person is shown** when §4's refusal fires. "Something changed about one of your
-   devices and this phone did not see it happen" is true and unhelpful. The honest version names
-   the device and offers the one recovery that works, which is re-scanning — and that is a screen
-   nobody has designed.
+1. **The weight table as an enforced rule.** §4 reads kind from the proven count, which needs
+   "a co-signer holds exactly one share, a device exactly three, a paper exactly two" to be
+   something the code refuses to violate rather than something it happens to do.
+2. **Where proofs are carried.** A member message relayed by servers needs no new kind. A
+   replaceable event per member would let a device fetch them with no server awake. Not chosen.
+3. **Epoch skew.** A proof is epoch-bound; a member a generation behind produces proofs nobody can
+   verify, and §5's hold-quietly rule makes that invisible. The honest behaviour is probably to
+   report a member whose proofs are stale rather than hold for it in silence.
+4. **What the person is shown** when §6's refusal fires. "Something changed about one of your
+   devices and this phone did not see it happen" is true and unhelpful; the honest version names the
+   device and offers the one recovery that works, which is setting it up again. Nobody has designed
+   that screen.
+5. **`mergeMembers` still copies a peer's `sharePub`** (`group.ts:1270`). 0.12.8 fixed what
+   verification does with that copy, not the copy. Under this document the server should derive it
+   too, and that is a two-line change worth making regardless.
