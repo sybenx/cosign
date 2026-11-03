@@ -3,15 +3,15 @@
 // member asks it, adding its own policy. Storage (deliveries, inboxes, the change set) is the
 // host's; this class keeps only what Core says a co-signer keeps, and takes the clock as input.
 
-import { bytesToHex, randomBytes, sha, jcsBytes, hexN, refuse, KeykinError, concatBytes, u32be } from './bytes.ts';
+import { bytesToHex, randomBytes, sha, jcsBytes, hexN, refuse, KeykinError, concatBytes, u32be, strictJson } from './bytes.ts';
 import { holdWaitId, recoveryWaitId, what, detachedDigest, stateHash, signpostD, signpostH } from './codes.ts';
 import { checkLifetime, bodyHash, ReplayCache, type Cls } from './lifetimes.ts';
 import { futureDateOk, destructive, deletionTargets, BurstCounter, type Ev } from './destructive.ts';
 import { commit, signShare, hedge, type SignCommit, type Nonces } from './frost.ts';
 import { ecdhAnswer } from './ecdh.ts';
 import { checkAssertion } from './lock.ts';
-import { eventId, schnorrVerify, verifyEvent, tag, type KeyPair, type NostrEvent, type Unsigned } from './event.ts';
-import { checkApproval, approvalType, approvalHash, placeholderList, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
+import { eventId, eventShape, schnorrVerify, verifyEvent, tag, type KeyPair, type NostrEvent, type Unsigned } from './event.ts';
+import { checkApproval, approvalType, approvalHash, placeholderList, changeKey, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
 import { computeMembership, parseChange, adopt, type Membership } from './membership.ts';
 import { pointFrom, commitmentFrom, scalarHex, type Commitment } from './curve.ts';
 import { stateOf, commitmentAt, type State } from './redeal.ts';
@@ -459,6 +459,13 @@ export class CoSigner {
     for (const c of cs as SignCommit[]) { pointFrom(c.D, 'D'); pointFrom(c.E, 'E'); }
   }
 
+  /** §9.5: a co-signer takes exactly `pubkey`, `created_at`, `kind`, `tags`, `content` and `id`, and
+   *  recomputes the id. */
+  private checkWire(ev: unknown) {
+    eventShape(ev, 'cosign');
+    if ((ev as any).id !== eventId(ev as Unsigned)) refuse('malformed', 'the event id differs from its fields');
+  }
+
   /** §5.7 items 4–7 on the event. Returns whether the event was destructive and approved by lock. */
   private checkEvent(from: string, msg: any, mode: 'everyday' | 'recovery', now: number) {
     const ev: Unsigned = msg.event;
@@ -469,7 +476,8 @@ export class CoSigner {
     // Account machinery (item 5).
     if (ev.kind === KIND_EPOCH) refuse('machinery', 'an epoch record is made only at creation');
     const signpostDs = new Set(this.m.backupKeys.map(signpostD));
-    if (ev.kind === 5 && ev.tags.some((t) => (t[0] === 'e' && this.signpostIds.has(t[1])) || (t[0] === 'a' && [...signpostDs].some((d) => t[1] === `${KIND_SIGNPOST}:${this.g}:${d}`))))
+    // §6.7.5: by `e` id, or by `a` = `30078:g:d`, hex compared ignoring case.
+    if (ev.kind === 5 && ev.tags.some((t) => typeof t[1] === 'string' && ((t[0] === 'e' && this.signpostIds.has(t[1].toLowerCase())) || (t[0] === 'a' && [...signpostDs].some((d) => t[1].toLowerCase() === `${KIND_SIGNPOST}:${this.g}:${d}`)))))
       refuse('machinery', 'a signpost delete is always refused');
     if (ev.kind === KIND_SIGNPOST && signpostDs.has(tag(ev, 'd') ?? '')) { this.checkSignpost(from, ev); return { evId, lockApproved: false, signpost: true }; }
     if (ev.kind === KIND_CHANGE) { this.checkListToSign(from, [ev], mode, now, msg); return { evId, lockApproved: false }; }
@@ -537,8 +545,8 @@ export class CoSigner {
     const p0 = ps[0];
     if (ps.some((p) => p.listHash !== p0.listHash)) refuse('bad_list', 'one list per request');
     // Every entry of the list exactly once.
-    const want = p0.c.list.map((x) => jcs(x));
-    const got = ps.map((p) => jcs(placeholderList([p.c.change])[0]));
+    const want = p0.c.list.map(changeKey);
+    const got = ps.map((p) => changeKey(placeholderList([p.c.change])[0]));
     if (want.length !== got.length || want.some((w) => got.filter((g) => g === w).length !== want.filter((x) => x === w).length))
       refuse('list_incomplete', 'every event of a list travels in one request');
     if (ps.some((p) => jcs(p.c.approval) !== jcs(p0.c.approval))) refuse('bad_list', 'one approval per list');
@@ -633,7 +641,7 @@ export class CoSigner {
   /** §6.7.5: a signpost only from a device, with the right `n` and an `h` matching this view. */
   private checkSignpost(from: string, ev: Unsigned) {
     if (!this.m.devices.has(from)) refuse('machinery', 'signposts come from devices');
-    if (Number(tag(ev, 'n')) !== signpostCount(this.m)) refuse('signpost_n');
+    if (tag(ev, 'n') !== String(signpostCount(this.m))) refuse('signpost_n'); // compared as a string (§9.5)
     if (tag(ev, 'h') !== signpostH(this.m.epochId, signpostServers(this.m))) refuse('signpost_h');
   }
 
@@ -649,6 +657,7 @@ export class CoSigner {
     const isList = msg.list_events !== undefined;
     const items: { event: Unsigned; commitments: SignCommit[] }[] = isList ? msg.list_events : [{ event: msg.event, commitments: msg.commitments }];
     if (!Array.isArray(items) || !items.length || items.length > 16) refuse('malformed');
+    for (const it of items) this.checkWire(it?.event);
     const mine = this.myIndices;
     let kept: { nonces: Nonces[][]; mine: SignCommit[][] } | null = null;
     if (!twoCall) {
@@ -680,7 +689,7 @@ export class CoSigner {
       this.checkListToSign(from, evs, mode, now, msg);
     } else {
       if (msg.event?.kind === KIND_CHANGE) {
-        let c: any; try { c = JSON.parse(msg.event.content); } catch { /* parse refuses below */ }
+        let c: any; try { c = strictJson(msg.event.content); } catch { /* parse refuses below */ }
         if (Array.isArray(c?.list) && c.list.length > 1) refuse('list_in_one_request', 'every event of a list travels in one request');
       }
       single = this.checkEvent(from, msg, mode, now) as { evId: string; lockApproved: boolean; signpost?: boolean };
@@ -713,6 +722,7 @@ export class CoSigner {
     const st = this.stale(msg); if (st) return st;
     const parts = this.participants(msg.signers, from, true);
     this.coordinator(from, parts, now);
+    if (msg.event !== undefined) this.checkWire(msg.event);
     const count = msg.count ?? 1;
     if (!Number.isSafeInteger(count) || count < 1 || count > 16) refuse('malformed', 'count');
     for (const [k, v] of this.#twoCall) if (now - v.at > NONCE_TTL_S) this.#twoCall.delete(k);

@@ -2,7 +2,7 @@
 // runs (signatures, the approver's membership, the structure). Freshness (the lock expiry, the
 // paper challenge, waited statements' age) is the co-signer's alone (§3.2), in cosign.ts.
 
-import { bytesToHex, refuse } from './bytes.ts';
+import { bytesToHex, refuse, jcs } from './bytes.ts';
 import { what, listHash, detachedDigest, selfDigest, waitedDigest, recoveryWaitId } from './codes.ts';
 import { checkAssertion, type LockPub, type SoftLock } from './lock.ts';
 import { schnorrSign, schnorrVerify, type KeyPair } from './event.ts';
@@ -61,10 +61,17 @@ export function checkListShape(list: Change[]): void {
 export function placeholderList(list: Change[]): Change[] {
   return list.map((c) => {
     if ('redeal' in c) return { redeal: { dealer: c.redeal.dealer } };
-    // A paper change is approved without `inner` and `state`; Backup's `holders` and `heir` are approved (§1.1 step 5).
-    if ('paper' in c) return { paper: { key: c.paper.key, replaces: c.paper.replaces, ...(c.paper.holders ? { holders: c.paper.holders } : {}), ...(c.paper.heir ? { heir: c.paper.heir } : {}) } };
+    // A paper change is approved without `inner` and `state`; every other field, Backup's `holders` and
+    // `heir` and any module's, stays in the approved list (§6.7.2).
+    if ('paper' in c && c.paper && typeof c.paper === 'object') { const { inner: _i, state: _s, ...rest } = c.paper as Record<string, unknown>; return { paper: rest } as Change; }
     return c;
   });
+}
+/** The comparison form (§9.5): two changes are the same when these JCS bytes are equal, an add's absent
+ *  `lock` counting as `"lock": null`. */
+export function changeKey(c: Change): string {
+  const a = (c as any)?.add;
+  return jcs(a && typeof a === 'object' && !Array.isArray(a) && !('lock' in a) ? { ...c, add: { ...a, lock: null } } : c);
 }
 export const approvalHash = (list: Change[]) => listHash(placeholderList(list));
 

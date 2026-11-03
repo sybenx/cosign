@@ -4,8 +4,9 @@
 
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import * as nip44 from 'nostr-tools/nip44';
-import { bytesToHex, randomBytes, refuse, utf8ToBytes } from './bytes.ts';
-import { eventId, verifyEvent, type NostrEvent } from './event.ts';
+import { bytesToHex, randomBytes, refuse, utf8ToBytes, strictJson, utf8Strict, fromB64 } from './bytes.ts';
+import { nip44Open } from './nip44.ts';
+import { eventId, verifyEvent, eventShape, type NostrEvent } from './event.ts';
 import { KIND_RUMOR } from './types.ts';
 import { LIFETIME_S, type Cls } from './lifetimes.ts';
 
@@ -40,13 +41,14 @@ export function unwrap(sk: Uint8Array, w: NostrEvent): { from: string; body: any
   if (!verifyEvent(w)) refuse('bad_wrap');
   let seal: NostrEvent, rumor: any;
   try {
-    seal = JSON.parse(nip44.v2.decrypt(w.content, nip44.v2.utils.getConversationKey(sk, w.pubkey)));
+    // §9.5: each text on its own through the profile; fatal UTF-8; exact event shapes.
+    seal = strictJson(nip44Open(w.content, nip44.v2.utils.getConversationKey(sk, w.pubkey)));
     if (seal.kind !== KIND_SEAL || !verifyEvent(seal)) refuse('bad_seal');
-    rumor = JSON.parse(nip44.v2.decrypt(seal.content, nip44.v2.utils.getConversationKey(sk, seal.pubkey)));
+    rumor = strictJson(nip44Open(seal.content, nip44.v2.utils.getConversationKey(sk, seal.pubkey)));
+    eventShape(rumor, 'rumor');
   } catch (e) { return refuse((e as any).code ?? 'undecryptable'); }
   if (rumor.kind !== KIND_RUMOR || rumor.pubkey !== seal!.pubkey || eventId(rumor) !== rumor.id) refuse('bad_rumor');
-  let body: any;
-  try { body = JSON.parse(rumor.content); } catch { return refuse('malformed'); }
+  const body = strictJson(rumor.content);
   return { from: seal!.pubkey, body, sentAt: rumor.created_at };
 }
 
@@ -72,14 +74,14 @@ export class Reassembler {
     const cls: Cls = Object.hasOwn(LIFETIME_S, body.cls) ? body.cls : 'sign';
     const p = this.#open.get(key) ?? { first: at, cls, got: Array.from({ length: m }, () => undefined), size: 0 };
     if (p.got.length !== m) refuse('bad_part');
-    const data = new Uint8Array(Buffer.from(String(body.data), 'base64'));
+    const data = fromB64(body.data);
     if (p.got[k] === undefined) { p.got[k] = data; p.size += data.length; }
     if (p.size > MAX_MESSAGE) { this.#open.delete(key); refuse('too_large'); }
     this.#open.set(key, p);
     if (p.got.some((x) => x === undefined)) return null;
     this.#open.delete(key);
     const all = Buffer.concat(p.got as Uint8Array[]);
-    try { return JSON.parse(all.toString('utf8')); } catch { return refuse('malformed'); }
+    return strictJson(utf8Strict(all));
   }
   prune(at: number) { for (const [k, p] of this.#open) if (at - p.first > LIFETIME_S[p.cls] + 30) this.#open.delete(k); }
   get pending() { return this.#open.size; }

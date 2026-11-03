@@ -22,7 +22,7 @@ import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { approveRecovery, approveLock, approvePaper, placeholderList } from '../src/approval.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
-import { newKey, pubOf, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
+import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import type { SoftLock } from '../src/lock.ts';
 import type { Transport, Node } from './bus.ts';
@@ -487,7 +487,8 @@ export class DeviceNode implements Node {
   // ---- driving ----
   /** Sign an event with the first live server that answers; `stale` brings us forward and retries. */
   async sign(ev: Partial<Unsigned>, extra: { approval?: Approval; hold?: string; list_events?: NostrEvent[]; material?: Item } = {}): Promise<NostrEvent> {
-    const event: Unsigned = { pubkey: this.g, created_at: this.now, kind: 1, tags: [], content: '', ...ev };
+    // The site's event as §9.5 reads it: absent fields filled, its id, sig and extra fields dropped.
+    const { id: _id, ...event } = siteEvent({ created_at: this.now, kind: 1, ...ev }, this.g);
     let lastErr = 'no_server';
     for (const s of this.servers()) {
       if (!this.bus.alive(s.key)) { lastErr = 'unreachable'; continue; }

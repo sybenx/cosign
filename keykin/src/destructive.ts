@@ -1,4 +1,4 @@
-import { strictJson } from './bytes.ts';
+import { parseJson } from './bytes.ts';
 
 // The co-signer's event checks that need no history: future dates (core §5.7 item 4) and the
 // stateless destructive rule (§5.8). Pure.
@@ -14,8 +14,17 @@ export const isReplaceable = (k: number) => k === 0 || k === 3 || (k >= 10000 &&
 /** §5.7 item 4: replaceable and addressable kinds, and deletions, at most 10 minutes ahead. */
 export const futureDateOk = (e: Ev, now: number) => !(isReplaceable(e.kind) || e.kind === 5) || e.created_at - now <= MAX_AHEAD_S;
 
-/** The `e`/`a` targets of a deletion. */
-export const deletionTargets = (e: Ev) => (e.kind === 5 ? e.tags.filter((t) => t[0] === 'e' || t[0] === 'a').length : 0);
+/** §5.8: a tag counts only with at least two elements, empty strings included (`[]` and `["r"]` are no
+ *  tag at all; `["p",""]` counts). */
+const counted = (e: Ev) => e.tags.filter((t) => Array.isArray(t) && t.length >= 2);
+
+/** The targets of a deletion: its distinct (`e` or `a`, value) pairs. */
+export const deletionTargets = (e: Ev) => (e.kind === 5 ? new Set(counted(e).filter((t) => t[0] === 'e' || t[0] === 'a').map((t) => JSON.stringify([t[0], t[1]]))).size : 0);
+
+/** §9.5's whitespace set for kind 0 fields (JavaScript's `\s`, written out so every port uses the same):
+ *  U+0009–000D, U+0020, U+00A0, U+1680, U+2000–200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF. */
+const NOT_WS = /[^\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
+export const nonEmptyField = (v: unknown) => typeof v === 'string' && NOT_WS.test(v);
 
 /** §5.8: does this event need a lock approval or a passed hold? `recentUnapproved` is the number of
  *  deletion targets this server co-signed for the account without approval in the last 10 minutes. */
@@ -30,10 +39,12 @@ export function destructive(e: Ev, recentUnapproved = 0): boolean {
   }
   if (k === 0) {
     const c = profileObject(e.content ?? '');
-    return !c || !['name', 'display_name', 'about', 'picture'].some((f) => typeof c[f] === 'string' && /\S/.test(c[f]));
+    return !c || !['name', 'display_name', 'about', 'picture'].some((f) => nonEmptyField(c[f]));
   }
-  if (k === 10002 && !e.tags.some((t) => t[0] === 'r' && /^wss?:\/\//.test(t[1] ?? ''))) return true;
-  if (k === 3 || (k >= 10000 && k <= 10030) || (k >= 30000 && k <= 30030)) return e.tags.every((t) => t[0] === 'd') && (e.content ?? '') === '';
+  // Byte-exact and case-sensitive: "WSS://" is not a relay URL here.
+  if (k === 10002 && !counted(e).some((t) => t[0] === 'r' && (t[1].startsWith('wss://') || t[1].startsWith('ws://')))) return true;
+  // "Empty content" is the zero-length string; whitespace or `{}` is not empty.
+  if (k === 3 || (k >= 10000 && k <= 10030) || (k >= 30000 && k <= 30030)) return counted(e).every((t) => t[0] === 'd') && (e.content ?? '') === '';
   return false;
 }
 
@@ -44,10 +55,12 @@ export class BurstCounter {
   add(now: number, n: number) { if (n > 0) this.log.push({ at: now, n }); }
 }
 
-/** §5.8 (13.8): a kind 0 content as a JSON object, or null if it isn't one or repeats a key at any level. */
+/** §5.8 and §9.5 "Kind 0": the content as a JSON object, or null if it isn't one or breaks one of the
+ *  first five rules (UTF-8, RFC 8259, no key twice, no lone surrogate or stray control character, depth).
+ *  Numbers are checked against the grammar only, so no form or size fails the parse. */
 export function profileObject(text: string): Record<string, unknown> | null {
   let v: unknown;
-  try { v = strictJson(text); } catch { return null; }
+  try { v = parseJson(text, { numbers: 'grammar' }); } catch { return null; }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   return v as Record<string, unknown>;
 }

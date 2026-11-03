@@ -1,6 +1,6 @@
 // Push payloads and the server inbox (core §8.1–§8.2). Pure.
 
-import { sha, jcsBytes, refuse, utf8ToBytes } from './bytes.ts';
+import { sha, jcsBytes, refuse, utf8ToBytes, utf8Strict, strictJson } from './bytes.ts';
 import { schnorrSign, schnorrVerify, tag, type KeyPair, type NostrEvent } from './event.ts';
 import { LIFETIME_S, type Cls } from './lifetimes.ts';
 
@@ -21,7 +21,7 @@ export function pushPayload(host: KeyPair, cls: Cls | 'notice', id: string, wrap
   return out;
 }
 export function readPush(bytes: Uint8Array, hostKeys: Set<string>): any {
-  const p = JSON.parse(new TextDecoder().decode(bytes));
+  const p = strictJson(utf8Strict(bytes));
   if (!hostKeys.has(p.srv)) refuse('unknown_server');
   const { sig, ...rest } = p;
   if (!schnorrVerify(sig, sha(jcsBytes(rest)), p.srv)) refuse('bad_signature');

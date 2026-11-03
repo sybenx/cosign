@@ -1,10 +1,11 @@
 // Upkeep's server-side rules and proofs (core §6.7.3–§6.7.4, §6.5 step 4, §7.2). Pure.
 
-import { sha, shaHex, bytesToHex, randomBytes, hexToBytes, refuse, u32be } from './bytes.ts';
+import { sha, shaHex, bytesToHex, randomBytes, hexToBytes, refuse, u32be, utf8Strict, strictJson } from './bytes.ts';
 import { type Commitment, derivePoint, deriveDelta, mul, mod, compBytes, compHex, pointFrom, scalarFrom, scalarHex, G } from './curve.ts';
 import { checkApproval, approvalHash, type Authority } from './approval.ts';
 import { itemHash, openItem, sealItem, commitmentAt, wrapUnder, unwrapUnder, type Item } from './redeal.ts';
 import * as nip44 from 'nostr-tools/nip44';
+import { nip44Open } from './nip44.ts';
 import { signpostDeviceKey, signpostH } from './codes.ts';
 import { newKey } from './event.ts';
 import { schnorrSign, schnorrVerify, type KeyPair } from './event.ts';
@@ -154,11 +155,13 @@ export function readSignpost(events: { tags: string[][]; content: string }[], ep
   let best: { n: number; servers: unknown[] } | null = null;
   for (const e of events) {
     try {
-      const c = JSON.parse(e.content);
-      const text = key.backupSk ? nip44.v2.decrypt(c.backup, nip44.v2.utils.getConversationKey(key.backupSk, c.eph))
-        : new TextDecoder().decode(unwrapUnder(signpostDeviceKey(key.baseDk!), c.devices));
-      const servers = JSON.parse(text);
-      const n = Number(e.tags.find((t) => t[0] === 'n')?.[1]);
+      const c = strictJson(e.content);
+      const text = key.backupSk ? nip44Open(c.backup, nip44.v2.utils.getConversationKey(key.backupSk, c.eph))
+        : utf8Strict(unwrapUnder(signpostDeviceKey(key.baseDk!), c.devices));
+      const servers = strictJson(text);
+      const nt = e.tags.find((t) => t[0] === 'n')?.[1] ?? '';
+      if (!/^(0|[1-9][0-9]*)$/.test(nt)) continue; // decimal tags have one spelling (§9.5)
+      const n = Number(nt);
       if (e.tags.find((t) => t[0] === 'h')?.[1] !== signpostH(epochId, servers)) continue;
       if (!best || n > best.n) best = { n, servers };
     } catch { /* not ours, or tampered */ }

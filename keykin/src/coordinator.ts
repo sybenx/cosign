@@ -3,7 +3,7 @@
 // `P_i^S`, names the member whose partial fails, and checks the result as plain BIP-340.
 
 import { bytesToHex, randomBytes, sha, concatBytes, hexToBytes, utf8ToBytes, refuse, KeykinError } from './bytes.ts';
-import { eventId, type NostrEvent, type Unsigned } from './event.ts';
+import { eventId, wireEvent, type NostrEvent, type Unsigned } from './event.ts';
 import { commit, signShare, verifyShare, aggregate, hedge, type SignCommit, type Nonces } from './frost.ts';
 import { checkEcdhAnswers, ownPart, sumPoints, type EcdhAnswer } from './ecdh.ts';
 import type { Commitment } from './curve.ts';
@@ -34,7 +34,7 @@ export class OneCall {
     const context = concatBytes(hexToBytes(this.eventId), u32s(signers), hexToBytes(this.id), hexToBytes(co.key));
     const cs = me.indices.map((i) => commit(ctx.C, i, me.shares.get(i)!, hedge(me.shares.get(i)!, context)));
     this.#nonces = cs.map((c) => c.nonces);
-    this.request = { v: 1, type: 'sign', g: ctx.g, epoch: ctx.epochId, id: this.id, cls: extra.cls ?? 'sign', state: ctx.state, event,
+    this.request = { v: 1, type: 'sign', g: ctx.g, epoch: ctx.epochId, id: this.id, cls: extra.cls ?? 'sign', state: ctx.state, event: wireEvent(event),
       signers, commitments: cs.map((c) => c.commit), ...(extra.approval ? { approval: extra.approval } : {}), ...(extra.hold ? { hold: extra.hold } : {}), ...(extra.list_events ? { list_events: extra.list_events } : {}), ...(extra.material ? { material: extra.material } : {}) };
   }
   /** Finish with the co-signer's `partial`: the signed event, or a refusal naming the member. */
@@ -68,7 +68,7 @@ export class ListCall {
       hedge(me.shares.get(i)!, concatBytes(hexToBytes(evId), u32s(signers), hexToBytes(this.id), hexToBytes(co.key))))));
     this.#nonces = cs.map((x) => x.map((c) => c.nonces));
     this.request = { v: 1, type: 'sign', g: ctx.g, epoch: ctx.epochId, id: this.id, cls: extra.cls ?? 'ask', state: ctx.state, signers,
-      list_events: events.map((event, e) => ({ event, commitments: cs[e].map((c) => c.commit) })), ...(extra.material ? { material: extra.material } : {}) };
+      list_events: events.map((event, e) => ({ event: wireEvent(event), commitments: cs[e].map((c) => c.commit) })), ...(extra.material ? { material: extra.material } : {}) };
   }
   finish(partial: any): NostrEvent[] {
     if (partial?.type !== 'partial' || !Array.isArray(partial.events) || partial.events.length !== this.events.length)
@@ -113,7 +113,7 @@ export class TwoCall {
   get isList() { return this.events.length > 1; }
   commitRequest(cls: Cls = 'ask') {
     return { v: 1, type: 'commit', g: this.#ctx.g, epoch: this.#ctx.epochId, id: this.commitId, cls, state: this.#ctx.state, signers: this.signers,
-      ...(this.isList ? { count: this.events.length } : { event: this.event }) };
+      ...(this.isList ? { count: this.events.length } : { event: wireEvent(this.event) }) };
   }
   took(co: string, answer: any) {
     if (answer?.type !== 'commitments') throw new KeykinError(answer?.code ?? 'no_commitments', co);
@@ -123,8 +123,8 @@ export class TwoCall {
   get commitments(): SignCommit[] { return this.commitmentsFor(0); }
   signRequest(cls: Cls = 'ask', extra: { approval?: Approval; material?: unknown } = {}) {
     const base = { v: 1, type: 'sign', g: this.#ctx.g, epoch: this.#ctx.epochId, id: this.signId, cls, state: this.#ctx.state, signers: this.signers, after: this.commitId, ...extra };
-    return this.isList ? { ...base, list_events: this.events.map((event, e) => ({ event, commitments: this.commitmentsFor(e) })) }
-      : { ...base, event: this.event, commitments: this.commitments };
+    return this.isList ? { ...base, list_events: this.events.map((event, e) => ({ event: wireEvent(event), commitments: this.commitmentsFor(e) })) }
+      : { ...base, event: wireEvent(this.event), commitments: this.commitments };
   }
   finishAll(partials: Map<string, any>): NostrEvent[] {
     return this.events.map((ev, e) => {

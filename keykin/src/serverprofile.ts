@@ -2,7 +2,7 @@
 // list, and the deterministic replacement pick. Pure.
 
 import { p256 } from '@noble/curves/nist.js';
-import { sha, shaHex, hkdf32, hexN, jcs, concatBytes, bytesToHex, hexToBytes, u32be, u64be, refuse, utf8ToBytes } from './bytes.ts';
+import { sha, shaHex, hkdf32, hexN, jcs, concatBytes, bytesToHex, hexToBytes, u32be, u64be, refuse, utf8ToBytes, strictJson } from './bytes.ts';
 import { schnorrSign, schnorrVerify, pubOf, verifyEvent, tag, type KeyPair, type NostrEvent } from './event.ts';
 import { N } from './curve.ts';
 import { hkdf } from '@noble/hashes/hkdf.js';
@@ -62,7 +62,7 @@ export interface ServerList { version: number; issued: number; key_next?: string
 export function acceptList(ev: NostrEvent, pin: { key: string; newest: number }): { key: string; newest: number; list: ServerList; nextPin: string | null } {
   if (ev.kind !== 30078 || tag(ev, 'd') !== LIST_D || !verifyEvent(ev)) refuse('bad_list_event');
   if (ev.pubkey !== pin.key) refuse('not_pinned');
-  const list = JSON.parse(ev.content) as ServerList;
+  const list = strictJson(ev.content) as ServerList;
   if (!Number.isSafeInteger(list.version) || list.version <= pin.newest) refuse('rollback', 'a list never goes back');
   const sorted = [...list.servers].map((x) => x.host).sort();
   if (JSON.stringify(sorted) !== JSON.stringify(list.servers.map((x) => x.host))) refuse('bad_list', 'servers sorted by host key');
@@ -99,7 +99,7 @@ export interface Announcement { host: string; relays: string[]; https: string | 
 /** A kind 30243 server announcement, `d = keykin-server` (readers also accept `cosign-server`), signed by the host key. */
 export function readAnnouncement(e: NostrEvent): Announcement | null {
   if (e.kind !== 30243 || !['keykin-server', 'cosign-server'].includes(tag(e, 'd') ?? '') || !verifyEvent(e)) return null;
-  let c: any; try { c = JSON.parse(e.content); } catch { return null; }
+  let c: any; try { c = strictJson(e.content); } catch { return null; }
   if (!Array.isArray(c.relays) || !['open', 'invite'].includes(c.enroll) || !Array.isArray(c.versions)) return null;
   const op = e.tags.find((t) => t[0] === 'p' && t[3] === 'operator')?.[1] ?? null;
   return { host: e.pubkey, relays: c.relays, https: c.https ?? null, enroll: c.enroll, versions: c.versions, pow: c.pow, operator: op };

@@ -3,7 +3,8 @@
 
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import * as nip44 from 'nostr-tools/nip44';
-import { sha, shaHex, bytesToHex, hexToBytes, randomBytes, jcs, concatBytes, utf8ToBytes, refuse } from './bytes.ts';
+import { nip44Open } from './nip44.ts';
+import { sha, shaHex, bytesToHex, hexToBytes, randomBytes, jcs, concatBytes, utf8ToBytes, refuse, utf8Strict, strictJson } from './bytes.ts';
 import { stateHash, detachedDigest } from './codes.ts';
 import { type Commitment, mul, mod, N, addRedeal, deriveDelta, derivePoint, interpolate, pointFrom, compHex, scalarHex, scalarFrom, liftX } from './curve.ts';
 import { checkOwnShares } from './record.ts';
@@ -37,9 +38,9 @@ export function sealItem(kind: Item['kind'], redeal: string | null, K: string, r
 }
 /** Open an item: by the backup key holder (`backupSk`) or by a device holding the item's conversation key. */
 export function openItem(it: Item, releaseSeed: string, key: { backupSk?: Uint8Array; ck?: string }): any {
-  const inner = new TextDecoder().decode(unwrapUnder(releaseSeed, it.box));
+  const inner = utf8Strict(unwrapUnder(releaseSeed, it.box));
   const ck = key.ck ? hexToBytes(key.ck) : nip44.v2.utils.getConversationKey(key.backupSk!, it.eph);
-  return JSON.parse(nip44.v2.decrypt(inner, ck));
+  return strictJson(nip44Open(inner, ck));
 }
 
 /** Everything a dealer makes for one redeal (§6.7.3). `δ` lives only in this object, in process

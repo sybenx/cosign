@@ -6,7 +6,7 @@ import { hexN, jcs, KeykinError, refuse, strictJson } from './bytes.ts';
 import { deviceIndices, helperSeat, listHash } from './codes.ts';
 import { pointFrom } from './curve.ts';
 import { verifyEvent, tag, schnorrVerify, type NostrEvent } from './event.ts';
-import { checkApproval, checkListShape, placeholderList, approvalHash, W_DEFAULT, type Authority } from './approval.ts';
+import { checkApproval, checkListShape, placeholderList, changeKey, approvalHash, W_DEFAULT, type Authority } from './approval.ts';
 import { checkInvariants } from './record.ts';
 import { redealDigest } from './redeal.ts';
 import type { LockPub } from './lock.ts';
@@ -31,8 +31,8 @@ export function parseChange(rec: EpochContent, ev: NostrEvent, signed = true): P
   if (signed && !verifyEvent(ev)) refuse('bad_signature');
   checkListShape(c.list);
   if (jcs(placeholderList(c.list)) !== jcs(c.list)) refuse('bad_list', 'the list is carried in its approved (placeholder) form');
-  const ph = jcs(placeholderList([c.change])[0]);
-  if (!c.list.some((x) => jcs(x) === ph)) refuse('bad_list', 'the change is not in its list');
+  const ph = changeKey(placeholderList([c.change])[0]);
+  if (!c.list.some((x) => changeKey(x) === ph)) refuse('bad_list', 'the change is not in its list');
   const ch: any = c.change;
   if (!ch || typeof ch !== 'object' || Array.isArray(ch)) refuse('not_a_change', 'change');
   const keys = Object.keys(ch);
@@ -59,7 +59,7 @@ export function parseChange(rec: EpochContent, ev: NostrEvent, signed = true): P
     case 'seat': {
       const s = ch.seat;
       const seats = rec.seats;
-      const m = /^server:(\d+)$/.exec(s.seat);
+      const m = /^server:(0|[1-9][0-9]*)$/.exec(s.seat); // one spelling (§9.5): "server:01" is no seat
       if (!(m && seats.servers.includes(Number(m[1]))) && s.seat !== 'helper') refuse('bad_change', 'no such seat');
       if (s.new !== null) {
         const e: MemberEntry = s.new;
@@ -188,8 +188,8 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
   const byList = new Map<string, Parsed[]>();
   for (const p of accepted) if (p.c.list.length > 1) byList.set(p.listHash, [...(byList.get(p.listHash) ?? []), p]);
   for (const ps of byList.values()) {
-    const got = new Set(ps.map((p) => jcs(placeholderList([p.c.change])[0])));
-    if (ps[0].c.list.every((x) => got.has(jcs(x)))) continue;
+    const got = new Set(ps.map((p) => changeKey(placeholderList([p.c.change])[0])));
+    if (ps[0].c.list.every((x) => got.has(changeKey(x)))) continue;
     for (const p of ps) { accepted.splice(accepted.indexOf(p), 1); refused.push({ id: p.ev.id, code: 'list_incomplete' }); }
   }
   const auth = authority();
@@ -240,12 +240,13 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
   const claim = (i: number, who: string) => claims.set(i, (claims.get(i) ?? new Set()).add(who));
   for (const m of rec.members) m.shares.forEach((i) => claim(i, m.key));
   for (const i of [...rec.seats.servers, ...rec.seats.backup, ...rec.seats.helper]) claim(i, 'seat');
-  const adds = new Map<string, { salt: number; lock: LockPub | null; indices: number[] }[]>();
+  const adds = new Map<string, { salt: number; lock: LockPub | null; indices: number[]; same: string }[]>();
   for (const { ch } of of('add')) {
-    const a = ch.add, indices = deviceIndices(g, epochId, a.key, a.salt);
+    const a = ch.add, indices = deviceIndices(g, epochId, a.key, a.salt), same = changeKey({ add: a } as Change);
     const prev = adds.get(a.key) ?? [];
-    // The same add twice counts once; two different adds of one key (salt or lock) void it (§3.2).
-    if (!prev.some((x) => x.salt === a.salt && jcs(x.lock) === jcs(a.lock))) prev.push({ salt: a.salt, lock: a.lock, indices });
+    // The same add twice counts once; two different adds of one key void it (§3.2). "The same" is JCS
+    // byte equality of the whole add, an absent lock counting as null (§9.5).
+    if (!prev.some((x) => x.same === same)) prev.push({ salt: a.salt, lock: a.lock ?? null, indices, same });
     adds.set(a.key, prev);
     indices.forEach((i) => claim(i, a.key));
   }

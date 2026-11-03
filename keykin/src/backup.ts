@@ -6,7 +6,7 @@ import { validateMnemonic } from '@scure/bip39';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { sha, hexN, jcs, concatBytes, bytesToHex, hexToBytes, randomBytes, utf8ToBytes, hkdf32, refuse } from './bytes.ts';
+import { sha, hexN, jcs, concatBytes, bytesToHex, hexToBytes, randomBytes, utf8ToBytes, hkdf32, refuse, utf8Strict, strictJson } from './bytes.ts';
 import { N, G, mod, mul, liftX, compHex, pointFrom, scalarHex, scalarFrom, lagrange } from './curve.ts';
 
 const PREFIX = 'kkbak';
@@ -36,7 +36,7 @@ function untlv(b: Uint8Array): { sk: Uint8Array | null; card: Card } {
     const t = b[i], l = (b[i + 1] << 8) | b[i + 2], v = b.slice(i + 3, i + 3 + l); i += 3 + l;
     if (v.length !== l) refuse('bad_backup', 'truncated');
     if (t === 0) sk = v; else if (t === 1) card.g = bytesToHex(v); else if (t === 2) card.epoch = bytesToHex(v);
-    else if (t === 3) card.servers.push({ host: bytesToHex(v.slice(0, 32)), ...JSON.parse(new TextDecoder().decode(v.slice(32))) });
+    else if (t === 3) card.servers.push({ host: bytesToHex(v.slice(0, 32)), ...strictJson(utf8Strict(v.slice(32))) });
     else if (t === 4) card.holderInbox = bytesToHex(v);
   }
   if (sk) checkSecret(sk);
@@ -106,7 +106,7 @@ export function openHeir(rec: HeirRecord, g: string, heirSk: Uint8Array, pieces:
   const r = two.reduce((acc, [x, p]) => mod(acc + p * lagrange(BigInt(x), two.map(([y]) => BigInt(y)))), 0n);
   const z = hexToBytes(compHex(mul(BigInt('0x' + bytesToHex(heirSk)), pointFrom(rec.E))).slice(2));
   const plain = chacha20poly1305(heirKey(z, r), hexToBytes(rec.nonce), heirAD(g, rec.H, rec.set)).decrypt(hexToBytes(rec.envelope));
-  return JSON.parse(new TextDecoder().decode(plain));
+  return strictJson(utf8Strict(plain));
 }
 export const heirWaitId = (H: string, setId: string, requestId: string) => bytesToHex(sha('heir', hexN(H, 32, 'H'), hexN(setId, 32, 'set id'), hexN(requestId, 16, 'request id')));
 export { G, scalarFrom };

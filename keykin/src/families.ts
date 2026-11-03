@@ -2,6 +2,7 @@
 // the anchors themselves (NIP-03 OpenTimestamps, Bitcoin headers) are the caller's to verify.
 
 import { verifyEvent, type NostrEvent } from './event.ts';
+import { strictJson } from './bytes.ts';
 
 export const KIND_FAMILY = 1244, KIND_RELEASE = 1245, KIND_LEAKED = 1246, KIND_ACCEPT = 1247;
 export const FAMILY_KINDS = new Set([KIND_FAMILY, KIND_RELEASE, KIND_LEAKED, KIND_ACCEPT]);
@@ -14,7 +15,7 @@ export function parseFamily(e: NostrEvent): { id: string; master: string; child:
   if (e.kind !== KIND_FAMILY || !verifyEvent(e)) return null;
   const child = one(e, 'p');
   let acc: NostrEvent;
-  try { acc = JSON.parse(e.content); } catch { return null; }
+  try { acc = strictJson(e.content); } catch { return null; }
   if (!child || acc.kind !== KIND_ACCEPT || !verifyEvent(acc) || acc.pubkey !== child || one(acc, 'p') !== e.pubkey) return null;
   return { id: e.id, master: e.pubkey, child };
 }
