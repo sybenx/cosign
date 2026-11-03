@@ -11,6 +11,7 @@ import { deal as dealRedeal } from '../src/redeal.ts';
 import { softLock } from '../src/lock.ts';
 import { newKey } from '../src/event.ts';
 import { stateHash, signpostD, signpostH } from '../src/codes.ts';
+const codesState = (ids: string[]) => stateHash(ids);
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
 import { ReplayCache } from '../src/lifetimes.ts';
 import type { Change } from '../src/types.ts';
@@ -34,12 +35,23 @@ test('#1 critical: a repair is never sealed to anyone but the index\'s owner', a
   const acc = await create({ lockless: true });
   const A = acc.A;
   // A lockless device asks S1 to help repair S2's index 7, sealed to itself.
-  await assert.rejects(A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, A.kp.pub, 'add'), /not_assigned/);
-  await assert.rejects(A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, A.kp.pub, 'seat'), /not_assigned/);
+  await assert.rejects(A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, A.kp.pub, 'add'), /not_assigned|bad_helpers/);
+  await assert.rejects(A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, A.kp.pub, 'seat'), /not_assigned|bad_helpers/);
   // Even sealed to S2 itself, a join repair is only for an added device.
   await assert.rejects(A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, acc.servers[1].kp.pub, 'add'), /not_assigned/);
-  // A seat repair is answered once per key and index.
+  // Review 2 N1: the helper list is checked, so A can't claim S1's index as its own.
+  const st = [...A.state!.ids];
+  const lie = (helpers: any) => acc.bus.send(A.kp, acc.servers[0].kp.pub, { type: 'repair_start', participant: 7, seal_to: acc.servers[1].kp.pub, why: 'seat', state: codesState(st), rid: '00'.repeat(16), helpers });
+  assert.equal((await lie([{ key: A.kp.pub, indices: [1, 2, 3, 4] }, { key: acc.servers[0].kp.pub, indices: [4] }])).code, 'bad_helpers');
+  assert.equal((await lie([{ key: A.kp.pub, indices: [1, 2, 3, 4] }])).code, 'bad_helpers', 'S1 must be in the list with its own index');
+  await assert.rejects(A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [] }], 7, acc.servers[1].kp.pub, 'seat'), /bad_helpers/);
+  // A seat repair is answered once per key and index, counted only once the owner confirms its share
+  // (review 2 N5: a stranger's attempts can't use up the answer).
   await A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, acc.servers[1].kp.pub, 'seat');
+  await A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, acc.servers[1].kp.pub, 'seat');
+  await acc.bus.send(acc.servers[2].kp, acc.servers[0].kp.pub, { type: 'repair_ok', participant: 7 });   // not the owner: ignored
+  await A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, acc.servers[1].kp.pub, 'seat');
+  await acc.bus.send(acc.servers[1].kp, acc.servers[0].kp.pub, { type: 'repair_ok', participant: 7 });
   await assert.rejects(A.repairFor([{ key: A.kp.pub, indices: [1, 2, 3] }, { key: acc.servers[0].kp.pub, indices: [4] }], 7, acc.servers[1].kp.pub, 'seat'), /already_answered/);
 });
 
@@ -55,7 +67,9 @@ test('#2 high: once a signpost is co-signed, its delete by e tag is refused', ()
   const del2 = new OneCall(ctx(F), dev(F), { key: F.servers[0].kp.pub, indices: [4] }, { pubkey: F.g, created_at: clock, kind: 5, tags: [['e', signed.id]], content: '' });
   assert.equal(S2.handle(F.devices[0].kp.pub, del2.request, clock).code, 'machinery', 'survives a restart');
   // A server that didn't co-sign it learns the id by delivery (core 14.2), and refuses too.
-  const S3 = server(F, 1); S3.noteSignpost(signed.id);
+  const S3 = server(F, 1);
+  assert.equal(S3.takeSignpost({ ...signed, id: '00'.repeat(32) }), false, 'review 2 N6: only a real signpost is taken');
+  assert.equal(S3.takeSignpost(signed), true);
   const del3 = new OneCall(ctx(F), dev(F), { key: F.servers[1].kp.pub, indices: [7] }, { pubkey: F.g, created_at: clock, kind: 5, tags: [['e', signed.id]], content: '' });
   assert.equal(S3.handle(F.devices[0].kp.pub, del3.request, clock).code, 'machinery');
 });
@@ -126,7 +140,9 @@ test('#4: a member refuses to adopt a view that breaks an invariant', () => {
   const pl: Change[] = [{ paper: { key: A.kp.pub, replaces: F.backup.kp.pub } }, { redeal: { dealer: A.kp.pub } }];
   const ap = approveLock(F.g, F.epochId, pl, EXP(), A.kp.pub, A.lock!);
   const ev = F.change({ paper: { key: A.kp.pub, replaces: F.backup.kp.pub, inner: '00'.repeat(32), state: [] } }, pl, ap);
-  assert.equal(S.addChanges([ev]), false);
+  const rd = F.change({ redeal: dealRedeal(F.g, A.kp, [], new Map(), A.kp.pub, [5, 6]).redeal }, pl, ap);
+  assert.equal(S.addChanges([ev]), true, 'without its redeal the paper change waits, inert');
+  assert.equal(S.addChanges([rd]), false, 'with it, the view would break: refused');
   assert.ok(S.m.backupKey === F.backup.kp.pub && S.m.devices.has(A.kp.pub));
 });
 
@@ -200,4 +216,65 @@ test('#15: a two-call co-signer that leaves out an index is named', () => {
   const req = t.signRequest();
   const p1 = S1.handle(A.kp.pub, req, clock), p2 = S2.handle(A.kp.pub, req, clock);
   assert.throws(() => t.finish(new Map([[cos[0].key, p1], [cos[1].key, { ...p2, z: [] }]])), new RegExp(`bad_partial: member ${cos[1].key}`));
+});
+
+// --- review 2 -------------------------------------------------------------------------------
+
+test('review 2 N2: a paper-approved list commits (one challenge serves every change of the list)', async () => {
+  const acc = await create({ lockless: true });
+  const P = acc.paper;
+  const ch = async () => (await acc.bus.send(acc.A.kp, acc.servers[0].kp.pub, { v: 1, type: 'challenge', g: acc.g, epoch: acc.epochId, id: bytesToHex(randomBytes(16)), cls: 'ask' })).challenge;
+  const c1 = await ch();
+  const { invite } = await import('../sim/account.ts');
+  const B = await invite(acc, acc.A, (l) => approvePaper(acc.g, acc.epochId, l, acc.bus.now + 3600, acc.A.kp, P, c1, acc.servers[0].host.pub));
+  const c2 = await ch();
+  const list: Change[] = [{ remove: B.kp.pub }, { redeal: { dealer: acc.A.kp.pub } }];
+  await acc.A.submit(list, approvePaper(acc.g, acc.epochId, list, acc.bus.now + 3600, acc.A.kp, P, c2, acc.servers[0].host.pub));
+  assert.ok(acc.A.m!.removed.has(B.kp.pub));
+  // The same challenge for another list is refused.
+  const l2: Change[] = [{ add: { key: newKey().pub, kind: 'device', lock: null, salt: 0 } }];
+  await assert.rejects(acc.A.submit(l2, approvePaper(acc.g, acc.epochId, l2, acc.bus.now + 3600, acc.A.kp, P, c2, acc.servers[0].host.pub)), /stale_challenge|wrong_challenge_server/);
+});
+
+test('review 2 N3: an F7 repair needs the current lock', () => {
+  const F = fixture(); const A = F.devices[0];
+  const b = newKey();
+  const addB: Change[] = [{ add: { key: b.pub, kind: 'device', lock: null, salt: 0 } }];
+  const nl = softLock();
+  const lc: Change[] = [{ lock: { member: A.kp.pub, replaces: A.lock!.pub.pub, new: nl.pub } }];
+  const S = server(F, 0, [F.change(addB[0], addB, approveLock(F.g, F.epochId, addB, EXP(), A.kp.pub, A.lock!)),
+    F.change(lc[0], lc, approvePair(F.g, F.epochId, lc, EXP(), A.kp, b, 'aa'.repeat(16)))]);
+  const K = newKey();
+  const list: Change[] = [{ paper: { key: K.pub, replaces: F.backup.kp.pub } }, { redeal: { dealer: A.kp.pub } }];
+  const body = (approval: any) => ({ participant: 5, seal_to: K.pub, why: 'paper', state: S0, list, approval,
+    helpers: [{ key: A.kp.pub, indices: [1, 2, 3] }, { key: F.servers[0].kp.pub, indices: [4] }] });
+  assert.equal(code(() => S.authorizeRepair(A.kp.pub, body(approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, A.lock!)))), 'not_current_lock');
+  assert.equal(code(() => S.authorizeRepair(A.kp.pub, body(approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, nl)))), 'ok');
+});
+
+test('review 2 N4: after a host conflict, a void: reseat refills the seat and it moves on as usual', () => {
+  const F = fixture();
+  const s1host = F.rec.members.find((m) => m.kind === 'server' && m.shares[0] === 4)!.host!;
+  const clash = { key: newKey().pub, kind: 'server', shares: [7], host: s1host };
+  const e1 = seatEvs(F, 7, F.servers[1].kp.pub, clash);
+  const m1 = computeMembership(F.rec, e1);
+  assert.equal(m1.seats.get('server:4')!.holder, null);
+  assert.equal(m1.seats.get('server:7')!.holder, null);
+  const v4 = m1.seats.get('server:4')!.voided[0];
+  assert.ok(v4, 'the record holder\'s seat gets a void id to reseat with');
+  const y = { key: newKey().pub, kind: 'server', shares: [4], host: newKey().pub };
+  const z = { key: newKey().pub, kind: 'server', shares: [4], host: newKey().pub };
+  const m2 = computeMembership(F.rec, [...e1, ...seatEvs(F, 4, `void:${v4}`, y), ...seatEvs(F, 4, y.key, z)]);
+  assert.equal(m2.seats.get('server:4')!.holder!.key, z.key);
+});
+
+test('review 2 N9: one list can\'t seat one host twice', () => {
+  const F = fixture(); const A = F.devices[0];
+  const S = server(F, 0, [], { uploads: { get: () => undefined, liveSeatHolders: () => 3 } });
+  const h = newKey().pub;
+  const list: Change[] = [{ seat: { seat: 'server:7', new: { key: newKey().pub, kind: 'server', shares: [7], host: h }, replaces: F.servers[1].kp.pub } },
+    { seat: { seat: 'server:8', new: { key: newKey().pub, kind: 'server', shares: [8], host: h }, replaces: F.servers[2].kp.pub } }, { redeal: { dealer: A.kp.pub } }];
+  const ap = approveLock(F.g, F.epochId, list, EXP(), A.kp.pub, A.lock!);
+  const rd = F.change({ redeal: dealRedeal(F.g, A.kp, [], new Map(), F.backup.kp.pub, [5, 6]).redeal }, list, ap);
+  assert.equal(signChange(S, F, list[0], list, ap, { list_events: [rd] }).code, 'invariant');
 });

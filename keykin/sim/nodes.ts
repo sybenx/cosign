@@ -6,7 +6,7 @@ import { bytesToHex, randomBytes, hexToBytes, sha, refuse, KeykinError } from '.
 import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
-import { computeMembership, takenIndices, signpostCount, signpostServers, type Membership } from '../src/membership.ts';
+import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall } from '../src/coordinator.ts';
 import { deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
@@ -205,7 +205,13 @@ export class ServerNode implements Node {
       }
       case 'signpost_id':                                  // core 14.2 §6.7.10: a device delivers each new signpost id
         if (!m.devices.has(from)) refuse('not_device');
-        this.co.noteSignpost(body.id); return { type: 'ack' };
+        if (!this.co.takeSignpost(body.event)) refuse('not_a_signpost');
+        return { type: 'ack' };
+      case 'repair_ok': {
+        const owner = [...m.members.values()].find((x) => x.shares.includes(body.participant));
+        if (owner?.key === from) this.co.repairSucceeded(from, body.participant);
+        return { type: 'ack' };
+      }
       case 'cancels_get': return { type: 'cancels', cancels: this.co.cancels };
       case 'upload_status': { const u = this.uploads.get(body.redeal); return { type: 'upload_status', held: !!u && this.now - u.at < 7 * 86400 }; }
       case 'deliver':
@@ -225,6 +231,8 @@ export class ServerNode implements Node {
         const C = commitmentAt(commitmentFrom(this.rec!.commitment), [...m.redeals.values()].filter((x) => ids.has(x.r.id)).map((x) => x.r));
         const s = repairShare(C, sig.map((x) => x.sigma), idx);
         this.co.setState({ ids, C, shares: new Map([[idx, s]]) });
+        // The share checked: tell each helper, so its one `need_repair` answer is now used (§6.7.4).
+        for (const w of body.sigmas as NostrEvent[]) await this.bus.send(this.kp, unwrap(this.kp.sk, w).from, { type: 'repair_ok', participant: idx });
         return { type: 'ack' };
       }
       default: {
@@ -250,7 +258,6 @@ export class ServerNode implements Node {
   private repairStart(from: string, body: any) {
     if (body.state !== stateOf(this.co!.state)) return { type: 'stale', ids: [...this.co!.state.ids].sort() };
     this.co!.authorizeRepair(from, body, this.now);
-    if (body.why === 'seat') this.co!.repairSucceeded(body.seal_to, body.participant);
     return this.repair.start(this.kp, this.co!.state.C, this.co!.state.shares, body);
   }
 }
@@ -295,9 +302,10 @@ export class DeviceNode implements Node {
     if (this.m.removed.has(this.kp.pub)) this.wipe();
   }
   wipe() { this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() }; this.seeds.clear(); this.items = []; this.baseDk = ''; }
+  refusedChanges: NostrEvent[] = [];
   takeChanges(evs: NostrEvent[]) {
-    const ids = new Set(this.changes.map((e) => e.id));
-    for (const e of evs) if (!ids.has(e.id)) { this.changes.push(e); ids.add(e.id); }
+    const r = adopt(this.rec!, this.changes, [...evs, ...this.refusedChanges], this.m?.authority.W);
+    this.changes = r.changes; this.refusedChanges = r.refused.map((x) => x.ev);
     this.recompute();
   }
 
@@ -423,7 +431,7 @@ export class DeviceNode implements Node {
     const m = this.m!;
     const ev = await this.sign({ kind: KIND_SIGNPOST, tags: [['d', signpostD(m.backupKey!)], ['n', String(signpostCount(m))], ['h', signpostH(m.epochId, signpostServers(m))]],
       content: signpostContent(m.backupKey!, this.baseDk, signpostServers(m)) });
-    for (const s of this.servers()) await this.bus.send(this.kp, s.key, { type: 'signpost_id', id: ev.id });
+    for (const s of this.servers()) await this.bus.send(this.kp, s.key, { type: 'signpost_id', id: ev.id, event: ev });
     (this.bus as any).published?.push(ev);
     return ev;
   }

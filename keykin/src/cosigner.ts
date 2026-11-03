@@ -10,9 +10,9 @@ import { futureDateOk, destructive, deletionTargets, BurstCounter, type Ev } fro
 import { commit, signShare, hedge, type SignCommit, type Nonces } from './frost.ts';
 import { ecdhAnswer } from './ecdh.ts';
 import { checkAssertion } from './lock.ts';
-import { eventId, schnorrVerify, tag, type KeyPair, type NostrEvent, type Unsigned } from './event.ts';
-import { checkApproval, approvalType, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
-import { computeMembership, parseChange, type Membership } from './membership.ts';
+import { eventId, schnorrVerify, verifyEvent, tag, type KeyPair, type NostrEvent, type Unsigned } from './event.ts';
+import { checkApproval, approvalType, approvalHash, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
+import { computeMembership, parseChange, adopt, type Membership } from './membership.ts';
 import { pointFrom, commitmentFrom, type Commitment } from './curve.ts';
 import { stateOf, commitmentAt, type State } from './redeal.ts';
 import { verifyRerepair, redealMissing, postListView, type Upload } from './upkeep.ts';
@@ -67,15 +67,13 @@ export class CoSigner {
 
   /** Take changes (a delivery, `changes`, a catch-up union): the membership is recomputed. */
   addChanges(evs: NostrEvent[]) {
-    const ids = new Set(this.changes.map((e) => e.id));
-    const next = [...this.changes, ...evs.filter((e) => !ids.has(e.id))];
-    const m = computeMembership(this.o.record, next, this.W);
-    // A member refuses to adopt a view that breaks an invariant (§3.3), and shows it.
-    if (m.invariantError) { this.refusedBatches.push({ events: evs, why: m.invariantError }); return false; }
-    this.changes = next; this.m = m;
-    return true;
+    // A member refuses to adopt a change that breaks an invariant (§3.3), and shows it. Refused ones
+    // are retried with every later batch, so the view depends only on the set held.
+    const r = adopt(this.o.record, this.changes, [...evs, ...this.refusedChanges.map((x) => x.ev)], this.W);
+    this.changes = r.changes; this.m = r.m; this.refusedChanges = r.refused;
+    return !r.refused.some((x) => evs.includes(x.ev));
   }
-  refusedBatches: { events: NostrEvent[]; why: string }[] = [];
+  refusedChanges: { ev: NostrEvent; why: string }[] = [];
   setState(s: State) { this.state = s; }
 
   /** Use up a challenge this co-signer issued to `to` (one of `to`), if fresh (§6.1, §6.5). */
@@ -89,10 +87,11 @@ export class CoSigner {
   /** May this member help repair `participant` for `seal_to` (§4.2 step 3, §4.4, §6.7.4)? Throws if not.
    *  The sigma always goes to the index's assigned owner, never to whoever asks. */
   answeredRepair = new Set<string>();
-  authorizeRepair(from: string, body: { participant: number; seal_to: string; why: string; state: string; proof?: any }, now = this.o.now()) {
+  authorizeRepair(from: string, body: { participant: number; seal_to: string; why: string; state: string; proof?: any; helpers?: { key: string; indices: number[] }[] }, now = this.o.now()) {
     const m = this.m;
     if (body.state !== stateOf(this.state)) refuse('stale');
     const p = body.participant;
+    this.checkHelpers(body.helpers, p, body.seal_to);
     if (body.why === 'paper') return this.authorizePaperRepair(from, body as any, now);
     if (m.record.seats.backup.includes(p)) refuse('backup_seat', 'never repaired by need_repair or a join');
     const owner = [...m.members.values()].find((x) => x.shares.includes(p));
@@ -129,6 +128,25 @@ export class CoSigner {
       default: refuse('bad_repair');
     }
   }
+  /** The helper list is checked against this view, never taken on trust: every entry is a current
+   *  member with exactly its own indices, this co-signer is in it with its own, nobody twice, worth at
+   *  least 4, and neither the new owner nor the backup helps (they would learn the share). */
+  private checkHelpers(helpers: { key: string; indices: number[] }[] | undefined, participant: number, sealTo: string) {
+    if (!Array.isArray(helpers) || !helpers.length) refuse('bad_helpers');
+    const seen = new Set<string>();
+    let worth = 0;
+    for (const h of helpers!) {
+      const mem = this.m.members.get(h?.key);
+      if (!mem || this.m.removed.has(h.key) || seen.has(h.key)) refuse('bad_helpers', 'helpers are distinct current members');
+      if (mem!.kind === 'backup' && !(this.session()?.backup === h.key)) refuse('bad_helpers', 'the backup helps only in its recovery session');
+      if (JSON.stringify([...h.indices].sort((a, b) => a - b)) !== JSON.stringify([...mem!.shares].sort((a, b) => a - b))) refuse('bad_helpers', 'each helper lists exactly its own indices');
+      if (h.key === sealTo || h.indices.includes(participant)) refuse('bad_helpers', 'the new holder never helps');
+      seen.add(h.key); worth += h.indices.length;
+    }
+    if (!seen.has(this.o.me.pub)) refuse('bad_helpers', 'this co-signer is one of the helpers');
+    if (worth < 4) refuse('bad_helpers', 'helpers worth at least 4');
+  }
+
   /** F7 step 2 (§4.3, §6.7.10): the backup seat repaired towards a new paper key K, only under a
    *  valid, fresh approval of `[paper K, redeal]`, by its approving device, sealed to K, once per K. */
   private authorizePaperRepair(from: string, body: { participant: number; seal_to: string; list: Change[]; approval: Approval }, now: number) {
@@ -136,11 +154,10 @@ export class CoSigner {
     if (!m.record.seats.backup.includes(body.participant)) refuse('not_assigned');
     const pc = (body.list ?? []).find((c) => 'paper' in c) as { paper: { key: string; replaces: string } } | undefined;
     if (!pc) refuse('bad_list', 'a paper repair needs its [paper, redeal] approval');
-    const { error, approvers } = checkApproval(m.authority, body.list, body.approval);
-    if (error) refuse(error);
-    const a = body.approval;
-    if (!(a.expiry! > now && a.expiry! <= now + MAX_EXPIRY_S + 30)) refuse('approval_expired');
-    if (!approvers.includes(from) || !m.devices.has(from)) refuse('not_approver', 'the approving device makes the repair');
+    this.checkFresh(from, body.list, body.approval, now, approvalHash(body.list));
+    const t = approvalType(body.approval);
+    const { approvers } = checkApproval(m.authority, body.list, body.approval);
+    if (t === 'recovery' ? this.session(now)?.backup !== from : !approvers.includes(from) || !m.devices.has(from)) refuse('not_approver', 'the approving device (or the holder, under recovery) makes the repair');
     const K = pc!.paper.key;
     if (pc!.paper.replaces !== m.backupKey) refuse('not_current_backup');
     if (body.seal_to !== K) refuse('not_assigned', 'sealed only to the new paper key');
@@ -155,6 +172,19 @@ export class CoSigner {
 
   /** The current signpost's event id (§6.7.5), from co-signing it or from a welcome: its delete is refused. */
   noteSignpost(id: string) { this.signpostIds.add(id); }
+  /** A signpost delivered by a device (§6.7.10): only a group-signed kind 30078 with this account's
+   *  signpost `d` is taken, and it replaces the older one for that `d`. */
+  signpostByD = new Map<string, { id: string; at: number }>();
+  takeSignpost(ev: NostrEvent): boolean {
+    const d = tag(ev, 'd') ?? '';
+    if (ev?.kind !== KIND_SIGNPOST || ev.pubkey !== this.g || !verifyEvent(ev) || !new Set(this.m.backupKeys.map(signpostD)).has(d)) return false;
+    const cur = this.signpostByD.get(d);
+    if (cur && cur.at > ev.created_at) return false;
+    if (cur) this.signpostIds.delete(cur.id);
+    this.signpostByD.set(d, { id: ev.id, at: ev.created_at });
+    this.signpostIds.add(ev.id);
+    return true;
+  }
 
   /** What a server keeps across a restart (§2, §5.6): answered ids, waits, cancels, challenges.
    *  Never nonces: a restart loses every round in flight (§5.2). Shares are the host's to store. */
@@ -302,28 +332,50 @@ export class CoSigner {
     return { evId, lockApproved };
   }
 
+  /** An approval as every member checks it, plus the co-signer's freshness (§3.2, once): expiry,
+   *  approvers still current, only the current lock, the paper challenge (used once per list, so every
+   *  change of the list shares it), the recovery session. `use` names what consumes the challenge. */
+  private usedChallenges = new Map<string, string>();
+  checkFresh(from: string, list: Change[], a: Approval, now: number, use: string) {
+    const t = approvalType(a);
+    const { error, approvers } = checkApproval(this.m.authority, list, a);
+    if (error) refuse(error);
+    if (t === 'lock' || t === 'pair' || t === 'paper') {
+      if (!(a.expiry! > now && a.expiry! <= now + MAX_EXPIRY_S + 30)) refuse('approval_expired');
+    }
+    for (const k of approvers) if (this.m.removed.has(k) || !this.m.devices.has(k)) refuse('approver_removed');
+    if (t === 'lock') {
+      const cur = this.m.locks.get(a.lock!.member);
+      if (!cur || checkAssertion(this.g, cur, changeWhat(this.g, this.m.epochId, list, a.expiry!), a.lock!.assertion)) refuse('not_current_lock');
+    }
+    if (t === 'paper') {
+      if (a.paper!.backup !== this.m.backupKey) refuse('not_current_backup');
+      if (a.paper!.server !== (this.o.host?.pub ?? this.o.me.pub)) refuse('wrong_challenge_server');
+      const prior = this.usedChallenges.get(a.paper!.challenge);
+      if (prior !== undefined) { if (prior !== use) refuse('stale_challenge'); }
+      else if (!this.takeChallenge(a.paper!.challenge, [a.paper!.member, a.paper!.backup], now)) refuse('stale_challenge');
+      else this.usedChallenges.set(a.paper!.challenge, use);
+    }
+    if (t === 'recovery') {
+      const r = a.recovery!;
+      if (r.backup !== this.m.backupKey || from !== r.backup) refuse('not_holder', 'recovery approvals come only from the holder\'s own connection');
+      const sess = this.session(now);
+      if (!sess || sess.backup !== from) refuse('no_recovery_session');
+      if (r.waited.some((w: Waited) => now > w.end + STATEMENT_MAX_AGE_S)) refuse('statement_too_old');
+    }
+  }
+
   /** §5.7 item 5 for a change: valid, fresh, and safe to add to this co-signer's membership. */
   private checkChangeToSign(from: string, ev: Unsigned, mode: 'everyday' | 'recovery', now: number, msg: any) {
     const self = { ...ev, id: eventId(ev), sig: '' } as NostrEvent;
     const p = parseChange(this.o.record, self, false);
     const a = p.c.approval;
     const t = approvalType(a);
-    const { error, approvers } = checkApproval(this.m.authority, p.c.list, a);
-    if (error) refuse(error);
+    this.checkFresh(from, p.c.list, a, now, p.listHash);
     if (mode === 'recovery' && t !== 'recovery') refuse('recovery_session', 'only recovery-approved changes');
     // F3 (§6.7.2): a seat list no current seat holder co-signs, here a device co-signing it, needs
     // `pair`, `paper` or `recovery`, never a lock alone.
     if (this.o.kind !== 'server' && p.c.list.some((x) => 'seat' in x) && !(t === 'pair' || t === 'paper' || t === 'recovery')) refuse('approval_not_allowed', 'F3 needs pair, paper or recovery');
-    // Freshness: the co-signer's job, once (§3.2).
-    if (t === 'lock' || t === 'pair' || t === 'paper') {
-      if (!(a.expiry! > now && a.expiry! <= now + MAX_EXPIRY_S + 30)) refuse('approval_expired');
-    }
-    for (const k of approvers) if (this.m.removed.has(k) || !this.m.devices.has(k)) refuse('approver_removed');
-    // Only the current lock counts here (every member accepts any lock the device ever had, §3.2).
-    if (t === 'lock') {
-      const cur = this.m.locks.get(a.lock!.member);
-      if (!cur || checkAssertion(this.g, cur, changeWhat(this.g, this.m.epochId, p.c.list, a.expiry!), a.lock!.assertion)) refuse('not_current_lock');
-    }
     // A list is co-signed as one: its redeal first, then each other change with the signed redeal
     // presented beside it, so a seat or remove never applies without its redeal (§6.7.2).
     const listEvents: NostrEvent[] = [];
@@ -334,18 +386,11 @@ export class CoSigner {
       if (!rd) refuse('list_redeal_first', 'present the co-signed redeal of this list');
       listEvents.push(rd);
     }
-    if (t === 'paper') {
-      if (a.paper!.backup !== this.m.backupKey) refuse('not_current_backup');
-      if (a.paper!.server !== (this.o.host?.pub ?? this.o.me.pub)) refuse('wrong_challenge_server');
-      if (!this.takeChallenge(a.paper!.challenge, [a.paper!.member, a.paper!.backup], now)) refuse('stale_challenge');
-    }
-    if (t === 'recovery') {
-      const r = a.recovery!;
-      if (r.backup !== this.m.backupKey || from !== r.backup) refuse('not_holder', 'recovery approvals come only from the holder\'s own connection');
-      const sess = this.session(now);
-      if (!sess || sess.backup !== from) refuse('no_recovery_session');
-      if (r.waited.some((w: Waited) => now > w.end + STATEMENT_MAX_AGE_S)) refuse('statement_too_old');
-    }
+    // Across the list: no two seats to one key or host, and the paper key is nobody else's.
+    const seatNews = p.c.list.flatMap((x: any) => (x.seat?.new ? [x.seat.new] : []));
+    if (new Set(seatNews.map((n: any) => n.key)).size !== seatNews.length || new Set(seatNews.map((n: any) => n.host)).size !== seatNews.length) refuse('invariant', 'one key or host in two seats');
+    const paperKey = (p.c.list.find((x: any) => 'paper' in x) as any)?.paper.key;
+    if (paperKey && seatNews.some((n: any) => n.key === paperKey)) refuse('invariant', 'a paper key is a fresh key');
     // The change must leave a valid membership: try it (§3.3).
     const ch: any = p.c.change;
     const trial = computeMembership(this.o.record, [...this.changes, ...listEvents], this.W, [self]);

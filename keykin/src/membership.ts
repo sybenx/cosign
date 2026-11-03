@@ -178,6 +178,13 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
     pending = next;
   }
   for (const p of pending) refused.push({ id: p.ev.id, code: checkApproval(authority(), p.c.list, p.c.approval).error! });
+  // A seat, remove or paper change applies only beside its list's redeal (§6.7.2, §6.7.10): until the
+  // group-signed redeal of the same list hash is here, the others wait (they are not lost).
+  const redealLists = new Set(accepted.filter((p) => p.type === 'redeal').map((p) => p.listHash));
+  for (const p of [...accepted]) if (p.type !== 'redeal' && p.c.list.some((x) => 'redeal' in x) && !redealLists.has(p.listHash)) {
+    accepted.splice(accepted.indexOf(p), 1);
+    refused.push({ id: p.ev.id, code: 'redeal_missing' });
+  }
   const auth = authority();
 
   const removed = new Set(rec.removed);
@@ -210,15 +217,20 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
   // before may hold another later (I7), so the rule is on the resulting holders, not on history.
   const byHost = new Map<string, string[]>();
   for (const [sid, st] of seats) if (st.holder?.host) byHost.set(st.holder.host, [...(byHost.get(st.holder.host) ?? []), sid]);
-  for (const sids of byHost.values()) if (sids.length > 1) for (const sid of sids) {
-    const st = seats.get(sid)!;
-    removed.add(st.holder!.key);
-    const w = winners.get(sid);
-    // A `void:<id>` reseat can fill it again.
-    const cands = seatCh.filter(({ ch }) => ch.seat.seat === sid && String(ch.seat.replaces).startsWith('void:') && ch.seat.new?.host !== st.holder!.host)
-      .map(({ p, ch }) => ({ hash: p.listHash, replaces: ch.seat.replaces, newId: ch.seat.new?.key ?? null, value: ch.seat.new as MemberEntry | null }));
-    const r = follow({ id: null, value: null }, cands, (a: any, b: any) => a.newId === b.newId, 'void', (k) => removed.add(k), w ? [w] : []);
-    seats.set(sid, { holder: r.cur.value, voided: r.voided });
+  for (const sids of byHost.values()) if (sids.length > 1) {
+    // The void ids: the seatings that met; a record holder has none of its own, so the other's counts.
+    const ids = sids.map((sid) => winners.get(sid)).filter((x): x is string => !!x);
+    for (const sid of sids) {
+      const st = seats.get(sid)!;
+      removed.add(st.holder!.key);
+      const host = st.holder!.host;
+      // Refill: a `void:<id>` reseat, then the seat moves on as usual.
+      const cands = seatCh.filter(({ ch }) => ch.seat.seat === sid && ch.seat.new?.host !== host && !(ch.seat.new && removed.has(ch.seat.new.key)))
+        .map(({ p, ch }) => ({ hash: p.listHash, replaces: ch.seat.replaces, newId: ch.seat.new?.key ?? null, value: ch.seat.new as MemberEntry | null }))
+        .filter((c) => c.replaces !== null || ids.length === 0);
+      const r = follow({ id: null, value: null }, cands, (a: any, b: any) => a.newId === b.newId, 'void', (k) => removed.add(k), ids);
+      seats.set(sid, { holder: r.cur.value, voided: r.voided });
+    }
   }
 
   // The paper: lowest hash wins a conflict, the loser's key is removed.
@@ -309,3 +321,18 @@ export { listHash };
 export const signpostCount = (m: Membership) => m.accepted.filter((p) => p.type === 'seat' || p.type === 'paper').length;
 export const signpostServers = (m: Membership) => [...m.seats.entries()].filter(([k, s]) => k.startsWith('server:') && s.holder)
   .map(([, s]) => ({ host: s.holder!.host, https: s.holder!.https, relays: s.holder!.relays ?? [] }));
+
+/** Adopt incoming changes (§3.3, §3.4): each is taken unless the view with it breaks an invariant.
+ *  Candidates go in id order, so the result depends only on the set, never on batching or arrival. */
+export function adopt(rec: EpochContent, current: NostrEvent[], incoming: NostrEvent[], W = W_DEFAULT): { changes: NostrEvent[]; m: Membership; refused: { ev: NostrEvent; why: string }[] } {
+  const have = new Set(current.map((e) => e.id));
+  const cands = [...new Map(incoming.filter((e) => !have.has(e.id)).map((e) => [e.id, e])).values()].sort((a, b) => (a.id < b.id ? -1 : 1));
+  let changes = [...current], m = computeMembership(rec, changes, W);
+  const refused: { ev: NostrEvent; why: string }[] = [];
+  for (const e of cands) {
+    const t = computeMembership(rec, [...changes, e], W);
+    if (t.invariantError) refused.push({ ev: e, why: t.invariantError });
+    else { changes = [...changes, e]; m = t; }
+  }
+  return { changes, m, refused };
+}

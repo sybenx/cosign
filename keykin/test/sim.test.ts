@@ -169,8 +169,8 @@ test('F7: a paper repair is refused without a valid approval, from a non-approve
   const list: Change[] = [{ paper: { key: K.pub, replaces: acc.paper.pub } }, { redeal: { dealer: A.kp.pub } }];
   const helpers = [{ key: A.kp.pub, indices: [1, 2, 3] }, { key: srv.kp.pub, indices: [4] }];
   await assert.rejects(A.repairFor(helpers, 5, K.pub, 'paper', { list, approval: {} }), /bad_approval/);
-  await assert.rejects(A.repairFor(helpers, 5, A.kp.pub, 'paper', { list, approval: A.approveLock(list) }), /not_assigned/);
-  await assert.rejects(A.repairFor(helpers, 4, K.pub, 'paper', { list, approval: A.approveLock(list) }), /not_assigned/);
+  await assert.rejects(A.repairFor(helpers, 5, A.kp.pub, 'paper', { list, approval: A.approveLock(list) }), /not_assigned|bad_helpers/);
+  await assert.rejects(A.repairFor(helpers, 4, K.pub, 'paper', { list, approval: A.approveLock(list) }), /not_assigned|bad_helpers/);
 });
 test('F3, every server dead: pair approval, co-signed by a second device, seats filled by two devices', async () => {
   const acc = await create();
