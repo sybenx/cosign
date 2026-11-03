@@ -15,7 +15,7 @@ import { checkApproval, approvalType, approvalHash, placeholderList, checkWaited
 import { computeMembership, parseChange, adopt, type Membership } from './membership.ts';
 import { pointFrom, commitmentFrom, type Commitment } from './curve.ts';
 import { stateOf, commitmentAt, type State } from './redeal.ts';
-import { verifyRerepair, redealMissing, postListView, type Upload } from './upkeep.ts';
+import { verifyRerepair, redealMissing, postListView, postListBackup, type Upload } from './upkeep.ts';
 import { itemHash } from './redeal.ts';
 import { RepairHelper } from './repair.ts';
 import { takenIndices, signpostCount, signpostServers } from './membership.ts';
@@ -519,6 +519,7 @@ export class CoSigner {
           if (r.abandons.some((x: string) => this.m.redeals.get(x)?.withRemove)) refuse('abandons_remove_redeal');
           if (r.base.some((b: string) => this.m.abandoned.has(b))) refuse('abandoned');
           if (this.m.abandoned.has(r.id)) refuse('abandoned');
+          if (r.paper_to !== postListBackup(this.m, p.c.list)) refuse('bad_paper_to');
           if (this.o.kind === 'server') {
             if (!this.o.uploads) refuse('no_upload_store');
             const view = postListView(this.m, p.c.list);

@@ -135,7 +135,7 @@ export async function recover(acc: Account, lost: DeviceNode[], paper: KeyPair =
   const j = D.joiner.finish({ from: welcome.from, welcome: welcome.body, sigmas, recovery: { backup: P.kp.pub } });
   D.adopt(r.recEv, changes, { ids: new Set(r.state), C: j.C, shares: j.shares });
   for (const [k, v] of r.seeds) D.seeds.set(k, v);
-  D.base = r.base; D.items = r.items; D.baseDk = r.dk;
+  D.base = r.base; D.items = r.items; D.baseDk = r.dk; D.dkSeeds = [...r.dkSeeds];
   // F9: report the lost devices and redeal, approved by `recovery`; D deals, the holder co-signs.
   if (lost.length) {
     const list: Change[] = [...lost.map((l) => ({ remove: l.kp.pub }) as Change), { redeal: { dealer: D.kp.pub } }];

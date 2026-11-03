@@ -113,3 +113,25 @@ export function commitmentAt(C0: Commitment, redeals: Redeal[]): Commitment {
   return redeals.reduce((c, r) => addRedeal(c, r.D.map((h) => pointFrom(h))), C0);
 }
 export { stateHash, derivePoint, liftX, scalarFrom, sha, pubOf, N };
+
+/** A redeal delivery as its receiver checks it (§6.7.2, §6.7.3): sealed by the redeal's dealer, and
+ *  every seed it carries matching the hash the group-signed redeal pins. Throws to refuse. */
+export function checkDelivery(r: Redeal, from: string, body: { release?: string; dk?: string }) {
+  if (from !== r.dealer) refuse('not_dealer', 'a delta comes only from its redeal\'s dealer');
+  if (body.release !== undefined && shaHex(hexToBytes(body.release)) !== r.rs) refuse('bad_seed', 'release seed');
+  if (body.dk !== undefined && shaHex(hexToBytes(body.dk)) !== r.dk) refuse('bad_seed', 'data-key seed');
+}
+
+/** §6.7.1 step 0: a device opens the redeal's paper item with its conversation key and checks that it
+ *  is the pinned item, carries δ(b) for the backup seat matching the redeal's commitments, and the
+ *  pinned data-key seed. True sets the "paper item verified" bit for the current backup key. */
+export function verifyPaperItem(r: Redeal, item: Item, releaseSeed: string, ck: string, backupSeat: number[]): boolean {
+  try {
+    if (itemHash(item) !== r.paper_item || item.to !== r.paper_to) return false;
+    const v = openItem(item, releaseSeed, { ck });
+    const D = r.D.map((h) => pointFrom(h));
+    if (JSON.stringify(v.b) !== JSON.stringify(backupSeat)) return false;
+    if (!backupSeat.every((b, k) => mul(scalarFrom(v.d[k])).equals(deriveDelta(D, BigInt(b))))) return false;
+    return shaHex(hexToBytes(v.dk_seed)) === r.dk;
+  } catch { return false; }
+}

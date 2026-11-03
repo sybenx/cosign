@@ -1,6 +1,6 @@
 // Upkeep's server-side rules and proofs (core §6.7.3–§6.7.4, §6.5 step 4, §7.2). Pure.
 
-import { sha, bytesToHex, randomBytes, hexToBytes, refuse, u32be } from './bytes.ts';
+import { sha, shaHex, bytesToHex, randomBytes, hexToBytes, refuse, u32be } from './bytes.ts';
 import { type Commitment, derivePoint, mul, mod, compBytes, compHex, pointFrom, scalarFrom, scalarHex, G } from './curve.ts';
 import { checkApproval, approvalHash, type Authority } from './approval.ts';
 import { itemHash, openItem, sealItem, commitmentAt, wrapUnder, unwrapUnder, type Item } from './redeal.ts';
@@ -107,16 +107,19 @@ export function openMaterial(o: { g: string; backup: KeyPair; pin: string; base:
   const shares = new Map<number, bigint>(base.shares.map(([i, s]: [number, string]) => [i, scalarFrom(s)]));
   const baseState = new Set<string>(base.state);
   const later = o.redeals.filter((r) => o.state.has(r.id) && !baseState.has(r.id));
+  const dkSeeds: string[] = [];
   for (const r of later) {
     const it = o.items.find((x) => x.redeal === r.id && x.to === o.backup.pub && itemHash(x) === r.paper_item) ?? o.items.find((x) => x.redeal === r.id && x.kind === 'reissue' && x.to === o.backup.pub);
     const seed = o.seeds.get(r.id);
     if (!it || !seed) refuse('missing_item', r.id);
     const v = openItem(it!, seed!, { backupSk: o.backup.sk });
     v.b.forEach((b: number, k: number) => shares.set(b, mod(shares.get(b)! + scalarFrom(v.d[k]))));
+    // The data-key seed rides in the item, so a recovery loses no data (§4.5); checked against `dk`.
+    if (typeof v.dk_seed === 'string' && shaHex(hexToBytes(v.dk_seed)) === r.dk) dkSeeds.push(v.dk_seed);
   }
   const C = commitmentAt(o.C0, o.redeals.filter((r) => o.state.has(r.id)));
   for (const [i, s] of shares) if (!mul(s).equals(derivePoint(C, BigInt(i)))) refuse('bad_material', `the sum misses P_${i}`);
-  return { shares, C, dk: base.dk as string };
+  return { shares, C, dk: base.dk as string, dkSeeds };
 }
 export { G, detachedDigest };
 

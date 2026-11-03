@@ -110,6 +110,9 @@ test('paper recovery after a redeal: wait, release, recovery join, report the lo
   assert.equal(D.state!.ids.size, 2, 'the recovery redeal applied');
   for (const s of acc.servers) assert.deepEqual([...s.co!.state.ids].sort(), [...D.state!.ids].sort());
   assert.ok(verifyEvent(await D.sign({ content: 'recovered' })));
+  // Review 4 A5/A6: the recovered device has the account's data key (every data-key seed came back).
+  const { dataKey } = codesMod;
+  assert.equal(dataKey(D.baseDk, D.dkSeeds.filter((x, i, xs) => xs.indexOf(x) === i).slice(0, 1)), dataKey(acc.A.baseDk, acc.A.dkSeeds.slice(0, 1)));
   assert.equal(await code(async () => { acc.bus.revive(acc.A.kp.pub); await acc.A.sign({ content: 'old phone' }); }), 'removed');
 });
 

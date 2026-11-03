@@ -350,3 +350,45 @@ test('core 14.9: the backup may help fill a seat with a device, under a paper ap
   const other: Change[] = [{ seat: { seat: 'server:8', new: { ...Y, key: newKey().pub }, replaces: F.servers[2].kp.pub } }, { redeal: { dealer: A.kp.pub } }];
   assert.equal(code(() => Adev.authorizeRepair(Y.key, { ...body(approvePaper(F.g, F.epochId, other, EXP(), A.kp, F.backup.kp, 'cd'.repeat(16), newKey().pub)), list: other })), 'bad_helpers', 'only for the change being filled');
 });
+
+// --- review 4 -------------------------------------------------------------------------------
+
+test('review 4 A1: seat_welcome only once, only from a current device, only if it seats this server', async () => {
+  const acc = await create();
+  const stranger = newKey();
+  const w = { recEv: acc.A.recEv, changes: [], state: [], seeds: [], items: [], base: acc.A.base };
+  assert.equal((await acc.bus.send(stranger, acc.servers[0].kp.pub, { type: 'seat_welcome', w })).code, 'already_welcomed');
+  const { ServerNode } = await import('../sim/nodes.ts');
+  const fresh = acc.bus.add(new ServerNode(acc.bus, 'fresh')) as any;
+  assert.equal((await acc.bus.send(acc.A.kp, fresh.kp.pub, { type: 'seat_welcome', w })).code, 'not_seated');
+  assert.ok((await acc.A.sign({ content: 'still signs' })).sig);
+});
+
+test('review 4 A2/A3: inbox deliveries only from members; deltas only from their dealer, with the pinned seeds', async () => {
+  const { Inbox } = await import('../src/inbox.ts');
+  const { wrap } = await import('../src/transport.ts');
+  const I = new Inbox(), a = newKey(), b = newKey();
+  assert.equal(code(() => I.deliver({ from: newKey().pub, to: b.pub, wrap: wrap(a.sk, b.pub, { type: 'x' }), kind: 'delivery', cls: 'member', at: 0,
+    isMember: (k) => k === a.pub || k === b.pub, isRemoved: () => false, isBackup: () => false })), 'not_member');
+  const { checkDelivery } = await import('../src/redeal.ts');
+  const F = fixture(); const A = F.devices[0];
+  const d = dealRedeal(F.g, A.kp, [], new Map([[A.kp.pub, [1, 2, 3]]]), F.backup.kp.pub, [5, 6]);
+  assert.equal(code(() => checkDelivery(d.redeal, A.kp.pub, { release: d.releaseSeed, dk: d.dkSeed })), 'ok');
+  assert.equal(code(() => checkDelivery(d.redeal, newKey().pub, { release: d.releaseSeed })), 'not_dealer');
+  assert.equal(code(() => checkDelivery(d.redeal, A.kp.pub, { release: bytesToHex(randomBytes(32)) })), 'bad_seed');
+  assert.equal(code(() => checkDelivery(d.redeal, A.kp.pub, { dk: bytesToHex(randomBytes(32)) })), 'bad_seed');
+});
+
+test('review 4 A4: a paper item is verified with its conversation key; a spoiled one is caught', async () => {
+  const { verifyPaperItem, sealItem } = await import('../src/redeal.ts');
+  const F = fixture(); const A = F.devices[0];
+  const d = dealRedeal(F.g, A.kp, [], new Map([[A.kp.pub, [1, 2, 3]]]), F.backup.kp.pub, [5, 6]);
+  assert.equal(verifyPaperItem(d.redeal, d.paperItem, d.releaseSeed, d.paperCk, [5, 6]), true);
+  const bad = sealItem('paper', d.redeal.id, F.backup.kp.pub, d.releaseSeed, { redeal: d.redeal.id, d: ['00'.repeat(31) + '01', '00'.repeat(31) + '02'], b: [5, 6], dk_seed: d.dkSeed });
+  assert.equal(verifyPaperItem({ ...d.redeal, paper_item: (await import('../src/redeal.ts')).itemHash(bad.item) }, bad.item, d.releaseSeed, bad.ck, [5, 6]), false);
+});
+
+test('review 4 A7: a device the list removes never deals its redeal', () => {
+  const k = newKey().pub;
+  assert.equal(code(() => checkListShape([{ remove: k }, { redeal: { dealer: k } }])), 'bad_list');
+});

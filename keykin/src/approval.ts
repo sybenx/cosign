@@ -50,6 +50,9 @@ export function checkListShape(list: Change[]): void {
   if (needs && redeals !== 1) refuse('mandatory_redeal', 'a list with a seat, remove or paper change carries exactly one redeal');
   if (!needs && types.includes('redeal') && list.length !== 1) refuse('bad_list');
   if (types.filter((t) => t === 'paper').length > 1) refuse('bad_list', 'one paper per list');
+  // A device the list removes never deals its redeal (§6.4): it would keep 3 points at the new state.
+  const dealer = (list.find((c) => 'redeal' in c) as any)?.redeal.dealer;
+  if (dealer && list.some((c) => 'remove' in c && c.remove === dealer)) refuse('bad_list', 'a removed device never deals the redeal');
   const self = list.filter((c) => 'remove' in c && (c as any).to !== undefined);
   if (self.length && (self.length !== 1 || list.length !== 2 || !types.includes('redeal'))) refuse('bad_list', 'a self remove is exactly [remove, redeal]');
 }

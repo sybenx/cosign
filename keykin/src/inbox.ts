@@ -40,6 +40,7 @@ export class Inbox {
   #n = 0;
   deliver(o: { from: string; to: string; wrap: NostrEvent; kind: InboxItem['kind']; cls: Cls; at: number; isMember: (k: string) => boolean; isRemoved: (k: string) => boolean; isBackup: (k: string) => boolean }): string {
     if (o.isRemoved(o.from)) refuse('removed', 'deliver from a removed member');
+    if (!o.isMember(o.from)) refuse('not_member', 'deliver only from a current member');
     if (!o.isMember(o.to)) refuse('not_member', '`to` must be a current member');
     if (o.isBackup(o.to)) refuse('backup_never_fetches');
     if (tag(o.wrap, 'p') !== o.to) refuse('bad_p', 'the wrap\'s p tag must be `to`');

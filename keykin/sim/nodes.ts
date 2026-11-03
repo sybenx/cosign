@@ -2,14 +2,14 @@
 // Each node keeps what Core says it keeps; the drivers (`sign`, `submit`, `invite`, …) are what an
 // app would run. Nothing here is a second implementation of a rule: every check is in src/.
 
-import { bytesToHex, randomBytes, hexToBytes, sha, refuse, KeykinError } from '../src/bytes.ts';
+import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, refuse, KeykinError } from '../src/bytes.ts';
 import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
-import { deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
+import { checkDelivery, verifyPaperItem, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
@@ -116,7 +116,8 @@ export class ServerNode implements Node {
         const u = this.uploads.get(r.id);
         const mine = u?.items.find((it) => it.to === this.kp.pub);
         if (!mine) continue;                                   // a gap: closed by rerepair
-        const body = unwrap(this.kp.sk, mine.wrap as NostrEvent).body;
+        const o = unwrap(this.kp.sk, mine.wrap as NostrEvent), body = o.body;
+        try { checkDelivery(r, o.from, body); } catch { continue; }
         const deltas = new Map<number, bigint>(body.deltas.map(([i, d]: [number, string]) => [i, scalarFrom(d)]));
         if (!this.co!.state.shares.size) continue;           // not repaired yet: the repair sets the state
         const { state } = applyRedeal(m.g, this.co!.state, r, deltas, false, m.record.seats.backup, m.abandoned);
@@ -157,7 +158,15 @@ export class ServerNode implements Node {
   private async dispatch(from: string, body: any, sentAt: number): Promise<any> {
     if (this.lastActive && this.now - this.lastActive > 7 * 86400) this.passive = true;
     this.lastActive = this.now;
-    if (body.type === 'seat_welcome') { this.welcome(body.w); return { type: 'ack' }; }
+    if (body.type === 'seat_welcome') {
+      // Once per account, from a current device of the welcome's own view, and only if that view seats us (§6.7.4).
+      if (this.co) refuse('already_welcomed');
+      const rec = checkEpochRecord(body.w.recEv, { g: body.w.recEv.pubkey });
+      const view = computeMembership(rec, body.w.changes);
+      if (!view.devices.has(from)) refuse('not_device');
+      if (![...view.seats.values()].some((x) => x.holder?.key === this.kp.pub)) refuse('not_seated');
+      this.welcome(body.w); return { type: 'ack' };
+    }
     if (!this.co) return { type: 'error', code: 'unknown_account' };
     if (this.retired) {
       // A forwarding note, served to a request sealed by one of the allowed keys (§6.7.5 route 2).
@@ -347,16 +356,23 @@ export class DeviceNode implements Node {
     for (const s of this.servers()) {
       const a = await this.bus.send(this.kp, s.key, msg('inbox_get', this.g, this.epochId, 'ask'));
       if (a?.type !== 'inbox') continue;
-      for (const it of a.items) this.takeDelivery(it.wrap);
+      for (const it of a.items) try { this.takeDelivery(it.wrap); } catch { /* one bad item never wedges the rest */ }
       await this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid) }));
     }
     this.applyAll();
   }
   pendingDeltas = new Map<string, any>();
+  /** "Paper item verified" bits, per backup key and redeal (§6.7.6, 14.12). */
+  paperVerified = new Map<string, boolean>();
   lastDetail: string | undefined;
   takeDelivery(w: NostrEvent) {
     const o = unwrap(this.kp.sk, w);
-    if (o.body.type === 'delta') this.pendingDeltas.set(o.body.redeal, o.body);
+    if (o.body.type === 'delta') {
+      // Only the redeal's dealer's delta counts; a stranger's never replaces it (§6.7.3).
+      const r = this.m!.redeals.get(o.body.redeal)?.r;
+      if (r && o.from !== r.dealer) return;
+      this.pendingDeltas.set(o.body.redeal, { ...o.body, from: o.from });
+    }
   }
   /** Apply every redeal we hold a delta for (§6.7.1), checking our rebuilt commitment each time. */
   applyAll() {
@@ -366,6 +382,13 @@ export class DeviceNode implements Node {
       for (const { r } of m.redeals.values()) {
         const d = this.pendingDeltas.get(r.id);
         if (!d || applicable(this.state!, r, m.abandoned)) continue;
+        try { checkDelivery(r, d.from ?? r.dealer, d); } catch { this.pendingDeltas.delete(r.id); this.notices.push({ kind: 'bad_delivery', member: d.from }); continue; }
+        // §6.7.1 step 0: the paper item, opened with its conversation key; a bad one is shown.
+        if (d.paper_item && d.paper_ck) {
+          const ok = verifyPaperItem(r, d.paper_item, d.release, d.paper_ck, m.record.seats.backup);
+          this.paperVerified.set(`${m.backupKey}:${r.id}`, ok);
+          if (!ok) this.notices.push({ kind: 'bad_paper_item', member: r.dealer });
+        }
         const deltas = new Map<number, bigint>(d.deltas.map(([i, x]: [number, string]) => [i, scalarFrom(x)]));
         const { state } = applyRedeal(m.g, this.state!, r, deltas, true, m.record.seats.backup, m.abandoned);
         this.state = state; this.pendingDeltas.delete(r.id);
@@ -395,7 +418,7 @@ export class DeviceNode implements Node {
         wrap: wrap(this.kp.sk, x.key, { type: 'delta', redeal: dealt!.redeal.id,
           deltas: [...dealt!.deltas.get(x.key)!].map(([i, d]) => [i, scalarHex(d)]),
           ...(x.kind !== 'helper' ? { release: dealt!.releaseSeed } : {}),
-          ...(x.kind === 'device' ? { dk: dealt!.dkSeed, paper_ck: dealt!.paperCk } : {}) }) }));
+          ...(x.kind === 'device' ? { dk: dealt!.dkSeed, paper_ck: dealt!.paperCk, paper_item: dealt!.paperItem } : {}) }) }));
       (dealt as any).uploadItems = items;
       const up = msg('upload', this.g, this.epochId, 'member', { list: approvalListOf(list), approval, redeal: dealt.redeal.id, items, paper_item: dealt.paperItem });
       for (const s of [...view.values()].filter((x) => x.kind === 'server')) await this.bus.send(this.kp, s.key, up);
@@ -425,7 +448,8 @@ export class DeviceNode implements Node {
     this.takeChanges(signed);
     if (dealt && !this.wiped) {
       const mine = dealt.deltas.get(this.kp.pub);
-      if (mine) this.pendingDeltas.set(dealt.redeal.id, { type: 'delta', redeal: dealt.redeal.id, deltas: [...mine].map(([i, d]) => [i, scalarHex(d)]), release: dealt.releaseSeed, dk: dealt.dkSeed });
+      if (mine) this.pendingDeltas.set(dealt.redeal.id, { type: 'delta', redeal: dealt.redeal.id, deltas: [...mine].map(([i, d]) => [i, scalarHex(d)]), release: dealt.releaseSeed, dk: dealt.dkSeed,
+        paper_ck: dealt.paperCk, paper_item: dealt.paperItem, from: this.kp.pub });
       this.applyAll();
       dealt.destroy();
     }
@@ -548,10 +572,15 @@ export class PaperHolder implements Node {
     const rec: EpochContent = checkEpochRecord(bs[0].record, { g: this.g });
     const changes = [...new Map(bs.flatMap((b) => b.changes).map((e: NostrEvent) => [e.id, e])).values()] as NostrEvent[];
     const m = computeMembership(rec, changes);
-    const seeds = new Map<string, string>(bs.flatMap((b) => b.seeds));
+    // Each redeal's release seed is the one matching its pinned `rs`, whichever server sent it (§6.7.2).
+    const seeds = new Map<string, string>();
+    for (const [k, v] of bs.flatMap((b) => b.seeds) as [string, string][]) {
+      const r = m.redeals.get(k)?.r;
+      if (k === 'base' || (r && shaHex(hexToBytes(v)) === r.rs)) seeds.set(k, v);
+    }
     const items = [...new Map(bs.flatMap((b) => b.items).map((it: Item) => [itemHash(it), it])).values()] as Item[];
     // The servers' state: the redeals the bundles' servers have applied (they agree, or the holder retries).
-    const state = new Set<string>([...m.redeals.keys()].filter((id) => seeds.has(id)));
+    const state = new Set<string>([...m.redeals.keys()].filter((id) => seeds.has(id) && !m.abandoned.has(id)));
     // The pin: the creation record's, or the committed paper change for this key (its base is wrapped
     // under its list's redeal's release seed, §6.7.2).
     const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === this.kp.pub);
@@ -561,7 +590,7 @@ export class PaperHolder implements Node {
     const o = openMaterial({ g: this.g, backup: this.kp, pin, base, baseSeed, items, seeds,
       C0: commitmentFrom(rec.commitment), redeals: [...m.redeals.values()].map((x) => x.r), state });
     this.shares = o.shares; this.C = o.C;
-    return { rec, recEv: bs[0].record as NostrEvent, changes, m, waited: bs.map((b) => b.waited as Waited), state, dk: o.dk, seeds, items, base };
+    return { rec, recEv: bs[0].record as NostrEvent, changes, m, waited: bs.map((b) => b.waited as Waited), state, dk: o.dk, dkSeeds: o.dkSeeds, seeds, items, base };
   }
   approve(list: Change[], waited: Waited[]) { return approveRecovery(this.g, approvalListOf(list), this.kp, { r: this.r }, waited); }
   /** A recovery round: backup (2) plus two servers, two-call form. */
