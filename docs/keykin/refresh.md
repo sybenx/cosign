@@ -2,7 +2,11 @@
 
 Draft 3 · 2026-11-02 · optional module of [Keykin Core](core.md) draft 8.1 · not built
 
-> **Parked (2026-11-02).** Its own red team on this draft (`keykin-refresh-redteam-2.md` in the shared
+> **Unparked (2026-11-02): required, redesign in progress.** The user requires structural change to
+> work. This draft's red team findings stand (1 critical, 2 high, `keykin-refresh-redteam-2.md`); the
+> replacement design comes from the hub session's design panel.
+>
+> *Earlier, parked (2026-11-02):* Its own red team on this draft (`keykin-refresh-redteam-2.md` in the shared
 > notes) found 1 critical and 2 high problems, all at the seams with the core:
 >
 > 1. members a refresh removes are never told, so a leaving server still counts a leaving helper and

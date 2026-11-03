@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 8.3 · 2026-11-02 · `draft` `optional` · not built
+Draft 8.4 · 2026-11-02 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -382,15 +382,28 @@ wire change.
   through the member, Doors module), or the person installs the desktop app.
 - **The app registers a native-messaging host.** An extension checks for it before acting as a member.
   If it finds the app, it does not join; if it already is the member, it **hands its membership over**:
-  - it passes its member key and shares to the app over native messaging;
-  - the app confirms it holds them and signs a test round;
-  - the extension destroys its copy and becomes a relay.
+  1. It passes **everything a `welcome` carries** (§4.2 step 4) to the app over native messaging: the
+     member key and shares, the epoch record and the set of changes, the release key, the backup
+     material and the data key, plus its site grants and its history.
+  2. The app stores all of it durably, reloads it from storage, checks `s_i·G == P_i` for every share
+     against the epoch record, and only then confirms.
+  3. The extension then destroys its copy and becomes a relay.
 
   The membership doesn't change: same member key, same indices. So nothing in the account changes and
-  no approval is needed. A copy that survives the handover is the same 3 shares twice, not 6 points.
-- **If the app joined separately** while an extension on the same machine was already a member (two
-  members on one machine), the extension retires itself as soon as it finds the app: a `remove` naming
-  its own key (§6.4). The laptop ends up as one member.
+  no approval is needed. A copy that survives the handover (a crash between steps 2 and 3, a profile
+  restored from a backup) is the same 3 shares twice, not 6 points. An app holds **one membership per
+  account** and refuses a second handover for an account it already serves.
+- **Retiring an extension.** When an extension that holds a membership finds the app, it compares
+  first:
+  - if the app holds the **same** member key for the same `g`, the extension's copy is a leftover:
+    it just deletes it locally and sends nothing;
+  - if the app holds a **different**, current member key for the same `g` (the app joined
+    separately, so the laptop is two members), the extension removes itself: a `remove` naming its own
+    key (§6.4);
+  - if the app serves no membership for this `g`, the extension hands over as above.
+
+  An extension never removes itself in any other case, so it can never remove the machine's only
+  member.
 - A lock belongs to the member app (Touch ID through the Secure Enclave). A handed-over membership has
   no lock until the app registers one by a lock change (§3.2).
 
@@ -1098,3 +1111,11 @@ extensions relay to it; with no app one extension is the member; handover moves 
 changing it; a separately joined extension removes itself); a device may remove itself (§6.4); §10's
 "two apps on one laptop" limit narrowed to the cases the rule can't cover, and the local-software limit
 stated.
+
+## Changes in draft 8.4
+
+The one-member-per-machine rule's red team found two gaps in the handover, both fixed: it now carries
+everything a `welcome` does plus grants and history, committed in a set order (store, reload, check,
+confirm, then delete) with no test round; and an extension removes itself only when the app holds a
+*different* current member key for the same account, so a leftover copy can never remove the
+machine's only member. An app also holds one membership per account.
