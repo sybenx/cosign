@@ -22,7 +22,7 @@ class BehaviourTest {
             val c = cs.getJSONObject(k); val e = c.getJSONObject("expect")
             val m = Membership.compute(rec, (0 until c.getJSONArray("changes").length()).map { Event.of(c.getJSONArray("changes").getJSONObject(it)) })
             val name = c.getString("name")
-            assertEquals(strs(e.getJSONArray("devices")), m.devices, "$name: devices")
+            assertEquals(strs(e.getJSONArray("devices")), m.devices, "$name: devices (refused ${m.refused})")
             assertEquals(strs(e.getJSONArray("removed")), m.removed, "$name: removed")
             assertEquals(strs(e.getJSONArray("refused")), m.refused, "$name: refused")
             assertEquals(e.optString("backup"), m.backup ?: "", "$name: backup")

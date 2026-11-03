@@ -52,4 +52,8 @@ export interface Waited { server: string; kind: 'recovery' | 'hold'; wait: strin
  *  every change of the list so anyone can recompute the list hash. */
 export interface ChangeContent { v: 1; g: string; epoch: string; change: Change; list: Change[]; approval: Approval; cosig?: { host: string; sig: string } }
 
-export const changeType = (c: Change): string => Object.keys(c).find((k) => k !== 'to')!;
+/** The change's one type key: exactly one key besides a remove's `to`, else "unknown". */
+export const changeType = (c: Change): string => {
+  const ks = Object.keys(c ?? {}).filter((k) => k !== 'to');
+  return ks.length === 1 && ['add', 'remove', 'lock', 'seat', 'paper', 'redeal'].includes(ks[0]) && (!('to' in (c as any)) || ks[0] === 'remove') ? ks[0] : 'unknown';
+};

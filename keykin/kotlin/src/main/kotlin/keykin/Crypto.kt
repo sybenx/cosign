@@ -20,18 +20,8 @@ fun refuse(code: String, msg: String? = null): Nothing = throw KeykinException(c
 fun jsJson(v: Any?): String = when (v) {
     null, JSONObject.NULL -> "null"
     is Boolean -> v.toString()
-    is Number -> v.toLong().toString()
-    is String -> buildString {
-        append('"')
-        for (ch in v) when {
-            ch == '"' -> append("\\\""); ch == '\\' -> append("\\\\")
-            ch == '\n' -> append("\\n"); ch == '\r' -> append("\\r"); ch == '\t' -> append("\\t")
-            ch == '\b' -> append("\\b"); ch == '\u000c' -> append("\\f")
-            ch < ' ' -> append("\\u%04x".format(ch.code))
-            else -> append(ch)
-        }
-        append('"')
-    }
+    is Number -> Json.num(v)
+    is String -> Json.str(v)
     is JSONArray -> (0 until v.length()).joinToString(",", "[", "]") { jsJson(v.get(it)) }
     is List<*> -> v.joinToString(",", "[", "]") { jsJson(it) }
     else -> error("json: ${v::class}")
@@ -42,7 +32,9 @@ data class Event(val id: String, val pubkey: String, val createdAt: Long, val ki
     companion object {
         fun of(o: JSONObject): Event {
             val t = o.getJSONArray("tags")
-            return Event(o.optString("id"), o.optString("pubkey"), o.optLong("created_at"), o.optInt("kind"),
+            // created_at and kind are integers; anything else gives an event no id can match.
+            if (!Json.isInt(o.opt("created_at")) || !Json.isInt(o.opt("kind"))) return Event("", "", -1, -1, emptyList(), "", "")
+            return Event(o.optString("id"), o.optString("pubkey"), Json.long(o.opt("created_at")), Json.long(o.opt("kind")).toInt(),
                 (0 until t.length()).map { k -> val a = t.getJSONArray(k); (0 until a.length()).map { a.getString(it) } }, o.optString("content"), o.optString("sig"))
         }
     }
@@ -60,7 +52,7 @@ fun liftXHex(h: String): Pt = liftX(BigInteger(h, 16)) ?: refuse("malformed", "x
 private fun b32(v: BigInteger) = unhex(v.toString(16).padStart(64, '0'))
 /** BIP-340 verification. */
 fun schnorrVerify(sigHex: String, msg: ByteArray, pubHex: String): Boolean = try {
-    val sig = unhex(sigHex); require(sig.size == 64)
+    val sig = unhex(sigHex); require(sig.size == 64); require(unhex(pubHex).size == 32)
     val Pk = liftX(BigInteger(pubHex, 16))!!; val r = BigInteger(1, sig.copyOfRange(0, 32)); val s = BigInteger(1, sig.copyOfRange(32, 64))
     require(r < P && s < N)
     val e = BigInteger(1, taggedHash("BIP0340/challenge", b32(r), unhex(pubHex), msg)).mod(N)
@@ -70,11 +62,29 @@ fun schnorrVerify(sigHex: String, msg: ByteArray, pubHex: String): Boolean = try
 fun verifyEvent(e: Event) = eventId(e) == e.id && schnorrVerify(e.sig, unhex(e.id), e.pubkey)
 
 private val p256: ECParameterSpec = AlgorithmParameters.getInstance("EC").apply { init(ECGenParameterSpec("secp256r1")) }.getParameterSpec(ECParameterSpec::class.java)
-private fun b64d(s: String) = Base64.getUrlDecoder().decode(s)
+private fun b64d(s: String): ByteArray {
+    if (!Regex("^[A-Za-z0-9_-]*$").matches(s) || s.length % 4 == 1) refuse("malformed", "base64url")
+    return Base64.getUrlDecoder().decode(s)
+}
+/** Strict DER for an ECDSA signature: SEQUENCE of two positive, minimal INTEGERs (as noble checks). */
+private fun derOk(b: ByteArray): Boolean {
+    fun u(k: Int) = b[k].toInt() and 0xff
+    if (b.size < 8 || u(0) != 0x30 || u(1) != b.size - 2) return false
+    var k = 2
+    repeat(2) {
+        if (k + 2 > b.size || u(k) != 0x02) return false
+        val l = u(k + 1); if (l == 0 || k + 2 + l > b.size) return false
+        if (u(k + 2) and 0x80 != 0) return false
+        if (l > 1 && u(k + 2) == 0 && u(k + 3) and 0x80 == 0) return false
+        k += 2 + l
+    }
+    return k == b.size
+}
 /** §6.1: null when `assertion` is a valid lock signature over `what`, else why not. */
 fun checkAssertion(g: String, lockPub: String, rp: String, w: ByteArray, a: JSONObject): String? = try {
+    if (!Regex("^04[0-9a-f]{128}$").matches(lockPub) || !Regex("^[0-9a-f]{64}$").matches(rp)) refuse("malformed")
     val authData = b64d(a.getString("authData")); val clientRaw = b64d(a.getString("clientData")); val sig = b64d(a.getString("sig"))
-    val cd = JSONObject(String(clientRaw, Charsets.UTF_8))
+    val cd = Json.obj(String(clientRaw, Charsets.UTF_8))
     when {
         cd.optString("type") != "webauthn.get" -> "lock_type"
         cd.optString("challenge") != Codes.lockChallenge(g, w) -> "lock_challenge"
@@ -84,7 +94,7 @@ fun checkAssertion(g: String, lockPub: String, rp: String, w: ByteArray, a: JSON
             val pub = unhex(lockPub); require(pub.size == 65 && pub[0] == 4.toByte())
             val key = KeyFactory.getInstance("EC").generatePublic(ECPublicKeySpec(ECPoint(BigInteger(1, pub.copyOfRange(1, 33)), BigInteger(1, pub.copyOfRange(33, 65))), p256))
             val v = Signature.getInstance("SHA256withECDSA"); v.initVerify(key); v.update(authData + sha(clientRaw))
-            if (v.verify(sig)) null else "lock_sig"
+            if (derOk(sig) && v.verify(sig)) null else "lock_sig"
         }
     }
 } catch (_: Exception) { "lock_malformed" }

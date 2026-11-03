@@ -118,7 +118,7 @@ export function checkApproval(auth: Authority, list: Change[], a: Approval): { e
   const { g, epochId } = auth;
   const isDevice = (k: unknown) => typeof k === 'string' && auth.devices.has(k);
   const needsExpiry = t === 'lock' || t === 'pair' || t === 'paper';
-  if (needsExpiry && !Number.isSafeInteger(a.expiry)) return fail('bad_approval');
+  if (needsExpiry && (!Number.isSafeInteger(a.expiry) || a.expiry! < 0)) return fail('bad_approval');
   const w = needsExpiry ? changeWhat(g, epochId, list, a.expiry!) : new Uint8Array();
   switch (t) {
     case 'lock': {
@@ -151,7 +151,7 @@ export function checkApproval(auth: Authority, list: Change[], a: Approval): { e
       if (!auth.backupKeys.has(p.backup)) return fail('not_backup_key');
       if (!schnorrVerify(p.backup_sig, detachedDigest('recovery', g, { list: approvalHash(list) }), p.backup)) return fail('bad_signature');
       const rr = p.release_request as { r?: string };
-      if (!rr || typeof rr.r !== 'string') return fail('bad_approval');
+      if (!rr || typeof rr.r !== 'string' || !/^[0-9a-f]{32}$/.test(rr.r)) return fail('bad_approval');
       const wait = recoveryWaitId(p.backup, epochId, rr.r);
       const ok = (p.waited ?? []).filter((s) => s.kind === 'recovery' && s.wait === wait && auth.hostKeys.has(s.server) && checkWaited(g, s, auth.W));
       if (new Set(ok.map((s) => s.server)).size < 2) return fail('waited_missing');

@@ -26,7 +26,11 @@ export function u64be(n: number): Bytes {
 }
 
 export const b64u = (b: Bytes) => Buffer.from(b).toString('base64url');
-export const fromB64u = (s: string): Bytes => new Uint8Array(Buffer.from(s, 'base64url'));
+/** Strict base64url: the URL alphabet only, no padding, no spaces (Buffer alone would take anything). */
+export function fromB64u(s: string): Bytes {
+  if (typeof s !== 'string' || !/^[A-Za-z0-9_-]*$/.test(s) || s.length % 4 === 1) throw new KeykinError('malformed', 'base64url');
+  return new Uint8Array(Buffer.from(s, 'base64url'));
+}
 
 /** HKDF-SHA256 with an empty salt (core §4.5). */
 export const hkdf32 = (ikm: Bytes, info: string): Bytes => hkdf(sha256, ikm, new Uint8Array(0), utf8ToBytes(info), 32);
@@ -43,7 +47,8 @@ export function hexN(h: unknown, n: number, what: string): Bytes {
 export function jcs(v: unknown): string {
   if (v === null || typeof v === 'boolean' || typeof v === 'string') return JSON.stringify(v);
   if (typeof v === 'number') {
-    if (!Number.isFinite(v)) throw new KeykinError('malformed', 'JCS: non-finite number');
+    // The strict profile: numbers in Keykin bodies are safe integers (spec issue 45).
+    if (!Number.isSafeInteger(v)) throw new KeykinError('malformed', 'JCS: numbers are safe integers');
     return JSON.stringify(v);
   }
   if (Array.isArray(v)) return '[' + v.map(jcs).join(',') + ']';
@@ -69,3 +74,37 @@ export class KeykinError extends Error {
   constructor(code: string, message?: string) { super(message ? `${code}: ${message}` : code); this.code = code; }
 }
 export const refuse = (code: string, message?: string): never => { throw new KeykinError(code, message); };
+
+/** The strict JSON profile Keykin reads every inbound body with (spec issue 45): RFC 8259 as JSON.parse
+ *  takes it, but an object naming one key twice is refused (JSON.parse would silently keep the last). */
+const strictSeen = new Map<string, boolean>();
+export function strictJson(text: string): any {
+  const v = JSON.parse(text);
+  let dup = strictSeen.get(text);
+  if (dup === undefined) { dup = hasDuplicateKey(text); if (strictSeen.size > 20_000) strictSeen.clear(); strictSeen.set(text, dup); }
+  if (dup) throw new KeykinError('malformed', 'duplicate key');
+  return v;
+}
+/** Scan valid JSON for an object that names one key twice (JSON.parse silently keeps the last). */
+export function hasDuplicateKey(text: string): boolean {
+  const stack: (Set<string> | null)[] = [];
+  let i = 0, expectKey = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      const raw = text.slice(i + 1, j);
+      const str = raw.includes('\\') ? JSON.parse(text.slice(i, j + 1)) : raw;
+      const top = stack[stack.length - 1];
+      if (expectKey && top) { if (top.has(str)) return true; top.add(str); expectKey = false; }
+      i = j + 1; continue;
+    }
+    if (ch === '{') { stack.push(new Set()); expectKey = true; }
+    else if (ch === '[') stack.push(null);
+    else if (ch === '}' || ch === ']') stack.pop();
+    else if (ch === ',') expectKey = stack[stack.length - 1] instanceof Set;
+    i++;
+  }
+  return false;
+}

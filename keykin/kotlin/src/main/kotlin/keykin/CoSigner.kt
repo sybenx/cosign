@@ -26,7 +26,7 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
 
     fun handle(from: String, msg: JSONObject, sentAt: Long): JSONObject {
         val id = msg.optString("id")
-        if (!Regex("^[0-9a-f]{32}$").matches(id) || msg.opt("v") != 1) return err(id, "malformed")
+        if (!Regex("^[0-9a-f]{32}$").matches(id) || !(Json.isInt(msg.opt("v")) && Json.long(msg.opt("v")) == 1L)) return err(id, "malformed")
         if (msg.optString("g") != g) return err(id, "wrong_group")
         if (msg.optString("epoch") != epoch) return err(id, "wrong_epoch")
         val type = msg.opt("type") as? String ?: return err(id, "unsupported")
@@ -61,7 +61,7 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
         val tags = ev.getJSONArray("tags").let { t -> (0 until t.length()).map { k -> val a = t.getJSONArray(k); (0 until a.length()).map { a.getString(it) } } }
         if (!Rules.futureOk(kind, createdAt - now())) refuse("dated_ahead")
         if (kind == 30242) refuse("machinery")
-        if (kind == 24302) { val c = try { JSONObject(ev.getString("content")) } catch (_: Exception) { refuse("not_a_change") }
+        if (kind == 24302) { val c = try { Json.obj(ev.getString("content")) } catch (_: Exception) { refuse("not_a_change") }
             if ((c.optJSONArray("list")?.length() ?: 0) > 1) refuse("list_in_one_request"); refuse("unsupported_change") }
         val evId = eventId(Event("", g, createdAt, kind, tags, ev.getString("content"), ""))
         if (Rules.destructive(kind, ev.getString("content"), tags)) {

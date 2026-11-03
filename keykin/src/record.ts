@@ -1,6 +1,6 @@
 // The epoch record (core §3.1), its invariants (§3.3) and the adoption checks (§3.4). Pure.
 
-import { refuse, hexN, KeykinError } from './bytes.ts';
+import { refuse, hexN, KeykinError, strictJson } from './bytes.ts';
 import { helperSeat } from './codes.ts';
 import { commitmentFrom, liftX, derivePoint, rebuildCommitment, sameCommitment, mul, type Commitment } from './curve.ts';
 import { verifyEvent, tag, type NostrEvent } from './event.ts';
@@ -73,7 +73,7 @@ export function checkEpochRecord(ev: NostrEvent, o: AdoptOptions): EpochContent 
   const d = tag(ev, 'd');
   if (!d || !D_TAGS.includes(d)) refuse('not_a_record', 'd tag');
   let c: EpochContent;
-  try { c = JSON.parse(ev.content); } catch { return refuse('not_a_record', 'content'); }
+  try { c = strictJson(ev.content); } catch { return refuse('not_a_record', 'content'); }
   if (!c || typeof c !== 'object' || c.v === undefined) refuse('not_a_record', 'content');
   if (c.v !== 1) refuse('unsupported_version', `v ${c.v}`);
   if (tag(ev, 'v') !== String(c.v) || tag(ev, 'epoch') !== String(c.epoch?.n)) refuse('bad_record', 'tags disagree with the content');

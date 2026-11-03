@@ -26,11 +26,11 @@ fun comp(p: Pt): String = (if (p.y.testBit(0)) "03" else "02") + p.x.toString(16
 fun compBytes(p: Pt) = unhex(comp(p))
 /** A 33-byte compressed point; the identity has no encoding, so it is refused. */
 fun point(h: String): Pt {
-    require(h.length == 66 && (h.startsWith("02") || h.startsWith("03"))) { "not a compressed point" }
-    val x = BigInteger(h.substring(2), 16); require(x < P)
+    if (!Regex("^0[23][0-9a-f]{64}$").matches(h)) refuse("malformed", "not a compressed point")
+    val x = BigInteger(h.substring(2), 16); if (x >= P) refuse("malformed", "not on the curve")
     val y2 = (x.pow(3) + BigInteger.valueOf(7)).mod(P)
     var y = y2.modPow((P + BigInteger.ONE).shiftRight(2), P)
-    require(y.modPow(BigInteger.TWO, P) == y2) { "not on the curve" }
+    if (y.modPow(BigInteger.TWO, P) != y2) refuse("malformed", "not on the curve")
     if (y.testBit(0) != h.startsWith("03")) y = P - y
     return Pt(x, y)
 }

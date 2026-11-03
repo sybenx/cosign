@@ -1,3 +1,5 @@
+import { strictJson } from './bytes.ts';
+
 // The co-signer's event checks that need no history: future dates (core §5.7 item 4) and the
 // stateless destructive rule (§5.8). Pure.
 
@@ -45,30 +47,8 @@ export class BurstCounter {
 /** §5.8 (13.8): a kind 0 content as a JSON object, or null if it isn't one or repeats a key at any level. */
 export function profileObject(text: string): Record<string, unknown> | null {
   let v: unknown;
-  try { v = JSON.parse(text); } catch { return null; }
+  try { v = strictJson(text); } catch { return null; }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  return hasDuplicateKey(text) ? null : (v as Record<string, unknown>);
+  return v as Record<string, unknown>;
 }
 
-/** Scan valid JSON for an object that names one key twice (JSON.parse silently keeps the last). */
-function hasDuplicateKey(text: string): boolean {
-  const stack: (Set<string> | null)[] = [];
-  let i = 0, expectKey = false;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === '"') {
-      let j = i + 1;
-      while (text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
-      const str = JSON.parse(text.slice(i, j + 1));
-      const top = stack[stack.length - 1];
-      if (expectKey && top) { if (top.has(str)) return true; top.add(str); expectKey = false; }
-      i = j + 1; continue;
-    }
-    if (ch === '{') { stack.push(new Set()); expectKey = true; }
-    else if (ch === '[') stack.push(null);
-    else if (ch === '}' || ch === ']') stack.pop();
-    else if (ch === ',') expectKey = stack[stack.length - 1] instanceof Set;
-    i++;
-  }
-  return false;
-}

@@ -2,7 +2,7 @@
 // `computeMembership` is a pure function of the record and the *set* of changes, so every member
 // that holds the same set reaches the same answer whatever order the changes arrived in.
 
-import { hexN, jcs, KeykinError, refuse } from './bytes.ts';
+import { hexN, jcs, KeykinError, refuse, strictJson } from './bytes.ts';
 import { deviceIndices, helperSeat, listHash } from './codes.ts';
 import { pointFrom } from './curve.ts';
 import { verifyEvent, tag, schnorrVerify, type NostrEvent } from './event.ts';
@@ -22,7 +22,7 @@ const k32 = (h: unknown, what: string) => hexN(h, 32, what);
 export function parseChange(rec: EpochContent, ev: NostrEvent, signed = true): Parsed {
   if (ev?.kind !== KIND_CHANGE) refuse('not_a_change', 'kind');
   let c: ChangeContent;
-  try { c = JSON.parse(ev.content); } catch { return refuse('not_a_change', 'content'); }
+  try { c = strictJson(ev.content); } catch { return refuse('not_a_change', 'content'); }
   if (!c || typeof c !== 'object' || c.v === undefined || !c.change) refuse('not_a_change', 'content');
   if (c.v !== 1) refuse('unsupported_version');
   if (tag(ev, 'v') !== String(c.v) || tag(ev, 'epoch') !== c.epoch) refuse('bad_change', 'tags disagree with the content');
@@ -33,14 +33,18 @@ export function parseChange(rec: EpochContent, ev: NostrEvent, signed = true): P
   if (jcs(placeholderList(c.list)) !== jcs(c.list)) refuse('bad_list', 'the list is carried in its approved (placeholder) form');
   const ph = jcs(placeholderList([c.change])[0]);
   if (!c.list.some((x) => jcs(x) === ph)) refuse('bad_list', 'the change is not in its list');
-  const type = changeType(c.change);
   const ch: any = c.change;
+  if (!ch || typeof ch !== 'object' || Array.isArray(ch)) refuse('not_a_change', 'change');
+  const keys = Object.keys(ch);
+  const known = keys.filter((k) => ['add', 'remove', 'lock', 'seat', 'paper', 'redeal'].includes(k));
+  if (known.length !== 1 || keys.some((k) => !known.includes(k) && !(k === 'to' && known[0] === 'remove'))) refuse('bad_change', 'exactly one change');
+  const type = changeType(c.change);
   switch (type) {
     case 'add': {
       const a = ch.add;
       k32(a.key, 'add key');
       if (a.kind !== 'device') refuse('bad_change', 'a new member is always a device');
-      if (!Number.isSafeInteger(a.salt) || a.salt < 0) refuse('bad_change', 'salt');
+      if (!Number.isSafeInteger(a.salt) || a.salt < 0 || a.salt > 0xffffffff) refuse('bad_change', 'salt');
       if (a.lock !== null && !isLock(a.lock)) refuse('bad_change', 'lock');
       break;
     }
@@ -172,12 +176,13 @@ export function computeMembership(rec: EpochContent, events: NostrEvent[], W = W
     const auth = authority();
     const next: Parsed[] = [];
     for (const p of pending) {
-      const { error } = checkApproval(auth, p.c.list, p.c.approval);
+      let error: string | null;
+      try { error = checkApproval(auth, p.c.list, p.c.approval).error; } catch (e) { error = e instanceof KeykinError ? e.code : 'malformed'; }
       if (error === null) { accepted.push(p); progress = true; } else next.push(p);
     }
     pending = next;
   }
-  for (const p of pending) refused.push({ id: p.ev.id, code: checkApproval(authority(), p.c.list, p.c.approval).error! });
+  for (const p of pending) { let code: string; try { code = checkApproval(authority(), p.c.list, p.c.approval).error ?? 'malformed'; } catch (e) { code = e instanceof KeykinError ? e.code : 'malformed'; } refused.push({ id: p.ev.id, code }); }
   // A list takes effect only whole (§6.7.10, 14.3): until every event of the list is here,
   // group-signed, none of them applies, its redeal included. They wait; they are not lost.
   const byList = new Map<string, Parsed[]>();

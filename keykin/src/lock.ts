@@ -3,7 +3,7 @@
 
 import { p256 } from '@noble/curves/nist.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { b64u, fromB64u, hexN, concatBytes, utf8ToBytes, bytesToHex, eqBytes, randomBytes, type Bytes } from './bytes.ts';
+import { b64u, fromB64u, hexN, concatBytes, utf8ToBytes, bytesToHex, eqBytes, randomBytes, strictJson, type Bytes } from './bytes.ts';
 import { lockChallenge } from './codes.ts';
 
 export interface LockPub { pub: string; rp: string }
@@ -16,7 +16,8 @@ export function checkAssertion(g: string, lock: LockPub, w: Bytes, a: Assertion)
   try {
     const pub = hexN(lock.pub, 65, 'lock pub'), rp = hexN(lock.rp, 32, 'rp');
     const authData = fromB64u(a.authData), clientDataRaw = fromB64u(a.clientData), sig = fromB64u(a.sig);
-    const cd = JSON.parse(new TextDecoder().decode(clientDataRaw));
+    const cd = strictJson(new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }).decode(clientDataRaw));
+    if (!cd || typeof cd !== 'object' || Array.isArray(cd)) return 'lock_malformed';
     if (cd.type !== 'webauthn.get') return 'lock_type';
     if (cd.challenge !== lockChallenge(g, w)) return 'lock_challenge';
     if (authData.length < 37 || !eqBytes(authData.slice(0, 32), rp)) return 'lock_rp';

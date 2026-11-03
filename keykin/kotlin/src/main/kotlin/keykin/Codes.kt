@@ -9,7 +9,10 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
-fun unhex(h: String): ByteArray { require(h.length % 2 == 0); return ByteArray(h.length / 2) { h.substring(2 * it, 2 * it + 2).toInt(16).toByte() } }
+fun unhex(h: String): ByteArray {
+    if (h.length % 2 != 0 || h.any { it !in '0'..'9' && it !in 'a'..'f' && it !in 'A'..'F' }) refuse("malformed", "hex")
+    return ByteArray(h.length / 2) { h.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
+}
 fun sha(vararg parts: ByteArray): ByteArray { val d = MessageDigest.getInstance("SHA-256"); parts.forEach { d.update(it) }; return d.digest() }
 fun utf8(s: String) = s.toByteArray(Charsets.UTF_8)
 fun u32(n: Long): ByteArray = ByteBuffer.allocate(4).putInt(n.toInt()).array()

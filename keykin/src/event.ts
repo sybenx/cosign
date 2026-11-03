@@ -10,6 +10,7 @@ export type Unsigned = Omit<NostrEvent, 'id' | 'sig'>;
 export const eventId = (e: Unsigned) => bytesToHex(sha(JSON.stringify([0, e.pubkey, e.created_at, e.kind, e.tags, e.content])));
 
 export function verifyEvent(e: NostrEvent): boolean {
+  if (!Number.isSafeInteger(e?.created_at) || !Number.isSafeInteger(e?.kind)) return false;
   try { return eventId(e) === e.id && schnorr.verify(hexToBytes(e.sig), hexToBytes(e.id), hexToBytes(e.pubkey)); } catch { return false; }
 }
 
