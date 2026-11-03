@@ -18,15 +18,17 @@ const isLock = (l: any): l is LockPub => l && typeof l === 'object' && /^04[0-9a
 const k32 = (h: unknown, what: string) => hexN(h, 32, what);
 
 /** §3.4: the structural checks on one change event (kind, tags, group signature, shapes). */
-export function parseChange(rec: EpochContent, ev: NostrEvent): Parsed {
+/** `signed: false` is the co-signer's view of a change it is asked to sign (no signature yet). */
+export function parseChange(rec: EpochContent, ev: NostrEvent, signed = true): Parsed {
   if (ev?.kind !== KIND_CHANGE) refuse('not_a_change', 'kind');
   let c: ChangeContent;
   try { c = JSON.parse(ev.content); } catch { return refuse('not_a_change', 'content'); }
+  if (!c || typeof c !== 'object' || c.v === undefined || !c.change) refuse('not_a_change', 'content');
   if (c.v !== 1) refuse('unsupported_version');
   if (tag(ev, 'v') !== String(c.v) || tag(ev, 'epoch') !== c.epoch) refuse('bad_change', 'tags disagree with the content');
   if (c.g !== rec.g || ev.pubkey !== rec.g) refuse('wrong_group');
   if (c.epoch !== rec.epoch.id) refuse('wrong_epoch');
-  if (!verifyEvent(ev)) refuse('bad_signature');
+  if (signed && !verifyEvent(ev)) refuse('bad_signature');
   checkListShape(c.list);
   if (jcs(placeholderList(c.list)) !== jcs(c.list)) refuse('bad_list', 'the list is carried in its approved (placeholder) form');
   const ph = jcs(placeholderList([c.change])[0]);

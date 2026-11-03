@@ -161,7 +161,7 @@ export function checkApproval(auth: Authority, list: Change[], a: Approval): { e
       const d = selfDigest(g, approvalHash(list));
       if (!schnorrVerify(p.sig, d, p.member) || !schnorrVerify(p.app_sig, d, rm.to)) return fail('bad_signature');
       const rd = list.find((c) => 'redeal' in c) as { redeal: { dealer: string } };
-      if (rd.redeal.dealer !== rm.to) return fail('self_redeal_dealer', 'the app taking over deals the redeal');
+      if (rd.redeal.dealer !== rm.to) return fail('self_redeal_dealer'); // the app taking over deals the redeal
       return { error: null, approvers: [p.member, rm.to] };
     }
   }

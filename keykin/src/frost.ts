@@ -71,7 +71,7 @@ export function repairShare(C: Commitment, sigmas: string[], participant: number
 export function deal(secret: bigint, indices: number[], rand: () => bigint = () => mod(BigInt('0x' + bytesToHex(randomBytes(32))))) {
   let a0 = mod(secret);
   if (a0 === 0n) refuse('bad_secret');
-  if (!mul(a0).hasEvenY()) a0 = N - a0;
+  if (mul(a0).toAffine().y % 2n === 1n) a0 = N - a0;
   const coef = [a0, rand(), rand(), rand()];
   const f = (x: bigint) => coef.reduce((acc, c, k) => mod(acc + c * x ** BigInt(k)), 0n);
   return { commitment: coef.map((c) => mul(c)) as Commitment, shares: new Map(indices.map((i) => [i, f(BigInt(i))])), secret: a0 };
