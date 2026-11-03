@@ -95,7 +95,7 @@ export class CoSigner {
     this.replay.claim(from, id, hash, msg.cls as Cls, now);
     let answer: any;
     try { answer = (this.handlers as any)[msg.type].call(this, from, msg, now); }
-    catch (e) { answer = ERR(id, e instanceof KeykinError ? e.code : 'internal'); if (!(e instanceof KeykinError)) answer.detail = String(e); }
+    catch (e) { answer = ERR(id, e instanceof KeykinError ? e.code : 'internal'); (answer as any).detail = String((e as Error).message ?? e); }
     this.replay.answer(from, id, answer);
     return answer;
   }
