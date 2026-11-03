@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.9 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.10 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -536,8 +536,8 @@ naming the same `after`.
   snapshot, a restore or a second process could bring back. After a restart, every round in flight is
   lost.
 - **Hedged randomness.** The hedge is `SHA-256(fresh OS randomness ‖ share ‖ context)`, where context is,
-  for a co-signer, the SHA-256 of the request; and for a coordinator, `event id ‖ signers ‖ request id ‖
-  co-signer key`. It seeds a stream: the random input to the `k`-th call of `nonce_generate` (FROST calls it
+  for a co-signer, the SHA-256 of the request ‖ the event's position in the request (4 bytes); and for a
+  coordinator, `event id ‖ signers ‖ request id ‖ co-signer key`. It seeds a stream: the random input to the `k`-th call of `nonce_generate` (FROST calls it
   twice per index, for the hiding and the binding nonce) is `SHA-256(hedge ‖ k)`, `k` a 4-byte big-endian
   counter from 0, so the two nonces never coincide.
 - **One nonce pair signs one event.** A member MUST NOT use a nonce pair for more than one event, in any
@@ -893,8 +893,9 @@ stuck. Two ideas make that safe:
      (§3.4 step 4);
   3. destroy, at once, the old share and `δ(i)`. A device also works out `δ(b1)`, `δ(b2)` (from the
      redeal's full `δ`: its own 3 values plus `δ(0) = 0`) and keeps them with the redeal's data-key seed,
-     encrypted at rest, **until the paper item for the current backup key is verified** (§6.7.6), then
-     destroys them and the paper conversation key;
+     encrypted at rest, **until the paper item for the current backup key is verified** (§6.7.6), and in
+     any case for 30 days after the redeal (so a paper that commits in that time, by an F7 that began
+     before it, can still be re-issued the item), then destroys them and the paper conversation key;
   4. send `ack`.
 - **Never sign at a state you have left.** Honest members can't: they destroyed it.
 - Servers apply every redeal they know before co-signing an Upkeep change; repair helpers do too. Before
@@ -941,10 +942,11 @@ They are changes of §3.2 (kind 24302, group-signed, valid in any order).
   - Two seat changes for one seat with the same `new`, or with the same host under different member keys,
     count as one (the lower list hash's `new` wins; the losing member key goes into `removed`). Otherwise, with different `new`, both are void and
     the seat stays empty until a `void:<id>` reseat. Two seat changes for **different seats** with the
-    same `new.host` are both void, and both `new` keys go into `removed`, **unless** one of them names in
-    `replaces` a holder that the other one's seat chain had already replaced (so the host moved, rather
-    than holding two seats at once). This depends only on the changes themselves, so every member reaches
-    the same answer in any order; a host that held a seat before may hold another later (I7).
+    same `new.host` whose approvals' expiries are within 24 hours of each other are both void, and both
+    `new` keys go into `removed`: only changes approved at about the same time can put one host in two seats
+    at once, since co-signers refuse a host already seated in their view (I2). This depends only on the
+    changes themselves, so every member reaches the same answer in any order; a host that held a seat
+    before may hold another later (I7).
   - The helper leaves only by `seat helper→null`; a `remove` never names a seat holder.
   - Every key that stops being a seat's current holder, `replaces` or voided `new`, goes into `removed`,
     and gets the removal notice (§6.4).
@@ -1212,8 +1214,8 @@ current device can re-issue.
   three server seats), never putting two seats on one
   `operator` while another eligible one exists. If that pick refuses the seat or doesn't answer within a
   minute, the device takes the next server in the slice, in list order, and the `ask` names which one.
-  It checks for itself that the server is dead (or has sent a host-signed shutdown notice) before it
-  shows the card. When there is no other operator, the card says "All your servers are run by X".
+  It checks for itself that the server is dead (or has sent a host-signed shutdown notice, or answers
+  `deleted` or "unknown account" for an account its peers still serve) before it shows the card. When there is no other operator, the card says "All your servers are run by X".
 
 #### 6.7.8 Failure handling
 
@@ -1262,8 +1264,9 @@ Pinned from the reference implementation (batch 2):
   the `[paper, redeal]` list and its approval; for `rerepair`, `{challenge, state, proof: {i, R, z}}`.
 - **A helper checks the helper list against its own view** before it computes anything: every entry is a
   current member listing exactly its own indices, the helper itself is among them, nobody appears twice,
-  the list is worth at least 4, and neither the index's new owner nor the backup (outside its recovery
-  session) is a helper. Otherwise a device could list a server's index as its own and receive every
+  the list is worth at least 4, and the index's new owner is not a helper. The backup may be a helper only
+  in its recovery session (§4.4), or alongside a current device under a valid `paper` approval for the
+  change being filled (F3, a device with the paper). Otherwise a device could list a server's index as its own and receive every
   delta that server makes.
 - **`rerepair` proof:** Schnorr over `e = H("keykin-rerepair/1" ‖ g ‖ owner key ‖ i (4 bytes) ‖ P_i^{S_old}
   ‖ R ‖ challenge)`, with a challenge the server issued to that owner.
@@ -1972,3 +1975,12 @@ From Helper's sixth red team: helper stops carry an id and are kept as account s
 a resume (with an approval, checked by every receiver) or a helper seat change (`clears_stops`) clears only
 the stop ids it names. The stop counters of 14.4–14.7 are gone. Also: `kept_new` carries a lockless
 account's new kept secret after an F7; the delete tombstone keeps the epoch record.
+
+## Changes in draft 14.10
+
+From the red team of 14.5 to 14.8 (0 critical, 1 high): the backup may be a repair helper alongside a
+current device under a `paper` approval, so F3 works for a one-device owner with a paper (H1); a
+co-signer's hedge includes the event's position in a list (M1); devices keep paper deltas for 30 days
+after a redeal, for F7s that straddle it (M2); "one host in two seats" voids only changes approved within
+24 hours of each other (M5); a server answering `deleted` or "unknown account" while its peers serve the
+account counts as dead for F1 (M6).
