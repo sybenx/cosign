@@ -616,12 +616,16 @@ Before giving a partial, a co-signer MUST check that:
 7. the stateless destructive rule (§5.8);
 8. if the coordinator is the **helper**: the helper is not stopped (below), and the event is one of kind 1
    (notes and replies), 1111 (comments), 7 (reactions), 6 and 16 (reposts), 9734 (zap requests), 20, 21
-   and 22 (media posts) or 22242 (relay auth). Anything else is refused. A helper never co-signs.
+   and 22 (media posts) or 22242 (relay auth). Anything else is refused. A helper never co-signs, and a
+   device never co-signs a round the helper coordinates, so every helper round has a server in it.
 
-**Stopping the helper.** Any current device may send `helper_stop {}`, with no approval, as a delivery to
-every server: it only takes power away. A server that has it refuses every round the helper coordinates
-or takes part in, until a seat change for the helper seat (a new holder, or `null`) clears it. Every
-device is told.
+**Stopping the helper.** Any current device may send `helper_stop {key}`, naming the helper's member key,
+with no approval, as a delivery to every server: it only takes power away. A server that has it refuses
+every round that key coordinates or takes part in. Only a seat change whose `replaces` is that key, or
+`helper_resume {key}` with an approval (`lock`, `pair` or `paper`), clears it. Every device is told.
+- A seat holder's welcome carries any stop in force, and devices re-send it to every incoming seat holder.
+- Before co-signing a helper round, a server fetches its peers' deliveries (at most every 10 minutes), so a
+  stop sent to one server reaches the others.
 
 A device co-signing for another device-class member also applies its own destructive policy (Device
 policy module) and refuses when that says to; it never prompts, because nobody may be looking at it.
@@ -640,7 +644,8 @@ co-signer and any retry), **or** a passed hold:
   over three servers gets about three times that, still far less than a stolen nsec allows);
 - kind 0 whose content has no non-empty `name`, `display_name`, `about` or `picture`;
 - kind 3, 10000–10030 or 30000–30030 with no tags other than `d` **and an empty `content`**;
-- kind 10002 with no `r` tag whose value starts with `wss://` or `ws://`.
+- kind 10002 with no `r` tag whose value starts with `wss://` or `ws://`;
+- a key-family release or leaked event (kinds 1245, 1246, Key families module).
 
 These tests are exact: kind 0's content is parsed as a JSON object, and content that isn't one, or has a
 duplicate key, counts as empty; a field is non-empty only if it is a string with a non-whitespace
@@ -747,6 +752,7 @@ second device or the paper. A helper never approves anything.
 | Delete the account (`account_delete`, Account admin module) | `lock`, `pair` or `paper` |
 | Add a notice channel | any device, no approval (refused during a recovery wait) |
 | Stop the helper (`helper_stop`, §5.7) | any device, no approval |
+| Resume a stopped helper (`helper_resume`, §5.7) | `lock`, `pair` or `paper` |
 
 ### 6.3 Waits
 
@@ -1027,8 +1033,8 @@ Further rules:
   - A device's welcome (§4.2 step 4) and a handover (§4.6) carry: the state, the base data key and every
     data-key seed, every release seed of the state, and the backup material (every item).
   - A seat holder's welcome carries: the epoch record, the change set, its seat, the state, every release
-    seed of the state (servers only) and the backup material. It never carries the data key or data-key
-    seeds.
+    seed of the state (servers only), the backup material and any `helper_stop` in force. It never carries
+    the data key or data-key seeds.
 
 #### 6.7.5 Finding today's servers, and retired servers
 
@@ -1377,7 +1383,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `sign` / `partial` | coordinator → co-signer / back | 5.1 |
 | `ecdh` / `ecdh_partial` | device → co-signer / back | 5.5 |
 | `hold` | device → servers | 5.8 |
-| `helper_stop` | device → servers | 5.7 |
+| `helper_stop` / `helper_resume` | device → servers | 5.7 |
 | `pair_request` / `pair_sign` | first device → second device (via `deliver`) / back | 6.2 |
 | `change` | any member → members (a signed change) | 3.2 |
 | `changes_get` / `changes` | member → server / back | 3.2 |
@@ -1500,7 +1506,9 @@ The signpost (kind 30078) is the one Core event published on relays (§6.7.5); m
 - **A change approved just before its approver's removal reached a server stays valid.** The window is
   how long a `remove` takes to arrive.
 - **Helper plus one server** signs, by design: the person opted in to that. It signs only the kinds of §5.7
-  item 8, and any one device can stop it at once.
+  item 8, and any one device can stop it at once. But the helper's 3 shares plus **any one dishonest
+  server's** share are 4 points: the whole key, offline, with no kind limit. So is a stolen helper box
+  plus one dishonest server.
 - **A lock accepts any enrolled biometric**, a partner's finger included, as the phone itself does.
 - **Locks are unattested.** Servers cannot tell a hardware, biometric-only key from a software one, and a
   tampered app can make its own "lock".
@@ -1796,6 +1804,9 @@ From the user's answers on the Helper and Key families modules (2026-11-03):
 - The helper's entry names its host, and no host holds both the helper seat and a server seat (I6).
 - A helper never co-signs for others (§2 table).
 - §10 and F10 say plainly what key families do and don't do.
+- From the module reviews: `helper_stop` names the helper's key, travels in seat welcomes and is fetched
+  before helper rounds; `helper_resume` with an approval; devices never co-sign helper rounds; §10 says a
+  helper plus one dishonest server is the key; key-family releases and leaked events are in §5.8.
 - An imported 0.12 account may be a child of a new master (§6.8).
 - On a device with no lock, a declined paper keeps the backup secret sealed until a second device joins
   or a paper is read back (§4.3 step 4; the user's answer).
