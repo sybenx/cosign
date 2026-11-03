@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 14 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
+Draft 15 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.12 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -115,24 +115,26 @@ for listing and re-sending. The wildcard is also published in the ending device'
   ‖ g ‖ d ‖ created_at ‖ SHA-256(entries ‖ tombstones ‖ ended list)`. The maker publishes at `created_at = max(now,
   last + 1)`.
 - **Publishing.** A home stores a change to its grants before it publishes it. It publishes to the account's
-  **recorded relays** (the epoch record's and seat changes' relays), records which accepted every part (an
-  `OK`), drops a relay that refuses with `blocked:` or `restricted:` three times in a row, and retries with
-  back-off until more than half of the rest accept (every one of them, when the account has fewer than
-  three recorded relays). It also writes to its NIP-65 write relays, which
-  don't count.
-- **A member whose storage can be copied adopts its own newest event**: a browser extension, and a desktop
-  app unless its storage is bound to the device (a hardware-protected key excluded from backups, as the
-  Secure Enclave gives on macOS): at start, at each 5-minute inbox fetch and before each publish or takeover, it fetches its own
-  newest grant event. A fetch is good when more than half of the relays that accepted its last publish
-  answer; failing that, a fetch from more than half of those plus the account's recorded relays may answer
-  requests but never allows a publish. Until the first
-  good fetch it waits up to 3 seconds, then answers grants made since its last publish and gives other
-  requests `try-later:`, retrying every 10 seconds, and shows one quiet line if relays can't be reached. It
-  never publishes after a failed fetch. It takes the event over **only if it is newer than its own last
-  publish**, and then drops only entries **made before** that event that are missing from it; for each
-  entry the higher `v` wins (ties as below). A restart of the background worker within 5 minutes of a good
-  fetch doesn't count as a start. Apps on phones, and desktop apps with device-bound storage, keep grants
-  with their shares, which no backup restores, so they skip this check.
+  **recorded relays** (the epoch record's and seat changes' relays), and a publish counts once **more than
+  half of all recorded relays** accept every part (an `OK`); it retries with back-off until then. A relay
+  that refuses with `blocked:` or `restricted:` on three tries spread over at least a day no longer counts
+  among the recorded relays for this. It also writes to its NIP-65 write relays, which don't count.
+- **A member whose storage can be restored adopts its own newest event**: every browser extension and
+  every desktop app (a system image or a reverted virtual machine brings a desktop app's storage back,
+  hardware-protected keys included). At start, at each 5-minute inbox fetch and before each publish or
+  takeover, it fetches its own newest grant event; a fetch is good once **more than half of all recorded
+  relays** answer, so any good fetch and any counted publish share a relay. A device that has never
+  published needs no fetch.
+  - Until the first good fetch it waits up to 3 seconds, then answers grants made since its last publish
+    and gives other requests `try-later:`, retrying every 10 seconds, and shows one quiet line if relays
+    can't be reached. It never publishes after a failed fetch.
+  - **An account with fewer than three recorded relays** can't reach a majority with one relay down, so
+    there the device answers from its own state and says, once, "Add a third relay to keep sign-ins in
+    step"; core §9.2 already asks for three.
+  - It takes the event over **only if it is newer than its own last publish**, and then drops only entries
+    **made before** that event that are missing from it; for each entry the higher `v` wins (ties as
+    below). A restart of the background worker within 5 minutes of a good fetch doesn't count as a start.
+  - Apps on phones keep grants with their shares, which no backup restores, so they skip this check.
 - **Grants are stored like shares** (core §7.3): grants, ended lists and signer keys are excluded from
   restorable backups, so restoring a device from a backup brings back no grant. An extension keeps them in
   its local storage, never in browser sync storage. (A copied browser profile is a copy of a member, as
@@ -140,13 +142,14 @@ for listing and re-sending. The wildcard is also published in the ending device'
 - **A grant that left its maker's event never comes back.** Each device's grant event keeps a compact
   **ended list** of `{id, until}` (the 16-byte ids of its grants that ended, and for helper grants the
   signer key's hash, matched against a helper entry's signer key; `until` is the grant's fixed expiry plus
-  30 days, or for an "unused" expiry one year after it ended). Every device also keeps the **union** of all
+  30 days, or one year after it ended for an "unused" or a never-expiring grant). Every device also keeps the **union** of all
   makers' ended lists, reading the others' grant events at each 5-minute fetch, and **carries the union in
-  its own event** too, so relays hold each ended id in several devices' events; the welcome's and
+  its own event** too, so relays hold each ended id in several devices' events. Each id in the union is
+  kept only while its maker is a member, and up to its `until`, and the maker's signature covers it; the welcome's and
   handover's `grants` field carries it, and a home merges the ids of **its own** grants it learns into its
   own list before it publishes. An
-  id is dropped after its `until`. Any entry whose id is in the union is a resurrection: ignored everywhere, and the maker is sent a tombstone. Re-sends are batched: at most one
-  delivery per maker per day in the first week, then one a week, carrying them all, and none until the maker has published a newer event since the last one. (A handover keeps the ids, so moved grants are no
+  id is dropped after its `until`. Any entry whose id is in the union is a resurrection: ignored everywhere. No tombstone needs re-sending:
+  the maker drops it at its next read of the union. (A handover keeps the ids, so moved grants are no
   resurrection.)
 - **Tombstones** are kept until the maker's newest event no longer has the entry, and at least 30 days;
   for helper grants, until the helper's report no longer lists them. Each device also applies, for its own
@@ -376,6 +379,15 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 15**, from its fourteenth red team (0 critical, 2 high):
+  - every desktop app runs the start check, since a system image restores its storage (H1);
+  - publishes and fetches both count more than half of all recorded relays, so they always share one; an
+    account with fewer than three relays answers from local state and suggests a third (H2, M1).
+
+  The mediums and lows:
+  - union ids kept only while their maker is a member and up to `until`, under the maker's signature (M2);
+  - `until` for never-expiring grants, relays dropped only after refusals spread over a day, devices that
+    never published, re-sends dropped as redundant (lows).
 - **Draft 14**, from its thirteenth red team (0 critical, 1 high):
   - desktop apps whose storage can be restored run the check too, and every device carries the union of
     ended ids in its own event, read every 5 minutes (H1).
