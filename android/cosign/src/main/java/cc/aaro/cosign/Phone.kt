@@ -1472,6 +1472,8 @@ class Signer(private val context: Context, val slot: String = "0") {
 
     // Joining, on the new device: show a code, wait for a server's welcome and a device's sigma.
     private var joinWith: String? = null
+    /** The pk in the invite the person scanned on this device: the one thing the scan authenticates. */
+    private var joinInviter: String? = null
     private val joinPieces = ConcurrentHashMap<String, Any>()
 
     fun startJoin(relays: List<String> = listOf("wss://syb.lol", "wss://nos.lol", "wss://relay.primal.net")) {
@@ -1497,6 +1499,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         val urls = u.getQueryParameters("r").filter { it.startsWith("wss://") || it.startsWith("ws://") }
         if (!isHex32(inviter) || urls.isEmpty()) return ui.update { it.copy(error = "That invite is damaged. Ask for a new one.") }
         startJoin(urls)
+        joinInviter = inviter
         val sk = joinWith ?: return
         val name = android.os.Build.MODEL.ifBlank { "A phone" }
         val ask = mapOf("type" to "join_request", "pk" to publicKeyHex(sk.hexToBytes()), "name" to name, "relays" to urls)
@@ -1510,24 +1513,52 @@ class Signer(private val context: Context, val slot: String = "0") {
         note("Asked your other device to add this phone")
     }
 
-    fun cancelJoin() { joinWith = null; relays?.stop(); relays = null; sk = null; ui.update { it.copy(joinCode = null) } }
+    fun cancelJoin() { joinWith = null; joinInviter = null; relays?.stop(); relays = null; sk = null; ui.update { it.copy(joinCode = null) } }
 
     private fun onJoinPiece(msg: Map<*, *>, fromPk: String) {
         // A sigma per helper share for each new share, from the server's welcome and the vouching device: [k, helper, sigma].
         @Suppress("UNCHECKED_CAST")
         val pieces = (joinPieces.getOrPut("sigmas") { java.util.Collections.synchronizedList(mutableListOf<List<Any?>>()) } as MutableList<List<Any?>>)
+        // Who sent each piece, kept with it: this runs before any member list exists, so the
+        // sender is all there is to go on, and without it one message is a whole enrollment.
         if (msg["type"] == "welcome") {
             joinPieces["welcome"] = msg; joinPieces["server"] = fromPk
-            pieces.addAll((msg["sigmas"] as? List<*>)?.map { it as List<*> } ?: listOf(listOf(msg["k"], 0L, msg["sigma"])))
-        } else pieces.addAll((msg["sigmas"] as? List<*>)?.map { it as List<*> } ?: listOf(listOf(msg["k"], -1L, msg["sigma"] as? String ?: return)))
+            pieces.addAll(((msg["sigmas"] as? List<*>)?.map { it as List<*> } ?: listOf(listOf(msg["k"], 0L, msg["sigma"]))).map { it + fromPk })
+        } else pieces.addAll(((msg["sigmas"] as? List<*>)?.map { it as List<*> } ?: listOf(listOf(msg["k"], -1L, msg["sigma"] as? String ?: return))).map { it + fromPk })
         val w = joinPieces["welcome"] as? Map<*, *> ?: return
         val mySk = joinWith ?: return
         val group = parseGroup(w["group"]) ?: return
         val ks = (w["ks"] as? List<*>)?.mapNotNull { (it as? Long)?.toInt() } ?: listOfNotNull((w["k"] as? Long)?.toInt())
-        val need = (w["helpers"] as? List<*>)?.size ?: 2
-        val forK = { k: Int -> pieces.toList().filter { (it[0] as? Long)?.toInt() == k }.map { it[2] as String } }
+        // Never fewer than two parties. `helpers` comes out of the welcome, so a welcome that
+        // says one helper would otherwise make itself the whole quorum.
+        val need = maxOf(2, (w["helpers"] as? List<*>)?.size ?: 2)
+        val mine = { k: Int -> pieces.toList().filter { (it[0] as? Long)?.toInt() == k } }
+        val forK = { k: Int -> mine(k).map { it[2] as String } }
         if (ks.isEmpty() || ks.any { forK(it).size < need }) return
+        // A piece from the device whose invite the person scanned. That pk is the only thing the
+        // scan authenticates, and the vouching device sends its sigmas straight here, so an
+        // attacker cannot stand in for it: it would need that device's shares. Without this, the
+        // group below -- the key, the threshold, every member and every point -- comes from
+        // whichever `welcome` arrives first, from anyone who can see the join request on the
+        // invite's relays, and the join request's pubkey is in the clear there.
+        //
+        // This covers joining by someone else's invite, which is the path that has a scanned pk.
+        // Showing our own join code (`startJoin`) does not: there the scan goes the other way, so
+        // the other device authenticates us and we learn nothing about who answers. The
+        // two-senders floor still applies there, and an attacker with two keys satisfies it, so
+        // **that path is still open** and closing it needs something the person sees -- the key's
+        // npub, or a short string to compare -- which is a screen, not a condition here.
+        val inviter = joinInviter
+        if (inviter != null && ks.any { k -> mine(k).none { it.getOrNull(3) == inviter } }) return
+        // At least two distinct senders, whatever `helpers` claims.
+        if (ks.any { k -> mine(k).mapNotNull { it.getOrNull(3) as? String }.toSet().size < 2 }) return
         val g = groupJson(group)
+        // repairStep3 verifies the sum against the group's own commitment (frost/src/lib.rs
+        // repair_step3, `share.verify()`), so a sum that does not lie on this key's polynomial is
+        // already refused here. That is the other half of the protection and it was always
+        // present: the attack above works only because an attacker that supplies *every* piece
+        // supplies a consistent one. One honest piece in the sum, which the check above forces,
+        // is what this then catches.
         val shares = try { ks.map { k -> Share(k, FrostNative.repairStep3(g, Json.stringify(forK(k)), k)) } } catch (e: Exception) {
             return ui.update { it.copy(error = "The pieces didn't add up to a share of that key. Nothing was kept.") }
         }
@@ -1536,7 +1567,7 @@ class Signer(private val context: Context, val slot: String = "0") {
         val m = Membership(mySk, ks[0], shares, w["signer"] as? String ?: return, group.copy(members = group.members + me), (w["epoch"] as? Long)?.toInt() ?: 0)
         secrets.saveMembership(Json.stringify(membershipToMap(m)))
         send(joinPieces["server"] as String, mapOf("type" to "joined", "id" to w["id"], "sharePub" to me.sharePub, "sharePubs" to points.map { listOf(it.idx, it.sharePub) }))
-        joinWith = null
+        joinWith = null; joinInviter = null
         ui.update { it.copy(member = m, joinCode = null) }
         note("Joined. This device holds ${shares.size} of ${group.members.sumOf { it.points.size } + shares.size} shares of ${group.npub.take(16)}…")
         start() // same relays and key: it keeps the connection the joined message just went out on
