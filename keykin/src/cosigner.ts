@@ -311,6 +311,9 @@ export class CoSigner {
     const { error, approvers } = checkApproval(this.m.authority, p.c.list, a);
     if (error) refuse(error);
     if (mode === 'recovery' && t !== 'recovery') refuse('recovery_session', 'only recovery-approved changes');
+    // F3 (§6.7.2): a seat list no current seat holder co-signs, here a device co-signing it, needs
+    // `pair`, `paper` or `recovery`, never a lock alone.
+    if (this.o.kind !== 'server' && p.c.list.some((x) => 'seat' in x) && !(t === 'pair' || t === 'paper' || t === 'recovery')) refuse('approval_not_allowed', 'F3 needs pair, paper or recovery');
     // Freshness: the co-signer's job, once (§3.2).
     if (t === 'lock' || t === 'pair' || t === 'paper') {
       if (!(a.expiry! > now && a.expiry! <= now + MAX_EXPIRY_S + 30)) refuse('approval_expired');

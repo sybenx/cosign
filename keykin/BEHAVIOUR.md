@@ -84,7 +84,8 @@ refuse result. The codes are proposals until the spec pins them.
 | 12 | Dealer dies before the co-sign | nothing changes; signing goes on at the old state | `sim.test.ts` |
 
 | 12 | Paper (F7): approve `[paper K, redeal]` without `inner`, repair the backup seat towards K, commit with `inner`, `state` and `material`; the old key is removed; recovery with K after a later redeal | accept; a second repair towards K refused `already_answered`; without a valid approval `bad_approval`; sealed elsewhere `not_assigned`; a commit without its material `bad_material` | `sim.test.ts`, `review1.test.ts` |
+| 12 | F3: every server dead; `[seat×3, redeal]` co-signed by a second device | accept with `pair`; a lock alone refused `approval_not_allowed`; the two devices fill all three seats | `sim.test.ts` |
 
-Not yet covered: paper re-issue, F3 (every server dead), the helper,
+Not yet covered: paper re-issue (every server dead), the helper,
 `need_seeds`, the signpost's publication, forwarding notes and `seated?`, passive servers, and a
 recovery whose state includes a stranded redeal.

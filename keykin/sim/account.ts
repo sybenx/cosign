@@ -146,3 +146,25 @@ export async function recover(acc: Account, lost: DeviceNode[], paper: KeyPair =
   return { D, P };
 }
 export { sha, stateHash };
+
+/** F3, every server dead (§6.7.6): `[seat×3, redeal]` approved by `pair`, co-signed by a second
+ *  device (no current seat holder can), then every seat filled by the two devices (6 points). */
+export async function replaceAllServers(acc: Account, A: DeviceNode, B: DeviceNode, approve: (list: Change[]) => Approval): Promise<ServerNode[]> {
+  const { bus } = acc;
+  const idx = A.m!.record.seats.servers;
+  const Ys = idx.map(() => bus.add(new ServerNode(bus, `Y${++seq}`)) as ServerNode);
+  const list: Change[] = [...idx.map((i, k) => ({ seat: { seat: `server:${i}`, new: Ys[k].entry(i), replaces: A.m!.seats.get(`server:${i}`)!.holder?.key ?? null } }) as Change),
+    { redeal: { dealer: A.kp.pub } }];
+  const { OneCall } = await import('../src/coordinator.ts');
+  await A.submit(list, approve(list), { deliverTo: Ys.map((y) => y.kp.pub), cosigner: async (ev, extra) => {
+    const r = new OneCall(A.ctx(), A.me(), { key: B.kp.pub, indices: [...B.state!.shares.keys()] }, ev, extra as any);
+    return r.finish(await bus.send(A.kp, B.kp.pub, r.request));
+  } });
+  for (const [k, Y] of Ys.entries()) {
+    const wa = await bus.send(A.kp, Y.kp.pub, { type: 'seat_welcome', w: { recEv: A.recEv!, changes: A.changes, state: [...A.state!.ids], seeds: [...A.seeds], items: A.items, base: A.base! } });
+    if (wa?.type !== 'ack') refuse(wa?.code ?? 'welcome_failed', wa?.detail);
+    const sigmas = await A.repairFor([{ key: A.kp.pub, indices: [...A.state!.shares.keys()] }, { key: B.kp.pub, indices: [...B.state!.shares.keys()] }], idx[k], Y.kp.pub, 'seat');
+    await bus.send(A.kp, Y.kp.pub, { type: 'seat_fill', sigmas, state: [...A.state!.ids] });
+  }
+  return Ys;
+}

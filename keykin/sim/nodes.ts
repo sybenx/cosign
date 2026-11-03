@@ -346,6 +346,7 @@ export class DeviceNode implements Node {
           deltas: [...dealt!.deltas.get(x.key)!].map(([i, d]) => [i, scalarHex(d)]),
           ...(x.kind !== 'helper' ? { release: dealt!.releaseSeed } : {}),
           ...(x.kind === 'device' ? { dk: dealt!.dkSeed, paper_ck: dealt!.paperCk } : {}) }) }));
+      (dealt as any).uploadItems = items;
       const up = msg('upload', this.g, this.epochId, 'member', { list: approvalListOf(list), approval, redeal: dealt.redeal.id, items, paper_item: dealt.paperItem });
       for (const s of [...view.values()].filter((x) => x.kind === 'server')) await this.bus.send(this.kp, s.key, up);
       full = list.map((c) => ('redeal' in c ? { redeal: dealt!.redeal } : c));
@@ -367,6 +368,12 @@ export class DeviceNode implements Node {
     // Deliver the list as one to every server (and live device); then apply our own delta and destroy δ.
     const targets = o.deliverTo ?? [...m.members.values(), ...postListView(m, list).values()].filter((x) => x.kind === 'server').map((x) => x.key);
     for (const t of new Set(targets)) await this.bus.send(this.kp, t, { type: 'change', events: signed, ...(material ? { material } : {}) });
+    // Live devices get the list and their own delivery directly (21059); asleep ones fetch from inboxes.
+    if (dealt) for (const x of postListView(m, list).values()) if (x.kind === 'device' && x.key !== this.kp.pub && this.bus.alive(x.key)) {
+      await this.bus.send(this.kp, x.key, { type: 'change', events: signed });
+      const w = (dealt as any).uploadItems?.find((it: any) => it.to === x.key)?.wrap;
+      if (w) await this.bus.send(this.kp, x.key, { type: 'delta_push', wrap: w });
+    }
     if (material) this.base = material;
     this.takeChanges(signed);
     if (dealt && !this.wiped) {

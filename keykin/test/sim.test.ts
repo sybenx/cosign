@@ -172,6 +172,19 @@ test('F7: a paper repair is refused without a valid approval, from a non-approve
   await assert.rejects(A.repairFor(helpers, 5, A.kp.pub, 'paper', { list, approval: A.approveLock(list) }), /not_assigned/);
   await assert.rejects(A.repairFor(helpers, 4, K.pub, 'paper', { list, approval: A.approveLock(list) }), /not_assigned/);
 });
+test('F3, every server dead: pair approval, co-signed by a second device, seats filled by two devices', async () => {
+  const acc = await create();
+  const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
+  for (const s of acc.servers) acc.bus.kill(s.kp.pub);
+  // A lock alone is refused when a device co-signs a seat list.
+  const { replaceAllServers } = await import('../sim/account.ts');
+  await assert.rejects(replaceAllServers(acc, acc.A, B, (l) => acc.A.approveLock(l)), /approval_not_allowed/);
+  const Ys = await replaceAllServers(acc, acc.A, B, (l) => approvePair(acc.g, acc.epochId, l, acc.bus.now + 3600, acc.A.kp, B.kp, bytesToHex(randomBytes(16))));
+  assert.deepEqual([...B.state!.ids], [...acc.A.state!.ids], 'B applied the redeal live');
+  for (const Y of Ys) assert.deepEqual([...Y.co!.state.ids], [...acc.A.state!.ids]);
+  assert.ok(verifyEvent(await acc.A.sign({ content: 'new servers' })));
+  assert.ok(verifyEvent(await B.sign({ content: 'new servers, B' })));
+});
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';
