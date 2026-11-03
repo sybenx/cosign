@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.2 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.2 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -53,18 +53,19 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    as a co-signer would.
 4. **Live only when adopted.** The account goes live (the npub is shown, anything is published) only after
    every server has adopted the epoch record first-hand (core §3.4) and stored its seat keys (Server
-   profile §4). Otherwise, before starting again from step 1, the device sends `create_abort {attempt}`,
-   signed by its member key for that attempt, to every server that took part: each drops everything for
-   that attempt and keeps no record, so a retry of the same imported npub is never barred. Restarts here
-   count towards the three of step 2; after the third, the app says "Couldn't reach enough servers. Try
-   again later."
-   As soon as the account is live, the device publishes the signpost (core §6.7.5) and registers push
-   with each server (core §8.1), before the backup question.
+   profile §4). Until then each server holds the account **provisionally**. As soon as every server has
+   adopted, the device publishes the signpost (core §6.7.5) and delivers its event id to every server
+   (core §6.7.10); that delivery **confirms** the account, and it registers push (core §8.1), all before
+   the backup question. A server drops a provisional account it hasn't seen confirmed within an hour,
+   keeping no record, so a failed attempt never bars a retry of the same imported npub and no message can
+   wipe a live account. Restarts count towards the three of step 2; after the third, the app says
+   "Couldn't reach enough servers. Try again later." 
 5. **The backup.** The device asks once, quietly: "Write down a backup now? If you lose this phone, it gets
    your account back." — **Write it down**, **Add another device instead**, or **Not now**.
-   - **Write it down** makes a paper or friends' pieces of **this** backup key (Backup module §1.1, without
-     a new key or a `paper` change, since the epoch record already pins it), with the read-back. The same
-     applies later on a lockless device that kept the secret. An heir always needs a new set (F7).
+   - **Write it down** makes a **paper** of **this** backup key (no new key or `paper` change: the epoch
+     record already pins it), with the read-back; then the secret is destroyed. Friends' pieces and an heir
+     always go through a new set (F7, Backup module §1.1), which the kept secret may approve as a paper
+     would.
    - **Add another device instead**: while the device still holds the backup secret, it can approve adding
      a device with it (a `paper` approval, core §6.2). This is the way out for a device with no lock.
    - **A kept secret** approves whatever a paper would (adding a device, registering a lock, replacing a
@@ -92,7 +93,9 @@ For someone who already has an nsec, and for moving a Cosign 0.12 account (core 
    instead." with **Import anyway**, for someone who lost that account and has only the nsec. A server
    that already serves this `g` refuses the new epoch record when it arrives (`refused: exists`; never in
    answer to an unauthenticated enrol, which would tell anyone which servers serve an npub), and the device
-   picks another.
+   picks another. With one operator today, every listed server may already hold the old account; then
+   the app says plainly: "Your old account's servers still hold it. Recover it with its paper, or delete
+   it from a device you still have." A server that answers `deleted` for this `g` is skipped the same way.
 3. The device picks and enrols servers as in §1.1 steps 1 and 3 (`g` is the nsec's public key), then
    deals: if the key's point has odd y, it negates the nsec (the npub is the same), then makes a random
    polynomial `f` of degree 3 with `f(0) = nsec`, with shares for its own three indices, the backup seat's
@@ -183,16 +186,22 @@ An extension retiring in favour of the machine's desktop app uses the core's `se
    can't destroy the key, unless that phone still keeps its backup secret (§1.1 step 5), which approves
    as a paper would. If the person chose Erase my posts, the delete's approval is asked for only
    after the vanish is signed, and the device republishes the signed vanish to every relay it knows first.
-   - The device sends it to every server, as a delivery, and keeps sending until each answers `deleted`,
-     keeping only the request and the servers' endpoints until then.
-   - A server accepts it with an approval it checks itself (fresh, with its own challenge for `paper`), or
-     with a peer's host-signed `deleted` carrying the request. It then destroys everything for the
+   - For a `paper` approval the device first gets a fresh challenge from every server and has the backup
+     sign for each, so every server can check it itself.
+   - The device sends it to every server, as a delivery, and keeps everything until **two** servers have
+     answered `deleted`; only then does it destroy the account, keeping only the request, the first
+     `deleted` it received and the servers' endpoints, and sending until each answers.
+   - A server accepts it with an approval it checks itself (fresh, with its own challenge for `paper`, every
+     approver a current device in its own view, core §3.2), or with a host-signed `deleted` from a peer that
+     is a current seat holder, carrying the request. It then destroys everything for the
      account (its share, seeds, material, waits, push addresses, notice channels, heir record), keeps only
      `SHA-256(g)`, the approved request and the changes that make its approver a device (core §2), and
      answers every later request for `g` with a host-signed `deleted` and those, which devices check. It
      never seats or creates `g` again. Servers that never held the account aren't bound by it.
    - Every device that verifies it destroys everything for the account. Friends and the heir get one
-     notice ("*Name* deleted their account"), and their apps drop their pieces.
+     notice ("*Name* deleted their account") carrying a host-signed `deleted` with the request and the
+     changes that prove its approval; their apps check those against the account card's `g` and only then
+     drop their pieces (Backup module §1.1 step 8).
 
 After a delete, a paper can no longer be used with any honest server. Pieces a dishonest member kept
 still combine as core §10 says.
@@ -221,7 +230,6 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 |---|---|---|
 | `create` / `create_ok {dkg_key, host_sig}` | device → server / back | `ask` |
 | `dkg_1`, `dkg_2`, `dkg_abort {culprit}` | device ↔ server (relayed) | `ask` |
-| `create_abort {attempt}` | device → servers | `ask` |
 | `refused: exists` | server → device (an `error`) | — |
 | `account_delete {id, approval}` / `deleted {request, changes, host_sig}` | device → servers, server → server / back | `member` |
 
@@ -244,6 +252,18 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 ## Changes
 
+- **Draft 5**, from its fourth red team (0 critical, 1 high):
+  - `create_abort` is gone: servers hold a new account provisionally until the device confirms it, and
+    drop it after an hour, so no message can wipe a live account (H1).
+
+  The mediums and lows:
+  - a delete destroys the device's copy only after two servers accept, with a challenge from each for
+    `paper` (M1);
+  - friends and the heir check the delete proof before dropping pieces (M2);
+  - "a second device has joined" means its welcome was acknowledged (M3, core 14.2);
+  - from the creation key, a paper only; friends and heirs through F7 (M4);
+  - Import anyway when every server holds the old account (M5);
+  - alignment with core 14.1, and smaller wording (lows).
 - **Draft 4**, from its third red team (0 critical, 2 high):
   - a handover carries the kept backup secret, and the app may use it for its first lock (H1, core 14);
   - a failed creation is undone by `create_abort`, which leaves no record (H2).

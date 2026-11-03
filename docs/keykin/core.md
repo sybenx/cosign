@@ -389,7 +389,8 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
    it **and shown it is readable** by scanning it back or re-entering it (§1.1), then destroys it and
    the shares. If the person declines, or leaves the flow unfinished for 24 hours, the device destroys
    them and the account has no paper until a later F7 (Account admin module), **except on a device with no
-   lock**: there it keeps them sealed (§7.3) until a second device has joined, a paper has been read
+   lock**: there it keeps them sealed (§7.3) until a second device has joined (its add co-signed and its
+   welcome acknowledged, §4.2 step 5), a paper has been read
    back, or the device has registered a lock, so a lockless account can still add a device. Until then
    that device alone is worth 5 points, like an nsec kept in it, and the kept secret approves what a
    `paper` approval would. It SHOULD prompt, quietly, to finish the backup.
