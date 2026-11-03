@@ -20,6 +20,8 @@ export const deletionTargets = (e: Ev) => (e.kind === 5 ? e.tags.filter((t) => t
 export function destructive(e: Ev, recentUnapproved = 0): boolean {
   const k = e.kind;
   if (k === 62) return true;
+  // Key families §4: accept, family, release and leaked events are all Held.
+  if (k === 1244 || k === 1245 || k === 1246 || k === 1247) return true;
   if (k === 5) {
     const n = deletionTargets(e);
     return n >= MASS_TARGETS || recentUnapproved + n > MASS_TARGETS;
