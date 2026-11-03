@@ -1813,6 +1813,19 @@ class Signer(private val context: Context, val slot: String = "0") {
                     note("${srv.name} sent a piece of reading your messages that doesn't match its share.", "denied")
                     continue
                 }
+                // Every one of its shares, and no others. Each proof only speaks for its own
+                // index, so two pieces of three pass this check and leave one point missing: the
+                // combine then makes a value that is nobody's key, and the only symptom is a MAC
+                // failure wherever the plaintext was wanted, with nobody named. The check above
+                // compares the answer against itself, so it cannot see this.
+                // Sorted lists, not sets: one index twice is as wrong as one missing (the piece
+                // would be added twice), and both pass the count check above.
+                val sent = parts.mapNotNull { (it as? Map<*, *>)?.get("idx") as? Long }.map { it.toInt() }.sorted()
+                if (sent != srv.idxs.sorted()) {
+                    answers += "it sent only some of its pieces"
+                    note("${srv.name} sent only some of its pieces of reading your messages.", "denied")
+                    continue
+                }
                 theirs = checked.map { it!!.hexToBytes() }
             } else {
                 theirs = ((res["points"] as? List<*>) ?: listOf(res["point"])).map { (it as String).hexToBytes() }
