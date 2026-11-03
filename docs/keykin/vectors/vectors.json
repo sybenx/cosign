@@ -1,5 +1,5 @@
 {
- "spec": "Keykin Core draft 8.1",
+ "spec": "Keykin Core draft 13.1",
  "note": "hex unless stated; x-only keys are 32 bytes",
  "cases": {
   "join_check": [
@@ -21,23 +21,48 @@
     "code": "611403"
    }
   ],
-  "change_hash": {
-   "change": {
-    "add": {
-     "key": "80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463",
-     "kind": "device",
-     "lock": null,
-     "salt": 0
-    }
+  "list_hash": [
+   {
+    "list": [
+     {
+      "add": {
+       "key": "80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463",
+       "kind": "device",
+       "lock": null,
+       "salt": 0
+      }
+     }
+    ],
+    "jcs": "[{\"add\":{\"key\":\"80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463\",\"kind\":\"device\",\"lock\":null,\"salt\":0}}]",
+    "sha256": "0d164a726dbea374f9b2e3898319e5e06e182662a4c0701eb5f18093cedb5a6b"
    },
-   "jcs": "{\"add\":{\"key\":\"80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463\",\"kind\":\"device\",\"lock\":null,\"salt\":0}}",
-   "sha256": "30afbdea42ded20b7d7afd79ba2a3d53574c7efdb668fe1e11497bab5b9e9bcd"
-  },
+   {
+    "note": "a seat change with its redeal placeholder",
+    "list": [
+     {
+      "seat": {
+       "seat": "server:4",
+       "new": {
+        "key": "7a5a7dabcb83769fb6f5b62658544fc69bb7e97719bf3450d32e2c8d4e8cf79a",
+        "kind": "server"
+       },
+       "replaces": null
+      }
+     },
+     {
+      "redeal": {
+       "dealer": "80f16ba03b9d46d10f7cd0a125da5e0c914687b3aed2fab90e09e1eb81dbc463"
+      }
+     }
+    ],
+    "sha256": "2c4087f881aaad21986596e5b0d845274be1268584d5b0906de0646274d5901a"
+   }
+  ],
   "pair_code": {
    "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
-   "change_hash": "30afbdea42ded20b7d7afd79ba2a3d53574c7efdb668fe1e11497bab5b9e9bcd",
+   "list_hash": "0d164a726dbea374f9b2e3898319e5e06e182662a4c0701eb5f18093cedb5a6b",
    "r": "454349e422f05297191ead13e21d3db5",
-   "code": "990009"
+   "code": "521611"
   },
   "indices": {
    "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
@@ -71,8 +96,9 @@
     "challenge": "6Jv1W0h0zan4TN3XK7CKmZLBkeKRdohs_FidB01IADc"
    },
    {
-    "what": "change ‖ change hash ‖ epoch id",
-    "challenge": "nMb9ML4KwvoIkXXrZBe07uSpu9FdR0JyKaqX7jaBXJk"
+    "what": "change ‖ list hash ‖ epoch id ‖ expiry (8-byte big-endian unix)",
+    "expiry": 1793686400,
+    "challenge": "TF6zLhIq-ou7uM9sGyJE2JDjTq4wg8hRlBmmWGTypog"
    },
    {
     "what": "cancel ‖ wait id",
@@ -131,6 +157,11 @@
   "ecdh_dleq": {
    "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
    "epoch_id": "afc9b31d9f3f3645ae563606e1ddbe4b",
+   "state_ids": [
+    "399738bb1af628d8647a253bf68e694c",
+    "f4951ab3aa60aeaa29fda73eb61ad3ae"
+   ],
+   "state": "c8d6b07ec741c9f6ca3072312b90cad22c217e68a70c67562d187a2f1b30acb1",
    "Q": "036dd012e609447dec3d49932842b7177cd8b0f99b3422976a7fd6393cdfa375c9",
    "signers": [
     1,
@@ -145,13 +176,13 @@
    "k": "0301cca077ac6278fd026f542adc7cacabfd9cc84518024e2236e3d71e722149",
    "R1": "03fc41b00181ca97aaf3f4fa67a6785355404c3633c816351678a072953203add4",
    "R2": "02ed43873e65127baaf0c13aae181f3103909874e4257cee53e97a7814fef304af",
-   "e": "98cc733f9c6bfeb12162b2d105b243e2161b2ed4866b54248460c0d0f073c7df",
-   "z": "593debcfa8b1de2c6a5e99f46b73a23b7fd5e8e84ee11ddada64527e9ea7b716",
+   "e": "f7afabd1180d14a9cd1c01bfa06d092438ac81cba18cc45d6b300def49f36065",
+   "z": "e423dcfda1171c5ae4c157a148d91b6ebaeb2255694141a2f3e1db6bda4abb64",
    "valid": true,
    "negative": [
     {
      "case": "z + 1",
-     "z": "593debcfa8b1de2c6a5e99f46b73a23b7fd5e8e84ee11ddada64527e9ea7b717",
+     "z": "e423dcfda1171c5ae4c157a148d91b6ebaeb2255694141a2f3e1db6bda4abb65",
      "valid": false
     },
     {
@@ -304,6 +335,77 @@
     "accept": false,
     "note": "dated 31 s ahead"
    }
-  ]
+  ],
+  "helper_seat": {
+   "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
+   "indices": [
+    777970470,
+    201406148,
+    1060659324
+   ],
+   "j_encoding": "4-byte big-endian"
+  },
+  "redeal_apply": {
+   "D": [
+    "03bdca4e3d5f521b6746d570f6dd291e85d1b7d880443dd51961bd6c011a449426",
+    "02f2a11eff2c43bdb791f940e55589843a24956c90a534236f8d6e5718f466636e",
+    "022605cad39d0d25185df2eb91f09fc920df19dead26efd34a842fe6c2b81f4000"
+   ],
+   "C_S": [
+    "02fb65966780bfb057aed9ee34c6e583716a55965531d9c970edba400dff21e105",
+    "027c9e6f20cb0579cf1077aef91ca48fd587c6234d7dcc4fddd438d9882a698530",
+    "03bffddb14ae45042c9480fff56fd64e9c8600935486d326fc4be5f92c6a0d0036",
+    "02a657242595e630e6ad8c9d8d8175a19bfd7889834d19ae0ac920a52c17c20c8e"
+   ],
+   "device_index": 1,
+   "delta_i_G": "034eb8063cd871032df6a94d31fcf1f6f11aa0114fb1fea1ad7476baa12f424494",
+   "new_P_i": "0270c99712113416197b25b26d8b214181041ef2e37ba74d8a46809b375d33997f",
+   "paper_reissue": {
+    "b": [
+     5,
+     6
+    ],
+    "delta_b_G": [
+     "02cc16135fef3f5b3da0c4fee558c69576bc141b20da955e0aa40ac63bf41b9f32",
+     "03890a579c48a81d6ba1b1b40c91d8867b86e873371b94fc1fa831332e6b2450fe"
+    ],
+    "note": "a device derives δ(b) from its 3 deltas plus δ(0)=0; servers check the clear δ(b)·G against Σ D_k·b^k"
+   },
+   "negative": {
+    "case": "D containing the identity, or an all-zero δ",
+    "valid": false
+   }
+  },
+  "data_key": {
+   "base": "6ecaea95ffff05fccbf864fad39b9ac4149dd62e9f7ab69bec6918a0e8820f39",
+   "seeds_sorted": [
+    "4a45efaeb8c453922d90fe1005b7616f5bac6d5d74c29e6282c362dc14bcd6b3",
+    "b8d73f95d2c6fce9e27dd08dd9e3f30693f0e4e27790d0aa1f88bb27f23e5d75"
+   ],
+   "dk_S": "c4af916220bd2a612e1536730b177fa36193468ad5e7f79dbed885c81fb0cdcf",
+   "note": "HKDF-SHA256, empty salt, ikm = base ‖ seeds sorted bytewise, info = 'keykin-dk/1', 32 bytes"
+  },
+  "signpost": {
+   "backup_key": "bd3074f4a6bea388c3af94de39450d0cfe8d262de2da5bbcf920b44d6b4aec3b",
+   "d": "b8556a40f96f7a75246fb8406ef7ada30b5c99b6663364b543bb7153b09adab8",
+   "epoch_id": "afc9b31d9f3f3645ae563606e1ddbe4b",
+   "servers": [
+    {
+     "host": "7a5a7dabcb83769fb6f5b62658544fc69bb7e97719bf3450d32e2c8d4e8cf79a",
+     "https": "https://s1.example",
+     "relays": [
+      "wss://r1.example"
+     ]
+    }
+   ],
+   "h": "fb6d217b3c6ae77c0ba984ae37bc5d79a160009b09598f65706e8247e34cf3e0",
+   "device_copy_key": "46cdf6964d895126665aea8d7336602b1c22e0af2801d724dbc2c4fe52981222"
+  },
+  "seated_reply_digest": {
+   "H_key": "6fb10a498209037679bec58445df527fb2271fb42931b6cb8b1713160799775c",
+   "challenge": "28b4640ead7b6bc735189e6b0d386bf0",
+   "ciphertext_sha": "use the raw ciphertext bytes; here a stand-in",
+   "digest": "a2728457ddd6bde789e991ac22ac2436b730ae67adf7e8312581a31497c7f2f8"
+  }
  }
 }

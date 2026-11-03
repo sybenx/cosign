@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Generate Keykin Core test vectors (core.md draft 8.1, §14).
+"""Generate Keykin Core test vectors (core.md draft 13.1, §14).
 
 Pure Python, no dependencies. Run: python3 -I gen_vectors.py > vectors.json
 Every value is derived from fixed inputs, so the output is reproducible. FROST signing rounds
 themselves are not here: they come from frost-secp256k1-tr's own vectors plus the cases in vectors.md.
 """
-import hashlib, json, base64
+import hashlib, hmac, json, base64
 
 # --- secp256k1 -------------------------------------------------------------------------------
 P = 2**256 - 2**32 - 977
@@ -46,7 +46,7 @@ def priv_from(label):  # deterministic test keys, even-y public
     if pt[1] % 2: k = N - k; pt = mul(k)
     return k, pt
 
-out = {"spec": "Keykin Core draft 8.1", "note": "hex unless stated; x-only keys are 32 bytes", "cases": {}}
+out = {"spec": "Keykin Core draft 13.1", "note": "hex unless stated; x-only keys are 32 bytes", "cases": {}}
 C = out["cases"]
 
 g_sk, g_pt = priv_from("group")      # stands in for the group point; nobody holds g_sk in real life
@@ -63,12 +63,17 @@ C["join_check"] = [{"g": hx(g), "m": hx(m), "n": hx(n), "s": hx(s), "t": hx(t),
                    {"note": "changing t changes the code", "g": hx(g), "m": hx(m), "n": hx(n), "s": hx(s),
                     "t": hx(sha(b"t2")[:16]), "code": six(sha(b"keykin-join/1", g, m, n, s, sha(b"t2")[:16]))}]
 
-# 2. change hash, pair code (§3.2, §6.2)
+# 2. list hash, pair code (§6.1, §6.2, §6.7.2): a single change is a list of one
 change = {"add": {"key": hx(n), "kind": "device", "lock": None, "salt": 0}}
-ch = sha(jcs(change))
+lst = [change]
+ch = sha(jcs(lst))
+seat_list = [{"seat": {"seat": "server:4", "new": {"key": hx(m), "kind": "server"}, "replaces": None}},
+             {"redeal": {"dealer": hx(n)}}]
 r = sha(b"r")[:16]
-C["change_hash"] = {"change": change, "jcs": jcs(change).decode(), "sha256": hx(ch)}
-C["pair_code"] = {"g": hx(g), "change_hash": hx(ch), "r": hx(r), "code": six(sha(b"keykin-pair/1", g, ch, r))}
+C["list_hash"] = [{"list": lst, "jcs": jcs(lst).decode(), "sha256": hx(ch)},
+                  {"note": "a seat change with its redeal placeholder", "list": seat_list,
+                   "sha256": hx(sha(jcs(seat_list)))}]
+C["pair_code"] = {"g": hx(g), "list_hash": hx(ch), "r": hx(r), "code": six(sha(b"keykin-pair/1", g, ch, r))}
 
 # 3. indices (§3.2)
 def indices(key, salt):
@@ -90,7 +95,8 @@ C["wait_ids"] = {"event_id": hx(event_id), "hold": hx(hold_id),
 def chal(what): return b64u(sha(b"keykin-lock/1", g, what))
 C["lock_challenge"] = [
     {"what": "sign ‖ event id", "challenge": chal(b"sign" + event_id)},
-    {"what": "change ‖ change hash ‖ epoch id", "challenge": chal(b"change" + ch + epoch_id)},
+    {"what": "change ‖ list hash ‖ epoch id ‖ expiry (8-byte big-endian unix)", "expiry": 1793686400,
+     "challenge": chal(b"change" + ch + epoch_id + (1793686400).to_bytes(8, "big"))},
     {"what": "cancel ‖ wait id", "challenge": chal(b"cancel" + rec_id)},
 ]
 start, end = 1793600000, 1793600000 + 3 * 86400
@@ -143,7 +149,9 @@ for j in signers:
 Y = mul(lam * s_i, Q); W = mul(lam, P_i(i, commit))
 k = int.from_bytes(sha(b"fixed-k-for-vectors"), "big") % N      # real k is hedged, §5.5
 R1 = mul(k); R2 = mul(k, Q)
-e = int.from_bytes(sha(b"keykin/ecdh-dleq/1", g, epoch_id, i32(i), cb(W), cb(Q), cb(Y), cb(R1), cb(R2)), "big") % N
+redeal_ids = sorted([sha(b"redeal-a")[:16], sha(b"redeal-b")[:16]])
+state = sha(*redeal_ids)          # SHA-256 of the sorted 16-byte ids, concatenated
+e = int.from_bytes(sha(b"keykin/ecdh-dleq/1", g, epoch_id, state, i32(i), cb(W), cb(Q), cb(Y), cb(R1), cb(R2)), "big") % N
 z = (k + e * lam * s_i) % N
 assert mul(z) == add(R1, mul(e, W)) and mul(z, Q) == add(R2, mul(e, Y))
 total = None
@@ -153,7 +161,8 @@ for j in signers:
         if jj != j: lj = lj * jj * pow(jj - j, -1, N) % N
     total = add(total, mul(lj * f(j), Q))
 assert total == mul(coeffs[0], Q)
-C["ecdh_dleq"] = {"g": hx(g), "epoch_id": hx(epoch_id), "Q": comp(Q), "signers": signers, "i": i,
+C["ecdh_dleq"] = {"g": hx(g), "epoch_id": hx(epoch_id), "state_ids": [hx(x) for x in redeal_ids],
+    "state": hx(state), "Q": comp(Q), "signers": signers, "i": i,
     "lambda_i": hx(sc(lam)), "Y": comp(Y), "W_i": comp(W), "k": hx(sc(k)), "R1": comp(R1), "R2": comp(R2),
     "e": hx(sc(e)), "z": hx(sc(z)), "valid": True,
     "negative": [{"case": "z + 1", "z": hx(sc(z + 1)), "valid": False},
@@ -180,5 +189,58 @@ C["lifetimes"] = [
     {"type": "sign", "cls": "ask", "age_s": 149, "accept": True}, {"type": "hold", "cls": "member", "age_s": 604800, "accept": True},
     {"type": "hold", "cls": "sign", "accept": False, "note": "class not allowed for type"},
     {"type": "sign", "cls": "sign", "age_s": -31, "accept": False, "note": "dated 31 s ahead"}]
+
+# 8. Upkeep (§6.7) ---------------------------------------------------------------------------
+def hkdf(ikm, info, L=32):   # HKDF-SHA256, empty salt
+    prk = hmac.new(b"\x00" * 32, ikm, hashlib.sha256).digest()
+    out, t, c = b"", b"", 1
+    while len(out) < L:
+        t = hmac.new(prk, t + info + bytes([c]), hashlib.sha256).digest(); out += t; c += 1
+    return out[:L]
+helper_seat = [2**16 + int.from_bytes(sha(b"keykin-seat/1", g, b"helper", i32(j))[:4], "big") % 2**30 for j in range(3)]
+C["helper_seat"] = {"g": hx(g), "indices": helper_seat, "j_encoding": "4-byte big-endian"}
+
+# a redeal: zero-constant degree-3 polynomial added to the epoch polynomial
+dcoef = [0] + [int.from_bytes(sha(b"dcoef", bytes([k])), "big") % N for k in range(1, 4)]
+def dl(x): return sum(a * pow(x, k, N) for k, a in enumerate(dcoef)) % N
+Dcom = [mul(a) for a in dcoef[1:]]                          # D1..D3; D0 is the identity
+newcommit = [commit[0]] + [add(commit[k], Dcom[k - 1]) for k in range(1, 4)]
+dev_i = 1
+def Pd(i): 
+    acc = None
+    for k, Dk in enumerate(Dcom, start=1): acc = add(acc, mul(pow(i, k, N), Dk))
+    return acc
+assert mul(dl(dev_i)) == Pd(dev_i)
+assert mul((f(dev_i) + dl(dev_i)) % N) == P_i(dev_i, newcommit)
+# a device recovers the full δ from its 3 values plus δ(0) = 0, so it can work out δ(b) for the paper
+pts = [(0, 0)] + [(x, dl(x)) for x in dev]
+def interp(x0):
+    tot = 0
+    for xj, yj in pts:
+        num = den = 1
+        for xm, _ in pts:
+            if xm != xj: num = num * (x0 - xm) % N; den = den * (xj - xm) % N
+        tot = (tot + yj * num * pow(den, -1, N)) % N
+    return tot
+b1, b2 = 5, 6
+assert interp(b1) == dl(b1) and interp(b2) == dl(b2)
+C["redeal_apply"] = {"D": [comp(x) for x in Dcom], "C_S": [comp(x) for x in newcommit],
+    "device_index": dev_i, "delta_i_G": comp(Pd(dev_i)), "new_P_i": comp(P_i(dev_i, newcommit)),
+    "paper_reissue": {"b": [b1, b2], "delta_b_G": [comp(Pd(b1)), comp(Pd(b2))],
+                      "note": "a device derives δ(b) from its 3 deltas plus δ(0)=0; servers check the clear δ(b)·G against Σ D_k·b^k"},
+    "negative": {"case": "D containing the identity, or an all-zero δ", "valid": False}}
+
+base_dk = sha(b"base-dk"); seeds = sorted([sha(b"dk-seed-1"), sha(b"dk-seed-2")])
+C["data_key"] = {"base": hx(base_dk), "seeds_sorted": [hx(x) for x in seeds],
+    "dk_S": hx(hkdf(base_dk + b"".join(seeds), b"keykin-dk/1")),
+    "note": "HKDF-SHA256, empty salt, ikm = base ‖ seeds sorted bytewise, info = 'keykin-dk/1', 32 bytes"}
+srv_entries = [{"host": hx(m), "https": "https://s1.example", "relays": ["wss://r1.example"]}]
+C["signpost"] = {"backup_key": hx(backup_key), "d": hx(sha(b"keykin-beacon/1", backup_key)),
+    "epoch_id": hx(epoch_id), "servers": srv_entries,
+    "h": hx(sha(b"keykin-beacon/1", epoch_id, jcs(srv_entries))),
+    "device_copy_key": hx(hkdf(base_dk, b"keykin-beacon/1"))}
+ct = sha(b"sealed-reply-ciphertext")
+C["seated_reply_digest"] = {"H_key": hx(sha(backup_key)), "challenge": hx(sha(b"chal")[:16]), "ciphertext_sha": "use the raw ciphertext bytes; here a stand-in",
+    "digest": hx(sha(b"keykin-seated/1", sha(backup_key), sha(b"chal")[:16], ct))}
 
 print(json.dumps(out, indent=1, ensure_ascii=False))

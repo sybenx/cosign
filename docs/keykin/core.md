@@ -376,7 +376,8 @@ A random 32-byte key, never derived from the group key or any to-self conversati
 published. Devices hold it whole, in storage that is never backed up or synced (on iPhone, never in
 iCloud Keychain or a restorable backup). Helpers, servers and backups never get it, except that a copy
 is in the backup material, so a recovery loses no data (§7.2). It is
-`dk(S) = HKDF("keykin-dk/1", base data key ‖ seeds of S, sorted)`: every redeal brings a new seed (sent
+`dk(S) = HKDF("keykin-dk/1", base data key ‖ seeds of S, sorted)` (HKDF-SHA256, empty salt, the
+string as info, 32 bytes; the same for the signpost's device-copy key): every redeal brings a new seed (sent
 to devices only, §6.7.3), so it rotates with every redeal, and a removed device never gets a later seed.
 Data names the state hash it was written under; devices keep older keys to read older data, and data
 services re-encrypt lazily.
@@ -626,8 +627,8 @@ the user-present and user-verified flags set; and that `sig` verifies over
 
 - for a destructive event, `"sign" ‖ event id` (§5.8);
 - for an account change, `"change" ‖ list hash ‖ epoch id ‖ expiry`, where the list hash is
-  `SHA-256(JCS(list))` as §6.7.2 defines it (a single change is a list of one), with the expiry at most
-  24 hours away;
+  `SHA-256(JCS(list))` as §6.7.2 defines it (a single change is a list of one), with the expiry (8-byte
+  big-endian unix seconds) at most 24 hours away;
 - for a cancel, `"cancel" ‖ wait id`;
 - for any other request (`take_out`, removing a notice channel), `type ‖ id ‖ SHA-256(JCS(body
   without the assertion))`.
@@ -770,7 +771,8 @@ stuck. Two ideas make that safe:
   `f(i) + Σ_{r∈S} δ_r(i)`, and the commitment it checks against is `C_S = C + Σ_{r∈S} D_r` (with `C`
   the epoch record's commitment and `D_r` the redeal's). `P_i^S` is always derived, never taken from a
   message.
-- Every signing round, decryption, repair and co-sign request carries `state = SHA-256(sorted ids)`. A
+- Every signing round, decryption, repair and co-sign request carries `state = SHA-256(sorted ids)`
+  (the 16-byte ids sorted bytewise and concatenated; the empty state hashes the empty string). A
   mismatch is answered with `stale {ids}`; the side missing ids fetches them (§7.1), applies them and
   retries.
 - **Applying a redeal:**

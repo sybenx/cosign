@@ -18,17 +18,22 @@ parser has run against every message type in core §9.4 and `refresh.md` §7.
 | Key | Core § | What it pins |
 |---|---|---|
 | `join_check` | 4.1 | The 6-digit join check from `g, m, n, s, t`. A second case changes only `t`, which changes the code. |
-| `change_hash` | 3.2 | JCS encoding and SHA-256 of an `add` change. |
-| `pair_code` | 6.2 | The typed two-device code from `g`, the change hash and `r`. |
+| `list_hash` | 6.1, 6.7.2 | JCS and SHA-256 of a list: a single `add`, and a seat change with its redeal placeholder. |
+| `pair_code` | 6.2 | The typed two-device code from `g`, the list hash and `r`. |
 | `indices` | 3.2 | The three hash-derived indices of an added device, plus their 32-byte identifier encoding. |
 | `wait_ids` | 6.3 | The hold and recovery wait ids. |
-| `lock_challenge` | 6.1 | The WebAuthn `clientData.challenge` for a destructive sign, an account change and a cancel. |
+| `lock_challenge` | 6.1 | The WebAuthn `clientData.challenge` for a destructive sign, an account change (list hash, epoch id, expiry) and a cancel. |
 | `waited_statement_digest` | 6.3 | The digest a server signs for a waited statement. |
 | `commitment_rebuild` | 3.4 step 4 | A device rebuilding `C0…C3` from its own 3 points and `C0`. Includes a negative case (a tampered `C2` must be refused) and derived `P_i` for indices 4, 5, 6 and a hashed index. |
-| `ecdh_dleq` | 5.5 | One weighted decryption answer with its proof. Negatives: a changed `z`, a repeated index, `Q` the identity. |
+| `ecdh_dleq` | 5.5, 6.7.1 | One weighted decryption answer with its proof. Negatives: a changed `z`, a repeated index, `Q` the identity. |
 | `future_dates` | 5.7 item 4 | Which kinds may be dated ahead. |
 | `stateless_destructive` | 5.8 | What needs an approval or a hold. |
 | `lifetimes` | 5.6 | Age limits per class (lifetime plus 30 s), a class not allowed for a type, and a request dated ahead. |
+| `helper_seat` | 3.1 | The helper's three reserved seat indices. |
+| `redeal_apply` | 6.7.1 | A redeal's `D`, the new `C_S`, a device's delta check, and the `δ(b)·G` values for a re-issued paper item. |
+| `data_key` | 4.5 | `dk(S)` from the base key and sorted seeds. |
+| `signpost` | 6.7.5 | Its `d`, `h` and device-copy key. |
+| `seated_reply_digest` | 6.7.5 | What a server's `seated?` reply signature covers. |
 
 Notes:
 
