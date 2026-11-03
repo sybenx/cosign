@@ -561,8 +561,9 @@ Before giving a partial, a co-signer MUST check that:
 3. the request is fresh and not a replay (§5.6);
 4. `event.pubkey` is `g`, and, for a **replaceable or addressable** kind (0, 3, 10000–19999,
    30000–39999), the event's `created_at` is no more than 10 minutes ahead of its own clock: a version
-   dated ahead would block every later change until that date. Other kinds may be dated ahead, so a
-   person can schedule a post;
+   dated ahead would block every later change until that date. A deletion (kind 5) may not be dated
+   ahead either, since under NIP-09 it would delete future versions of its targets. Other kinds may be
+   dated ahead, so a person can schedule a post;
 5. if the event is **kind 30242 or kind 24302, whatever its tags, or a kind 30078 with the account's
    signpost `d`, or a kind 5 targeting a signpost**, it is account machinery: it MUST be a valid change
    (§3.2, §6.7.2) or a signpost from a device with the right `n` (§6.7.5); a signpost delete is always
@@ -1442,7 +1443,8 @@ The signpost (kind 30078) is the one Keykin event published on relays (§6.7.5).
 | #13 stranded server, #14 removal in a pending refresh | deliveries (§7.1); no plans or epochs move: a remove travels with its redeal in one list (§6.7.2) |
 | #16a/b optional or partial proofs | §5.5 |
 | #5 extension shares unencrypted | encrypted where it costs no prompt (§7.3); otherwise 3 points, which beats the bar (§10) |
-| #10, #11, #15 | Doors and Device policy modules (grants live on devices) |
+| #10, #15 | Doors and grants module (a `private-data` scope; revoke tombstones only a human act clears) |
+| #11 app data not judged | not closed: Device policy deliberately doesn't judge app data (holding it would nag); only `keykin-` app data is guarded |
 
 ## 11. Versions, moving from Cosign 0.12, the rename
 
