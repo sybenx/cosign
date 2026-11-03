@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 3 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
+Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -53,26 +53,31 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    as a co-signer would.
 4. **Live only when adopted.** The account goes live (the npub is shown, anything is published) only after
    every server has adopted the epoch record first-hand (core §3.4) and stored its seat keys (Server
-   profile §4). Otherwise, before starting again from step 1, the device sends `account_delete` (§3),
-   approved with the backup secret it still holds, to every server that adopted, so none keeps an orphan.
+   profile §4). Otherwise, before starting again from step 1, the device sends `create_abort {attempt}`,
+   signed by its member key for that attempt, to every server that took part: each drops everything for
+   that attempt and keeps no record, so a retry of the same imported npub is never barred. Restarts here
+   count towards the three of step 2; after the third, the app says "Couldn't reach enough servers. Try
+   again later."
+   As soon as the account is live, the device publishes the signpost (core §6.7.5) and registers push
+   with each server (core §8.1), before the backup question.
 5. **The backup.** The device asks once, quietly: "Write down a backup now? If you lose this phone, it gets
    your account back." — **Write it down**, **Add another device instead**, or **Not now**.
-   - **Write it down** makes the backup set (Backup module §1), with its read-back.
+   - **Write it down** makes a paper or friends' pieces of **this** backup key (Backup module §1.1, without
+     a new key or a `paper` change, since the epoch record already pins it), with the read-back. The same
+     applies later on a lockless device that kept the secret. An heir always needs a new set (F7).
    - **Add another device instead**: while the device still holds the backup secret, it can approve adding
      a device with it (a `paper` approval, core §6.2). This is the way out for a device with no lock.
-   - **Add another device instead** can be used for **one** add, started from this screen (or, on a
-     lockless device that chose Not now, from Add a device later); then the secret and the backup seat's
-     shares are destroyed. It is never an approval for anything else.
+   - **A kept secret** approves whatever a paper would (adding a device, registering a lock, replacing a
+     server, deleting the account), retried freely until the change is co-signed. It is destroyed once a
+     second device has joined, a paper has been read back, or the device has registered a lock.
    - **Not now**, on a device with a lock, destroys the backup secret and the backup seat's shares at once
      (core §4.3 step 4).
    - **Not now**, on a device with **no lock** (every browser extension), keeps them sealed (core §7.3)
-     until a second device has joined or a paper has been read back, then destroys them (core §4.3 step
-     4). Meanwhile the quiet dot on Backup suggests, once, "Add your phone to keep your account safe if
+     until a second device has joined, a paper has been read back, or a lock is registered, then destroys
+     them (core §4.3 step 4). Meanwhile the quiet dot on Backup suggests, once, "Add your phone to keep your account safe if
      this browser is lost." No banner, no push.
    - If the flow is left unfinished, the device treats it as Not now after 24 hours and says: "No backup
      yet. If you wrote one down, scan it in Backup to check it."
-6. **The signpost** is published (core §6.7.5), and the device registers push with each server (core §8.1).
-
 The person sees one screen with a spinner ("Making your account…", a few seconds), then the backup
 question, then the npub (core §1.1). No seed words, no server choices unless they ask.
 
@@ -85,8 +90,9 @@ For someone who already has an nsec, and for moving a Cosign 0.12 account (core 
 2. **Already a Keykin account?** The device looks on relays for any Keykin event signed by that key (a
    signpost or grant event). If it finds one: "This key is already a Keykin account. Sign in to it
    instead." with **Import anyway**, for someone who lost that account and has only the nsec. A server
-   that already serves this `g` refuses to enrol it again (`refused: exists`), and the device picks
-   another.
+   that already serves this `g` refuses the new epoch record when it arrives (`refused: exists`; never in
+   answer to an unauthenticated enrol, which would tell anyone which servers serve an npub), and the device
+   picks another.
 3. The device picks and enrols servers as in §1.1 steps 1 and 3 (`g` is the nsec's public key), then
    deals: if the key's point has odd y, it negates the nsec (the npub is the same), then makes a random
    polynomial `f` of degree 3 with `f(0) = nsec`, with shares for its own three indices, the backup seat's
@@ -118,8 +124,9 @@ One list, in plain words:
 that device. Names are kept in one account-signed kind 30078 event **per device**, with `d` made as Doors and grants
 does for grant events (`"keykin-labels:" ‖` an HMAC of the member key under the base data key), encrypted under
 `HKDF-SHA256(dk(S), "keykin-labels/1")`, with each name signed by the named device's own member key.
-Devices show only names signed by the device they name, so a stolen device can't rename the others to
-trick the owner into reporting the wrong one. The `keykin-` guard (Doors and grants §2) keeps sites away.
+Devices show only names signed by the device they name, always with the model next to the name, and
+flag two devices with the same name, so a stolen device can't pass itself off as another to trick the
+owner into reporting the wrong one. The `keykin-` guard (Doors and grants §2) keeps sites away.
 
 ### 2.1 Adding a device
 
@@ -128,10 +135,11 @@ have an account**. Either side shows a code (core §4.1). Then:
 
 1. The new device shows a 6-digit number; the person types it on the old device (core §4.1).
 2. The old device asks for its approval: its lock; or, with no lock, the person picks **Use another
-   device** (a `pair`) or **Scan my paper** (core §6.2).
+   device** (a `pair`), **Scan my paper**, or, on a lockless device that kept its backup, **Use the backup
+   this browser kept** (core §6.2).
 
-A lone device with no lock and no paper can't add a device (core §6.2, no wait path). The app says so in
-one line when it happens.
+A lone device with no lock, no paper and no kept backup can't add a device (core §6.2, no wait path). The
+app says so in one line when it happens.
 
 ### 2.2 Reporting a device lost
 
@@ -166,13 +174,16 @@ An extension retiring in favour of the machine's desktop app uses the core's `se
    account published on relays that honour it, the profile, follows and lists included, and leaves the
    key alone, so a person can erase their posts and keep their npub. Afterwards the device republishes the
    signpost and its grant and labels events.
-2. **Destroy my key**: the card says "This destroys every piece of your key. Keykin can never use this
-   npub again. This can't be undone." For an imported key it adds: "Old copies of your nsec still work."
+2. **Destroy my key**: the card says "This destroys every piece of your key on your servers. They will
+   never serve this npub again. This can't be undone." For an imported key it adds: "Old copies of your
+   nsec still work."
    It is an approved request, `account_delete {id}`, with a lock, a second device (`pair`) or the paper
    (core §6.2), encoded as core §6.1's generic request (for `paper`, the backup signs `{"what":
    hex(what), "challenge"}`, core 13.15). There is no hold path: a thief with an unlocked lockless phone
-   can't destroy the key. If the person chose Erase my posts, this waits until that is signed.
-   - The device sends it to every server, as a delivery, and keeps sending until each answers `deleted`.
+   can't destroy the key. If the person chose Erase my posts, the delete's approval is asked for only
+   after the vanish is signed, and the device republishes the signed vanish to every relay it knows first.
+   - The device sends it to every server, as a delivery, and keeps sending until each answers `deleted`,
+     keeping only the request and the servers' endpoints until then.
    - A server accepts it with an approval it checks itself (fresh, with its own challenge for `paper`), or
      with a peer's host-signed `deleted` carrying the request. It then destroys everything for the
      account (its share, seeds, material, waits, push addresses, notice channels, heir record), keeps only
@@ -208,7 +219,9 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 | `type` | From → to | `cls` |
 |---|---|---|
 | `create` / `create_ok {dkg_key, host_sig}` | device → server / back | `ask` |
-| `dkg_1`, `dkg_2` | device ↔ server (relayed) | `ask` |
+| `dkg_1`, `dkg_2`, `dkg_abort {culprit}` | device ↔ server (relayed) | `ask` |
+| `create_abort {attempt}` | device → servers | `ask` |
+| `refused: exists` | server → device (an `error`) | — |
 | `account_delete {id, approval}` / `deleted {request, changes, host_sig}` | device → servers, server → server / back | `member` |
 
 ## 7. Limits, said plainly
@@ -230,6 +243,18 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 ## Changes
 
+- **Draft 4**, from its third red team (0 critical, 2 high):
+  - a handover carries the kept backup secret, and the app may use it for its first lock (H1, core 14);
+  - a failed creation is undone by `create_abort`, which leaves no record (H2).
+
+  The mediums and lows:
+  - the kept secret approves whatever a paper would, and ends when a lock is registered (M1, L1);
+  - `refused: exists` only when the epoch record arrives (M2);
+  - the delete tombstone keeps what proves its approval (M3, core 14);
+  - "Write it down" from a kept secret (M4);
+  - a third approval choice when adding a device, the delete approval after the vanish, the vanish
+    republished, restarts counted, signpost and push before the backup question, the destroy card
+    wording, names shown with models, the sender keeps only the request (L2 to L10).
 - **Draft 3** (and the user's answer on lockless "Not now": keep the secret sealed until a second device
   or a paper, core 14), from its second red team (0 critical, 1 high):
   - lockless devices lead with **Add your phone now**, and Not now says plainly what it costs (H1; the

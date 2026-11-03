@@ -100,7 +100,7 @@ depends on a person seeing them:
    the second device (§6.2);
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
    scanning it back or re-entering it (§4.3), unless they declined a paper (on a lockless device it is kept
-   until a second device joins, §4.3);
+   until a second device joins, a paper is read back or a lock is registered, §4.3);
 7. a new paper: "Keep your old paper until this app says the new one is ready", and only after the
    conflict check, "You can destroy the old paper" (§6.7.6 F7);
 8. a device restoring its pieces or catching up seeds by `rerepair`, `need_repair` or `need_seeds`
@@ -132,7 +132,8 @@ would.
 9. the newest public server list it has verified, and its own seat keys, enrol secrets and the inert
    uploads for incoming seats (Server profile module);
 10. after an account is deleted (Account admin module), only `SHA-256(g)`, the approved `account_delete`
-   and the changes that make its approver a device (its add and lock changes).
+   and the changes that prove its approval (the approving devices' adds and lock changes, and for a
+   `paper` approval the change that made that backup key current).
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
 co-signs, checks approvals, enforces the two waits and the stateless destructive rule (§5.8), sends
@@ -384,9 +385,10 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
    it **and shown it is readable** by scanning it back or re-entering it (§1.1), then destroys it and
    the shares. If the person declines, or leaves the flow unfinished for 24 hours, the device destroys
    them and the account has no paper until a later F7 (Account admin module), **except on a device with no
-   lock**: there it keeps them sealed (§7.3) until a second device has joined or a paper has been read
-   back, so a lockless account can still add a device. Until then that device alone is worth 5 points, like
-   an nsec kept in it. Until then that device alone is worth 5 points, the same as an nsec on it; it SHOULD
+   lock**: there it keeps them sealed (§7.3) until a second device has joined, a paper has been read
+   back, or the device has registered a lock, so a lockless account can still add a device. Until then
+   that device alone is worth 5 points, like an nsec kept in it, and the kept secret approves what a
+   `paper` approval would. Until then that device alone is worth 5 points, the same as an nsec on it; it SHOULD
    prompt to finish the backup.
 
 After that, each redeal appends a **paper delta** for it (§7.2), so a paper reaches every later state
@@ -428,7 +430,8 @@ wire change.
   after finishing or abandoning any round, join, pair session or hold it has in flight:
   1. It passes **everything a `welcome` carries** (§4.2 step 4) to the app over native messaging: the
      member key and shares, the state, the epoch record and the set of changes, every release seed, the
-     backup material, the base data key and every data-key seed, plus its site grants and its history.
+     backup material, the base data key and every data-key seed, any backup secret it kept (§4.3 step 4),
+     plus its site grants and its history.
   2. The app stores all of it durably, reloads it from storage, runs the full checks of §3.4 on the
      epoch record and changes, checks that the member key is a current device holding exactly those
      indices and that `s_i·G == P_i` for every share, registers its own push addresses (replacing the
@@ -456,7 +459,8 @@ wire change.
   can never remove the machine's only member. An app that is asked to take a handover again for the
   same member key accepts it as a retry.
 - A lock belongs to the member app (Touch ID through the Secure Enclave). A handed-over membership has
-  no lock until the app registers one by a lock change (§3.2).
+  no lock until the app registers one by a lock change (§3.2), which a handed-over kept backup secret may
+  approve as a paper would.
 
 Native messaging is not authenticated against other local software: a program running as the person
 could register a fake host and receive the extension's shares at handover, or see the requests it
