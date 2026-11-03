@@ -1,6 +1,6 @@
 # Keykin module: Backup
 
-Draft 4 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14 · not built
 
 The core has one backup: the **paper**, a backup key pair whose shares exist only as wrapped material
 (core §4.3, §7.2), recovered with two servers after a 3-day wait (§6.5). This module says how that key is
@@ -33,7 +33,9 @@ renews your heir and the pieces your 3 friends hold."
    apps before *time*."
 2. **F7 steps 1–3** as the core says (make K, repair the backup seat, read back any paper).
 3. **Hand out.** Between F7 step 3 and step 4, the device hands every friend its piece (§3) and builds the
-   heir record (§4.1). The deadline is the **F7 approval's expiry**.
+   heir record (§4.1). The deadline is **an hour before the F7 approval's expiry**, leaving time for the
+   upload and the co-sign. (Declining a *paper* never destroys K while friends or an heir are being
+   handed theirs.)
 4. **Commit only when the set can recover**: the paper, or two pieces, or one piece plus a printed piece.
    Holders that haven't acknowledged by then are dropped and named on Backup. If no recoverable set is
    reached before the expiry, nothing is sent: the device destroys K (core §4.3 step 4), and the old set
@@ -42,14 +44,20 @@ renews your heir and the pieces your 3 friends hold."
    §11.1 ignores unknown fields):
    - `holders`: the hashes of the holder keys kept in the set;
    - `heir`: the hash of the heir record, if there is one. The record and each server's piece travel with
-     the change as inert uploads (core §6.7.3), and servers accept a record **only** at the co-sign of a
-     `paper` change naming its hash. So nobody can install or swap an heir outside an F7.
+     the change as inert uploads (core §6.7.3), and every server accepts a record **only** when it applies
+     a co-signed `paper` change naming its hash. So nobody can install or swap an heir outside an F7.
+
+   Both fields are part of the approved list (core §6.7.2).
 6. The device destroys K once the change is co-signed; it isn't needed afterwards.
 7. **The commit proof is the co-signed `paper` change itself.** After F7 step 5's check (core §1.1 item 7),
    devices forward it to every holder, and again each time a holder's still-holding note names another set
    (§3), until each holder acknowledges. A holder checks `g`'s signature and `paper.key`.
 8. **Holders never delete on a timer.** A holder deletes a set's piece only when it sees a co-signed
-   `paper` change that `replaces` that set, or one whose `holders` doesn't list it.
+   `paper` change that `replaces` that set, or the `paper` change **of that same set** (`paper.key` = its
+   set id) whose `holders` doesn't list it.
+9. **Any device can renew.** The pinned holder keys and the heir's are kept in the synced device metadata
+   (Device policy §1, encrypted under the data key), so a renewal from another device, or after a recovery
+   through friends, keeps every holder.
 
 ## 2. Writing the backup key down
 
@@ -67,7 +75,8 @@ other value.
   - `4`: the holder-inbox key (§3).
 
   The same TLV without type `0` is the set's **account card**: friends and the heir keep it with their
-  copy.
+  copy. A holder pins the card's `g` for good. Servers and relays in later cards are **hints** only, and the
+  holder-inbox key changes only with a commit proof (§1.1 step 7).
 - **The 24 words** encode the raw scalar with the BIP-39 English word list, but the last 8 bits are the
   first 8 bits of `SHA-256("keykin-backup/1" ‖ secret)`, not BIP-39's checksum. No PBKDF2 is applied.
   - A wallet then rejects the words 255 times in 256, and a Keykin app can say "This looks like a wallet
@@ -112,11 +121,14 @@ wallet, which is harmless), so a printed piece is headed "**Keykin recovery piec
   notes never land where the person's messages go.
 - **Staying alive.** A friend's app sends a small **still holding** note, signed by the holder key and
   naming the set id, every 90 days and when it starts. It is a kind 1059 wrap to the holder-inbox key
-  with a NIP-40 expiration (it holds no secret). A friend's app that starts after a restore and finds no
-  piece sends a **lost** note instead.
+  with a NIP-40 expiration (it holds no secret).
+- **A restore that lost the piece.** The friend's app keeps a non-secret **holding record** (whose piece,
+  the set id, the account card) in its backed-up data. An app restored from a backup finds the record but
+  no piece or holder key, and sends a **lost** note as a NIP-59 wrap whose seal is signed by the friend's
+  npub, which the owner pinned at setup.
   - A device that reads a note answers with a fresh account card sealed to the holder key on the same
     relays, and the commit proof if the note names an older set (§1.1 step 7).
-  - The owner's device shows the quiet dot on Backup for a friend who is silent for 6 months ("Ana's app
+  - The owner's device shows the quiet dot on Backup for a friend who is silent for 100 days ("Ana's app
     hasn't checked in"), who sent a lost note, or who still names an old set ("Ana still has an old
     piece").
   - A friend's app that holds pieces offers **Move to a new phone** by an in-person QR, and warns before it
@@ -139,9 +151,9 @@ wallet, which is harmless), so a printed piece is headed "**Keykin recovery piec
 ## 4. An heir
 
 The person can name an **heir**, who can take over the account after a long silence. The heir's app makes
-a holder key exactly as a friend's does (§3); the person scans it in person, and the heir's app signs
-`heir_accept {g, holder key}` with it. At setup the device also sends the heir the account card, sealed to
-the holder key. The envelope holds the backup secret and the account card, so opening it is followed by
+a holder key exactly as a friend's does (§3), and the person scans it in person. At setup the device also
+sends the heir the account card, sealed to the holder key. The heir's app sends still-holding notes like a
+friend's, and gets fresh cards the same way. The envelope holds the backup secret and the account card, so opening it is followed by
 the core's paper recovery, with its 3-day wait.
 
 At setup the app suggests, never forces, a notice channel (core §8.1), since heir notices are what protect
@@ -153,7 +165,7 @@ an owner who rarely opens the app.
   server's piece at x = the FROST index of its seat. It publishes the commitments `C0 = r·G` and `C1 =
   a1·G` of the line, so every piece can be checked: `r_x·G == C0 + x·C1`.
 - It picks an ephemeral key `e`, and takes `z`, the 32-byte x-coordinate of `e·H` for the heir's holder
-  key `H`, lifted to even y (so the heir negates its holder secret if `H` had odd y).
+  key `H`.
 - `K = HKDF-SHA256(ikm = z ‖ r, salt = empty, info = "keykin-heir/1")`, with `r` as 32 bytes big-endian.
   The envelope is ChaCha20-Poly1305 under `K` with a random 12-byte nonce and associated data
   `"keykin-heir/1" ‖ g ‖ H ‖ set id`. The device opens it once itself, to check it.
@@ -172,10 +184,11 @@ change: they give the incoming server its piece at its seat's x by Shamir repair
 §4.2 step 3 (each sends the other a masked Lagrange-weighted share, both seal their sums to the newcomer),
 and send it the heir record from their own storage.
 
-- The newcomer checks the result against `C0` and `C1`, then sends every device `heir_held {set id, x}`,
-  signed by its host key, as a delivery.
-- Devices show one quiet line, "Your heir can't inherit until you renew your backup", when fewer than two
-  current seats have sent `heir_held`.
+- The newcomer checks the record's hash against the `heir` field of the co-signed `paper` change, and its
+  piece against `C0` and `C1`.
+- **Every** server holding a piece sends every device `heir_held {set id, x}`, signed by its host key, as a
+  delivery: at setup and after each repair. Devices show one quiet line, "Your heir can't inherit until
+  you renew your backup", when fewer than two current seats have sent `heir_held` for the current set.
 - While an heir exists, replacement picks (core §6.7.7) prefer servers that implement this module.
 
 ### 4.3 The long wait
@@ -262,6 +275,17 @@ servers. The app offers it calmly, after 7 days with every server unreachable fr
 
 ## Changes
 
+- **Draft 5**, from its fourth red team (0 critical, 0 high), its mediums and lows:
+  - a restored friend's app sends a lost note signed by the friend's npub, and silence shows after 100
+    days (M1);
+  - newcomers check the heir record against the pinned hash (M2);
+  - every server accepts the record when applying the change, and every holder sends `heir_held` (M3);
+  - module fields are part of the approved list (M4, core 14);
+  - pinned holder keys synced among devices (M5);
+  - cards pin `g`, later servers are hints (M6);
+  - deletion only on the piece's own set's change (M7);
+  - the heir checks in, and forwarding notes answer the heir key (M8, core 14);
+  - `heir_accept` and the even-y clause cut; the hand-out deadline's margin (cuts, L8).
 - **Draft 4**, from its third red team (0 critical, 3 high):
   - the heir record's hash is pinned in the `paper` change and accepted only at its co-sign (H1);
   - the co-signed `paper` change is the commit proof, forwarded until acknowledged, and holders never

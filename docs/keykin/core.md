@@ -927,7 +927,8 @@ They are changes of §3.2 (kind 24302, group-signed, valid in any order).
 and its redeal, a remove and its redeal, a paper change and its redeal.
 
 - The list is a JSON array of changes in which the redeal is a placeholder and a paper change has no
-  `inner` and no `state`. Its hash, `SHA-256(JCS(list))`, is the "change hash" everywhere: the lock assertion's `what` is
+  `inner` and no `state`. Module fields of a change (such as Backup's `holders` and `heir`) are part of the
+  approved list like any other field. Its hash, `SHA-256(JCS(list))`, is the "change hash" everywhere: the lock assertion's `what` is
   `"change" ‖ list hash ‖ epoch id ‖ expiry` (§6.1), and a pair code uses the same hash. The expiry is at
   most 24 hours away and checked by the co-signer.
 - In the list, the redeal appears only as `{"redeal": {"dealer": <device key>}}`: it binds **who** deals,
@@ -1044,7 +1045,7 @@ replaced. Three routes, tried in order:
    also answers `seated?` and `forward_get` signed by that record's heir key.
 2. **Follow the forwarding notes.** A retired server, after destroying everything else, keeps for the
    account only the group-signed change that retired it and the hashes of the keys allowed to ask for it
-   (the backup keys, device keys and other seat servers' keys it knew). It serves that change to a
+   (the backup keys, device keys, other seat servers' keys and any heir key it knew). It serves that change to a
    request signed by one of them. That is a forwarding note with no secrets. From
    the printed servers, the paper app walks the notes to today's servers.
 3. **The signpost**, for servers the person runs themself that are not on the public list. It is a kind
