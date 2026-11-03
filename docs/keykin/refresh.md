@@ -1,10 +1,16 @@
 # Keykin: Refresh now
 
-Draft 1 · 2026-11-02 · optional module of [Keykin Core](core.md) draft 7 · not built
+Draft 2 · 2026-11-02 · optional module of [Keykin Core](core.md) draft 8 · not built
 
 "Refresh now" is the one ceremony that changes an account's structure. It re-deals every share, so
-the pieces of removed devices and servers stop fitting the key. It also replaces servers, adds or
-removes a helper, prints a new paper, changes locks and relays, and makes new data and release keys.
+honest members' old pieces are destroyed and the new ones no longer combine with anything kept from
+before. That is what makes replacing a server safe. It also adds or removes a helper, prints a new
+paper, changes locks and relays, and makes new data and release keys.
+
+**What it cannot do.** The key underneath stays the same, so pieces of the **same old epoch that
+someone kept** still add up to it among themselves, for ever. A removed phone (3) plus the old paper
+(2) is the key after a refresh just as before. So the old paper must be **destroyed**, and the app
+says exactly that.
 
 It is deliberately simple. It is started by hand. It runs only when **every member that stays** is
 online at once, and every one of them must confirm before anything changes. The old epoch keeps
@@ -18,8 +24,9 @@ The bar is the same as the core's: an nsec in a password manager. Terms are the 
 - The person taps **Refresh now**. Apps SHOULD offer it after a device is reported lost, after a paper
   recovery, and when a server has been quiet for a week ("Your server at home has been quiet for a
   week"). They never run it without the person.
-- **Before starting**, the device shows that the paper will be reprinted and **the old paper will stop
-  working once the refresh finishes** (a security display). The person can stop there.
+- **Before starting**, the device shows that a new paper will be printed and that the person must
+  **destroy the old paper** afterwards, because it is not made useless (a security display). It never
+  says the old paper "stops working". The person can stop there.
 - It needs an approval (core §6.2): the starting device's lock, two devices with a typed code, a device
   with the paper, or a paper recovery session.
 
@@ -44,18 +51,22 @@ The bar is the same as the core's: an nsec in a password manager. Terms are the 
    { "type": "refresh_plan", "plan": "<16 random bytes, hex>", "from_epoch": "<epoch id>",
      "epoch": { "n": 4, "id": "<16 random bytes>" },
      "staying": [ <member entries as in the epoch record, with any new lock> ],
-     "new":     [ <member entries for joining servers, helper, devices; indices from next free> ],
+     "new":     [ <member entries for joining servers, helper, devices, and the new backup> ],
      "leaving": [ "<member key>", … ],
      "relays": [ … ],
      "dealer_server": "<member key of one staying server>",
      "approval": { /* core §6.2, over SHA-256(JCS(plan without approval)) */ } }
    ```
 
-   A server MUST check the approval and the invariants, and that `from_epoch` is its current epoch.
+   New members' indices are derived as for changes (core §3.2), with the new epoch id. The `leaving`
+   list MUST include every key removed by a change the sender knows of, in this epoch or before. A
+   server MUST check the approval (`"refresh" ‖ SHA-256(JCS(plan without approval))` for a lock), the
+   invariants, that `from_epoch` is its current epoch, and that every removal it knows of is listed.
    It holds **at most one plan**: while it holds one, it answers any other with `error busy` and
    refuses new adds (core §3.2). A `remove` aborts the plan (step 8).
 2. **Deal.** The starting device and the named server each deal a random degree-3 polynomial with zero
-   constant term. Each publishes its commitments to every member, and seals to each staying member the
+   constant term. Each publishes its commitments (exactly 4 points, the first the identity) to every
+   member, and seals to each staying member the
    delta for each of its indices. Deltas travel live or through inboxes, never on relays.
 3. **Check.** Each staying member checks every delta against its dealer's commitments
    (`δ·G == Σ D_k·i^k`). It adds both, keeps the result as its **pending** share, and checks it against
@@ -70,13 +81,14 @@ The bar is the same as the core's: an nsec in a password manager. Terms are the 
 5. **New paper.** The starting device makes a new backup key pair and the paper exactly as core §4.3,
    on the pending shares. It checks the backup's shares with the secret it holds, wraps them and the new
    data key, signs the inner layer, and has the person print the paper and **show it is readable**. A
-   refresh without a paper (an account that never had one) skips this step.
-6. **Confirm.** Every staying and new member sends `refresh_ok {plan, pending: [P_i…]}`, with a
+   refresh without a paper (an account that never had one) skips this step. The backup is never asked
+   to confirm or adopt anything: the person's read-back is its confirmation.
+6. **Confirm.** Every staying and new member except the backup sends `refresh_ok {plan, pending: [P_i…]}`, with a
    detached signature, to the starting device and every server, once its pending shares verify. New
    devices also confirm their locks here. The starting device sends the new release key to every device
    and server and the new data key to every device, sealed, live or through inboxes.
-7. **Commit.** When the starting device holds a `refresh_ok` from **every** staying and new member, it
-   drafts the new epoch record:
+7. **Commit.** When the starting device holds a `refresh_ok` from **every** staying and new member other
+   than the backup, it drafts the new epoch record:
    - `C'`;
    - the members;
    - `removed`, extended with the leaving keys and every device removed by a change in the old epoch;
@@ -90,7 +102,8 @@ The bar is the same as the core's: an nsec in a password manager. Terms are the 
    - the starting device sends `withdraw {plan}`;
    - a proven `refresh_refuse` arrives;
    - a `remove` arrives;
-   - the plan is not committed within 1 hour (reference).
+   - the plan is not committed within 1 hour (reference) of the paper being read back (or, with no
+     paper, of the plan).
 
    Every member then destroys its pending shares and any new keys it received, and servers are free
    for another plan. A server MUST NOT drop a plan it confirmed for any other reason, and MUST NOT
@@ -100,13 +113,16 @@ The bar is the same as the core's: an nsec in a password manager. Terms are the 
 
 - A member **adopts** the new epoch record once it checks it (core §3.4, with the `refresh` evidence:
   the approval and a `refresh_ok` from every member the record lists). It then sends `adopted {epoch}`.
-- **The old epoch stays valid until every member has moved.** Until a member has seen `adopted` from
-  every member of the new record, it keeps its old share, release key and backup material, and signs
+- **The old epoch stays valid until every member has moved, and at most 7 days.** Until a member has
+  seen `adopted` from every member of the new record other than the backup, or 7 days have passed since
+  the commit, whichever comes first, it keeps its old share, release key and backup material, and signs
   rounds in whichever epoch the request names (core §5.1: all shares of one round are of one epoch).
   Servers refuse old-epoch rounds from leaving members, exactly as they refuse removed ones.
-- When every member has adopted, each destroys its old share, the old release key and the old backup
-  material. Devices keep old data keys to read old data. **From then on, the old paper and every
-  leaving or removed member's pieces fit nothing.**
+- Then each member destroys its old share, the old release key and the old backup material. Devices
+  keep old data keys to read old data. A member that had not adopted by then joins again. From then on,
+  no honest member holds an old piece, so a leaving server's or removed device's old pieces combine
+  with nothing an honest member has. **They still combine with each other and with the old paper**:
+  that is why it must be destroyed.
 - A member that was in the plan but missed the commit (it crashed after confirming) fetches the record
   and its deliveries when it is back, as the core says (§7.1), and adopts. Its pending shares were kept,
   so this works for as long as it kept them; a member that lost them joins again.
@@ -122,9 +138,8 @@ The bar is the same as the core's: an nsec in a password manager. Terms are the 
 
 **What it gives.**
 
-- After the commit, the pieces of removed devices, leaving servers and the old paper stop fitting.
-  This closes the core's "between refreshes" limits: a removed device plus a bad server, a removed
-  device plus the paper, and old data keys for new data.
+- After the old epoch retires, honest members hold no old pieces, so a removed device or a leaving
+  server can no longer find an honest partner, and new private data is under a new data key.
 - Servers change only here, and the re-deal means old and new server pieces never add up to 4.
 - Nothing is silent: everyone who stays confirms, the person sees the paper warning, and the paper is
   read back.
@@ -140,8 +155,9 @@ The bar is the same as the core's: an nsec in a password manager. Terms are the 
 - **The starting device sees the new backup's shares** while it makes the paper (core §4.3). A
   compromised starting device can therefore keep the new paper's power. It already holds the key with
   the paper in that moment.
-- **Old pieces copied before the refresh** (a removed device's shares, an old paper) stay valid for
-  signing only until every member has adopted, and only with members that still hold old shares.
+- **Old pieces kept by anyone stay valid among themselves, for ever.** A removed device plus the old
+  paper, or plus a dishonest leaving server's kept share, is the key after any number of refreshes.
+  Destroying the old paper is the person's job; the app says so before and after.
 
 ## 7. Messages
 
@@ -167,3 +183,10 @@ These are in the core's vectors file, under "refresh":
 - a `remove` aborting a plan;
 - a server swap where the old server's share does not fit `C'`;
 - old-epoch rounds accepted until everyone adopts, then refused.
+
+## Changes in draft 2
+
+From red-team round 7: honest wording about what refresh cannot do ("destroy your old paper"); the
+backup is left out of confirming and adopting; the old epoch retires at most 7 days after the commit;
+the plan must list every known removal; new indices are hash-derived; dealers' commitments are exactly
+4 points; the 1-hour limit starts after the paper is read back; the lock text for a refresh is defined.

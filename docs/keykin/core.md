@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 7 · 2026-11-02 · `draft` `optional` · not built
+Draft 8 · 2026-11-02 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -26,7 +26,7 @@ Keykin is the new working name of Cosign. Cosign 0.12 (built, described in `../C
 prototype this replaces; §11 says how existing accounts move over. Old `cosign` names stay readable
 for ever.
 
-**How it got this shape.** Six independent red teams kept finding serious problems in the same
+**How it got this shape.** Seven independent red teams kept finding serious problems in the same
 places, and the user cut them (decision log, 2026-11-02; reasoning in `simplification.md`):
 
 - the core never re-deals shares;
@@ -34,7 +34,8 @@ places, and the user cut them (decision log, 2026-11-02; reasoning in `simplific
 - everyday changes (add a device, report one lost, paper recovery) are independent signed approvals,
   safe in any order;
 - structural changes (servers, a helper, the paper) happen only in "Refresh now", with everyone
-  online.
+  online;
+- there is no in-place move from Cosign 0.12: an account moves by importing its nsec (§11.2).
 
 ---
 
@@ -64,8 +65,9 @@ places, and the user cut them (decision log, 2026-11-02; reasoning in `simplific
 - **Device-class**: `device` and `helper`. Only these coordinate everyday signing.
 - **Epoch record**: the signed list of members at the start of an epoch, with the polynomial
   commitment (§3.1). Made only at creation and by "Refresh now".
-- **Change**: a signed, self-contained account change made between refreshes: adding a device, or
-  removing a device or helper (§3.2). Changes can be applied in any order.
+- **Change**: a signed, self-contained account change made between refreshes: adding a device,
+  removing a device or helper, or re-registering a device's lock (§3.2). Changes can be applied in
+  any order.
 - **Membership**: the epoch record plus every valid change of that epoch.
 - **Lock**: a P-256 key in secure hardware that signs only after a fresh **biometric** match and stops
   working when the enrolled faces or fingerprints change (§6.1). A passcode never counts.
@@ -85,17 +87,18 @@ places, and the user cut them (decision log, 2026-11-02; reasoning in `simplific
 These are the only things this document requires an app to show, because the protocol's safety
 depends on a person seeing them:
 
-1. the 6-digit join check, on both screens, with the person confirming on both before a join goes
-   ahead (§4.1);
+1. the 6-digit join check, shown on the new device and **typed** by the person on the inviting
+   device before a join goes ahead (§4.1);
 2. the account a device joined, when it joined from a join code (§4.2);
 3. a refused epoch record or change, with the member it came from (§3.4);
 4. that an update is needed, when a device meets a version it does not know (§11.1);
 5. a two-device approval: the first device shows a 6-digit code and the person **types** it on the
-   second device; for adding a device, the code is the join check shown on the new device (§6.2);
+   second device; for adding a device, the code is the join check shown on the new device, typed on
+   the second device (§6.2);
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
    scanning it back or re-entering it (§4.3).
 
-`refresh.md` adds one more: before a refresh starts, that the old paper will stop working.
+`refresh.md` adds one more: before a refresh starts, that the person must destroy the old paper.
 
 ## 2. Who does what
 
@@ -165,7 +168,8 @@ tags `["d","keykin"]`, `["v","1"]` and `["epoch","<number>"]`. Its content is JS
   never taken from a message.
 - `lock` is absent for a member without one. `own` marks a server the user runs; it counts as one of
   the user's devices for privacy, nothing else.
-- `removed` only grows. A key in it is never a member again.
+- `removed` only grows, across epochs. A key in it is never a member again, in this epoch or any
+  later one.
 - **Unknown member kinds** are kept, and a device shows them. For the invariants, an unknown kind's
   shares count towards I2 as if it were a server, and as neither device nor server in I5. A member
   that meets an unknown kind MUST NOT take part in a refresh until it is updated, but signs everything
@@ -181,13 +185,16 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
 
 ```jsonc
 { "v": 1, "g": "<group key>", "epoch": "<epoch id>",
-  "change": { "add": { "key": "<member key>", "kind": "device", "salt": 0 } }   // or { "remove": "<member key>" }
-            ,
+  "change": { "add": { "key": "<member key>", "kind": "device", "lock": { … } | null, "salt": 0 } },
+            // or { "remove": "<member key>" }
+            // or { "lock": { "member": "<device key>", "replaces": "<old lock pub, or null>", "new": { "pub": "…", "rp": "…" } } }
   "approval": { /* §6.2 */ } }
 ```
 
-- There are only two: **add a device** and **remove a device or helper**. Everything else (servers,
-  a helper, the paper, locks, relays) changes only at a refresh.
+- There are only three: **add a device**, **remove a device or helper**, and **re-register a
+  device's lock** (after its face or fingerprint enrollment changed). Everything else (servers, a
+  helper, the paper, relays) changes only at a refresh. If two lock changes for one device replace
+  the same old lock, both are void and the device is lockless until it makes a new one.
 - **Indices without coordination.** An added device's three indices are
   `2^16 + (int(SHA-256("keykin-index/1" ‖ g ‖ epoch id ‖ key ‖ salt ‖ j)[0..4], big-endian) mod 2^30)`
   for `j = 0, 1, 2`. The inviting device picks the lowest `salt` whose indices collide with nothing it
@@ -195,13 +202,22 @@ A change is a **kind 24302** event signed by the group key, with tags `["v","1"]
   devices join again.
 - **Order does not matter.** The membership is the epoch record's members, plus every valid add,
   minus every key in a valid remove or in `removed`. A remove always wins over an add of the same key.
-- A change is **valid** when it is signed by `g`, names the current epoch, and carries a valid
-  approval (§6.2) from members of that membership. A co-signer refuses an approval from a member it
-  knows is removed. A change that a server co-signed before it learned of its approver's removal
-  stays valid; that window is the time a `remove` takes to arrive.
+- A change is **valid** when it is signed by `g`, names the current epoch, and its approval names
+  members who were in the membership (the epoch record's members or devices added by changes of that
+  epoch). A later removal of the approver does not undo it, so every member reaches the same answer
+  whatever order changes arrive in.
+- **Freshness is the co-signer's job, once.** Only a server co-signing a change checks that its
+  approval is fresh: the challenge, the waited statements' age, that the approver is not already
+  removed as far as the server knows. Everyone else, later or on joining, checks only the group
+  signature, the approver's membership and the structure. (The co-signer's signature is the evidence
+  that the check was made.) The window between an approver's removal and the news reaching a server
+  is a stated limit (§10).
+- **A remove crosses epochs.** A `remove` made in an older epoch still applies in every later one: a
+  member that learns of it removes that key wherever it is, and a refresh plan MUST list every removal
+  its sender knows of.
 - Changes never expire within their epoch. Every server keeps the whole set and gives it out
-  (`changes_get {epoch}` → `changes`), so a member that was away for a month just fetches the set
-  and checks each one. A refresh folds the set into the next epoch record and starts a new empty one.
+  (`changes_get {epoch}` → `changes`). A member catching up asks **every** server and takes the union,
+  so one server leaving out a removal changes nothing. A refresh folds the set into the next epoch record and starts a new empty one.
 - While a server holds a pending refresh plan (`refresh.md`), it refuses new adds (`error busy`); a
   `remove` aborts the plan.
 
@@ -222,7 +238,7 @@ change that breaks one, and every member MUST refuse to adopt one.
 Also: each server holds exactly 1 share, each device and helper exactly 3; indices are unique; and
 the epoch record has **exactly 3 servers or more**, so one dead server never blocks signing. (Apps
 add public servers automatically, alongside any server the person runs.) Changes only add devices
-and remove devices or helpers, so they cannot break I1, I2, I3 or I5.
+and remove devices or helpers, or change a lock, so they cannot break I1, I2, I3 or I5.
 
 ### 3.4 Checking
 
@@ -265,8 +281,9 @@ direction it goes. So after the hello, the side that received it answers with a 
 (`join_nonce`), and both screens show (§1.1) a 6-digit number,
 `int(SHA-256("keykin-join/1" ‖ g ‖ m ‖ n ‖ s ‖ t)[0..8], big-endian) mod 10^6` (keys as 32 raw
 bytes, `s` and `t` as 16 raw bytes; in the join-code direction `g` and `m` are those in the
-`welcome_offer`). The person confirms on both devices that they match. The hello fixes `n` before
-`t` exists, so nobody can grind a key whose number matches.
+`welcome_offer`). The **new device shows** it and the person **types** it on the inviting device,
+which goes on only if it matches. The hello fixes `n` before `t` exists, so nobody can grind a key
+whose number matches.
 
 ### 4.2 The handshake
 
@@ -511,9 +528,9 @@ is invalidated when the enrolled biometrics change:
 
 A key that accepts a passcode or PIN instead is **not a lock**. Browser passkeys (WebAuthn) do not count,
 because a site cannot stop them falling back to a PIN. So a phone with only a passcode, a browser
-extension, and a Mac without Touch ID have no lock. A member's lock is set when it joins and can change
-only at a refresh; a device whose lock stopped working (new face, new fingerprint) is lockless until
-then.
+extension, and a Mac without Touch ID have no lock. A device's lock is set when it joins. When it stops working (a new face or fingerprint was
+enrolled), the device is lockless until it re-registers one by a lock change (§3.2), approved by a
+second device or the paper, or at a refresh.
 
 A **lock assertion** has one encoding everywhere, WebAuthn's structure:
 `{ "authData": "<b64url>", "clientData": "<b64url of JSON>", "sig": "<b64url DER>" }`.
@@ -526,7 +543,10 @@ the user-present and user-verified flags set; and that `sig` verifies over
 - for a destructive event, `"sign" ‖ event id` (§5.8);
 - for an account change, `"change" ‖ SHA-256(JCS(change)) ‖ epoch id`;
 - for a cancel, `"cancel" ‖ wait id`;
-- for a refresh, as `refresh.md` says.
+- for a refresh, `"refresh" ‖ SHA-256(JCS(plan without approval))`.
+
+A `paper` approval's backup signature covers the change hash and a challenge from the server it is
+sent to; only that server checks the challenge (§3.2).
 
 Native apps build the same structure themselves. Servers cannot tell that a lock is in hardware or
 biometric-only (no attestation is required); that is a stated limit (§10), not a check.
@@ -557,6 +577,7 @@ second device or the paper. A helper never approves anything.
 | Change | Approval |
 |---|---|
 | Add a `device` (§3.2) | `lock`, `pair` or `paper`; or `recovery` |
+| Re-register a device's lock (§3.2) | `pair` or `paper`; or `recovery` |
 | Report a `device` or `helper` lost (§6.4) | `lock`, `pair` or `paper`; or `recovery` |
 | "Refresh now" (servers, helper, paper, locks, relays, data and release keys) | `lock`, `pair` or `paper`; or `recovery` (`refresh.md`) |
 | Export a child key (§6.6) | `lock`, `pair` or `paper` |
@@ -568,14 +589,17 @@ second device or the paper. A helper never approves anything.
 - There are only two kinds of wait, both `W` on each server's own clock: a **recovery** (§6.5) and a
   **hold** (§5.8). A server starts one, tells every member (an `ask` push and an inbox notice) and every
   notice channel (§8.1), and when its own wait has passed, pushes the requester (`ask`) and signs a
-  **waited statement**: `{ "server": <host key>, "wait": <wait id>, "start": <unix>, "end": <unix>,
-  "sig": <BIP-340 by the host key over SHA-256("keykin-waited/1" ‖ g ‖ wait ‖ start ‖ end)> }`. The wait
-  id is the SHA-256 of the request that started it. Verifiers MUST check that `end − start ≥ W` and
-  accept a statement only within 7 days of its `end`.
+  **waited statement**: `{ "server": <host key>, "kind": "recovery" | "hold", "wait": <wait id>,
+  "start": <unix>, "end": <unix>, "sig": <BIP-340 by the host key over SHA-256("keykin-waited/1" ‖ g ‖
+  kind ‖ wait ‖ start ‖ end)> }`. A hold's wait id is `SHA-256("hold" ‖ event id)`; a recovery's is
+  `SHA-256("recovery" ‖ backup key ‖ epoch id ‖ r)`, with `r` a random value the holder puts in every
+  `release_request`, so every server names the same wait. Verifiers MUST check that `end − start ≥ W`;
+  a co-signer also accepts a statement only within 7 days of its `end` (§3.2).
 - **Cancel** `cancel {wait}`, from a `device` with a lock assertion or from two devices (`pair`), ends
   the wait at that server, which tells everyone. A helper never cancels. The requester may always
   `withdraw` its own. A server MUST NOT issue a waited statement or a release bundle until it has fetched
-  its deliveries from its peers (§7.1), so a missed `cancel` still counts.
+  its deliveries from its peers (§7.1), so a missed `cancel` still counts; a peer that has not answered
+  for an hour is skipped.
 - **A recovery freezes holds.** When a server starts a recovery wait, it ends every running hold and,
   until the recovery wait is cancelled or the recovery session ends, refuses new holds and new notice
   channels. (A thief who knows a locked phone's passcode can reset its face; the lock then stops working,
@@ -591,16 +615,16 @@ second device or the paper. A helper never approves anything.
   MUST refuse to co-sign with it. It is never delayed.
 - **Removal is final.** Nobody is put back; a device removed by mistake joins again.
 - **What removal does not do.** The removed device's shares, the release key and the data key do not
-  change until the next "Refresh now", which re-deals everything so the removed pieces stop fitting. Apps
-  SHOULD offer a refresh right after a removal. Until then every member refusing it is the protection
-  (§10).
+  change. Every member refusing it is the protection (§10). "Refresh now" re-deals the shares, so the
+  removed device's pieces no longer combine with any honest member's; apps SHOULD offer it after a
+  removal. What the removed device itself kept, it keeps (§10).
 
 ### 6.5 Recovery
 
 A round with no device-class member (I4) happens only in a recovery session.
 
-1. The backup holder asks each server for a `challenge` and sends `release_request`, signed by the backup
-   key over it. Servers pass it to their peers as a delivery (§7.1), so a server that was down starts its
+1. The backup holder picks a random `r`, asks each server for a `challenge`, and sends each a
+   `release_request {r}` signed by the backup key over that server's challenge. Servers pass it to their peers as a delivery (§7.1), so a server that was down starts its
    own wait before it acts for the account again.
 2. Each server starts a recovery wait (`W`, §6.3), tells every member and channel, and freezes holds. A
    locked device, or two devices together, can cancel it; the holder can withdraw it.
@@ -626,8 +650,8 @@ So a stolen paper needs two servers that each take part after their wait, with e
   with `origin: import`; then none. Export is `take_out {}` from a device with an approval (§6.2); each
   server seals its share to that device and tells every member.
 - A server treats a group as a child only if it adopted, first-hand at the group's creation, a first
-  epoch record that says `role: child` (Key families module). A record made by migration (§11.2) is
-  always `master`.
+  epoch record that says `role: child` (Key families module). An account made by importing a 0.12
+  account's nsec (§11.2) is always `master`.
 - An export is permanent.
 
 ## 7. Keeping what you hold
@@ -639,7 +663,9 @@ release key, the backup material, and every `cancel`, `withdraw` and `release_re
 **delivery**. Every server of the account MUST keep each delivery for every member, other servers
 included, until that member sends `ack` for it or is removed, and MUST hand it over when asked (§8.2).
 A server that was offline MUST fetch its deliveries from its peers before it co-signs, issues a waited
-statement or releases anything again. Changes are kept for the whole epoch (§3.2).
+statement or releases anything again, skipping a peer that has not answered for an hour. Changes are
+kept for the whole epoch (§3.2). Deliveries for a removed member, and for the backup (which never
+fetches), are dropped; `deliver` from a removed member is refused.
 
 Deliveries travel **only live or through server inboxes**, never as copies on relays: anything that
 carries a share or a key must not sit in public archives.
@@ -818,11 +844,15 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 
 **What does not, said plainly.**
 
-- **Between refreshes, removed devices keep valid pieces**, and the data key and release key don't
-  change. A removed device plus any one server that ignores the block (hacked, buggy, restored from an
-  old backup) is 4 points; it can read private data written later; and with the paper it is the key with
-  no server. "Refresh now" ends all of this; apps offer it after every removal. After a serious leak of
-  the key itself, the fix is a new key with key families (later).
+- **Removed devices keep valid pieces.** The key underneath never changes, so whatever a removed
+  device kept still fits it. Between refreshes: a removed device plus any one server that ignores the
+  block (hacked, buggy, restored from an old backup) is 4 points, and it can read private data written
+  later. "Refresh now" changes that: honest members destroy their old pieces, so the removed device's
+  3 no longer combine with any honest server's, and the data key changes. But **pieces of the same
+  epoch that someone kept still combine with each other, for ever**: a removed device (3) plus the old
+  paper (2) is the key, and so is a removed device plus a dishonest server's kept old share. That is
+  why the old paper must be destroyed after a refresh. After a serious leak of the key itself, the fix
+  is a new key with key families (later).
 - **A stolen paper plus two dishonest servers** is the key. Today one operator runs every server. And a
   paper recovery that nobody cancels leaves the thief with a device, so the key for good.
 - **The paper needs two live servers** to recover; with fewer, it can only be used together with a
@@ -858,7 +888,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 
 | Finding | Closed by |
 |---|---|
-| #17 joining phone trusts any welcome | §4 (group-signed changes, inviter's sigma, the check with its nonce) |
+| #17 joining phone trusts any welcome | §4 (group-signed changes, inviter's sigma, the typed check with its nonce) |
 | #4 lock taken on trust | §6.1 (biometric-only, checked), §6.2 |
 | #1 injected member can act | §3 (only group-signed epoch records and changes; kinds fixed) |
 | #7 wipe leaves shares recoverable | §7.3 (browsers: §10) |
@@ -866,12 +896,12 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | #3 report-lost race | §6.2, §6.4 (lock, two devices with a typed code, or the paper) |
 | #8, #9 server archive and ECDH oracle | §2 (no history), §5.5 (devices only, weighted) |
 | #12 paper promotes itself | kinds never change; a backup is never a device |
-| #13 stranded server, #14 removal in a pending refresh | deliveries (§7.1); `refresh.md` (a removal aborts a plan) |
+| #13 stranded server, #14 removal in a pending refresh | deliveries (§7.1); a `remove` crosses epochs (§3.2) and aborts a plan (`refresh.md`) |
 | #16a/b optional or partial proofs | §5.5 |
 | #5 extension shares unencrypted | encrypted where it costs no prompt (§7.3); otherwise 3 points, which beats the bar (§10) |
 | #10, #11, #15 | Doors and Device policy modules (grants live on devices) |
 
-## 11. Versions, migration, the rename
+## 11. Versions, moving from Cosign 0.12, the rename
 
 ### 11.1 Versions
 
@@ -884,24 +914,17 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 
 ### 11.2 Moving a Cosign 0.12 account to Keykin
 
-The group key and the npub stay the same. Cosign 0.12 signs with its own FROST scheme (`server/frost.ts`,
-binding tag `cosign/rho`), so servers keep it as version N−1 until every member has moved.
+There is **no in-place move**. Cosign 0.12 never pinned its members' lock keys, so nothing a 0.12
+member says can be trusted to run one.
 
-1. Servers are updated to speak both. Nothing changes for the person yet.
-2. The move is one "Refresh now" (`refresh.md`) run by a device that knows the account first-hand: its
-   own 3 points and the group key give the commitment (§3.4 step 4); it keeps only members it ran the
-   repair or key generation for, or whose partials it verified against the derived points. Agreement
-   among servers counts for nothing. Everyone else joins again.
-3. The approval is the migrating device's lock, a second 0.12 device with a typed code, or the 0.12 paper
-   with the device. Servers refuse a migration from or listing a member removed under 0.12, and hold one
-   migration plan at a time, which needs every staying member's confirmation (`refresh.md`), so no one
-   else's migration can complete while the owner's devices refuse it.
-4. The first Keykin epoch record is always `role: master`. Because the move re-deals, every 0.12 piece,
-   including those of devices removed under 0.12, stops fitting. Once a server has adopted it, it stops
-   taking Cosign 0.12 traffic for the account.
-5. Do it first on a throwaway account, with the paper checked, before the main npub.
+A 0.12 account moves by **import**: the person brings the account's nsec (for the user's own account,
+from their password manager) to a Keykin device, which creates a fresh Keykin account with the same
+npub and new pieces (Account admin module, "import": deal, then wipe; `origin: import`). Then the old
+account is retired: each 0.12 server is asked to forget (0.12's guarded `forget`), and the 0.12 apps
+wipe their copies. The npub stays the same, so followers notice nothing.
 
-Accounts that never migrate keep working with servers that still speak Cosign 0.12.
+The key was whole when it was imported, so it is "ever whole" (§10). That was already true of the
+user's account.
 
 ### 11.3 The rename
 
@@ -963,3 +986,17 @@ The user's third cut (2026-11-02, after red-team round 6):
 - A recovery ends running holds (M1); `deliver` addresses inbox items by the wrap's `p` tag (M2);
   migration is one refresh with every staying member confirming (M3); the release-key rotation on
   removal is gone (L1); §10 states the remaining limits (L2, L3).
+
+## Changes in draft 8
+
+The user's fourth cut (2026-11-02, after red-team round 7):
+
+- **No in-place move from 0.12** (§11.2): an account moves by importing its nsec (round 7 H4).
+- **Honest refresh** (§6.4, §10, `refresh.md`): refresh kills honest members' old pieces; pieces
+  someone kept still combine; the old paper must be destroyed (C1).
+- **Lock re-registration** is an everyday change, approved by `pair` or `paper` (§3.2, §6.1; M5).
+- Round 7's slips: freshness is checked only by the co-signer, once (H2, M2); a `remove` crosses
+  epochs (H3); a dead peer is skipped after an hour (H5); catch-up takes the union of servers' change
+  sets (L4); recovery waits share an id and statements say their kind (M3); the new device shows the
+  join check and the person types it on the inviter (M4); the refresh lock text and the paper
+  challenge are defined (L1); deliveries for removed members and the backup are dropped (L3).

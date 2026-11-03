@@ -154,3 +154,9 @@ because it describes the code during the freeze.
 - 2026-11-02 · User: **a two-device approval means typing a 6-digit code** from one device into the other, not a tap.
 - 2026-11-02 · User: **a dead server, public or private, is replaced only in a refresh with a reprint, never by a silent swap.** After a week quiet, the app says so once, calmly, and offers "Refresh now". *(Updates the 2026-10-25 quiet-servers line and the 2026-10-24 "silent auto-swap for public servers".)*
 - 2026-11-02 · Process: red-team round 7 (core draft 7 + refresh draft 1) found 1 critical, 5 high. Stopped again; `simplification.md` part 4 proposes cutting in-place migration from 0.12 (re-import the nsec instead), honest refresh wording ("destroy your old paper"), slip fixes, and lock re-registration as an everyday change. Waiting on the user.
+
+## Fourth simplification (user, 2026-11-02, after red-team round 7)
+
+- 2026-11-02 · User: **no in-place move from Cosign 0.12.** The user's account moves by importing the nsec (from Bitwarden) into a fresh Keykin account: same npub, new pieces; the old 0.12 servers forget theirs.
+- 2026-11-02 · User: **keep "Refresh now" with honest wording**: "destroy your old paper", never "it stops working". Refresh kills honest members' old pieces (so server swaps are safe) but not pieces someone kept.
+- 2026-11-02 · User: **re-registering a face or fingerprint is an everyday change**, approved by a second device with a typed code or by the paper.
