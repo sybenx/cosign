@@ -1109,7 +1109,8 @@ There are no aborts, no busy state, no leases and no clock that matters.
 - About once a year per dead server: one Face ID. If every server is gone: scan the paper.
 - When a phone's lock stops working (a new face or fingerprint was enrolled), the app says so on the
   next open: "Your lock stopped working. Scan your paper or use a second device to restore it." A lone
-  device without a lock is pointed firmly at adding a second device at setup.
+  device without a lock gets a quiet suggestion, never a push, to add a second device (a browser
+  extension on a laptop counts).
 
 ### 6.8 Exporting keys
 
@@ -1367,7 +1368,8 @@ The signpost (kind 30078) is the one Keykin event published on relays (§6.7.5).
 - **Two servers dead and every device lost before replacement** ends paper-only recovery.
 - **A lone device without a working lock** (a passcode-only phone, a new fingerprint enrolled, an
   extension, a Mac without Touch ID) needs the paper in hand to add a device, make a paper, re-lock or
-  replace a server. That is the price of "no wait instead"; apps say so and push a second device.
+  replace a server. That is the price of "no wait instead" (user, 2026-11-03: it stays). Apps quietly suggest a
+  second device, which a browser extension on a laptop counts as, and never push.
 - **A stolen current device plus any dishonest retired server** from any state since the device joined
   is the key, because the device could work out every `δ` since then from its own values (it keeps
   only the paper's two, and only until they are delivered, but a thief who took the device during that

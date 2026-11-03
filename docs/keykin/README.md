@@ -51,15 +51,6 @@ Upkeep and is in git history.
 - **Interop runs** against a prototype (`interop-plan.md`).
 - **Modules** not yet written: Account admin, Server profile, Device policy, Doors and grants, Backup,
   Helper, Key families.
-- **One user decision** (below).
-
-## Question for the user
-
-**A single phone without a working face or fingerprint lock, that has also lost its paper,** can never
-make a new paper or replace a server again. Every account change needs a lock, a second device or the
-paper, and there is no "wait 3 days instead" any more. Fixing that would need a new mechanism, for
-example a server-enforced wait used only to make a new paper. Today the app pushes such a user hard
-towards a second device at setup, and core §10 states the limit. Leave it, or add the narrow wait-path?
 
 `../COSIGN.md`, `../NIP-XX.md`, `../servers.md` and `../choosing-servers.md` still describe Cosign 0.12 as
 built, and stay until the Keykin build replaces it.
