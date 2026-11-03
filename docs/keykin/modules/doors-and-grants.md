@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 17 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
+Draft 18 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.13 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -108,8 +108,8 @@ for listing. The wildcard is also published in the ending device's event.
   `["state", <state hash>]` tag naming the state whose data key encrypts it. Its content is
   XChaCha20-Poly1305 under `HKDF-SHA256(salt = empty, ikm = dk(S), info = "keykin-grants/1", L = 32)` for
   the **current** state (re-encrypted after each redeal), with associated data `g ‖ d ‖ state hash`, as
-  `base64(24-byte nonce ‖ ciphertext)`. Expired entries are pruned from it, and past 48 KB (under common relays'
-  64 KB event limit) it is split into `d ‖ ":1"`, `":2"`, …, each part its own encrypted chunk of the
+  `base64(24-byte nonce ‖ ciphertext)`. Expired entries are pruned from it, and once a part's encrypted, base64-encoded content
+  would pass 24 KB (under strfry's and most relays' 32–64 KB limits) it is split into `d ‖ ":1"`, `":2"`, …, each part its own encrypted chunk of the
   JCS-encoded set, all with the same `created_at` and a `["parts", n]` tag; the parts count as one
   event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `"keykin-grant-set/1"
   ‖ g ‖ d ‖ created_at ‖ SHA-256(JCS({entries, tombstones, ended, union}))`. The maker publishes at `created_at = max(now,
@@ -118,8 +118,10 @@ for listing. The wildcard is also published in the ending device's event.
   current seat holders' relays, leaving out a relay that has failed **10 tries over at least 7 days, each
   made while other counted relays answered** (so a device's own downtime never drops a relay), and one
   that refused with `blocked:` or `restricted:`, or still answered reads with `CLOSED` after the device's
-  NIP-42 sign-in, on three tries spread over a day (each retried weekly). A size refusal makes the device
-  split into smaller parts (24 KB) instead. An answer to a fetch is an `EOSE`, never a `CLOSED` or a
+  NIP-42 sign-in (the device signs the relay's challenge with the account, as any client does), on three
+  tries spread over a day; a dropped relay is retried weekly and counts again once it answers, and the
+  device fetches from it before writing to it again. A size refusal makes the device split into smaller
+  parts instead. A relay that accepts writes but never serves reads doesn't count. An answer to a fetch is an `EOSE`, never a `CLOSED` or a
   `NOTICE`. When the set changes, each device republishes its own grant event to a majority of the new
   set; it also re-sends its own event weekly, since an `OK` is not a promise to keep it.
 - **Publishing.** A home stores a change to its grants before it publishes it. A publish counts once **more
@@ -133,9 +135,12 @@ for listing. The wildcard is also published in the ending device's event.
   - At start, at each 5-minute inbox fetch and before each publish or takeover, it first catches up the
     change set (core §3.2, skipping a server that takes more than 2 seconds), then fetches its own newest
     grant event. A fetch is good once **more than half of the counted relays, and more than half of the
-    set its last counted publish used**, answer, so any good fetch and any counted publish share a relay.
+    part of its last publish's set that is still counted**, answer (the current set alone when fewer than
+    three of the last set remain, or the device has never published), so any good fetch and any counted
+    publish share a relay. Re-sending an unchanged event needs no fetch.
     A newer own event from any relay is adopted at once; one it can't decrypt or that misses a part counts
-    as a failed fetch for publishing.
+    as a failed fetch for publishing and for answering. If no server answers the catch-up within 2
+    seconds, the device fetches anyway and catches up later.
   - Until the first good fetch it waits up to 3 seconds, then answers `get_public_key` and grants made since
     its last publish, gives other requests `try-later:`, retries every 10 seconds, and shows one quiet line
     if relays can't be reached. It never publishes after a failed fetch.
@@ -143,7 +148,8 @@ for listing. The wildcard is also published in the ending device's event.
     fetches from every reachable relay before it publishes, never publishes a set that drops an id in the
     union or an entry it has seen ended, and otherwise answers from its own state. The person's relays change only with server seats
     (core §6.7.2).
-  - It takes the event over **only if it is newer than its own last publish**, and then drops only entries
+  - It merges ended ids and tombstones from **any** of its own events, whatever their date. It takes an
+    event's entries over **only if it is newer than its own last publish**, and then drops only entries
     **made before** that event that are missing from it; for each entry the higher `v` wins (ties as
     below). A restart of the background worker within 5 minutes of a good fetch doesn't count as a start.
 - **Grants are stored like shares** (core §7.3): grants, ended lists and signer keys are excluded from
@@ -396,6 +402,14 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
+- **Draft 18**, from its seventeenth red team (0 critical, 1 high):
+  - the last publish's set counts only relays still counted, and falls back to the current set, so a device
+    that slept through a relay change isn't stuck for good (H1).
+
+  The mediums and lows:
+  - ended ids merged from any own event, and dropped relays fetched from before being written again (M1);
+  - who signs in with NIP-42, write-only relays, 24 KB parts, unreadable events, catch-up with no server
+    (lows).
 - **Draft 17** (and Q9: the restored-copy case stated as a limit at the bar), from its sixteenth red team (0 critical, 1 high):
   - a relay drops out only after failed tries made while other relays answered, so a device's own downtime
     never drops one (H1; draft 12's rule restored).
