@@ -3,7 +3,10 @@
 import { sha, bytesToHex, randomBytes, hexToBytes, refuse, u32be } from './bytes.ts';
 import { type Commitment, derivePoint, mul, mod, compBytes, compHex, pointFrom, scalarFrom, scalarHex, G } from './curve.ts';
 import { checkApproval, approvalHash, type Authority } from './approval.ts';
-import { itemHash, openItem, sealItem, commitmentAt, type Item } from './redeal.ts';
+import { itemHash, openItem, sealItem, commitmentAt, wrapUnder, unwrapUnder, type Item } from './redeal.ts';
+import * as nip44 from 'nostr-tools/nip44';
+import { signpostDeviceKey, signpostH } from './codes.ts';
+import { newKey } from './event.ts';
 import { schnorrSign, schnorrVerify, type KeyPair } from './event.ts';
 import { detachedDigest } from './codes.ts';
 import type { Membership } from './membership.ts';
@@ -116,3 +119,30 @@ export function openMaterial(o: { g: string; backup: KeyPair; pin: string; base:
   return { shares, C, dk: base.dk as string };
 }
 export { G, detachedDigest };
+
+// --- the signpost (§6.7.5 route 3) -------------------------------------------------------
+
+/** The signpost's content: the current servers sealed twice, NIP-44 to the backup key (from an
+ *  ephemeral key) and XChaCha20-Poly1305 under the device-copy key. */
+export function signpostContent(backupKey: string, baseDk: string, servers: unknown[]): string {
+  const eph = newKey();
+  const body = JSON.stringify(servers);
+  return JSON.stringify({ eph: eph.pub, backup: nip44.v2.encrypt(body, nip44.v2.utils.getConversationKey(eph.sk, backupKey)),
+    devices: wrapUnder(signpostDeviceKey(baseDk), new TextEncoder().encode(body)) });
+}
+/** A reader: the highest `n` whose decrypted copy matches its `h` (§6.7.5). */
+export function readSignpost(events: { tags: string[][]; content: string }[], epochId: string, key: { backupSk?: Uint8Array; baseDk?: string }): unknown[] | null {
+  let best: { n: number; servers: unknown[] } | null = null;
+  for (const e of events) {
+    try {
+      const c = JSON.parse(e.content);
+      const text = key.backupSk ? nip44.v2.decrypt(c.backup, nip44.v2.utils.getConversationKey(key.backupSk, c.eph))
+        : new TextDecoder().decode(unwrapUnder(signpostDeviceKey(key.baseDk!), c.devices));
+      const servers = JSON.parse(text);
+      const n = Number(e.tags.find((t) => t[0] === 'n')?.[1]);
+      if (e.tags.find((t) => t[0] === 'h')?.[1] !== signpostH(epochId, servers)) continue;
+      if (!best || n > best.n) best = { n, servers };
+    } catch { /* not ours, or tampered */ }
+  }
+  return best?.servers ?? null;
+}

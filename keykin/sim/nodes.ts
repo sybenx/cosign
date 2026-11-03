@@ -3,14 +3,14 @@
 // app would run. Nothing here is a second implementation of a rule: every check is in src/.
 
 import { bytesToHex, randomBytes, hexToBytes, sha, refuse, KeykinError } from '../src/bytes.ts';
-import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest } from '../src/codes.ts';
+import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
-import { computeMembership, takenIndices, type Membership } from '../src/membership.ts';
+import { computeMembership, takenIndices, signpostCount, signpostServers, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall } from '../src/coordinator.ts';
 import { deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
-import { acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
+import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
 import { repairStart, repairFinish } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
 import { Inbox } from '../src/inbox.ts';
@@ -19,7 +19,7 @@ import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { approveRecovery, approveLock } from '../src/approval.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
 import { newKey, schnorrSign, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
-import { KIND_CHANGE, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
+import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import type { SoftLock } from '../src/lock.ts';
 import type { Transport, Node } from './bus.ts';
 
@@ -415,6 +415,17 @@ export class DeviceNode implements Node {
       dealt.destroy();
     }
     return signed;
+  }
+
+  /** Publish the signpost (§6.7.5): co-signed like any event (the co-signer checks `n` and `h`), then
+   *  its id delivered to every server so each refuses a delete aimed at it. */
+  async publishSignpost(): Promise<NostrEvent> {
+    const m = this.m!;
+    const ev = await this.sign({ kind: KIND_SIGNPOST, tags: [['d', signpostD(m.backupKey!)], ['n', String(signpostCount(m))], ['h', signpostH(m.epochId, signpostServers(m))]],
+      content: signpostContent(m.backupKey!, this.baseDk, signpostServers(m)) });
+    for (const s of this.servers()) await this.bus.send(this.kp, s.key, { type: 'signpost_id', id: ev.id });
+    (this.bus as any).published?.push(ev);
+    return ev;
   }
 
   /** F7, a new paper (§6.7.6, §4.3): approve `[paper K, redeal]`, repair the backup seat towards K

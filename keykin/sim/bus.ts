@@ -15,6 +15,8 @@ export class Bus implements Transport {
   /** Every wrap that crossed the bus, for the never-1059 check. */
   wire: NostrEvent[] = [];
   log: string[] = [];
+  /** Events published to relays (only the signpost, §9.4). */
+  published: NostrEvent[] = [];
   constructor(now = 1_800_000_000) { this.now = now; }
   add(n: Node) { this.nodes.set(n.kp.pub, n); return n; }
   kill(pub: string) { this.dead.add(pub); }

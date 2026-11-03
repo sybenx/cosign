@@ -17,7 +17,7 @@ import { pointFrom, commitmentFrom, type Commitment } from './curve.ts';
 import { stateOf, commitmentAt, type State } from './redeal.ts';
 import { verifyRerepair, redealMissing, postListView, type Upload } from './upkeep.ts';
 import { itemHash } from './redeal.ts';
-import { takenIndices } from './membership.ts';
+import { takenIndices, signpostCount, signpostServers } from './membership.ts';
 import { jcs } from './bytes.ts';
 import { KIND_CHANGE, KIND_EPOCH, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Waited } from './types.ts';
 
@@ -413,11 +413,8 @@ export class CoSigner {
   /** §6.7.5: a signpost only from a device, with the right `n` and an `h` matching this view. */
   private checkSignpost(from: string, ev: Unsigned) {
     if (!this.m.devices.has(from)) refuse('machinery', 'signposts come from devices');
-    const n = Number(tag(ev, 'n'));
-    const count = this.m.accepted.filter((p) => p.type === 'seat' || p.type === 'paper').length;
-    if (n !== count) refuse('signpost_n');
-    const servers = [...this.m.seats.entries()].filter(([k, s]) => k.startsWith('server:') && s.holder).map(([, s]) => ({ host: s.holder!.host, https: s.holder!.https, relays: s.holder!.relays ?? [] }));
-    if (tag(ev, 'h') !== signpostH(this.m.epochId, servers)) refuse('signpost_h');
+    if (Number(tag(ev, 'n')) !== signpostCount(this.m)) refuse('signpost_n');
+    if (tag(ev, 'h') !== signpostH(this.m.epochId, signpostServers(this.m))) refuse('signpost_h');
   }
 
   private sign(from: string, msg: any, now: number) {

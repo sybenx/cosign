@@ -87,6 +87,8 @@ refuse result. The codes are proposals until the spec pins them.
 | 12 | F3: every server dead; `[seat×3, redeal]` co-signed by a second device | accept with `pair`; a lock alone refused `approval_not_allowed`; the two devices fill all three seats | `sim.test.ts` |
 | 12 | Every printed server replaced: forwarding notes (only to allowed keys) and `seated?` (sealed reply, host signature outside) | today's servers found; a stranger gets `retired`, an unknown key `not_seated` | `sim.test.ts` |
 | 12 | `need_seeds` | seeds to a current device (with the data key) or a seat server (release seeds only), with a notice; `not_member` otherwise | `sim.test.ts` |
+| 12 | Signpost published by a device; read by the paper and by a device (highest `n` with a matching `h`); tampered copies skipped; delete by `e` refused at every server | as stated; a stale `n` refused `signpost_n` | `sim.test.ts` |
+| 12 | A replaced server that slept through its removal | learns it from peers before any wait and refuses `retired`, destroying its share | `sim.test.ts` |
 
-Not yet covered: paper re-issue, the helper, the signpost's publication, passive servers, and a
+Not yet covered: paper re-issue, the helper, passive servers' 7-day rule, and a
 recovery whose state includes a stranded redeal.

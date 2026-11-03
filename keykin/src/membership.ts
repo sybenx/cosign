@@ -303,3 +303,9 @@ export const takenIndices = (m: Membership) => new Set<number>([
 export const servers = (m: Membership) => [...m.seats.entries()].filter(([k, s]) => k.startsWith('server:') && s.holder).map(([, s]) => s.holder!);
 export const memberOf = (m: Membership, key: string) => m.members.get(key) ?? null;
 export { listHash };
+
+/** §6.7.5: the signpost's clear fields from a view: `n`, every seat and paper change in the set
+ *  (void ones included), and the current server entries that `h` covers. */
+export const signpostCount = (m: Membership) => m.accepted.filter((p) => p.type === 'seat' || p.type === 'paper').length;
+export const signpostServers = (m: Membership) => [...m.seats.entries()].filter(([k, s]) => k.startsWith('server:') && s.holder)
+  .map(([, s]) => ({ host: s.holder!.host, https: s.holder!.https, relays: s.holder!.relays ?? [] }));

@@ -238,6 +238,33 @@ test('a replaced server that slept through its removal learns it from peers befo
   assert.equal(a.code, 'retired');
   assert.ok(S3.retired && S3.co!.state.shares.size === 0, 'it destroyed its share');
 });
+test('the signpost: published by a device, read by the paper and a device, never deletable at any server', async () => {
+  const acc = await create();
+  const first = await acc.A.publishSignpost();
+  acc.bus.kill(acc.servers[2].kp.pub);
+  await replaceServer(acc, acc.A, 8, (l) => acc.A.approveLock(l));
+  const second = await acc.A.publishSignpost();
+  const { readSignpost } = await import('../src/upkeep.ts');
+  const hosts = (xs: any) => xs.map((x: any) => x.host).sort();
+  const now = acc.A.m!.seats;
+  const expect = [...now.values()].filter((s) => s.holder?.kind === 'server').map((s) => s.holder!.host).sort();
+  assert.deepEqual(hosts(readSignpost(acc.bus.published, acc.epochId, { backupSk: acc.paper.sk })), expect, 'the paper reads the highest n');
+  assert.deepEqual(hosts(readSignpost(acc.bus.published, acc.epochId, { baseDk: acc.A.baseDk })), expect, 'and so does a device');
+  // A tampered copy is skipped.
+  const bad = { ...second, tags: second.tags.map((t) => (t[0] === 'n' ? ['n', '99'] : t)), content: first.content };
+  assert.deepEqual(hosts(readSignpost([...acc.bus.published, bad], acc.epochId, { backupSk: acc.paper.sk })), expect);
+  // Deleting it by e tag is refused at every live server, even those that didn't co-sign it.
+  for (const s of acc.A.servers().filter((x) => acc.bus.alive(x.key))) {
+    const { OneCall } = await import('../src/coordinator.ts');
+    const r = new OneCall(acc.A.ctx(), acc.A.me(), { key: s.key, indices: s.shares }, { pubkey: acc.g, created_at: acc.bus.now, kind: 5, tags: [['e', second.id]], content: '' });
+    assert.equal((await acc.bus.send(acc.A.kp, s.key, r.request)).code, 'machinery');
+  }
+  // A stale n is refused.
+  const { OneCall } = await import('../src/coordinator.ts');
+  const s0 = acc.A.servers()[0];
+  const stale = new OneCall(acc.A.ctx(), acc.A.me(), { key: s0.key, indices: s0.shares }, { ...first, created_at: acc.bus.now, id: undefined, sig: undefined } as any);
+  assert.equal((await acc.bus.send(acc.A.kp, s0.key, stale.request)).code, 'signpost_n');
+});
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';
