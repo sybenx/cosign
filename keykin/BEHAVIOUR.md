@@ -88,5 +88,5 @@ refuse result. The codes are proposals until the spec pins them.
 | 12 | Every printed server replaced: forwarding notes (only to allowed keys) and `seated?` (sealed reply, host signature outside) | today's servers found; a stranger gets `retired`, an unknown key `not_seated` | `sim.test.ts` |
 | 12 | `need_seeds` | seeds to a current device (with the data key) or a seat server (release seeds only), with a notice; `not_member` otherwise | `sim.test.ts` |
 
-Not yet covered: paper re-issue (every server dead), the helper, the signpost's publication, passive servers, and a
+Not yet covered: paper re-issue, the helper, the signpost's publication, passive servers, and a
 recovery whose state includes a stranded redeal.
