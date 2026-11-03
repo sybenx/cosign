@@ -1,6 +1,6 @@
 # Keykin module: Helper
 
-Draft 6 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.9 · not built
+Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.9 · not built
 
 A **helper** is a family member's or friend's always-on box that holds the helper seat (3 shares, core
 §3.1, I6). With one server it can post for the account while every one of the person's devices sleeps.
@@ -52,10 +52,15 @@ being published, because it is already signed; **Unschedule** asks the publisher
   any member does), and a wildcard sign-out sent to it ends every grant made before its time (Doors and
   grants §1). Only when the person **retires a device they still have** (Remove this device, or a `self`
   remove, core §4.6) does the app offer to keep its helper sites: one unticked box per site, showing when
-  and from which device it was set up. Kept grants are re-signed under the device that stays, with `was`,
-  the helper is sent `helper_regrant {id, by}` for each, and no old-name tombstone is sent for them. A
-  `self` remove keeps them all, since the machine stays. **Report lost never offers this**: every helper
-  site that phone set up ends. A grant in a helper report that no current device's list names, still unnamed after the next
+  and from which device it was set up; the device doing the remove shows them. Kept grants are re-signed
+  under the device that stays, with `was`, and **that** device sends the helper `helper_regrant {entry}`
+  carrying its re-signed entry. The helper accepts a regrant only from a current device that is not being
+  removed, only with that device's own signature on the entry, and only while the old device is still a
+  member; it acknowledges, and the remove is sent only after every regrant is acknowledged. Devices send
+  no tombstone for a grant whose entry has a `was` they know. If the remove then fails, the kept grants
+  simply stay under the staying device. A `self` remove keeps them all, since the machine stays. **Report
+  lost never offers this**: every helper site that phone set up ends, and the app offers to unschedule
+  that phone's scheduled posts. A grant in a helper report that no current device's list names, still unnamed after the next
   report plus two hours, gets the warning of §4: "Your helper answers a site none of your devices set
   up." 
 - A helper grant has only the kinds of §1. It never widens: for more, the person connects the site to a
@@ -73,11 +78,12 @@ being published, because it is already signed; **Unschedule** asks the publisher
 
 1. The friend installs a Keykin app on an always-on machine (a desktop app left running, or a home-server
    package) and picks **Be a helper**. It shows a join code (core §4.1) carrying its host key, and tells
-   the friend: "Your npub will be listed in *name*'s account." Once its welcome names the account, it
-   checks the machine (its own apps, and extensions over native messaging); if a member of that account
-   is on it, it refuses to serve (answering its sites `declined: stopped`) and sends the person's devices
-   `helper_conflict {}` ("This machine also runs your extension; remove one of them"). Until one is removed,
-   that machine holds 6 points; the app says so. It never takes a handover from an extension (core §4.6). Afterwards any
+   the friend: "Your npub will be listed in *name*'s account." As soon as the hello names the account
+   (core §4.1, before any seat change), it checks the machine (its own apps, and extensions over native
+   messaging); if a member of that account is on it, it stops the join and tells the person's device
+   which one ("This machine also runs your *Chrome* extension"), so the machine never holds 6 points. If
+   one joins later anyway, it refuses to serve (answering its sites `declined: stopped`) and sends
+   `helper_conflict {member}` naming it. It never takes a handover from an extension (core §4.6). Afterwards any
    Keykin app **or browser extension** on that machine (extensions ask the helper app over native
    messaging) refuses to join this account as a device.
 2. On a device, the person picks **Add a helper**. The opt-in screen says, once and plainly: "*Name*'s
@@ -97,11 +103,12 @@ adding a server, and refuses a match; replacement picks skip the helper's operat
 
 ### 3.2 Stopping, at once
 
-**Stop helper** is on every device, with no approval (core §5.7, `helper_stop`): it stops the helper seat,
-whoever holds it, always applies, travels to servers seated later, and the device shows "Stopped" once a
-server confirms. Every device and the helper are told. It only takes power away, so a lone device with no
-lock can do it too. A stopped helper stays in its seat until it is removed or replaced, or until **Resume
-helper** (`helper_resume`) with an approval (a lock, two devices, or the paper).
+**Stop helper** is on every device, with no approval (core §5.7, `helper_stop {id}`): it stops the helper
+seat, whoever holds it. Servers keep the stop as account state, so it never expires and reaches servers
+seated later, and the device shows "Stopped" once a server confirms. Every device and the helper are told.
+It only takes power away, so a lone device with no lock can do it too. A stopped helper stays in its seat
+until it is removed or replaced, or until **Resume helper** (`helper_resume {ids}`) with an approval (a
+lock, two devices, or the paper), which clears exactly the stops that device has seen.
 
 ### 3.3 Removing or moving
 
@@ -119,7 +126,8 @@ helper** (`helper_resume`) with an approval (a lock, two devices, or the paper).
   last_used, logouts}`, at most 64 KB, sealed, as a delivery that replaces its earlier one, updated once an
   hour or every 50 events. When it is full, the oldest event ids give way to a count and a time span
   (`dropped {count, from, to}`); a report starts afresh after each acknowledgement, which a device sends
-  only after fetching the report's events, and devices compare the count with what they find in that
+  after fetching the report's events that relays keep (zap requests, relay sign-ins and unpublished events
+  are listed by count only, never fetched), and devices compare the count with what they find in that
   span. Reports also list the ids of posts scheduled on the box, so any device can show them. A device fetches the events by id from relays, checks each (`pubkey == g`, the
   signature) and writes Device policy's metadata for them (Device policy §1), marking the attribution as
   the helper's. Devices show it quietly: "*Helper* signed 12 notes for *Bot*."
@@ -150,13 +158,13 @@ They can't read messages, private lists or wallet content. The opt-in screen lin
 | `helper_report {event ids, grants, last_used, logouts}` | helper → devices (delivery, replacing) | `member` |
 | `helper_connect {nostrconnect}` | device → helper | `ask` |
 | `publish_later {event}` / `unpublish {id}` | device → helper | `member` |
-| `helper_regrant {id, by}` | device → helper | `member` |
+| `helper_regrant {entry}` / `regrant_ok` | staying device → helper / back | `member` |
 | `helper_conflict {}` | helper → devices (delivery) | `member` |
 
 ## 7. Limits, said plainly
 
 - **The helper plus one server** can post notes, replies, comments, reactions, reposts, zap requests and
-  media as the person, never dated ahead,
+  media as the person, dated at most 10 minutes ahead,
   silently, until any device stops it (core §10). A dishonest friend or a stolen box can post spam or
   worse in the person's name.
 - **The helper plus one dishonest server is the whole key** (3 + 1 = 4 points, core §10), offline and with
@@ -174,6 +182,15 @@ They can't read messages, private lists or wallet content. The opt-in screen lin
 
 ## Changes
 
+- **Draft 7**, from its sixth red team (0 critical, 2 high):
+  - a regrant comes only from the staying device, signed by it, acknowledged before the remove (H1, M1);
+  - stops are named and kept as account state, so a resume clears only those its device saw (H2, M3,
+    core 14.9).
+
+  The mediums and lows:
+  - acknowledgement after fetching only what relays keep (M2);
+  - the machine check at the hello, before any seat change, naming the member (M4);
+  - "at most 10 minutes ahead", unscheduling after Report lost, a failed remove (lows).
 - **Draft 6**, from its fifth red team (0 critical, 1 high):
   - helper sites are kept only when the person retires a device they still have, per site and unticked;
     Report lost ends them all (H1).
