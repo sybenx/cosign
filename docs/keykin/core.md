@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.3 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.4 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -123,7 +123,8 @@ would.
 6. answered request ids until each expires (§5.6), and its own counters for §5.8.
 7. if the person opted in, the account's NIP-46 signer public keys, for watching (below);
 8. if the person set up an heir (Backup module), the heir envelope, its own piece of the envelope key and
-   the heir's public key.
+   the heir's public key;
+9. the newest public server list it has verified (Server profile module).
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
 co-signs, checks approvals, enforces the two waits and the stateless destructive rule (§5.8), sends
@@ -972,8 +973,9 @@ A paper must always be able to find today's servers, even after every server pri
 replaced. Three routes, tried in order:
 
 1. **Ask the public list.** The paper app takes the app maker's signed public server list (§6.7.7) and
-   asks each listed server `seated? {H(key), challenge}`, where the key is the backup key or, from a
-   device, its member key. A server that holds a seat for an account where that key is the current backup
+   asks each listed server `seated? {H(key), challenge, sig}`, where the key is the backup key or, from a
+   device, its member key, and `sig` is that key's signature over the server's challenge (a server answers
+   only if it verifies). A server that holds a seat for an account where that key is the current backup
    key or a current device answers with a reply sealed to the key, carrying its host signature outside
    the seal, over `SHA-256("keykin-seated/1" ‖ H(key) ‖ challenge ‖ ciphertext)`, so the asker can check
    it. This needs no relays and no published event.
