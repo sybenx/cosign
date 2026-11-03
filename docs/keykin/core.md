@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.1 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.2 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -914,7 +914,8 @@ They are changes of §3.2 (kind 24302, group-signed, valid in any order).
   - Two seat changes for one seat with the same `new`, or with the same host under different member keys,
     count as one (the lower list hash's `new` wins; the losing member key goes into `removed`). Otherwise, with different `new`, both are void and
     the seat stays empty until a `void:<id>` reseat. Two seat changes that would put **one host in two
-    seats** are both void too.
+    seats at once** (as current holders) are both void too; a host that held a seat before may hold
+    another later (I7).
   - The helper leaves only by `seat helper→null`; a `remove` never names a seat holder.
   - Every key that stops being a seat's current holder, `replaces` or voided `new`, goes into `removed`,
     and gets the removal notice (§6.4).
@@ -1210,6 +1211,38 @@ There are no aborts, no busy state, no leases and no clock that matters.
   next open: "Your lock stopped working. Scan your paper or use a second device to restore it." A lone
   device without a lock gets a quiet suggestion, never a push, to add a second device (a browser
   extension on a laptop counts).
+
+#### 6.7.10 Who may ask, and what co-signers also refuse
+
+Pinned from the reference implementation (batch 2):
+
+- **Repair sigmas go only to the index's owner.** A helper seals a `repair_sigma` only to the current
+  owner of that index in its view, never to whoever asked, and never for the backup seat except in an F7
+  repair towards that F7's own `K` under its approval (§4.3 step 2). Who may ask:
+  - a join repair (§4.2): a current device other than the new device, or the backup holder in its recovery
+    session (§4.4);
+  - `need_repair`: the seat's current holder, or a current device filling that seat;
+  - `rerepair`: the index's owner, with its proof.
+
+  Repair requests carry `participant` (the asker), `seal_to` (the owner's key), `why` (the change that
+  makes it the owner) and `state`.
+- **`rerepair` proof:** Schnorr over `e = H("keykin-rerepair/1" ‖ g ‖ owner key ‖ i (4 bytes) ‖ P_i^{S_old}
+  ‖ R ‖ challenge)`, with a challenge the server issued to that owner.
+- **Challenges** are bound to the key they were issued to and are used once.
+- **A list is co-signed redeal first.** The list's redeal is co-signed first; every other change of the
+  list is co-signed only with the group-signed redeal of the same list hash presented beside it
+  (`list_events` in the `sign` request). So a `seat` or `remove` never commits without its redeal.
+- **A paper change's material** travels in the `sign` request as `material` (the base item), checked as
+  `SHA-256(item) == inner`, addressed to `K` and signed by `K`.
+- **Uploads** (§6.7.3) are accepted only from the list's `{redeal: {dealer}}`, a current device, once per
+  redeal id, and never after that redeal is co-signed.
+- **Signposts:** a device that publishes a signpost delivers its event id to every server (a delivery), so
+  every co-signer can refuse a kind 5 aimed at it by `e`.
+- **One key, one member.** No key is two members, across kinds: co-signers refuse an add, a seat's `new`
+  or a `paper` key that is already a member or is in `removed`.
+- **Co-signers try the change.** Besides the invariants (§3.3), a co-signer refuses a change after which a
+  member disappears that the list doesn't name, an add whose indices meet any known index, and a lock
+  change whose `replaces` isn't the device's current lock.
 
 ### 6.8 Exporting keys
 
@@ -1828,3 +1861,10 @@ From the red team of every core change since 13.1 (0 critical, 1 high):
 - `helper_stop` names the stopping device; relay auth by the helper only for the account's own relays
   (M2, M4).
 - §10 says what a lockless kept backup secret exposes, and a repeated sentence goes (M5).
+
+## Changes in draft 14.2
+
+From the reference implementation's batch 2 (items 18–27), in the new §6.7.10: repair sigmas sealed only
+to the index's owner and who may ask, the `rerepair` proof, single-use bound challenges, redeal-first list
+co-signing, the `material` field, who may upload, signpost ids delivered to servers, one key one member,
+and the co-signer's trial of a change; "one host in two seats" means at once (§6.7.2).
