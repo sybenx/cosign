@@ -121,7 +121,9 @@ would.
 5. push addresses and notice channels (§8.1), and the inbox, including deliveries kept until
    acknowledged (§7.1);
 6. answered request ids until each expires (§5.6), and its own counters for §5.8.
-7. if the person opted in, the account's NIP-46 signer public keys, for watching (below).
+7. if the person opted in, the account's NIP-46 signer public keys, for watching (below);
+8. if the person set up an heir (Backup module), the heir envelope, its own piece of the envelope key and
+   the heir's public key.
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
 co-signs, checks approvals, enforces the two waits and the stateless destructive rule (§5.8), sends
@@ -689,8 +691,10 @@ second device or the paper. A helper never approves anything.
 
 ### 6.3 Waits
 
-- There are only two kinds of wait, both `W` on each server's own clock: a **recovery** (§6.5) and a
-  **hold** (§5.8). A server starts one, tells every member (an `ask` push and an inbox notice) and every
+- There are only two kinds of wait in the core, both `W` on each server's own clock: a **recovery**
+  (§6.5) and a **hold** (§5.8). The Backup module adds a third, the **heir** wait (default 180 days),
+  which any current device may cancel with no lock; it releases only the heir's envelope pieces, never
+  a share or a release seed. A server starts one, tells every member (an `ask` push and an inbox notice) and every
   notice channel (§8.1), and when its own wait has passed, pushes the requester (`ask`) and signs a
   **waited statement**: `{ "server": <host key>, "kind": "recovery" | "hold", "wait": <wait id>,
   "start": <unix>, "end": <unix>, "sig": <BIP-340 by the host key over SHA-256("keykin-waited/1" ‖ g ‖
