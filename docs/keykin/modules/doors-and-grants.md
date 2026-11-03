@@ -376,6 +376,9 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 - **A device that can't reach a majority of the counted relays** answers only its newest grants and
   `get_public_key`, publishes nothing until it can, and says so; with fewer than three counted relays it
   answers from its own state.
+- **A device restored from an old copy**, while most of the account's relays are unreachable, may answer a
+  site it had signed out of, until it next reaches most of its relays or is reported. This is at the bar: a
+  site given a pasted nsec can never be signed out at all (Q9).
 - **A NIP-46 site is answered only by its home.** If that device sleeps and no server watches, the site
   waits. A watching server sees when sites talk to the account, though not what they say.
 - **A stolen home** receives what its NIP-46 sites still send (requests, and the text of messages the
@@ -393,7 +396,7 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
 
 ## Changes
 
-- **Draft 17**, from its sixteenth red team (0 critical, 1 high):
+- **Draft 17** (and Q9: the restored-copy case stated as a limit at the bar), from its sixteenth red team (0 critical, 1 high):
   - a relay drops out only after failed tries made while other relays answered, so a device's own downtime
     never drops one (H1; draft 12's rule restored).
 
