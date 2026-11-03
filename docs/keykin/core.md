@@ -654,7 +654,8 @@ co-signer and any retry), **or** a passed hold:
 - kind 0 whose content has no non-empty `name`, `display_name`, `about` or `picture`;
 - kind 3, 10000–10030 or 30000–30030 with no tags other than `d` **and an empty `content`**;
 - kind 10002 with no `r` tag whose value starts with `wss://` or `ws://`;
-- a key-family release or leaked event (kinds 1245, 1246, Key families module; a site never gets one signed).
+- a key-family event of any kind: family, release, leaked or accept (kinds 1244–1247, Key families module;
+  a site never gets one signed).
 
 These tests are exact: kind 0's content is parsed as a JSON object, and content that isn't one, or has a
 duplicate key, counts as empty; a field is non-empty only if it is a string with a non-whitespace

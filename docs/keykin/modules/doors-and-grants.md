@@ -152,7 +152,8 @@ published.
   doesn't let the same origin sign silently in another browser, profile or machine. Synced copies are for
   listing and signing out.
 - The `keykin-` app-data prefix is guarded: a device never signs, on a site's request, a kind 30078 with
-  a `d` starting with `keykin-`, or a kind 5 that targets one by `e` or `a`.
+  a `d` starting with `keykin-`, or a kind 5 that targets one by `e` or `a`; nor any key-family kind
+  (1244–1247, Key families module) or a kind 5 aimed at one.
 
 ## 3. The doors
 
