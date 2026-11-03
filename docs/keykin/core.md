@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.3 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.4 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -626,14 +626,18 @@ Before giving a partial, a co-signer MUST check that:
    relay lists, so the helper's relay sign-in isn't limited here; the Helper module says so.) A helper never co-signs, and a
    device never co-signs a round the helper coordinates, so every helper round has a server in it.
 
-**Stopping the helper.** Any current device may send `helper_stop {key, by, n}`, naming the helper's member
-key, the stopping device and a counter,
-with no approval, as a delivery to every server: it only takes power away. A server that has it refuses
-every round that key coordinates or takes part in. Only a seat change whose `replaces` is that key, or
-`helper_resume {key, n}` with an approval (`lock`, `pair` or `paper`), clears it. Each carries the next
-`n` for that key (one more than the highest the device has seen); a server applies only a higher `n`, and
-passes both to its peers as deliveries, so a late message can't undo a newer one. Every device is told. A
-stopped helper still receives redeals; only removing it cuts its pieces off.
+**Stopping the helper.** Any current device may send `helper_stop {by, n}`, naming the stopping device and
+a counter, with no approval, as a delivery to every server: it only takes power away. It stops **the
+helper seat**, whoever holds it. A server that has it refuses every round the helper coordinates or takes
+part in.
+- **A stop always applies**, whatever its counter. Only `helper_resume {n}` with an approval (`lock`,
+  `pair` or `paper`) clears stops, and only those with a counter **lower** than its own; a resume's
+  counter must be above every stop counter its device has seen, and servers tell devices the highest
+  counter they hold. A seat change made after a stop also clears it. So a late or missed message can
+  only leave the helper stopped, never running.
+- Servers pass stops and resumes to their peers as deliveries. A device shows "Stopped" only once a server
+  confirms it, and the helper is told.
+- A stopped helper still receives redeals; only removing it cuts its pieces off.
 - A seat holder's welcome carries any stop in force, and devices re-send it to every incoming seat holder.
 - Before co-signing a helper round, a server fetches its peers' deliveries (at most every 10 minutes), so a
   stop sent to one server reaches the others.
@@ -1891,3 +1895,8 @@ From the red team of 14 to 14.2 (0 critical, 1 high):
 - Challenges are reused only by a retry of the same request (M3).
 - The helper's relay sign-in can't be limited by servers; the module says so (M4).
 - §10 says a copied kept secret keeps paper power until a new paper (M5).
+
+## Changes in draft 14.4
+
+From the Helper module's fourth red team: a stop always applies and stops the helper seat, whoever holds
+it; a resume clears only lower-numbered stops; devices show "Stopped" once a server confirms.

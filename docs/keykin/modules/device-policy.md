@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.3 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.4 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
