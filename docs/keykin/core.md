@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.8 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.9 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -123,16 +123,16 @@ would.
    and recovery sessions (§6);
 5. push addresses and notice channels (§8.1), and the inbox, including deliveries kept until
    acknowledged (§7.1);
-6. answered request ids until each expires (§5.6), its own counters for §5.8, and whether the helper is
-   stopped (§5.7).
+6. answered request ids until each expires (§5.6), its own counters for §5.8, and every helper stop in
+   force (§5.7);
 7. if the person opted in, the account's NIP-46 signer public keys, each with its client public key,
    relays and home device, for watching (below);
 8. if the person set up an heir (Backup module), the heir record (the envelope, the heir's public key and
    the commitments to the envelope key) and its own piece of the envelope key;
 9. the newest public server list it has verified, and its own seat keys, enrol secrets and the inert
    uploads for incoming seats (Server profile module);
-10. after an account is deleted (Account admin module), only `SHA-256(g)`, the approved `account_delete`
-   and the changes that prove its approval (the approving devices' adds and lock changes, and for a
+10. after an account is deleted (Account admin module), only `SHA-256(g)`, the epoch record, the approved
+   `account_delete` and the changes that prove its approval (the approving devices' adds and lock changes, and for a
    `paper` approval the change that made that backup key current).
 
 A server MUST NOT keep signed events, list versions, site grants or logs of what it signed. It
@@ -396,11 +396,13 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
    device holds a sealed copy: the welcome of each new device carries it (step 4 of §4.2), so losing one
    lockless device never traps the other. Each holder is worth 5 points, like an nsec kept in it, and the
    kept secret approves what a `paper` approval would. It is always the **current** backup key's secret: an
-   F7 on such an account (friends' pieces with no paper, say) keeps the new key's secret the same way.
+   F7 on such an account (friends' pieces with no paper, say) keeps the new key's secret the same way: the
+   device that ran it sends `kept_new {secret}`, sealed, to every lockless device as a delivery, and each
+   replaces its copy.
    A lock counts as registered once a lock change is co-signed, or once a device added with a lock has had
    its add co-signed **and** acknowledged its welcome (§4.2 step 5). Then, or when a paper is read back,
-   the device that sees it sends `kept_done {}` (naming that change, or the read-back) to every device as a
-   delivery; holders take it only from a current device and, for a lock, only after checking the named
+   the device that sees it sends `kept_done {}` (naming that change, or the read-back; a lock change only
+   once it is valid) to every device as a delivery; holders take it only from a current device and, for a lock, only after checking the named
    change, and destroy their copies. The app then suggests, quietly, a new paper, since a copy taken
    earlier keeps paper power until the backup key is replaced. It SHOULD prompt, quietly, to finish the
    backup.
@@ -637,21 +639,20 @@ Before giving a partial, a co-signer MUST check that:
    relay lists, so the helper's relay sign-in isn't limited here; the Helper module says so.) A helper never co-signs, and a
    device never co-signs a round the helper coordinates, so every helper round has a server in it.
 
-**Stopping the helper.** Any current device may send `helper_stop {by, n}`, naming the stopping device and
-a counter, with no approval, as a delivery to every server: it only takes power away. It stops **the
-helper seat**, whoever holds it. A server that has it refuses every round the helper coordinates or takes
-part in.
-- **A stop always applies**, whatever its counter. Only `helper_resume {n}` with an approval (`lock`,
-  `pair` or `paper`) clears stops, and only those with a counter **lower** than its own; a resume's
-  counter must be above every stop counter its device has seen, and servers tell devices the highest
-  counter they hold. A server records a stop's counter as at most one above the highest it held, so a
-  thief's huge counter can't block every resume. A **helper seat** change clears only the stop counters it
-  names (`clears_stops: n`), as a resume does; no other seat change touches a stop. So a late or missed
-  message can only leave the helper stopped, never running.
-- Servers pass stops and resumes to their peers as deliveries. A device shows "Stopped" only once a server
-  confirms it, and the helper is told.
+**Stopping the helper.** Any current device may send `helper_stop {id, by}`, with a fresh 16-byte `id`
+and naming the stopping device, with no approval, as a delivery to every server: it only takes power away.
+It stops **the helper seat**, whoever holds it. A server that has any stop in force refuses every round
+the helper coordinates or takes part in.
+- **Stops are account state, not requests.** A server keeps every stop in force for as long as it is in
+  force (core §2 item 6), carries them in seat holders' welcomes, and passes them to its peers; they never
+  expire. Devices re-send them to every incoming seat holder.
+- **Only a named clear ends a stop.** `helper_resume {ids}`, with an approval (`lock`, `pair` or `paper`,
+  checked by every receiver as in §3.2), clears exactly the stop ids it names; a **helper seat** change
+  clears only the stop ids it names in `clears_stops: [ids]`. A stop the resuming device hadn't seen stays
+  in force. No other seat change touches a stop. So a late or missed message can only leave the helper
+  stopped, never running.
+- A device shows "Stopped" only once a server confirms it, and the helper is told.
 - A stopped helper still receives redeals; only removing it cuts its pieces off.
-- A seat holder's welcome carries any stop in force, and devices re-send it to every incoming seat holder.
 - Before co-signing a helper round, a server fetches its peers' deliveries (at most every 10 minutes), so a
   stop sent to one server reaches the others.
 
@@ -931,7 +932,7 @@ stuck. Two ideas make that safe:
 They are changes of §3.2 (kind 24302, group-signed, valid in any order).
 
 - **`seat`**: `{"seat": {"seat": "server:<idx>" | "helper", "new": <member entry> | null, "replaces":
-  <key | null | "void:<id>">}}`. A new server's member entry carries its `enroll` reply, signed by its
+  <key | null | "void:<id>">, "clears_stops": [<stop ids>] (helper seat only, optional)}}`. A new server's member entry carries its `enroll` reply, signed by its
   host key and binding its member key, VAPID key and endpoints to it (Server profile module). Co-signers
   and repair helpers verify that reply before co-signing or repairing.
   - A seat's current holder follows the epoch record's holder along valid seat changes, exactly as a
@@ -1467,7 +1468,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `ecdh` / `ecdh_partial` | device → co-signer / back | 5.5 |
 | `hold` | device → servers | 5.8 |
 | `helper_stop` / `helper_resume` | device → servers | 5.7 |
-| `kept_done` | device → devices (delivery) | 4.3 |
+| `kept_done` / `kept_new` | device → devices (delivery) | 4.3 |
 | `repair_ok` | new owner → repair helpers | 6.7.4 |
 | `pair_request` / `pair_sign` | first device → second device (via `deliver`) / back | 6.2 |
 | `change` | any member → members (a signed change) | 3.2 |
@@ -1964,3 +1965,10 @@ repair requests' fields; **a helper checks the helper list against its own view*
 reproduced a fourth point without it); `repair_ok` from the owner marks a `need_repair` as succeeded; a
 `paper` challenge is used once per list hash; which release seed opens an F7 base (§6.5 step 4); and
 "one host in two seats" decided by the changes alone (§6.7.2).
+
+## Changes in draft 14.9
+
+From Helper's sixth red team: helper stops carry an id and are kept as account state that never expires;
+a resume (with an approval, checked by every receiver) or a helper seat change (`clears_stops`) clears only
+the stop ids it names. The stop counters of 14.4–14.7 are gone. Also: `kept_new` carries a lockless
+account's new kept secret after an F7; the delete tombstone keeps the epoch record.

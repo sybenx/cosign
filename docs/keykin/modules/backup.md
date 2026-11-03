@@ -1,6 +1,6 @@
 # Keykin module: Backup
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.8 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.9 · not built
 
 The core has one backup: the **paper**, a backup key pair whose shares exist only as wrapped material
 (core §4.3, §7.2), recovered with two servers after a 3-day wait (§6.5). This module says how that key is
