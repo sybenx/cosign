@@ -223,6 +223,21 @@ test('§6.7.5: after every printed server is replaced, the paper finds today\'s 
   assert.deepEqual(body.servers.map((x: any) => x.host).sort(), Ys.map((y) => y.host.pub).sort());
   assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h: hx(sha(hb(newKey().pub))), challenge })).code, 'not_seated');
 });
+test('a replaced server that slept through its removal learns it from peers before starting a recovery wait', async () => {
+  const acc = await create();
+  const S3 = acc.servers[2];
+  acc.bus.kill(S3.kp.pub);
+  await replaceServer(acc, acc.A, 8, (l) => acc.A.approveLock(l));
+  acc.bus.revive(S3.kp.pub);                       // back, unaware: it never got the change
+  assert.ok(!S3.retired);
+  const ch = await acc.bus.send(acc.paper, S3.kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'));
+  const { schnorrSign } = await import('../src/event.ts');
+  const r = bytesToHex(randomBytes(16));
+  const a = await acc.bus.send(acc.paper, S3.kp.pub, msg('release_request', acc.g, acc.epochId, 'member', { r, challenge: ch.challenge,
+    sig: schnorrSign(codesMod.detachedDigest('release_request', acc.g, { r, challenge: ch.challenge }), acc.paper.sk) }));
+  assert.equal(a.code, 'retired');
+  assert.ok(S3.retired && S3.co!.state.shares.size === 0, 'it destroyed its share');
+});
 import { newKey } from '../src/event.ts';
 import * as nodes from '../sim/nodes.ts';
 import * as codesMod from '../src/codes.ts';
