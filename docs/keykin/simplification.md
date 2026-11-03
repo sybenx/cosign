@@ -380,3 +380,38 @@ The mediums go in the same draft:
    to park refresh for now and ship the core alone. In that case servers can't be replaced, and a lost
    phone's pieces never stop fitting. Recommended: apply the fixes. They reorder steps and add nothing
    new.
+
+---
+
+# The one-member-per-machine rule (core 8.3 §4.6)
+
+Its focused red team (`keykin-machine-rule-redteam.md`) found **0 critical, 2 high, 5 medium, 4 low**.
+Its verdict was to **keep the rule**: with the desktop app, a laptop is one member worth 3 points,
+the shares sit in the OS keychain, and no prompt is added. Under the stop rule nothing was patched.
+The fixes below are specification gaps in the handover, not new machinery. They are proposed for the
+next draft:
+
+- **H1** An extension whose copy survived a handover (a crash, or a backup restore) would remove the
+  machine's only member, because it removes "its own key", which is now also the app's. Fix: remove
+  itself only when the app holds a *different*, current member key of the same `g`. If the key is the
+  same, just delete the local copy.
+- **H2** The handover passes only the member key and shares. Fix: hand over everything a `welcome`
+  carries (epoch record, changes, release key, backup material, data key), plus grants and history.
+- **M1** Fix the commit order: the app persists, reloads and checks `s_i·G == P_i`, then confirms;
+  only then does the extension delete. Drop the "test round".
+- **M2** The relay is an unauthenticated local signing oracle. Fix:
+  - grants per browser, profile and origin;
+  - a one-time confirmation in the app for each new browser;
+  - NIP-07 methods only;
+  - check the parent process on macOS;
+  - §10 says that Windows and Linux can't authenticate the caller.
+- **M3** Not every browser reaches the app (other Chromium builds, Flatpak/Snap, Safari outside the
+  app). Fix: the extension checks for the app before inviting it, the app registers for every browser
+  it finds, and §10 lists the gaps.
+- **M4** Self-removal needs its own approval type (`self`, domain `keykin-self/1`), and §1/§10 need
+  updating.
+- **M5** The app holds one membership per account and refuses a second handover.
+- **L1–L4** Simplify the no-app second-browser fallback to "install the app, or it joins and §10
+  applies"; warn before the last device removes itself; correct the platform wording (the iPhone
+  Safari extension shares keys through a keychain group; Touch ID is Mac-only; a handed-over Mac
+  needs the paper or a second device to turn on Touch ID).
