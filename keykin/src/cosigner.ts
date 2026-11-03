@@ -66,6 +66,21 @@ export class CoSigner {
   }
   setState(s: State) { this.state = s; }
 
+  /** What a server keeps across a restart (§2, §5.6): answered ids, waits, cancels, challenges.
+   *  Never nonces: a restart loses every round in flight (§5.2). Shares are the host's to store. */
+  snapshot() {
+    return JSON.stringify({ replay: this.replay.dump(), holds: [...this.holds.values()], recoveries: [...this.recoveries.values()],
+      cancels: this.cancels, challenges: [...this.challenges], signposts: [...this.signpostIds] });
+  }
+  restore(json: string) {
+    const x = JSON.parse(json);
+    this.replay.load(x.replay);
+    this.holds = new Map(x.holds.map((h: Hold) => [h.wait, h]));
+    this.recoveries = new Map(x.recoveries.map((r: Recovery) => [r.wait, r]));
+    this.cancels = x.cancels; this.cancelledWaits = new Set(x.cancels.map((c: any) => c.wait));
+    this.challenges = new Map(x.challenges); this.signpostIds = new Set(x.signposts);
+  }
+
   /** A recovery session for the current backup key: open from the end of its wait for 7 days. */
   session(now = this.o.now()): Recovery | null {
     for (const r of this.recoveries.values())

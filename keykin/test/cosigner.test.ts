@@ -253,3 +253,19 @@ test('§5.7 item 5 and §6.7.5: account machinery and signposts are guarded', as
   assert.equal(sign(note(F, { kind: 30078, tags: [['d', d], ['n', '7'], ['h', '00']] })).code, 'signpost_n');
   assert.equal(sign(note(F, { kind: 30078, tags: [['d', d], ['n', '0'], ['h', '00']] })).code, 'signpost_h');
 });
+
+test('§5.6: answered ids survive a restart; nonces do not', () => {
+  const F = fixture(); const S = server(F);
+  const A = F.devices[0];
+  const r = new OneCall(ctx(F), dev(F), { key: F.servers[0].kp.pub, indices: [4] }, note(F));
+  const a1 = ask(S, F, A.kp.pub, r.request);
+  const t = new TwoCall(ctx(F), { key: A.kp.pub, indices: [1, 2, 3], shares: A.shares }, [{ key: F.servers[0].kp.pub, indices: [4] }, { key: F.servers[1].kp.pub, indices: [7] }], note(F));
+  t.took(F.servers[0].kp.pub, ask(S, F, A.kp.pub, t.commitRequest()));
+  const snap = S.snapshot();
+  assert.ok(!snap.includes(String(F.servers[0].share.toString(16))), 'no share in the snapshot');
+  const S2 = server(F); S2.restore(snap);
+  assert.deepEqual(ask(S2, F, A.kp.pub, structuredClone(r.request)), a1, 'the same answer after a restart');
+  assert.equal(ask(S2, F, A.kp.pub, { ...r.request, event: note(F, { content: 'x' }) }).code, 'id_reused');
+  t.took(F.servers[1].kp.pub, { type: 'commitments', commitments: [{ i: 7, D: t.commitments[0].D, E: t.commitments[0].E }] });
+  assert.equal(ask(S2, F, A.kp.pub, t.signRequest()).code, 'unknown_after', 'two-call nonces are gone after a restart');
+});
