@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 13.12 · 2026-11-03 · `draft` `optional` · not built
+Draft 13.13 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -150,7 +150,7 @@ borrowed computer or a desktop site.
 | Co-sign for others | yes | yes | yes | no |
 | Get decryption answers (§5.5) | yes | no | no | no |
 | Approve an account change (§6.2) | with its lock, with a second device, or with the paper | **no** | no | with a device, or in a recovery |
-| Cancel a wait | with its lock, or with a second device | **no** | no | no (the holder withdraws its own) |
+| Cancel a wait | with its lock, or with a second device (an heir wait with neither, Backup module) | **no** | no | no (the holder withdraws its own) |
 | Hold the release seeds | yes | no | yes, while seated | after release only |
 | Hold the data key | yes | no | no | no |
 
@@ -1019,7 +1019,8 @@ replaced. Three routes, tried in order:
    only if it verifies). A server that holds a seat for an account where that key is the current backup
    key or a current device answers with a reply sealed to the key, carrying its host signature outside
    the seal, over `SHA-256("keykin-seated/1" ‖ H(key) ‖ challenge ‖ ciphertext)`, so the asker can check
-   it. This needs no relays and no published event.
+   it. This needs no relays and no published event. A server that holds an heir record (Backup module)
+   also answers `seated?` and `forward_get` signed by that record's heir key.
 2. **Follow the forwarding notes.** A retired server, after destroying everything else, keeps for the
    account only the group-signed change that retired it and the hashes of the keys allowed to ask for it
    (the backup keys, device keys and other seat servers' keys it knew). It serves that change to a
@@ -1282,7 +1283,7 @@ the paper's base has a paper item for the current backup key (§6.7.6).
   32 waiting per sender and recipient, with its own push budget). Kind 21059 is used only towards members
   known to be awake (§9.1).
 - `inbox_get {}` returns `{ "items": [ { "iid": "…", "age": <seconds held>, "wrap": {…} } ], "waits":
-  [ <every recovery or hold running for the account, with its end> ] }`; `inbox_ack { "iids": […] }`
+  [ <every recovery, hold or heir wait running for the account, with its end> ] }`; `inbox_ack { "iids": […] }`
   removes items. Items expire with their lifetime class; deliveries (§7.1) stay until acknowledged.
 - **Opening the app MUST fetch every server's inbox**, with no gateway involved. A dead gateway slows a
   device down; it never cuts it off.
@@ -1748,9 +1749,9 @@ From red-team round 13, the first clean round since Upkeep (0 critical, 0 high),
 - Lows: §10 wording on what a device knows, one list hash, "remove a device" only, the new messages,
   who deals in F9, `upload_held`, double abandons, dedupe losers removed, and the `seated?` signature.
 
-## Changes in drafts 13.2 to 13.12
+## Changes in drafts 13.2 to 13.13
 
 Small clarifications from the module reviews, none a new mechanism: the host-signed enrol reply in a
 seat's `new` entry, refusing picks fall through, no future-dated kind 5 (13.2); own servers don't hold
 grants, opt-in NIP-46 watching, heir storage and the heir wait (13.3); the newest public server list kept,
-and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11); encodings and rules pinned from the reference implementation's first batch: the approval `expiry` field, the `pair`, `paper`, `recovery` and `release_request` signatures, `ecdh_partial`, `rs`/`dk` as seed hashes, the hedge stream, a list in every change event, lifetime classes, approvers, duplicate-key adds, kind 5 skew, list-hash ordering, and recovery changes co-signed only by the holder (13.12).
+and `seated?` verified (13.4); what a watching server keeps for each signer key, and the heir record (13.5); a declined or unfinished paper is destroyed, and the passkey page is dropped (13.6); a server's own keys in §2, and peers may fetch forwarding notes (13.7); §5.8's tests made exact, a list with private items isn't empty, co-signing devices refuse rather than prompt, rebased drafts (13.8); modules may publish events (13.9); heir waits named in §1 and §2, Cosign papers explained rather than read (13.10); `account_delete` approved like other changes, and its tombstone (13.11); encodings and rules pinned from the reference implementation's first batch: the approval `expiry` field, the `pair`, `paper`, `recovery` and `release_request` signatures, `ecdh_partial`, `rs`/`dk` as seed hashes, the hedge stream, a list in every change event, lifetime classes, approvers, duplicate-key adds, kind 5 skew, list-hash ordering, and recovery changes co-signed only by the holder (13.12); heir waits in `inbox_get` and §2's table, and heir lookups (13.13).

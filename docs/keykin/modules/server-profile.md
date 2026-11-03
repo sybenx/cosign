@@ -1,6 +1,6 @@
 # Keykin module: Server profile
 
-Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.12 · not built
+Draft 5 · 2026-11-03 · module of [Keykin Core](../core.md) draft 13.13 · not built
 
 This module covers running a Keykin server and being listed as one: the duties as an operator sees them,
 abuse defaults, how a server enrols and announces itself, the signed public list, closing and moving,
