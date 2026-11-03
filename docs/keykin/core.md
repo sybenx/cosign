@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.11 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.12 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -397,8 +397,9 @@ wrapped (§7.2). The read-back (step 4) checks every field. It is made at accoun
    lockless device never traps the other. Each holder is worth 5 points, like an nsec kept in it, and the
    kept secret approves what a `paper` approval would. It is always the **current** backup key's secret: an
    F7 on such an account (friends' pieces with no paper, say) keeps the new key's secret the same way: the
-   device that ran it sends `kept_new {secret}`, sealed, to every lockless device as a delivery, and each
-   replaces its copy.
+   device that ran it sends `kept_new {secret}`, sealed, to every lockless device as a delivery, only after
+   F7 step 5; each accepts it only from a current device, and only if the secret's public key is the
+   current backup key, then replaces its copy.
    A lock counts as registered once a lock change is co-signed, or once a device added with a lock has had
    its add co-signed **and** acknowledged its welcome (§4.2 step 5). Then, or when a paper is read back,
    the device that sees it sends `kept_done {}` (naming that change, or the read-back; a lock change only
@@ -646,7 +647,9 @@ the helper coordinates or takes part in.
 - **Stops are account state, not requests.** A server keeps every stop in force for as long as it is in
   force (core §2 item 6), and every **cleared** stop id too, carries both in seat holders' welcomes, and
   passes them to its peers; they never expire. A stop whose id is cleared never comes back in force.
-  Devices re-send stops to every incoming seat holder, and are told about resumes. A member may have at
+  Devices re-send stops to every incoming seat holder, and are told about resumes. Servers list the stop
+  ids in force (in `inbox_get`'s answer) to current devices, so any device can resume a stop another device
+  sent. Cleared ids are kept for a year. A member may have at
   most 3 stops in force; beyond that a server answers "already stopped".
 - **Only a named clear ends a stop.** `helper_resume {ids}`, with an approval (`lock`, `pair` or `paper`,
   checked by every receiver as in §3.2; for `paper`, with a challenge from every server, as for
@@ -896,9 +899,10 @@ stuck. Two ideas make that safe:
      (§3.4 step 4);
   3. destroy, at once, the old share and `δ(i)`. A device also works out `δ(b1)`, `δ(b2)` (from the
      redeal's full `δ`: its own 3 values plus `δ(0) = 0`) and keeps them with the redeal's data-key seed,
-     encrypted at rest, **until the paper item for the current backup key is verified** (§6.7.6), and in
-     any case for 30 days after the redeal (so a paper that commits in that time, by an F7 that began
-     before it, can still be re-issued the item), then destroys them and the paper conversation key;
+     encrypted at rest, **until the paper item for the current backup key is verified** (§6.7.6; the
+     "verified" bit is kept per backup key), then destroys them and the paper conversation key. The device
+     running an F7 also keeps them for redeals applied during it, until its paper change commits or its
+     approval expires, so it can re-issue the items the new paper misses;
   4. send `ack`.
 - **Never sign at a state you have left.** Honest members can't: they destroyed it.
 - Servers apply every redeal they know before co-signing an Upkeep change; repair helpers do too. Before
@@ -1218,7 +1222,8 @@ current device can re-issue.
   `operator` while another eligible one exists. If that pick refuses the seat or doesn't answer within a
   minute, the device takes the next server in the slice, in list order, and the `ask` names which one.
   It checks for itself that the server is dead (or has sent a host-signed shutdown notice, or answers
-  `deleted` or "unknown account" for an account its peers still serve) before it shows the card. When there is no other operator, the card says "All your servers are run by X".
+  `deleted` or "unknown account" for an account its peers still serve, for a day) before it shows the
+  card; such a server triggers the F1 card on its own. When there is no other operator, the card says "All your servers are run by X".
 
 #### 6.7.8 Failure handling
 
@@ -1993,3 +1998,11 @@ account counts as dead for F1 (M6).
 From Helper's seventh red team (0 critical, 0 high): cleared stop ids are kept as account state so a
 cleared stop never returns; at most 3 stops in force per member; a `paper`-approved resume gets a
 challenge from every server.
+
+## Changes in draft 14.12
+
+From the red team of 14.8 to 14.11 (0 critical, 0 high), its mediums: paper deltas are kept past
+verification only by the device running an F7, and the "verified" bit is per backup key (M1); `kept_new`
+only after F7 step 5, checked against the current backup key (M2); a server answering `deleted` or
+"unknown account" for a day brings the F1 card on its own (M3); servers list stop ids in force to devices,
+and keep cleared ids a year (M4, L5).
