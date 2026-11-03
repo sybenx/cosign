@@ -73,8 +73,10 @@ other value.
   - `0`: the secret;
   - `1`: the group key `g`;
   - `2`: the epoch id;
-  - `3`, repeated: one per current server, its host key, HTTPS endpoint and relays;
+  - `3`, repeated: one per current server, its 32-byte host key ‖ UTF-8 JSON `{https, relays}`;
   - `4`: the holder-inbox key (§3).
+
+  Unlike NIP-19, lengths here are **2 bytes** big-endian, so a server's relays fit.
 
   The same TLV without type `0` is the set's **account card**: friends and the heir keep it with their
   copy. A holder pins the card's `g` for good. Servers and relays in later cards are **hints** only, and the
@@ -167,7 +169,8 @@ an owner who rarely opens the app.
   server's piece at x = the FROST index of its seat. It publishes the commitments `C0 = r·G` and `C1 =
   a1·G` of the line, so every piece can be checked: `r_x·G == C0 + x·C1`.
 - It picks an ephemeral key `e`, and takes `z`, the 32-byte x-coordinate of `e·H` for the heir's holder
-  key `H`.
+  key `H` lifted to even y. (Since `z` is an x-coordinate, the heir's `h·E` gives the same `z` whichever
+  sign its key has.)
 - `K = HKDF-SHA256(ikm = z ‖ r, salt = empty, info = "keykin-heir/1")`, with `r` as 32 bytes big-endian.
   The envelope is ChaCha20-Poly1305 under `K` with a random 12-byte nonce and associated data
   `"keykin-heir/1" ‖ g ‖ H ‖ set id`. The device opens it once itself, to check it.

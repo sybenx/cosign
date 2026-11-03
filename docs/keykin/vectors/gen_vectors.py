@@ -46,7 +46,7 @@ def priv_from(label):  # deterministic test keys, even-y public
     if pt[1] % 2: k = N - k; pt = mul(k)
     return k, pt
 
-out = {"spec": "Keykin Core draft 13.1", "note": "hex unless stated; x-only keys are 32 bytes", "cases": {}}
+out = {"spec": "Keykin Core draft 14.12", "note": "hex unless stated; x-only keys are 32 bytes", "cases": {}}
 C = out["cases"]
 
 g_sk, g_pt = priv_from("group")      # stands in for the group point; nobody holds g_sk in real life
@@ -242,5 +242,20 @@ C["signpost"] = {"backup_key": hx(backup_key), "d": hx(sha(b"keykin-beacon/1", b
 ct = sha(b"sealed-reply-ciphertext")
 C["seated_reply_digest"] = {"H_key": hx(sha(backup_key)), "challenge": hx(sha(b"chal")[:16]), "ciphertext_sha": "use the raw ciphertext bytes; here a stand-in",
     "digest": hx(sha(b"keykin-seated/1", sha(backup_key), sha(b"chal")[:16], ct))}
+
+N256 = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551
+def derive_key(secret, label, gx, nonce, order):
+    c = 0
+    while True:
+        k = int.from_bytes(hkdf(secret, label + gx + nonce + bytes([c])), "big")
+        if 0 < k < order: return k, c
+        c += 1
+enrol_secret = sha(b"keykin-test/enrol-secret")
+enrol_nonce = bytes.fromhex("78377b525757b494427f89014f97d799")
+msk, mc = derive_key(enrol_secret, b"keykin-member/1", g, enrol_nonce, N)
+vsk, vc = derive_key(enrol_secret, b"keykin-vapid/1", g, enrol_nonce, N256)
+C["enrol_keys"] = {"enrol_secret": hx(enrol_secret), "g": hx(g), "nonce": hx(enrol_nonce),
+    "member_sk": "%064x" % msk, "member_counter": mc, "vapid_sk": "%064x" % vsk, "vapid_counter": vc,
+    "note": "Server profile §4: HKDF-SHA256, empty salt, ikm = enrol secret, info = label ‖ g ‖ nonce ‖ counter byte, 32 bytes; cross-checked by the reference implementation"}
 
 print(json.dumps(out, indent=1, ensure_ascii=False))

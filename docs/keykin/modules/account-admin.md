@@ -55,9 +55,10 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
    every server has adopted the epoch record first-hand (core §3.4) and stored its seat keys (Server
    profile §4). Until then each server holds the account **provisionally**. As soon as every server has
    adopted, the device signs the signpost (core §6.7.5) and delivers its event id and the epoch id to every
-   server (core §6.7.10), and only after every server acknowledges does it publish the signpost; that
-   delivery **confirms** the account (a server confirms only the epoch record it adopted), and it registers push (core §8.1), all before the backup question. A server
-   that hasn't seen the confirmation within an hour asks its peers first, and drops the provisional
+   server (core §6.7.10), together with an explicit `confirm {epoch}`, and only after every server
+   acknowledges does it publish the signpost; that `confirm` **confirms** the account (a server confirms only the epoch record it adopted), and it registers push (core §8.1), all before the backup question. A server
+   that hasn't seen the confirmation within an hour asks its peers first (`provisional_seen? {g, epoch}`),
+   and drops the provisional
    account only if none has seen it, keeping no record. A provisional account never counts for `refused:
    exists`, and a newer group-signed epoch record for the same `g` replaces it. A seat answering "unknown
    account" before the account is live restarts the creation; after, the core's dead check applies (F1). Dropping keeps no record, so a failed attempt never bars a retry of the same imported npub and no message can
@@ -241,10 +242,11 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 | `type` | From → to | `cls` |
 |---|---|---|
-| `create` / `create_ok {dkg_key, host_sig}` | device → server / back | `ask` |
-| `dkg_1`, `dkg_2`, `dkg_abort {culprit}` | device ↔ server (relayed) | `ask` |
+| `create` / `create_ok {dkg_key, host_sig}` (`host_sig` over `SHA-256("keykin-dkg-key/1" ‖ dkg_key)`) | device → server / back | `ask` |
+| `dkg_1 {index, max}` → `{package}`; `dkg_2 {round1: [[i, package]…], dkg_keys: {i: key}}` → `{packages: [[j, package \| {sealed, from}]…]}` (sealed NIP-44 to the other server's DKG key); `dkg_3 {round1, round2}` → `{g, points}`; `dkg_abort {culprit}` | device ↔ server (relayed) | `ask` |
+| `confirm {epoch}` / `provisional_seen? {g, epoch}` | device → servers / server → peers | `member` / `ask` |
 | `refused: exists` | server → device (an `error`) | — |
-| `account_delete {id, approval}` / `deleted {request, changes, host_sig}` | device → servers, server → server / back | `member` |
+| `account_delete {id, approval}` / `deleted {request, changes, host_sig}` (`host_sig` over `SHA-256("keykin-deleted/1" ‖ g ‖ JCS(request))`) | device → servers, server → server / back | `member` |
 
 ## 7. Limits, said plainly
 

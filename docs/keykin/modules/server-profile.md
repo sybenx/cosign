@@ -134,7 +134,7 @@ admin §1.1).
     until the output is a valid secp256k1 scalar (not 0, below the order). The member key is its x-only
     public key, used as BIP-340 does (even y). The VAPID key is the same with `"keykin-vapid/1"` and the
     P-256 order. So each reply, and so each seat, gets fresh keys, and the same host can be seated again
-    later (core I7). A test vector is to be added to `vectors/`.
+    later (core I7). The test vector is `enrol_keys` in `vectors/vectors.json`.
   - The reply is signed with BIP-340 by the **host key** over `SHA-256("keykin-enroll/1" ‖ JCS(reply))`.
     The seat change's `new` entry carries it.
   - **The reply's age is checked once, when the change is approved.** A reply is **unexpired** while it

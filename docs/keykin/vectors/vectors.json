@@ -1,5 +1,5 @@
 {
- "spec": "Keykin Core draft 13.1",
+ "spec": "Keykin Core draft 14.12",
  "note": "hex unless stated; x-only keys are 32 bytes",
  "cases": {
   "join_check": [
@@ -406,6 +406,16 @@
    "challenge": "28b4640ead7b6bc735189e6b0d386bf0",
    "ciphertext_sha": "use the raw ciphertext bytes; here a stand-in",
    "digest": "a2728457ddd6bde789e991ac22ac2436b730ae67adf7e8312581a31497c7f2f8"
+  },
+  "enrol_keys": {
+   "enrol_secret": "dfd483debb2ba4f3a54a4b81a55210bbb3b462e50d1b141098a61f6065fc575b",
+   "g": "78f22339037f8938c9eefb814570b6f06d432773b580ed1d1539a50612b65520",
+   "nonce": "78377b525757b494427f89014f97d799",
+   "member_sk": "35271d382f7981c9b703b61aa726216bec7ab098472070ea79e3b6f220145347",
+   "member_counter": 0,
+   "vapid_sk": "9b4ed0c794babdaedf1cdbd54cfeecbc2dfc2debca3dbcc508009381bc5e4572",
+   "vapid_counter": 0,
+   "note": "Server profile §4: HKDF-SHA256, empty salt, ikm = enrol secret, info = label ‖ g ‖ nonce ‖ counter byte, 32 bytes; cross-checked by the reference implementation"
   }
  }
 }
