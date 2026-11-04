@@ -39,7 +39,7 @@ test('a removed device\'s records stop counting', async () => {
 
 test('a big month goes in parts and reads back whole; an older snapshot never rolls a reader back', async () => {
   const { acc, A, B } = await three();
-  for (let k = 0; k < 400; k++) A.meta.encrypted((await A.nip44(A.g, `n${k}`, true)), `by:${k}`);
+  for (let k = 0; k < 400; k++) A.meta.encrypted((await A.nip44(A.g, `n${k}`, true)), `${A.kp.pub}:${k}`);
   const first = await A.meta.publish();
   assert.ok(first.filter((e) => e.tags.some((t) => t[1].startsWith('keykin-meta:'))).length > 1, 'more than one part');
   await B.meta.fetch();
@@ -47,7 +47,7 @@ test('a big month goes in parts and reads back whole; an older snapshot never ro
   assert.equal(B.evidence.owners.size, 400);
   assert.equal([...B.evidence.owners.values()].reduce((n, s) => n + s.size, 0), 800);
   // A newer snapshot, then a reader shown only the older one: it keeps what it read.
-  A.meta.encrypted(await A.nip44(A.g, 'later', true), 'by:later');
+  A.meta.encrypted(await A.nip44(A.g, "later", true), `${A.kp.pub}:later`);
   acc.bus.advance(1); await A.meta.publish();
   await B.meta.fetch();
   const n = B.evidence.owners.size;

@@ -161,22 +161,47 @@ export function looksWallet(plain: string): boolean {
   } catch { return false; }
 }
 const RANK: Record<string, number> = { 'private-data': 3, wallet: 2, lists: 1, dms: 0 };
-/** What this device knows of the account's own ciphertexts (Device policy §1's metadata, its own part): the
- *  kinds of the account's events carrying each ciphertext (by the SHA-256 of its decoded bytes), and who
- *  encrypted it: a grant `${by}:${id}`, or the member app. Kept on this device; syncing it is Device policy's. */
+/** What this device knows of the account's own ciphertexts (Device policy §1's metadata): by the SHA-256 of
+ *  each ciphertext's decoded bytes, the account events carrying it, as `kind:signer` (the grant `${by}:${id}`
+ *  that got it signed, or `member`), and who encrypted it (a grant, or `member`). An event is evidence only if
+ *  the same grant, or the member app, both encrypted and signed it (Doors §1; review 17 M1). */
 export class Evidence {
-  kinds = new Map<string, Set<number>>();
+  kinds = new Map<string, Set<string>>();
   owners = new Map<string, Set<string>>();
+  /** Records per owner: a site can't crowd out the member app's (review 17 H2). */
+  static readonly PER_OWNER = 2000;
+  #count = new Map<string, number>();
   static hashOf(payload: string): string | null {
     try { const b = base64.decode(payload); return base64.encode(b) === payload ? bytesToHex(sha256(b)) : null; } catch { return null; }
   }
-  encrypted(payload: string, owner: 'member' | string) { const h = Evidence.hashOf(payload); if (!h) return; const s = this.owners.get(h) ?? new Set(); s.add(owner); this.owners.set(h, s); this.#cap(); }
-  /** An account event this device signed or fetched (`pubkey == g`, verified by the caller). */
-  event(kind: number, content: string) { const h = Evidence.hashOf(content); if (!h) return; const s = this.kinds.get(h) ?? new Set(); s.add(kind); this.kinds.set(h, s); this.#cap(); }
+  encrypted(payload: string, owner: 'member' | string) {
+    const h = Evidence.hashOf(payload); if (!h) return;
+    const s = this.owners.get(h) ?? new Set(); if (s.has(owner)) return;
+    if (owner !== 'member' && (this.#count.get(owner) ?? 0) >= Evidence.PER_OWNER) return;
+    s.add(owner); this.owners.set(h, s); this.#count.set(owner, (this.#count.get(owner) ?? 0) + 1); this.#cap();
+  }
+  /** An account event this device signed (for `signer`) or fetched (verified by the caller). */
+  event(kind: number, content: string, signer = 'member') {
+    const h = Evidence.hashOf(content); if (!h) return;
+    const s = this.kinds.get(h) ?? new Set(); s.add(`${kind}:${signer}`); this.kinds.set(h, s); this.#cap();
+  }
+  /** The kinds of the events carrying `h` that are evidence: signed by an owner of its encryption. */
+  vouched(h: string): number[] {
+    const os = this.owners.get(h); if (!os) return [];
+    return [...(this.kinds.get(h) ?? [])].map((x) => { const i = x.indexOf(':'); return [Number(x.slice(0, i)), x.slice(i + 1)] as [number, string]; }).filter(([, sg]) => os.has(sg)).map(([k]) => k);
+  }
+  allKinds(h: string): number[] { return [...(this.kinds.get(h) ?? [])].map((x) => Number(x.slice(0, x.indexOf(':')))); }
+  /** The oldest records go first, when a month must fit its parts. */
+  trim(n: number) { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) for (const k of [...m.keys()].slice(0, n)) m.delete(k); this.#recount(); }
+  size() { return this.kinds.size + this.owners.size; }
+  #recount() { this.#count.clear(); for (const os of this.owners.values()) for (const o of os) this.#count.set(o, (this.#count.get(o) ?? 0) + 1); }
   #cap() { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) while (m.size > 20_000) m.delete(m.keys().next().value!); }
   dump() { return { kinds: [...this.kinds].map(([h, k]) => [h, [...k]]), owners: [...this.owners].map(([h, o]) => [h, [...o]]) }; }
-  load(x: any) { this.kinds = new Map((x?.kinds ?? []).map(([h, k]: [string, number[]]) => [h, new Set(k)])); this.owners = new Map((x?.owners ?? []).map(([h, o]: [string, string[]]) => [h, new Set(o)])); }
-  clear() { this.kinds.clear(); this.owners.clear(); }
+  load(x: any) {
+    this.kinds = new Map((x?.kinds ?? []).map(([h, k]: [string, unknown[]]) => [h, new Set(k.map((y) => (typeof y === 'number' ? `${y}:member` : String(y))))]));
+    this.owners = new Map((x?.owners ?? []).map(([h, o]: [string, string[]]) => [h, new Set(o)])); this.#recount();
+  }
+  clear() { this.kinds.clear(); this.owners.clear(); this.#count.clear(); }
 }
 /** The scope a decrypt needs (§1, "Which scope a decrypt needs"). With someone else's key, `dms`. To the account
  *  itself: the payload must be canonical base64, and is matched against the account's own events; an event counts
@@ -190,17 +215,15 @@ export function scopeForDecrypt(g: string, peer: string, plaintext?: string, o: 
   if (plaintext === undefined) return 'private-data';
   const h = o.payload !== undefined ? Evidence.hashOf(o.payload) : null;
   if (o.payload !== undefined && !h) return 'malformed';
-  const kinds = h ? [...(o.evidence?.kinds.get(h) ?? [])] : [];
-  const owners = h ? o.evidence?.owners.get(h) : undefined;
   const ofKind = (k: number): Scope => (WALLET_KINDS.has(k) ? 'wallet' : LIST_KINDS.has(k) ? 'lists' : k === 4 || k === 14 ? 'dms' : 'private-data');
   let need: Scope | null = null;
-  if (kinds.length) {
-    const vouched = !!owners && (owners.has('member') || (o.owner !== undefined && owners.has(o.owner)));
-    const classes = kinds.map(ofKind);
-    if (vouched) need = classes.reduce((a, b) => (RANK[b] > RANK[a] ? b : a));
+  if (h && o.evidence) {
+    // Evidence: events whose ciphertext the same grant (or the member app) both encrypted and got signed.
+    const vouched = o.evidence.vouched(h).map(ofKind);
+    const all = o.evidence.allKinds(h).map(ofKind);
+    if (vouched.length) need = [...vouched, ...all.filter((c) => RANK[c] > RANK.lists)].reduce((a, b) => (RANK[b] > RANK[a] ? b : a));
     // With no encrypt record at all (no metadata to hand): a list kind's bytes matching no wallet or private event.
-    // A record for another grant is metadata: those bytes are that grant's, not evidence for this one.
-    else if (!owners?.size && classes.every((c) => c === 'lists')) need = 'lists';
+    else if (!o.evidence.owners.get(h)?.size && all.length && all.every((c) => c === 'lists')) need = 'lists';
   }
   if (need === 'lists' && !listPlaintextOk(plaintext)) need = looksWallet(plaintext) ? 'wallet' : 'private-data';
   if (need === 'dms' || need === 'wallet' || need === 'private-data' || need === 'lists') return need === 'private-data' && looksWallet(plaintext) ? 'wallet' : need;

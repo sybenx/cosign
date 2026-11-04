@@ -188,7 +188,8 @@ export class Nip46Home {
           // Device policy §4: while a hold for this list is pending, this site's changes to it wait (review 12 H3).
           const lk = listKey(ev);
           if (lk && [...this.held.values()].some((x) => x.wait && x.signer === g.signer && listKey(x.event) === lk)) return { error: 'try-later: a held change to this list is waiting' };
-          try { return { result: JSON.stringify(await this.d.sign(ev)) }; }
+          // Signed for this grant: the evidence records who got each ciphertext signed (review 17 M1).
+          try { return { result: JSON.stringify(await this.d.sign(ev, { owner: `${this.d.kp.pub}:${g.entry}` })) }; }
           catch (err) {
             // Held (Doors §3.3, Device policy §4, review 11 L4): kept on this home for the person, who
             // approves it with the lock or lets a hold's wait pass; the result is published, not returned.
@@ -208,6 +209,8 @@ export class Nip46Home {
           // Encrypting to the account's own key is `post`; to anyone else, `dms`.
           const peer = String(params[0]);
           if (!this.#has(g, peer.toLowerCase() === this.d.g ? 'post' : 'dms')) return ask(peer.toLowerCase() === this.d.g ? 'post' : 'dms');
+          // At most 300 encryptions to self an hour per site: each becomes a metadata record (review 17 H2).
+          if (peer.toLowerCase() === this.d.g && !this.#budget(g.signer)) return { error: 'try-later: too many encryptions; wait a while' };
           // An encryption to self is recorded for this grant: evidence for its later decrypts (Device policy §1).
           return { result: method === 'nip44_encrypt' ? await this.d.nip44(peer, String(params[1]), true, { owner: `${this.d.kp.pub}:${g.entry}` }) : await this.d.nip04(peer, String(params[1]), true) };
         }
@@ -333,6 +336,12 @@ export class Nip46Home {
     }
     if (done.length) await this.d.bus.send(this.d.kp, this.watching, msg('inbox_ack', this.d.g, this.d.epochId, 'ask', { iids: done }));
     return this.answeredCount - before;
+  }
+  #crypt = new Map<string, number[]>();
+  #budget(signer: string): boolean {
+    const q = (this.#crypt.get(signer) ?? []).filter((t) => this.d.now - t < 3600);
+    if (q.length >= 300) { this.#crypt.set(signer, q); return false; }
+    q.push(this.d.now); this.#crypt.set(signer, q); return true;
   }
   /** Requests this home answered (for `wake`). */
   answeredCount = 0;

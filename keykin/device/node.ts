@@ -197,7 +197,7 @@ export class DeviceNode implements Node {
 
   // ---- driving ----
   /** Sign an event with the first live server that answers; `stale` brings us forward and retries. */
-  async sign(ev: Partial<Unsigned>, extra: { approval?: Approval; hold?: string; list_events?: NostrEvent[]; material?: Item } = {}): Promise<NostrEvent> {
+  async sign(ev: Partial<Unsigned>, extra: { approval?: Approval; hold?: string; list_events?: NostrEvent[]; material?: Item; owner?: string } = {}): Promise<NostrEvent> {
     // The site's event as §9.5 reads it: absent fields filled, its id, sig and extra fields dropped.
     const { id: _id, ...event } = siteEvent({ created_at: this.now, kind: 1, ...ev }, this.g);
     let lastErr = 'no_server';
@@ -224,8 +224,10 @@ export class DeviceNode implements Node {
         if (lk && signed.created_at > (this.#lists.get(lk) ?? 0)) { this.#lists.set(lk, signed.created_at); }
         // Doors §1's evidence: which account events carry which ciphertext (and the grant events' ids, which no
         // site may delete).
-        this.meta.event(signed.kind, signed.content);
-        if (signed.kind === KIND_GRANTS) this.protectedIds.add(signed.id);
+        // Not the account's own keykin- events (grants, metadata): they would feed back into the snapshot (M3).
+        const keykinD = signed.kind === KIND_GRANTS && (signed.tags.find((t) => t[0] === 'd')?.[1] ?? '').startsWith('keykin-');
+        if (!keykinD) this.meta.event(signed.kind, signed.content, extra.owner ?? 'member');
+        if (keykinD) this.#protect(signed.id);
         return signed;
       }
     }
@@ -274,7 +276,11 @@ export class DeviceNode implements Node {
     await this.checkReissues();
     await this.reissueMissing();
     // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
-    if (this.bus.events && this.baseDk) try { await this.grants.fetch(); } catch { /* relays out of reach: next time */ }
+    if (this.bus.events && this.baseDk) try {
+      await this.grants.fetch();
+      for (const e of (await this.bus.events.query({ kinds: [KIND_GRANTS], authors: [this.g] })).events)
+        if ((e.tags.find((t: string[]) => t[0] === 'd')?.[1] ?? '').startsWith('keykin-')) this.#protect(e.id);
+    } catch { /* relays out of reach: next time */ }
     // Device policy §1: every device's records, read with each catch-up; this device's own published at most
     // every 10 minutes.
     if (this.bus.events && this.baseDk) try {
@@ -742,11 +748,13 @@ export class DeviceNode implements Node {
     dataKey: () => dev.dataKeys.current(), keyFor: (s) => dev.dataKeys.forState(s),
     sign: (ev) => dev.sign(ev),
     publish: async (e) => { await dev.bus.events?.publishEvent(e); },
-    query: async () => (await dev.bus.events?.query({ kinds: [KIND_META], authors: [dev.g] })) ?? { events: [], answered: 0, asked: 0 },
+    query: async (f) => (await dev.bus.events?.query({ kinds: [KIND_META], authors: [dev.g], '#d': f['#d'] })) ?? { events: [], answered: 0, asked: 0 },
   }))(this);
   /** Doors §1's evidence for a decrypt to the account itself: every current device's records. */
   get evidence(): Evidence { return this.meta.evidence(); }
   protectedIds = new Set<string>();
+  /** The account's keykin- events (every device's grants and metadata): no site deletes one by id (M6). */
+  #protect(id: string) { this.protectedIds.add(id); if (this.protectedIds.size > 50_000) this.protectedIds.delete(this.protectedIds.values().next().value!); }
   /** When this device last caught up with the servers (Doors §2: no site is answered on older news). */
   lastFetchAt = 0;
   #grantTimer: ReturnType<typeof setTimeout> | null = null;
