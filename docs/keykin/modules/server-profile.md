@@ -1,6 +1,6 @@
 # Keykin module: Server profile
 
-Draft 7 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
+Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.18 · not built
 
 This module covers running a Keykin server and being listed as one: the duties as an operator sees them,
 abuse defaults, how a server enrols and announces itself, the signed public list, closing and moving,
@@ -153,8 +153,7 @@ admin §1.1).
   - An enrol secret is destroyed **13 months** after it was made. After that, logged traffic to a seat
     that has since retired can't be opened again, even if the host is later compromised. A seat change
     that arrives with no stored keys after its secret is gone (a server offline for a year) is the one
-    case it can't fill: it answers with a host-signed `refused: expired`, and the device replaces the seat
-    again (F1/F4). That refusal never delists the server.
+    case it can't fill: it can't derive the seat's member key, so it can't read the change and doesn't answer. The seat then falls to core §6.7.6's 7-day quiet rule and is replaced again (F1/F4), which never delists the server.
   - The host secret and enrol secrets are **never in a backup** (core §7.3). Only a live transfer (§5)
     copies them.
 - **Incoming holders before the seat change.** Core §6.7.3 has the dealer upload deliveries to incoming
@@ -232,7 +231,7 @@ admin §1.1).
     stays where it is and the device says: "No replacement server is available. You can add your own."
   - The device shows the card for the server it got an enrol reply from. If the reply is more than 7 days
     old when the person opens the card, it fetches a fresh one first.
-  - A host-signed `refused: expired` counts like a shutdown notice for the F1 card.
+  
   - **Off-list servers.** The `operator` in an off-list server's reply counts only if that operator's
     kind 10243 list names the host. Otherwise the operator is "unknown", which never counts as different
     from another for the two-seats rule or the "All your servers are run by X" line.
@@ -250,16 +249,63 @@ admin §1.1).
 | `type` | From → to | `cls` |
 |---|---|---|
 | `enroll {g}` / `enroll_reply` | device → server / back | `ask` |
-| `notice {shutdown, seq, host}` / `notice {endpoints}` | server → members and peers | `member` |
+| `notice {shutdown, seq, host, member, host_sig}` / `notice {endpoints}` | server → members and peers | `member` |
+| `notice_get {g}` / `notice` | device → server / back | `ask` |
+
+**Host-signed items.** A shutdown notice and a host-signed refusal carry `host_sig`, a detached BIP-340
+signature by the server's host key in core §6.2's form. A refusal counts over any transport (relays
+included) when its `host_sig` checks, as the checks below say; §4's "unauthenticated relay replies are
+ignored" is about replies without one. A notice counts only through a live answer (below). The added
+fields extend core's `notice` and `error` (core §11.1 keeps unknown fields).
+
+- **Shutdown notice:** `{"type": "notice", "shutdown": <unix> | null, "seq": <n>, "host": "<host key>",
+  "member": "<the seat's member key>", "host_sig": …}`, where `host_sig` signs
+  `SHA-256("keykin-shutdown/1" ‖ g ‖ JCS({"shutdown", "seq", "host", "member"}))`. It is per account and
+  per server seat. `"shutdown": null` cancels. The host issues `seq = max(now, last seq + 1)`, a
+  non-negative safe integer (core §9.5).
+- **Refusal:** `{"type": "error", "re": "<id>", "code": "<code>", "host": "<host key>", "host_sig": …}`,
+  where `host_sig` signs `SHA-256("keykin-refused/1" ‖ g ‖ JCS({"re", "code", "host"}))`. `code` is the
+  whole string (`"refused: closing"` from a closing server, `"refused: full"` at the hard cap), and no
+  other field of a refusal has meaning. `re` is the id of the `enroll` refused, so a refusal can't be
+  reused for another. Every "host-signed refusal" in this module has this form, and only the pick's answer
+  to `enroll` is host-signed. A co-signer's refusal of a seat change (`refused: I2`, `I6`, `I7` with the
+  conflicting change's id, or `refused: replaced`, duty 3) is an ordinary `error` sealed by its member key
+  and is handled only as §4 says (stopping, or fetching the conflicting change and falling through only if
+  it checks).
+- **The live answer decides.** A device asks a seat's server for its current notice with `notice_get {g}`
+  (`cls: ask`), when it receives a pushed notice for that seat whose `host_sig` checks and whose `seq` is
+  above the one it keeps (at most once an hour per seat), and once a day in the catch-up round it already
+  makes, so it adds no wake. The answer is a `notice` with `re: <the notice_get id>`, sealed by the seat's
+  member key (core §9.1): the host's latest notice for that seat, or `{"type": "notice", "re": …,
+  "shutdown": null, "seq": 0, "host": …, "member": …, "host_sig": …}` when it has none, either way with a
+  `host_sig` that checks. In an answer, `host_sig` signs `SHA-256("keykin-shutdown-answer/1" ‖ g ‖
+  JCS({"shutdown", "seq", "host", "member", "re"}))`, so an old notice can't be sealed as a fresh answer
+  by someone holding only the member key. The answer is `cls: ask`. The device takes only answers to its
+  outstanding request, for that request's whole lifetime; among answers to one request the highest `seq`
+  wins, and the latest accepted request's answer replaces anything kept before. A server answers
+  `notice_get` only from a verified current member of `g`, and counts it like other member messages;
+  anything else goes to the junk bucket (§3). A pushed notice, which has no `re`, is only a reason to ask
+  and never counts by itself. A relay can't replay an old notice into an answer, and someone holding only
+  one of the host key and the seat's member key can't make one (a thief of the whole server holds both,
+  and could as well stop it).
+- **When it counts.** A notice counts for the F1 card while the latest live answer, from a server seat at
+  the device's current epoch with `host` and `member` matching that seat, has a non-null `shutdown` no
+  more than 30 days after now (any past date counts). A date further out is shown on Backup as plain
+  information and brings the card when it comes within 30 days. Without an answer it doesn't count, and
+  only core §6.7.6's quiet rule can bring the card. A later answer with `"shutdown": null` removes the
+  card and the dot, unless another F1 trigger holds.
+- **Checking a refusal.** A device takes a refusal only if `host` is the host it asked and the signature
+  checks. A refusal makes a pick fall through (§4); none brings the F1 card by itself.
 
 ## 5. Closing, moving, and going quiet
 
 - **Planned closing.** An operator announces it at least **30 days** ahead with `notice {shutdown: <unix>,
-  seq: <n>, host}`, signed by the host key, to every account it serves, to every notice channel (in the
+  seq, host, member}`, signed by the host key (§4.1), to every account it serves, to every notice channel (in the
   core's fixed words, with the date) and to its peers. A later notice with a higher `seq` can move the
   date or cancel it. An operator adds a new host to the list before closing one.
-  - Devices treat a host-signed shutdown notice as "dead" for the seat-replacement card (core §6.7.6 F1):
-    the card calmly, then a quiet dot on Backup until the seat has moved.
+  - Devices treat a shutdown notice, confirmed by a live answer (§4.1), as "dead" for the
+    seat-replacement card (core §6.7.6 F1):
+    the card calmly, then a quiet dot on Backup until the seat has moved or the closing is cancelled (§4.1).
   - A **closing** server refuses only **new accounts and new enrol replies**, with a host-signed refusal.
     It keeps everything else: co-signing, recovery waits, holds and heir waits (new and running),
     cancels, catch-up, seat changes carrying its replies (§4), and seat moves away. A person with
@@ -271,8 +317,7 @@ admin §1.1).
     nobody opens for that year lose that server, as with any server that dies.
 - **Moving hardware.** A server may move to new hardware only as a **live transfer**, in this order:
   1. the old copy stops answering for every account;
-  2. everything is copied: everything core §2 lists, plus the host key, enrol secrets and stored seat
-     keys;
+  2. everything is copied: everything core §2 lists, plus the host key, enrol secrets, stored seat keys and each seat's latest shutdown notice and `seq`;
   3. the new copy starts;
   4. the old copy is destroyed.
 
@@ -328,13 +373,25 @@ Every listed server publishes this on its HTTPS page and links it from its annou
 
 ## Changes
 
+- **Draft 8**, from the reference implementation's item 47 and seven red-team rounds (0 critical; 2, 2, 1,
+  1, 2, 1 and 1 high): the signed forms of a shutdown notice and of a host-signed refusal, the cancel
+  (`"shutdown": null`), and `notice_get`. A notice is bound to the seat's member key and counts only
+  through the host's live answer, which names its `notice_get` (`re`) and is sealed by that key, never as
+  a pushed copy; so neither a replayed old notice nor a thief of the host key alone can bring the card.
+  `refused: expired` is gone: a server that has lost the enrol secret can't read the seat change at all,
+  and the seat falls to the 7-day quiet rule (wrapping requests to the host key instead would have broken
+  forward secrecy). Also: `seq` always rises, a far-off date waits until 30 days out, the full `code` is
+  signed, only the pick's refusal of `enroll` is host-signed (co-signer refusals stay sealed errors and
+  never make a pick fall through), refusals count over any transport but never bring the card, a live
+  transfer carries the notice state, an answer's `host_sig` covers its `re`, and a cancel removes the card
+  and the dot.
 - **Draft 7**, from its sixth red team (0 critical, 0 high), its mediums and lows:
   - two devices replacing the same server stop at the first, and `refused: replaced` (M1);
   - at the hard cap, new enrol requests are refused before approval (M2);
   - vouched uploads get the co-signed list (M3);
   - only authenticated replies count as refusals (M4);
   - closing servers honour all their replies, proof of work on the wire, I6 and the helper's host, the
-    pick to the byte, `refused: expired` brings the card, stale cards refetch, no device "ahead" check,
+    pick to the byte, `refused: expired` brings the card (dropped in draft 8), stale cards refetch, no device "ahead" check,
     push after a dedupe, the F3 challenge bucket (L1 to L9).
 - **Draft 6**, from its fifth red team (0 critical, 1 high):
   - any reply the device can't use counts as a refusal, and the device checks the reply before the card

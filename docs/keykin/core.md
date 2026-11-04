@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.16 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.18 · 2026-11-03 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -1126,8 +1126,7 @@ replaced. Three routes, tried in order:
    - **Guards.** A device MUST NOT sign, on a site's request, a kind 30078 with any of the account's
      signpost `d` values, or a kind 5 targeting one. Co-signers keep the current signpost's event id
      (one hash per backup key). They refuse every kind 5 that targets a signpost by `e` or `a`, from
-     anyone (an `e` value matches the signpost id, and an `a` value split on `:` matches kind `30078`, `g`
-     and a signpost `d`, hex compared ignoring case), and co-sign a signpost only from a device, with the right `n` and an `h` that matches their
+     anyone (an `e` value matches the signpost id; an `a` value hits when it contains both `g` and a signpost `d` anywhere in it, whatever its kind part or splitting, since relays read `a` values loosely (`030078`, `30078 `, extra `:` fields) and two 64-hex-character values name nothing else; hex is compared ignoring case; a kind 62 vanish request still removes the signpost, with the approval §5.8 requires), and co-sign a signpost only from a device, with the right `n` and an `h` that matches their
      own view.
    - Servers never act on the signpost.
 
@@ -1160,8 +1159,7 @@ One approval covers each list. The dealer uploads, one server co-signs, the deal
 incoming holders are repaired in the foreground, and the signpost is republished. Example account:
 phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
 
-- **F1, one server dies.** A peer has been quiet for 7 days, or sent a 30-day shutdown notice, and a live
-  server pushes an `ask` naming a candidate Y.
+- **F1, one server dies.** A peer has been quiet for 7 days, or sent a 30-day shutdown notice (confirmed by a live answer, Server profile §4.1), and a live server pushes an `ask` naming a candidate Y.
   - The card reads "S3 stopped answering. Move its piece to Y?" One Face ID (or a pair, or the paper)
     approves `[seat server:i3→Y, redeal]`.
   - S1 co-signs, and A and S1 repair `i3` for Y at the new state.
@@ -1232,9 +1230,7 @@ current device can re-issue.
   three server seats), never putting two seats on one
   `operator` while another eligible one exists. If that pick refuses the seat or doesn't answer within a
   minute, the device takes the next server in the slice, in list order, and the `ask` names which one.
-  It checks for itself that the server is dead (or has sent a host-signed shutdown notice, or answers
-  `deleted` or "unknown account" for an account its peers still serve, for a day) before it shows the
-  card; such a server triggers the F1 card on its own. When there is no other operator, the card says "All your servers are run by X".
+  It checks for itself that the server is dead (or has a shutdown notice confirmed by a live answer, Server profile §4.1, or answers `deleted` or "unknown account" for an account its peers still serve, for a day) before it shows the card; such a server triggers the F1 card on its own. When there is no other operator, the card says "All your servers are run by X".
 
 #### 6.7.8 Failure handling
 
@@ -1511,6 +1507,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `upload` / `upload_held` | dealer → seat holders / seat holder → co-signer | 6.7.3, 6.7.1 |
 | `paper_reissue` | device → servers | 6.7.6 |
 | `seated?` / `seated` / `forward_get` / `forward` | paper app or device → servers / back | 6.7.5 |
+
 | `part`, `error` | anyone | 9.1 |
 
 The signpost (kind 30078) is the one Core event published on relays (§6.7.5); modules may publish their own (Doors and grants: grant events). That is the whole of Core. Cosign 0.12 has 55 message types in
@@ -1805,6 +1802,10 @@ Each is a short document of its own, and none may weaken anything above.
 - **Upkeep** (§6.7) needs its own red-team round and vectors (`vectors/vectors.md`, case 12).
 - Repair with mixed-weight helpers relies on `frost-core`'s `repairable` module; its behaviour with a
   helper holding 3 indices must be pinned by vectors.
+- **A server that answers but never co-signs** (implementation item 48 a). It is not "dead" for F1, so
+  only F4 by hand moves it. An automatic test from ordinary signing misfires on healthy servers (routing
+  sends a server mostly the requests others were slow on, and per-server burst counters differ), so it
+  waits for a decision: a daily probe event, or no automatic trigger.
 
 ## 14. Test vectors
 
@@ -2138,3 +2139,14 @@ round's mediums: how a kind 5 targets a signpost (§6.7.5), and what an empty `c
 From the reference implementation's batch 6 follow-up (item 46): an add always carries `lock`, `null` when
 there is none, as both implementations already require; the "absent `lock` counts as null" line is gone.
 `vectors/negative.json` (300 cases) joins the vectors.
+
+## Changes in draft 14.17
+
+Pointers only: a shutdown notice counts for F1 through the server's live answer (Server profile §4.1,
+draft 8).
+
+## Changes in draft 14.18
+
+From the reference implementation's item 48 (b): a kind 5's `a` value hits the signpost when it contains
+both `g` and a signpost `d`, whatever its kind part or splitting (§6.7.5). Item 48 (a), a server that
+answers but never co-signs, is open (§13).
