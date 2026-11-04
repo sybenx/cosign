@@ -1,7 +1,8 @@
 // An in-memory relay: every message is a real NIP-59 wrap (kind 21059), so the simulation
 // exercises the envelope too. Synchronous request/answer; a dead node answers nothing.
 
-import { wrap, unwrap } from '../src/transport.ts';
+import { wrap, unwrap, powBits } from '../src/transport.ts';
+import { bytesToHex, randomBytes } from '../src/bytes.ts';
 import type { KeyPair, NostrEvent } from '../src/event.ts';
 
 export { TRANSPORT_FAILED, unreachable, type Node, type Transport, type PushOut } from '../runtime/net.ts';
@@ -27,14 +28,20 @@ export class Bus implements Transport {
   alive = (pub: string) => this.nodes.has(pub) && !this.dead.has(pub);
   advance(s: number) { this.now += s; }
   /** Seal `body` from `from` to `to`, deliver, and open the answer. */
-  async send(from: KeyPair, to: string, body: any): Promise<any> {
+  async send(from: KeyPair, to: string, body: any, opt: { pow?: number; timeoutMs?: number } = {}): Promise<any> {
+    const ans = await this.#send(from, to, body, opt);
+    // As RelayNet: a server under a flood asks for proof of work; once more, with a fresh id and the work.
+    if (ans?.code === 'pow' && !opt.pow && Number.isSafeInteger(ans.pow) && ans.pow <= 28) return this.#send(from, to, { ...body, id: body.id ? bytesToHex(randomBytes(16)) : undefined }, { pow: ans.pow });
+    return ans;
+  }
+  async #send(from: KeyPair, to: string, body: any, opt: { pow?: number }): Promise<any> {
     if (!this.alive(to) || this.dead.has(from.pub)) return unreachable();
-    const w = wrap(from.sk, to, body, { at: this.now });
+    const w = wrap(from.sk, to, body, { at: this.now, pow: opt.pow });
     this.wire.push(w);
     const node = this.nodes.get(to)!;
     const o = unwrap(node.kp.sk, w);
     this.log.push(`${from.pub.slice(0, 6)}→${to.slice(0, 6)} ${body.type}`);
-    const ans = await node.handle(o.from, o.body, o.sentAt);
+    const ans = await node.handle(o.from, o.body, o.sentAt, { pow: powBits(w.id) });
     if (ans === undefined || ans === null) return null;
     const back = wrap(node.kp.sk, from.pub, ans, { at: this.now });
     this.wire.push(back);

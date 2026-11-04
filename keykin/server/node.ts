@@ -108,12 +108,14 @@ export class ServerNode implements Node {
    *  record and changes (1, 2); seeds and material (3); the co-signer's waits, answered ids, counters,
    *  stops, challenges and heir records (4, 6, 8); push addresses and inbox (5); inert uploads; a
    *  tombstone (10). Never nonces (§5.2), never a DKG in flight: a restart abandons both. */
-  snapshot(): string {
+  snapshot(o: { withHost?: boolean } = {}): string {
     const hex = (b: Uint8Array | null) => (b ? bytesToHex(b) : null);
+    // The host key is the process's, not the seat's: a host writes seats without it (review 10 M2).
+    const host = o.withHost === false ? null : hex(this.host.sk);
     // After a delete, only the tombstone and the keys that sign and receive its `deleted` answers.
-    if (this.tombstone) return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), tombstone: this.tombstone });
+    if (this.tombstone) return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host, tombstone: this.tombstone });
     const co = this.co;
-    return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), enrolSecret: this.enrollR ? null : hex(this.enrolSecret), profile: this.profile, enrollR: this.enrollR, vapidSk: hex(this.vapidSk),
+    return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host, enrolSecret: this.enrollR ? null : hex(this.enrolSecret), profile: this.profile, enrollR: this.enrollR, vapidSk: hex(this.vapidSk),
       recEv: this.recEv, tombstone: this.tombstone, retired: this.retired, provisional: this.provisional, welcomedAt: this.welcomedAt, passive: this.passive, lastActive: this.lastActive,
       co: co && { changes: co.changes, ids: [...co.state.ids], shares: [...co.state.shares].map(([i, s]) => [i, scalarHex(s)]), co: co.snapshot() },
       seeds: [...this.seeds], items: this.items, base: this.base, uploads: [...this.uploads].map(([k, u]) => [k, { ...u, held: [...u.held] }]),
@@ -122,12 +124,12 @@ export class ServerNode implements Node {
   }
   /** A server restarted from storage: the same keys and seat, its co-signer rebuilt from the record,
    *  changes and state, checked as a welcome is (§3.4), and every round that was in flight gone. */
-  static restore(bus: Transport, json: string): ServerNode {
+  static restore(bus: Transport, json: string, o: { host?: KeyPair } = {}): ServerNode {
     const x = strictJson(json);
     if (x.v !== 1) refuse('malformed', 'storage version');
     const n = new ServerNode(bus, x.name);
     const key = (h: string) => ({ sk: hexToBytes(h), pub: pubOf(hexToBytes(h)) });
-    n.kp = key(x.kp); n.host = key(x.host); n.enrolSecret = x.enrolSecret ? hexToBytes(x.enrolSecret) : new Uint8Array(32); if (x.profile) n.profile = x.profile; n.enrollR = x.enrollR; n.vapidSk = x.vapidSk ? hexToBytes(x.vapidSk) : null;
+    n.kp = key(x.kp); n.host = x.host ? key(x.host) : o.host ?? refuse('malformed', 'no host key'); n.enrolSecret = x.enrolSecret ? hexToBytes(x.enrolSecret) : new Uint8Array(32); if (x.profile) n.profile = x.profile; n.enrollR = x.enrollR; n.vapidSk = x.vapidSk ? hexToBytes(x.vapidSk) : null;
     n.tombstone = x.tombstone ?? null;
     if (n.tombstone) return n;
     n.retired = x.retired; n.provisional = x.provisional; n.welcomedAt = x.welcomedAt; n.passive = x.passive; n.lastActive = x.lastActive;
@@ -146,9 +148,11 @@ export class ServerNode implements Node {
       const shares = new Map<number, bigint>(x.co.shares.map(([i, s]: [number, string]) => [i, scalarFrom(s)]));
       if (shares.size) checkOwnShares(n.rec!.g, shares, C, false);
       // The seat key a current server holding exactly these indices, as a device's restore checks (review 9 L7).
+      // A seat welcomed but not yet filled by its repair holds no share yet; that restores too (review 10 C2).
       if (!n.retired) {
         const me = m.members.get(n.kp.pub), want = [...(me?.shares ?? [])].sort((a, b) => a - b).join(',');
-        if (!me || me.kind !== 'server' || m.removed.has(n.kp.pub) || [...shares.keys()].sort((a, b) => a - b).join(',') !== want) refuse('not_member', 'the stored seat key is not a current server holding exactly these indices');
+        const got = [...shares.keys()].sort((a, b) => a - b).join(',');
+        if (!me || me.kind !== 'server' || m.removed.has(n.kp.pub) || (got !== want && got !== '')) refuse('not_member', 'the stored seat key is not a current server holding exactly these indices');
       }
       n.co = new CoSigner({ me: n.kp, host: n.host, kind: 'server', now: () => n.now, record: n.rec!, changes: [...x.co.changes],
         state: { ids: new Set(x.co.ids), C, shares }, upkeep: (p, mm) => n.upkeep(p, mm),
@@ -365,6 +369,8 @@ export class ServerNode implements Node {
   passive = false;
   lastActive = 0;
   pushReg = new PushRegistry();
+  /** Server profile §3's push cap, from the host: 60 an hour per address, wait notices always sent. */
+  pushLimit: (url: string, wait: boolean) => boolean = () => true;
   /** Server profile §5: this seat's latest shutdown notice for the account (`null` cancels). */
   notice: { shutdown: number | null; seq: number } | null = null;
   async announceShutdown(at: number | null) {
@@ -374,11 +380,12 @@ export class ServerNode implements Node {
     for (const mem of this.m.members.values()) if (mem.kind === 'device' && !this.m.removed.has(mem.key)) await this.bus.send(this.kp, mem.key, n);
   }
   /** §8.2: one Web Push to `member`'s address for `cls`, RFC 8291-encrypted, signed with this seat's VAPID key. */
-  pushTo(member: string, cls: 'sign' | 'ask' | 'notice', id: string, wrap?: unknown) {
+  pushTo(member: string, cls: 'sign' | 'ask' | 'notice', id: string, wrap?: unknown, o: { wait?: boolean } = {}) {
     // A removed member's addresses are dropped (core §8.1, review 9 L2).
     if (this.co && this.m.removed.has(member)) { this.pushReg.unregister(member); return false; }
     const addr = this.pushReg.for(member, cls);
     if (!addr || !this.vapidSk) return false;
+    if (!this.pushLimit(addr.url, !!o.wait)) return false;
     // A push that fails never replaces the answer it follows (review 9 M2).
     try {
       this.bus.pushes?.push({ url: addr.url, authorization: vapidHeader(addr.url, this.vapidSk, this.now), body: encryptPush(pushPayload(this.host, cls, id, wrap), addr), at: this.now });
@@ -466,7 +473,9 @@ export class ServerNode implements Node {
         return { type: 'ack' };
       case 'inbox_get': if (m.removed.has(from)) refuse('removed');
         // §8.2: with every recovery, hold or heir wait running for the account, each with its end.
-        return { type: 'inbox', items: this.inbox.get(from, this.now), waits: this.runningWaits(), ...(m.devices.has(from) ? { stops: [...this.co.stops.keys()] } : {}) };
+        // Waits only to the account's members and backup key, never to a stranger (review 10 M1).
+        return { type: 'inbox', items: this.inbox.get(from, this.now), ...(m.members.has(from) || m.backupKey === from ? { waits: this.runningWaits() } : {}),
+          ...(m.devices.has(from) ? { stops: [...this.co.stops.keys()] } : {}) };
       case 'inbox_ack': this.inbox.ack(from, body.iids); return { type: 'ack' };
       case 'repair_start': return this.repairStart(from, body);
       case 'repair_finish': return this.co.repairFinish(from, body);
@@ -521,7 +530,7 @@ export class ServerNode implements Node {
         }
         const a = this.co.handle(from, body, sentAt);
         // §8.2: a wait notice goes as an `ask` push to every member, with the wait id.
-        if (a?.type === 'notice' && a.kind === 'hold') for (const mem of this.m.members.keys()) this.pushTo(mem, 'ask', a.wait);
+        if (a?.type === 'notice' && a.kind === 'hold') for (const mem of this.m.members.keys()) this.pushTo(mem, 'ask', a.wait, undefined, { wait: true });
         if (a?.type === 'release') {
           // The release bundle (§6.5 step 3): seeds of this state, record, changes, material, statement.
           return { ...a, record: this.recEv, changes: this.co.changes, seeds: [...this.seeds], items: this.items, base: this.base };

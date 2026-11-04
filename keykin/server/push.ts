@@ -19,7 +19,7 @@ export class PushSender {
   push(p: PushOut) {
     if (!this.allowed(p.url)) { this.refused++; return; }
     this.sent++;
-    void this.fetch(p.url, { method: 'POST', body: new Uint8Array(p.body) as BodyInit, headers: { authorization: p.authorization, 'content-encoding': 'aes128gcm', 'content-type': 'application/octet-stream', ttl: '86400', urgency: 'high' } })
+    void this.fetch(p.url, { method: 'POST', body: new Uint8Array(p.body) as BodyInit, redirect: 'manual', headers: { authorization: p.authorization, 'content-encoding': 'aes128gcm', 'content-type': 'application/octet-stream', ttl: '86400', urgency: 'high' } })
       .then((r) => { if (r.status === 404 || r.status === 410) this.onGone(p.url); }).catch(() => {});
   }
 }

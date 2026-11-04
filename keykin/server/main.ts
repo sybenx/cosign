@@ -26,13 +26,16 @@ if (!relays.length) { console.error('KEYKIN_RELAYS is required: the server has n
 for (const r of relays) if (!/^wss?:\/\//.test(r)) { console.error(`not a relay URL: ${r}`); process.exit(2); }
 
 const store = new FileStore(env.KEYKIN_DATA ?? '/data', new KeyRing(env.KEYKIN_KEYS ?? '/keys'));
-const net = new RelayNet({ relays, log: env.KEYKIN_DEBUG ? (s) => console.log(s) : undefined });
+const net = new RelayNet({ relays, log: (s) => console.log(JSON.stringify({ relay: s })) });
 await net.connect();
 let host: Host;
-net.pushes = new PushSender({ allow: list(env.KEYKIN_PUSH_HOSTS), onGone: (url) => { for (const n of host.nodes.values()) for (const [m, a] of n.pushReg.dump()) if (a.addrs.some((x) => x.url === url)) n.pushReg.dead(m, url); } });
-host = new Host({ net, hosting: net, store, profile: { https: env.KEYKIN_HTTPS ?? '', relays, operator: env.KEYKIN_OPERATOR ?? '', name: env.KEYKIN_NAME ?? 'keykin', allowHttpPush: env.KEYKIN_PUSH_HTTP === '1' } }).start();
+// A gone address is dropped and the seat saved, so it doesn't come back after a restart (review 10 L2).
+net.pushes = new PushSender({ allow: list(env.KEYKIN_PUSH_HOSTS), onGone: (url) => { for (const n of host.nodes.values()) for (const [m, a] of n.pushReg.dump()) if (a.addrs.some((x) => x.url === url)) { n.pushReg.dead(m, url); host.save(n); } } });
+host = new Host({ net, hosting: net, store, profile: { https: env.KEYKIN_HTTPS ?? '', relays, operator: env.KEYKIN_OPERATOR ?? '', name: env.KEYKIN_NAME ?? 'keykin', allowHttpPush: env.KEYKIN_PUSH_HTTP === '1' } });
+host.log = (s) => console.log(JSON.stringify({ host: s }));
+host.start();
 const http = serveHttp({ net, limits: host.limits, port: Number(env.KEYKIN_PORT ?? 8711), bind: env.KEYKIN_BIND ?? '127.0.0.1', trustProxy: env.KEYKIN_TRUST_PROXY === '1',
-  status: () => ({ host: host.key.pub, seats: host.nodes.size }) });
+  status: () => ({ host: host.key.pub, relays: net.status() }) });
 console.log(JSON.stringify({ started: true, host: host.key.pub, seats: host.nodes.size, relays, port: Number(env.KEYKIN_PORT ?? 8711) }));
 
 const stop = () => { http.close(); net.close(); process.exit(0); };

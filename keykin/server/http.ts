@@ -11,19 +11,24 @@ import type { NostrEvent } from '../src/event.ts';
 const MAX_BODY = 640 * 1024;
 const read = (req: IncomingMessage) => new Promise<string>((res, rej) => {
   let n = 0; const chunks: Buffer[] = [];
-  req.on('data', (c: Buffer) => { n += c.length; if (n > MAX_BODY) { rej(new Error('too_large')); req.destroy(); } else chunks.push(c); });
+  req.on('data', (c: Buffer) => { n += c.length; if (n > MAX_BODY) { rej(new Error('too_large')); req.pause(); } else chunks.push(c); });
   req.on('end', () => res(Buffer.concat(chunks).toString('utf8'))); req.on('error', rej);
 });
 
 export function serveHttp(o: { net: RelayNet; limits: Limits; port: number; bind: string; trustProxy?: boolean; status?: () => unknown }): Server {
   const server = createServer(async (req, res) => {
-    const ip = (o.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : '') || req.socket.remoteAddress || '?';
+    // Behind a trusted proxy, the rightmost X-Forwarded-For entry is the one it appended; the leftmost
+    // is whatever the client wrote (review 10 H4).
+    const xff = o.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').map((x) => x.trim()).filter(Boolean) : [];
+    const ip = xff[xff.length - 1] || req.socket.remoteAddress || '?';
     const send = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
     try {
       if (req.method === 'GET' && req.url === '/health') return send(200, { ok: true, ...(o.status?.() as object ?? {}) });
       if (req.method !== 'POST' || req.url !== '/v1/wrap') return send(404, { error: 'not_found' });
       let wraps: NostrEvent[];
-      try { const x = strictJson(await read(req)); wraps = Array.isArray(x) ? x : [x]; } catch { o.limits.junk(ip, o.net.now); return send(400, { error: 'malformed' }); }
+      let text: string;
+      try { text = await read(req); } catch { return send(413, { error: 'too_large' }); }
+      try { const x = strictJson(text); wraps = Array.isArray(x) ? x : [x]; } catch { o.limits.junk(ip, o.net.now); return send(400, { error: 'malformed' }); }
       if (wraps.length > 32) return send(400, { error: 'too_many' });
       const out: NostrEvent[] = [];
       for (const w of wraps) {

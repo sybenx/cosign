@@ -55,9 +55,4 @@ export class Limits {
   push(url: string, now: number, wait: boolean) { return wait || this.#push.take(url, now); }
 }
 
-/** NIP-13: the number of leading zero bits of an event id. */
-export function powBits(idHex: string): number {
-  let n = 0;
-  for (const ch of idHex) { const v = parseInt(ch, 16); if (v === 0) { n += 4; continue; } return n + Math.clz32(v) - 28; }
-  return n;
-}
+export { powBits } from '../src/transport.ts';

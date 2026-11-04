@@ -20,6 +20,11 @@ test('Host: an account created by DKG through three front doors; restarts from s
   let hosts = [0, 1, 2].map((k) => new Host({ net: bus, hosting: bus, store: st[k], profile: pr[k] }).start());
   const acc = await createByDkg({ net: bus as any, hosts });
   assert.ok(verifyEvent(await acc.A.sign({ content: 'through the front door' })));
+  // A hold makes a seat born in a creation call its peers (catch-up): through the host's transport.
+  const { msg } = await import('../src/msg.ts');
+  const { wireEvent } = await import('../src/event.ts');
+  const vanish = wireEvent({ pubkey: acc.g, created_at: bus.now, kind: 62, tags: [], content: '' });
+  assert.equal((await bus.send(acc.A.kp, acc.A.servers()[0].key, { ...msg('hold', acc.g, acc.epochId, 'member'), event: vanish })).kind, 'hold');
   for (const [k, h] of hosts.entries()) {
     assert.equal(h.nodes.size, 1, 'one seat for one account');
     const e = acc.A.m!.members.get([...h.nodes.keys()][0])!;
@@ -54,5 +59,11 @@ test('Host: enrol secrets by month, destroyed after 13 months; the front door ta
   const r = await bus.send(dev, h.key.pub, { type: 'enroll', g: newKey().pub });
   assert.equal(r.type, 'enroll_reply');
   assert.equal(r.reply.secret_id, h.secret().id);
-  assert.ok(h.nodes.has(r.reply.member_key), 'the enrolled seat is hosted at its member key');
+  // Stateless enrol (Server profile §4, review 10 C1): a note of the reply, no seat node, nothing stored.
+  assert.ok(h.pending.has(r.reply.member_key) && !h.nodes.has(r.reply.member_key));
+  assert.ok(!s.list().some((k) => k.startsWith('seat-')));
+  // A message to the reply's key brings up its seat from derived keys; still nothing written.
+  const at = await bus.send(dev, r.reply.member_key, { v: 1, type: 'state_get', g: r.reply.g, epoch: 'ab'.repeat(16), id: 'cd'.repeat(16), cls: 'ask' });
+  assert.equal(at.code, 'unknown_account');
+  assert.ok(h.nodes.has(r.reply.member_key) && !s.list().some((k) => k.startsWith('seat-')));
 });
