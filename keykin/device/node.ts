@@ -14,6 +14,7 @@ import { OneCall, TwoCall, ListCall, ecdhRequest, ecdhFinish } from '../src/coor
 import { nip44Open } from '../src/nip44.ts';
 import { Nip46Home } from './nip46.ts';
 import { DataKeys } from './datakey.ts';
+import { memberSign } from './membersig.ts';
 import { extract } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { cbc } from '@noble/ciphers/aes.js';
@@ -98,12 +99,13 @@ export class DeviceNode implements Node {
     this.recEv = recEv; this.rec = checkEpochRecord(recEv, { g: recEv.pubkey, own: { shares: state.shares, C: state.C, device: true } });
     this.changes = [...changes]; this.state = state;
     this.recompute();
-    this.dataKeys.note();
+    this.#afterState();
   }
   recompute() {
     this.m = computeMembership(this.rec!, this.changes);
     this.co = new CoSigner({ me: this.kp, kind: this.role, now: () => this.now, record: this.rec!, changes: this.changes, state: this.state!, policy: (e, f) => this.policy(e, f) });
     if (this.m.removed.has(this.kp.pub)) this.wipe();
+    this.#reportRemovals();
     this.persist();
   }
   /** A removed or wiped member destroys everything it holds (core §7.3), the backup secret, push keys and
@@ -231,7 +233,7 @@ export class DeviceNode implements Node {
         if (paperValues && (!verified || this.f7)) this.kept.set(r.id, { b: m.record.seats.backup, d: paperValues, dk: d.dk, release: d.release });
         if (d.release) this.seeds.set(r.id, d.release);
         if (d.dk && !this.dkSeeds.includes(d.dk)) this.dkSeeds.push(d.dk);
-        this.dataKeys.note();                               // the new state, now that its seed is in (core §4.5)
+        this.#afterState();                                 // the new state, now that its seed is in (core §4.5)
         again = true;
       }
     }
@@ -511,6 +513,46 @@ export class DeviceNode implements Node {
     const [ct, iv] = text.split('?iv=');
     if (!ct || !iv) refuse('malformed', 'nip04 payload');
     return utf8Strict(cbc(key, base64.decode(iv)).decrypt(base64.decode(ct)));
+  }
+
+  // --- for other protocols: the account's devices, and signing with this device's member key ------
+  /** The account's current device member keys (helpers, servers and the backup are not devices). */
+  memberKeys(): string[] { return this.m ? [...this.m.devices].filter((k) => !this.m!.removed.has(k)).sort() : []; }
+  #knownDevices: Set<string> | null = null;     // removed device keys already reported
+  #removedListeners = new Set<(x: { removed: string[]; state: string }) => void>();
+  /** Called when devices left the account (a remove or report-lost), once the redeal after it has been
+   *  applied, with the state hash that redeal brought. Returns a function that stops it. */
+  onMemberRemoved(cb: (x: { removed: string[]; state: string }) => void): () => void { this.#removedListeners.add(cb); return () => void this.#removedListeners.delete(cb); }
+  #afterState() { this.dataKeys.note(); this.#reportRemovals(); }
+  /** Report each removed device once the redeal of its own list is part of this device's state, whichever
+   *  arrived first (the redeal's delivery or the remove change). What was removed before this device's
+   *  first state is history, not news. */
+  #reportRemovals() {
+    if (this.wiped || !this.m || !this.state) return;
+    const m = this.m, ids = this.state.ids;
+    const everDevices = new Set([...this.rec!.members.filter((x) => x.kind === 'device').map((x) => x.key),
+      ...m.accepted.filter((p) => p.type === 'add').map((p) => (p.c.change as any).add.key as string)]);
+    const landed: string[] = [];
+    for (const p of m.accepted) {
+      if (p.type !== 'remove') continue;
+      const k = (p.c.change as any).remove as string;
+      if (!everDevices.has(k) || !m.removed.has(k)) continue;
+      const redeals = m.accepted.filter((q) => q.listHash === p.listHash && q.type === 'redeal').map((q) => (q.c.change as any).redeal.id as string);
+      if (redeals.some((r) => ids.has(r))) landed.push(k);
+    }
+    const first = this.#knownDevices === null;
+    const reported = this.#knownDevices ?? new Set<string>();
+    const removed = first ? [] : [...new Set(landed)].filter((k) => !reported.has(k)).sort();
+    for (const k of landed) reported.add(k);
+    this.#knownDevices = reported;
+    if (!removed.length) return;
+    const state = stateHash(ids);
+    for (const cb of this.#removedListeners) { try { cb({ removed, state }); } catch { /* a listener never wedges the device */ } }
+  }
+  /** Sign `message` under a registered `domain` with this device's member key (device/membersig.ts). */
+  signAsMember(domain: string, message: Uint8Array): { sig: string; key: string } {
+    if (this.wiped) refuse('wiped');
+    return { sig: memberSign(this.kp.sk, domain, message), key: this.kp.pub };
   }
 
   /** The data key (core §4.5), for libraries that encrypt the account's own data. */

@@ -8,6 +8,7 @@
 
 export { DeviceNode, PaperHolder, FriendNode, approvalListOf } from './node.ts';
 export { DataKeys, type DataKey } from './datakey.ts';
+export { memberSign, memberVerify, memberDigest, registerDomain, registeredDomains, domainFault } from './membersig.ts';
 export { RelayNet, type RelayNetOpts } from '../runtime/relay.ts';
 export type { Transport, Node } from '../runtime/net.ts';
 export { useWasm } from '../src/wasm.ts';
