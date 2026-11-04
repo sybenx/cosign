@@ -35,7 +35,7 @@ test('a Kotlin device applies a redeal it slept through, reports the removal and
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-ku-')))));
   net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await createByDkg({ net: net as any, fronts });
+  const acc = await createByDkg({ net: net as any, fronts, relays });
   const A = acc.A;
   const B = await invite(acc, A, (l) => A.approveLock(l));
   const C = await invite(acc, A, (l) => A.approveLock(l));

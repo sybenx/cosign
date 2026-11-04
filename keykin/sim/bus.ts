@@ -29,7 +29,7 @@ export class Bus implements Transport {
     // serving reads), so tests can count majorities.
     publishTo: async (e: any, relays: string[]) => {
       const out = new Map<string, true | string>();
-      for (const r of relays) { const f = this.relayFaults.get(r); out.set(r, f === 'down' ? 'down' : f === 'blocked' ? 'blocked: no' : f === 'nowrite' ? 'restricted: read only' : true); }
+      for (const r of relays) { const f = this.relayFaults.get(r); out.set(r, f === 'down' || f === 'writedown' ? 'down' : f === 'blocked' ? 'blocked: no' : f === 'nowrite' ? 'restricted: read only' : true); }
       if ([...out.values()].some((x) => x === true) && !this.published.some((x) => x.id === e.id)) await this.events.publishEvent(e);
       return out;
     },
@@ -39,7 +39,7 @@ export class Bus implements Transport {
     },
   };
   /** Faults of named relays, for publishTo and queryEach. */
-  relayFaults = new Map<string, 'down' | 'blocked' | 'nowrite' | 'noread'>();
+  relayFaults = new Map<string, 'down' | 'writedown' | 'blocked' | 'nowrite' | 'noread'>();
   constructor(now = 1_800_000_000) { this.now = now; }
   add(n: Node) { this.nodes.set(n.kp.pub, n); return n; }
   kill(pub: string) { this.dead.add(pub); }

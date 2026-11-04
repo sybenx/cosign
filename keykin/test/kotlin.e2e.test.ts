@@ -33,7 +33,7 @@ test('a Kotlin device signs through three TS server processes over relays', { sk
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-kt-')))));
   net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await createByDkg({ net: net as any, fronts });
+  const acc = await createByDkg({ net: net as any, fronts, relays });
   // The TS device steps aside: its state goes to the Kotlin device (one member, core §4.6).
   const snap = join(mkdtempSync(join(tmpdir(), 'kk-kt-')), 'device.json');
   writeFileSync(snap, acc.A.snapshot());

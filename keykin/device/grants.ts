@@ -5,9 +5,16 @@
 // signed out anywhere; a grant ended once never comes back (the union of ended ids); a removed device's grants
 // are gone everywhere. A grant applies only on its own connection: synced copies are for listing and signing out.
 //
-// Not yet: the counted-relay majorities and adopt-own-newest checks (§2) — this publishes to the account's
-// relays and reads whatever they hold; decrypt-to-self evidence from signed metadata (§1) — decrypts are
-// classified from their plaintext only.
+// Publishing counts once more than half of the counted relays (device/relays.ts) accept every part, retried with
+// back-off; a publish follows a good fetch (a majority of the counted relays and of the last publish's set), and a
+// device adopts its own newest event. Ends made elsewhere reach their home as deliveries (node.ts `signOut`).
+//
+// Not yet: NIP-65 write relays (only the counted ones and the transport's own are written to); the welcome's and
+// handover's `grants` field; a takeover's `was` re-signing (and `made` carried over); the helper's regrant and
+// `kept` on a device's retirement (helper grants of a removed device always end, a `self` remove included);
+// `helper_connect` for a scanned nostrconnect code; `publish_later`; the report's replacing slot (each report is a
+// fresh delivery, at most the inbox's 32 per sender); with fewer than three counted relays, a fetch counts as
+// good once any relay answers.
 
 import { Ledger } from './history.ts';
 import { RelayHealth, majority } from './relays.ts';
@@ -36,6 +43,7 @@ export interface Tombstone { by: string; id: string; at: number; before?: number
 export interface GrantSet { entries: GrantEntry[]; tombstones: Tombstone[]; ended: Ended[]; union: UnionEnded[] }
 
 export const KIND_GRANTS = 30078;
+const SKEW_S = 120;
 const PART_PLAIN = 17_000;                          // a part's plaintext: its base64 ciphertext stays under 24 KB
 const MAX_PARTS = 64;                               // ~1.5 MB of grants: more is refused, never read
 const YEAR = 365 * 86400;
@@ -112,7 +120,9 @@ const num = (x: unknown) => typeof x === 'number' && Number.isInteger(x) && x >=
 /** A signed set still has to be a set: each list an array of the right objects (review 16 L2). */
 function setShapeOk(s: GrantSet): boolean {
   return Array.isArray(s.entries) && s.entries.every((e) => e && hex(e.id, 16) && num(e.v) && hex(e.by, 32) && Array.isArray(e.scopes) && e.scopes.every((x) => typeof x === 'string') && typeof e.site === 'string')
-    && Array.isArray(s.tombstones) && s.tombstones.every((t) => t && hex(t.by, 32) && hex(t.id, 16) && num(t.at))
+    // A wildcard (`id: "*"` with `before`) and a helper grant's `signer` are part of a tombstone's shape (review 19 H1).
+    && Array.isArray(s.tombstones) && s.tombstones.every((t) => t && hex(t.by, 32) && (hex(t.id, 16) || (t.id === '*' && num(t.before)) || (t.id === '' && hex(t.signer, 32))) && num(t.at)
+      && (t.signer === undefined || hex(t.signer, 32)) && (t.before === undefined || num(t.before)))
     && Array.isArray(s.ended) && s.ended.every((t) => t && hex(t.id, 16) && num(t.until))
     && Array.isArray(s.union) && s.union.every((t) => t && hex(t.by, 32) && hex(t.id, 16) && num(t.until));
 }
@@ -250,9 +260,11 @@ export interface GrantHost { g: string; kp: KeyPair; baseDk: string; now: number
    *  fetch the counted majorities need (Doors §2); without them a device falls back to `publish` and `query`. */
   recorded?(): string[];
   publishTo?(e: NostrEvent, relays: string[]): Promise<Map<string, true | string>>;
-  queryEach?(relays: string[]): Promise<{ events: NostrEvent[]; answered: string[] }>;
+  queryEach?(relays: string[], ds: string[]): Promise<{ events: NostrEvent[]; answered: string[] }>;
   /** Schedule a retry (tests run them at once). */
-  later?(f: () => void, ms: number): void }
+  later?(f: () => void, ms: number): void;
+  /** Whether the helper's latest report still lists a grant by this signer key. */
+  helperLists?(signer: string): boolean }
 
 export class GrantStore {
   own = new Map<string, GrantEntry>();               // id → this device's entries
@@ -270,7 +282,7 @@ export class GrantStore {
     const e = signEntry(this.h.g, this.h.kp, { id: bytesToHex(randomBytes(16)), v: 1, site: o.site, says: o.says, door: o.door, connection: o.connection,
       ...(o.relays ? { relays: o.relays } : {}), ...(o.signer ? { signer: o.signer } : {}), scopes: [...new Set(o.scopes)].sort() as Scope[],
       borrowed: !!o.borrowed, helper: !!o.helper, made: this.h.now, expiry: o.expiry ?? 'unused-90d' });
-    this.own.set(e.id, e);
+    this.own.set(e.id, e); this.dirty = true;
     return e;
   }
   /** More scopes for an own grant (asked the first time they are needed): `v` goes up. */
@@ -278,13 +290,17 @@ export class GrantStore {
     const e = this.own.get(id); if (!e) throw new KeykinError('unknown_grant');
     const { by: _b, by_sig: _s, ...rest } = e;
     const w = signEntry(this.h.g, this.h.kp, { ...rest, v: e.v + 1, scopes: [...new Set([...e.scopes, ...scopes])].sort() as Scope[] });
-    this.own.set(id, w); return w;
+    this.own.set(id, w); this.dirty = true; return w;
   }
   /** Sign out one grant, anywhere: an own one ends here; another device's gets a tombstone for its home. */
   end(by: string, id: string) {
+    this.dirty = true;
     const until = (e?: GrantEntry) => (typeof e?.expiry === 'number' ? e.expiry + 30 * 86400 : this.h.now + YEAR);
     if (by === this.h.kp.pub) {
       const e = this.own.get(id); this.own.delete(id);
+      // An own helper grant that ends by any path (here, a delivered end, the union, a wildcard) is the helper's to
+      // end too: its signer tombstone waits to be delivered (review 19 H2).
+      if (e?.helper && e.signer && !this.helperEnds.some((x) => x.signer === e.signer)) this.helperEnds.push({ by, id, at: this.h.now, signer: e.signer });
       if (!this.ended.some((x) => x.id === id)) this.ended.push({ id, until: until(e) });
       this.union.set(`${by}:${id}`, { by, id, until: until(e) });
     } else if (!this.tombstones.some((t) => t.by === by && t.id === id)) {
@@ -304,7 +320,8 @@ export class GrantStore {
   takeEnds(ts: Tombstone[]): string[] {
     const me = this.h.kp.pub, gone: string[] = [];
     for (const t of ts) if (t?.by === me) {
-      if (t.id === '*' && Number.isSafeInteger(t.before)) { for (const [id, e] of [...this.own]) if (e.made < t.before!) { this.end(me, id); gone.push(id); } }
+      // A wildcard's `before` is the ending device's clock, `made` this one's: two minutes' slack (review 19 L1).
+      if (t.id === '*' && Number.isSafeInteger(t.before)) { for (const [id, e] of [...this.own]) if (e.made < t.before! + SKEW_S) { this.end(me, id); gone.push(id); } }
       else if (typeof t.id === 'string' && this.own.has(t.id)) { this.end(me, t.id); gone.push(t.id); }
     }
     return gone;
@@ -341,6 +358,16 @@ export class GrantStore {
     const day = Math.floor(this.h.now / 86400) * 86400;
     if ((e.last_used ?? 0) < day) { const { by: _b, by_sig: _s, ...rest } = e; this.own.set(id, signEntry(this.h.g, this.h.kp, { ...rest, last_used: day })); this.dirty = true; }
   }
+  /** Signer tombstones of own helper grants that ended, for the node to deliver to the helper. */
+  helperEnds: Tombstone[] = [];
+  /** A use the device learnt of elsewhere (the helper's report): the later wins, put in the entry once a day. */
+  usedAt(id: string, at: number) {
+    if ((this.lastUsed.get(id) ?? 0) >= at) return;
+    this.lastUsed.set(id, at);
+    const e = this.own.get(id); if (!e) return;
+    const day = Math.floor(at / 86400) * 86400;
+    if ((e.last_used ?? 0) < day) { const { by: _b, by_sig: _s, ...rest } = e; this.own.set(id, signEntry(this.h.g, this.h.kp, { ...rest, last_used: day })); this.dirty = true; }
+  }
   /** Own grants changed since the last publish. */
   dirty = false;
   /** When a fetch last heard from more than half of the relays asked (§2: a publish follows a good fetch). */
@@ -353,7 +380,11 @@ export class GrantStore {
     const now = this.h.now, cur = this.h.currentDevices();
     this.ended = this.ended.filter((x) => x.until > now);
     for (const [k, u] of this.union) if (u.until <= now || !cur.has(u.by)) this.union.delete(k);
-    this.tombstones = this.tombstones.filter((t) => now - t.at < 30 * 86400 || [...this.others.values()].some((o) => o.set.entries.some((e) => e.by === t.by && e.id === t.id)));
+    // Kept 30 days, and longer while the maker still lists the entry; a wildcard while its home still lists one made
+    // before it (review 19 M7); a helper grant's while the helper's report still lists it (H2).
+    this.tombstones = this.tombstones.filter((t) => now - t.at < 30 * 86400
+      || [...this.others.values()].some((o) => o.set.entries.some((e) => e.by === t.by && (e.id === t.id || (t.id === '*' && e.made < (t.before ?? 0)))))
+      || (!!t.signer && !!this.h.helperLists?.(t.signer)));
     return { entries: [...this.own.values()].filter((e) => !expired(e, now, this.lastUsed.get(e.id))).sort((a, b) => (a.id < b.id ? -1 : 1)),
       tombstones: [...this.tombstones], ended: [...this.ended], union: [...this.union.values()].sort((a, b) => (`${a.by}:${a.id}` < `${b.by}:${b.id}` ? -1 : 1)) };
   }
@@ -367,8 +398,10 @@ export class GrantStore {
   async #publish(): Promise<NostrEvent[]> {
     // Never publish over a copy this device hasn't read: a restored copy must take over its own newest event
     // first, or it would publish an older set over it (§2; review 16, the fetch-before-publish gate).
-    if (!this.goodFetchAt) await this.fetch();
-    if (!this.goodFetchAt) throw new KeykinError('try_later', 'relays did not answer the grant fetch');
+    // Before every publish, a fetch of its own newest event, and only a good one lets it publish (review 19 M4).
+    let good = false;
+    try { good = await this.fetch(); } catch { /* counted as failed */ }
+    if (!good) throw new KeykinError('try_later', 'relays did not answer the grant fetch');
     const at = Math.max(this.h.now, this.lastPublish + 1);
     const evs = grantEvents(this.h.g, this.h.kp, this.h.baseDk, this.h.dataKey(), this.set(), at);
     const signed: NostrEvent[] = [];
@@ -385,8 +418,8 @@ export class GrantStore {
   lastSet: string[] = [];
   lastSentAt = 0;
   counted = false;
-  #countedKey = '';
-  #tries = 0;
+  countedKey = '';
+  tries = 0;
   /** Send every part to the counted relays (and the transport's own, which don't count); it counts once more than
    *  half of the writable counted relays accept every part, and is retried with back-off until then. */
   async #send(parts: NostrEvent[]) {
@@ -402,40 +435,49 @@ export class GrantStore {
       const prev: Set<string> | null = took;
       took = prev ? new Set([...prev].filter((u: string) => ok.has(u))) : ok;
     }
-    this.lastSet = [...(took ?? [])]; this.lastSentAt = this.h.now; this.#countedKey = this.relays.counted(recorded).sort().join(' ');
-    if (majority(this.lastSet, write)) { this.counted = true; this.#tries = 0; return; }
-    // Back-off: 10 s, doubling, at most 10 minutes; a newer publish supersedes it.
-    const delay = Math.min(600_000, 10_000 * 2 ** this.#tries++);
-    (this.h.later ?? ((f, ms) => { const t = setTimeout(f, ms); (t as any).unref?.(); }))(() => { if (this.lastSent === parts && !this.counted) void this.#send(parts).catch(() => {}); }, delay);
+    this.lastSet = [...(took ?? [])]; this.lastSentAt = this.h.now; this.countedKey = this.relays.counted(recorded).sort().join(' ');
+    // Counted over the counted relays, a fetch-only one as not accepting, so a good fetch and a counted publish
+    // always share a relay (review 19 M1).
+    if (majority(this.lastSet, this.relays.counted(recorded))) { this.counted = true; this.tries = 0; return; }
+    // Back-off: 10 s, doubling, at most 10 minutes; one retry pending at a time, and a newer publish supersedes it (L5).
+    if (this.#retrying) return;
+    this.#retrying = true;
+    const delay = Math.min(600_000, 10_000 * 2 ** Math.min(this.tries++, 6));
+    (this.h.later ?? ((f, ms) => { const t = setTimeout(f, ms); (t as any).unref?.(); }))(() => { this.#retrying = false; if (this.lastSent === parts && !this.counted) void this.#send(parts).catch(() => {}); }, delay);
   }
+  #retrying = false;
   /** At each catch-up: re-send the last event weekly (an OK is no promise to keep it), and to a majority of the new
    *  set when the counted relays change. A re-send needs no fetch. */
   async upkeep() {
     if (!this.lastSent.length) return;
     const recorded = this.h.recorded?.() ?? [];
     const key = this.relays.counted(recorded).sort().join(' ');
-    if (this.h.now - this.lastSentAt >= 7 * 86400 || (this.#countedKey && key !== this.#countedKey)) { this.counted = false; await this.#send(this.lastSent); }
+    // Also an uncounted publish after a restart (its retry didn't survive it, review 19 M2).
+    if (!this.counted || this.h.now - this.lastSentAt >= 7 * 86400 || (this.countedKey && key !== this.countedKey)) { this.counted = false; await this.#send(this.lastSent); }
   }
   /** Read every current device's newest grant event: others' sets for listing, their ended ids into the union,
    *  their tombstones for this device's own grants applied; and this device's own newest, if newer than its
    *  last publish (a restored copy), taken over: ended ids and tombstones always, entries made before it. */
-  async fetch() {
-    let evs: NostrEvent[];
+  async fetch(): Promise<boolean> {
+    let evs: NostrEvent[], good = false;
     const recorded = this.h.recorded?.() ?? [];
     if (this.h.queryEach && recorded.length) {
       // §2: good once more than half of the counted relays answer, and more than half of the part of the last
       // publish's set still counted (when three or more of it remain); with fewer than three counted, once every
       // reachable one was asked and one answered.
       const ask = this.relays.toFetch(recorded, this.h.now);
-      const r = await this.h.queryEach(ask);
+      // Only the current devices' grant events, by d and parts, so other app data can't crowd them out (review 19 M5).
+      const ds = [...this.h.currentDevices()].flatMap((m) => { const d = grantsD(this.h.baseDk, m); return [d, ...Array.from({ length: MAX_PARTS }, (_, k) => `${d}:${k + 1}`)]; });
+      const r = await this.h.queryEach(ask, ds);
       this.relays.fetched(ask, r.answered, recorded, this.h.now);
       const counted = this.relays.counted(recorded), still = this.lastSet.filter((u) => counted.includes(u));
-      const good = counted.length < 3 ? r.answered.length > 0 : majority(r.answered, counted) && (still.length < 3 || majority(r.answered, still));
+      good = counted.length < 3 ? r.answered.length > 0 : majority(r.answered, counted) && (still.length < 3 || majority(r.answered, still));
       if (good) this.goodFetchAt = this.h.now;
       evs = r.events;
     } else {
       const r = await this.h.query(); evs = r.events;
-      if (r.asked > 0 && r.answered * 2 > r.asked) this.goodFetchAt = this.h.now;
+      good = r.asked > 0 && r.answered * 2 > r.asked;
+      if (good) this.goodFetchAt = this.h.now;
     }
     for (const m of this.h.currentDevices()) {
       const got = readMaker(this.h.g, m, this.h.baseDk, (s) => this.h.keyFor(s), evs);
@@ -448,6 +490,7 @@ export class GrantStore {
       this.takeEnds(got.set.tombstones);
     }
     for (const u of this.union.values()) if (u.by === this.h.kp.pub && this.own.has(u.id)) this.end(u.by, u.id);
+    return good;
   }
   /** A union entry: the later `until` wins, so no member can shorten another's (review 16 L1). */
   #unite(u: UnionEnded) { const k = `${u.by}:${u.id}`, p = this.union.get(k); if (!p || u.until > p.until) this.union.set(k, { by: u.by, id: u.id, until: u.until }); }
@@ -462,13 +505,14 @@ export class GrantStore {
   }
 
   dump() { return { own: [...this.own.values()], tombstones: this.tombstones, ended: this.ended, union: [...this.union.values()], others: [...this.others], lastUsed: [...this.lastUsed], lastPublish: this.lastPublish,
-    relays: this.relays.dump(), lastSent: this.lastSent, lastSet: this.lastSet, lastSentAt: this.lastSentAt, counted: this.counted }; }
+    relays: this.relays.dump(), lastSent: this.lastSent, lastSet: this.lastSet, lastSentAt: this.lastSentAt, counted: this.counted, countedKey: this.countedKey, tries: this.tries, dirty: this.dirty }; }
   load(x: any) {
     if (!x) return;
     this.own = new Map((x.own ?? []).map((e: GrantEntry) => [e.id, e])); this.tombstones = x.tombstones ?? []; this.ended = x.ended ?? [];
     this.union = new Map((x.union ?? []).map((u: UnionEnded) => [`${u.by}:${u.id}`, u])); this.others = new Map(x.others ?? []);
     this.lastUsed = new Map(x.lastUsed ?? []); this.lastPublish = x.lastPublish ?? 0;
     this.relays.load(x.relays); this.lastSent = x.lastSent ?? []; this.lastSet = x.lastSet ?? []; this.lastSentAt = x.lastSentAt ?? 0; this.counted = x.counted ?? false;
+    this.countedKey = x.countedKey ?? ''; this.tries = x.tries ?? 0; this.dirty = x.dirty ?? false;
   }
   clear() { this.own.clear(); this.tombstones = []; this.ended = []; this.union.clear(); this.others.clear(); this.lastUsed.clear(); this.relays.clear(); this.lastSent = []; this.lastSet = []; }
 }

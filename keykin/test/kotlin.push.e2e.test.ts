@@ -47,7 +47,7 @@ test('a Kotlin device is woken by a TS server\'s push and follows the redeal it 
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-kp-')))));
   net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await createByDkg({ net: net as any, fronts });
+  const acc = await createByDkg({ net: net as any, fronts, relays });
   const A = acc.A;
   const B = await invite(acc, A, (l) => A.approveLock(l));
   await B.fetch();

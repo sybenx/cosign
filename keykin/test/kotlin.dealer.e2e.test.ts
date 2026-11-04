@@ -34,7 +34,7 @@ test('a Kotlin device deals and submits a removal; TS servers co-sign it and a T
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-kd-')))));
   net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await createByDkg({ net: net as any, fronts });
+  const acc = await createByDkg({ net: net as any, fronts, relays });
   const A = acc.A;
   const B = await invite(acc, A, (l) => A.approveLock(l), { lock: true });
   const C = await invite(acc, A, (l) => A.approveLock(l));

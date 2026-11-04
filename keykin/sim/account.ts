@@ -212,7 +212,7 @@ export async function addHelper(acc: Account, dev: DeviceNode, approve: (list: C
 /** Account admin §1.1: a fresh account by DKG. The device runs indices 1, 2, 3 and the backup seat's
  *  5, 6; three servers run 4, 7, 8 under throwaway DKG keys. The device signs the epoch record alone with
  *  its five points, every server adopts it provisionally, and the device's confirmation makes it live. */
-export async function createByDkg(o: { lockless?: boolean; net?: Net; hosts?: { key: KeyPair; nodes: Map<string, ServerNode> }[]; fronts?: string[] } = {}): Promise<Account> {
+export async function createByDkg(o: { lockless?: boolean; net?: Net; hosts?: { key: KeyPair; nodes: Map<string, ServerNode> }[]; fronts?: string[]; relays?: string[] } = {}): Promise<Account> {
   const bus = (o.net ?? new Bus()) as Bus;
   const A = bus.add(new DeviceNode(bus, 'A', o.lockless ? null : softLock())) as DeviceNode;
   // Through real host front doors (server/host.ts) when given; otherwise bare seat nodes.
@@ -273,7 +273,7 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net; hosts?: { 
     { key: A.kp.pub, kind: 'device', shares: [1, 2, 3], ...(A.lock ? { lock: A.lock.pub } : {}) },
     ...replies.map((r, k) => entryFromReply(r, sIdx[k])), { key: paper.pub, kind: 'backup', shares: [5, 6] }];
   const rec: EpochContent = { v: 1, g, epoch: { n: 1, id: epochId }, prev: null, t: 4, commitment: commitmentHex(C), role: 'master', origin: 'dkg',
-    relays: ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: itemHash(base), seats: { servers: sIdx, backup: [5, 6], helper: helperSeat(g) } };
+    relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: itemHash(base), seats: { servers: sIdx, backup: [5, 6], helper: helperSeat(g) } };
   // 7. The device signs the record alone with four of its five points (no co-signer knows the account yet).
   const unsigned = { pubkey: g, created_at: bus.now, kind: KIND_EPOCH, tags: [['d', 'keykin'], ['v', '1'], ['epoch', '1']], content: JSON.stringify(rec) };
   const id = eventId(unsigned);

@@ -197,6 +197,8 @@ export class Nip46Home {
           // 10 seconds for an Undo; Held goes to the person at once.
           const owner = `${this.d.kp.pub}:${g.entry}`;
           const event = siteEvent({ ...ev, created_at: ev?.created_at ?? now }, this.d.g);
+          // The helper has no person to ask: it signs only the helper kinds, which the co-signers enforce (Helper §2).
+          if (this.d.role === 'helper') { const r = await this.d.sign(event, { owner: `helper:${g.signer}` }); this.signedSinceReport++; return { result: JSON.stringify(r) }; }
           // A site's deletions and list changes are judged and signed one at a time (review 18 M1).
           try {
             // Signed for this grant: the evidence records who got each ciphertext signed (review 17 M1).
@@ -383,7 +385,10 @@ export class Nip46Home {
   async helperEnds(from: string, ts: any[]) {
     for (const t of ts) for (const g of [...this.grants.values()]) {
       if (g.endedAt || !g.asker) continue;
-      const hit = t.id === '*' ? Number.isSafeInteger(t.before) && (g.made ?? 0) < t.before && (t.by === this.d.kp.pub) : typeof t.signer === 'string' && t.signer === g.signer && g.asker === from;
+      // A signer tombstone from any current device (Helper §2: a sign-out anywhere reaches the helper, review 19 H2); a
+      // wildcard addressed to the helper, with two minutes' slack for the clocks (L1).
+      const hit = t.id === '*' ? Number.isSafeInteger(t.before) && (g.made ?? 0) < t.before + 120 && t.by === this.d.kp.pub : typeof t.signer === 'string' && t.signer === g.signer;
+      void from;
       if (hit) await this.end(g.signer);
     }
     void this.d.helperReportNow(true).catch(() => {});
@@ -391,13 +396,28 @@ export class Nip46Home {
   /** Every grant whose asking device is no longer a member ends. */
   async helperPrune() {
     const m = this.d.m; if (!m) return;
-    for (const g of [...this.grants.values()]) if (g.asker && !g.endedAt && (!m.devices.has(g.asker) || m.removed.has(g.asker))) await this.end(g.signer);
+    const now = this.d.now;
+    for (const g of [...this.grants.values()]) {
+      if (!g.asker || g.endedAt) continue;
+      // A link never used goes once it expires (review 19 M6); a grant unused for 90 days expires, as on its device (H5).
+      if (!g.client && g.linkExpires !== null && now > g.linkExpires) { this.grants.delete(g.signer); continue; }
+      if (!m.devices.has(g.asker) || m.removed.has(g.asker) || (g.client && now - (g.lastUsed ?? g.connectedAt ?? g.made ?? now) > 90 * 86400)) await this.end(g.signer);
+    }
+    // Ended ones are kept 30 days for their `revoked:` answer, then go.
+    for (const [k, g] of this.grants) if (g.asker && g.endedAt && now - g.endedAt > 30 * 86400) this.grants.delete(k);
+    this.d.persist();
   }
+  /** Events the helper signed since its last report (a report goes after 50). */
+  signedSinceReport = 0;
+  /** At most this many live helper grants (a looping or hostile device can't grow it without bound, review 19 M6). */
+  static readonly HELPER_GRANTS_MAX = 256;
+  helperFull() { return [...this.grants.values()].filter((g) => g.asker && !g.endedAt).length >= Nip46Home.HELPER_GRANTS_MAX; }
   /** The helper's report body: its live grants (signer key, asking device, site, made, last use) and its logouts. */
   helperReport() {
     const live = [...this.grants.values()].filter((g) => g.asker && !g.endedAt);
     const logouts = [...this.grants.values()].filter((g) => g.asker && g.endedAt && this.d.now - g.endedAt < 30 * 86400).map((g) => g.signer);
-    return { grants: live.map((g) => ({ signer: g.signer, asker: g.asker!, site: g.site, made: g.made ?? 0, ...(g.lastUsed ? { last_used: g.lastUsed } : {}) })), logouts };
+    // Bounded to stay near the report's 64 KB (Helper module §4).
+    return { grants: live.slice(0, 300).map((g) => ({ signer: g.signer, asker: g.asker!, site: g.site.slice(0, 64), made: g.made ?? 0, ...(g.lastUsed ? { last_used: g.lastUsed } : {}) })), logouts: logouts.slice(0, 300) };
   }
 
   dump() { return { grants: [...this.grants.values()], watching: this.watching, seen: [...this.#seen], held: [...this.held.values()], asks: [...this.asks].map(([k, v]) => [k, [...v]]) }; }

@@ -46,7 +46,7 @@ test('a Kotlin device invites and adds a new Kotlin device, repaired with a TS s
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-ki-')))));
   net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await createByDkg({ net: net as any, fronts });
+  const acc = await createByDkg({ net: net as any, fronts, relays });
   const A = acc.A;
   const B = await invite(acc, A, (l) => A.approveLock(l), { lock: true });
   await B.fetch();

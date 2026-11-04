@@ -30,7 +30,7 @@ const run = (args: string[]) => new Promise<{ code: number; out: string; err: st
 });
 
 test('nak and BunkerSigner sign and encrypt as the account through the device\'s bunker link', { skip: !haveNak && 'nak not installed', timeout: 180_000 }, async () => {
-  const acc = await create({ net: net as any });
+  const acc = await create({ net: net as any, relays: [url] });
   // nak makes a new client key each run, so each run gets a fresh link (Doors §3.3).
   const n1 = await run(['event', '--sec', acc.A.nip46.mintBunker([url], 'nak'), '-k', '1', '-c', 'hello from nak', url]);
   const ev = JSON.parse(n1.out.trim().split('\n').find((l) => l.startsWith('{'))!);
@@ -57,7 +57,7 @@ test('nak and BunkerSigner sign and encrypt as the account through the device\'s
 });
 
 test('a grant on a relay the device doesn\'t otherwise use: the reply goes there and requests there are answered (review 11 H3)', { skip: !haveNak && 'nak not installed', timeout: 120_000 }, async () => {
-  const acc = await create({ net: net as any });
+  const acc = await create({ net: net as any, relays: [url] });
   const pool = new SimplePool();
   try {
     const clientSk = newKey().sk;

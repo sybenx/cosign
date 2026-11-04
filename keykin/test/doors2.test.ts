@@ -33,7 +33,8 @@ const retries = (d: DeviceNode) => { const q: (() => void)[] = []; (d.grants.h a
 test('the counted relays: a publish counts once more than half accept every part, and is retried until then', async () => {
   const { acc, A } = await two();
   const q = retries(A);
-  acc.bus.relayFaults.set('wss://r2.test', 'down'); acc.bus.relayFaults.set('wss://r3.test', 'down');
+  // Writes time out at two relays that still answer reads (a publish fetches first, and that fetch is good).
+  acc.bus.relayFaults.set('wss://r2.test', 'writedown'); acc.bus.relayFaults.set('wss://r3.test', 'writedown');
   A.grants.make(site('a'));
   await A.grants.publish();
   assert.equal(A.recordedRelays().length, 4, 'the record\'s 3 and the seat holders\' 1');
@@ -67,12 +68,18 @@ test('a relay that keeps failing while others answer is dropped after 10 tries o
   // The device's own downtime (nobody answered) never counts against a relay.
   const own = new RelayHealth(); for (let k = 0; k < 20; k++) own.fetched(rec, [], rec, k * 86400);
   assert.deepEqual(own.counted(rec), rec);
-  // blocked:/restricted: on three tries over 12 hours drops it; another write refusal makes it fetch-only.
+  // blocked:/restricted: on three tries over 12 hours makes it fetch-only, retried for writes weekly; a timeout or a
+  // passing refusal never counts (review 19 H4).
   const b = new RelayHealth();
   for (const t of [0, 6 * 3600, 13 * 3600]) b.published(new Map([['c', 'blocked: no']]), t);
-  assert.deepEqual(b.counted(rec), ['a', 'b']);
-  const w = new RelayHealth(); w.published(new Map([['c', 'error: read-only']]), 0);
-  assert.deepEqual(w.writable(rec), ['a', 'b']); assert.deepEqual(w.counted(rec), rec);
+  assert.deepEqual(b.writable(rec, 14 * 3600), ['a', 'b']); assert.deepEqual(b.counted(rec), rec, 'still fetched from');
+  assert.deepEqual(b.writable(rec, 13 * 3600 + 7 * 86400), rec, 'weekly write retry');
+  const w = new RelayHealth(); for (const r of ['publish timed out', 'rate-limited: slow down', 'auth-required: sign in', 'error: busy']) w.published(new Map([['c', r]]), 0);
+  assert.deepEqual(w.writable(rec, 1), rec);
+  // A relay that stays dead through 5-minute fetches is dropped after 7 days (review 19 H3).
+  const dead = new RelayHealth();
+  for (let t = 0; t <= 8 * 86400; t += 300) dead.fetched(rec, ['a', 'b'], rec, t);
+  assert.deepEqual(dead.counted(rec), ['a', 'b']);
   assert.ok(majority(['a', 'b'], rec)); assert.ok(!majority(['a'], rec)); assert.ok(!majority([], []));
 });
 
@@ -102,7 +109,7 @@ test('sign out of every site: every grant everywhere ends, by a wildcard each ho
   await B.signOutEverywhere();
   assert.equal(B.grants.own.size, 0); assert.equal(A.grants.own.size, 0, 'the wildcard reached A');
   assert.equal(B.grants.all().length, 0, 'listed as ended');
-  acc.bus.advance(5);
+  acc.bus.advance(200);                                   // past the wildcard's two minutes' clock slack
   const later = A.grants.make(site('d'));
   await A.grants.fetch();
   assert.equal(A.grants.own.has(later.id), true, 'made after the wildcard');

@@ -59,7 +59,7 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-an-')))));
   net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await createByDkg({ net: net as any, fronts });
+  const acc = await createByDkg({ net: net as any, fronts, relays });
   const A = acc.A;
   A.inviter = new Inviter({ g: A.g, m: A.kp.pub, now: net.now });
   const code = A.inviter.invite(relays);

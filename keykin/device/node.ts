@@ -13,7 +13,7 @@ import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall, ecdhRequest, ecdhFinish } from '../src/coordinator.ts';
 import { nip44Open } from '../src/nip44.ts';
 import { Nip46Home, listKey } from './nip46.ts';
-import { GrantStore, KIND_GRANTS, Evidence } from './grants.ts';
+import { GrantStore, KIND_GRANTS, Evidence, expired } from './grants.ts';
 import { MetaStore, KIND_META } from './metadata.ts';
 import { History, addrOf } from './history.ts';
 import { Guard, judge, itemsOf, tagKey, undoDate, UNDO_AHEAD_S, type Verdict } from './policy.ts';
@@ -181,7 +181,7 @@ export class DeviceNode implements Node {
     if (this.m.removed.has(this.kp.pub)) this.wipe();
     this.members.update();
     // The helper ends every grant whose asking device left (Helper module §2).
-    if (this.role === 'helper' && !this.wiped) void this.nip46.helperPrune();
+    if (this.role === 'helper' && !this.wiped) void this.nip46.helperPrune().catch(() => {});
     this.persist();
   }
   /** A removed or wiped member destroys everything it holds (core §7.3), the backup secret, push keys and
@@ -291,7 +291,14 @@ export class DeviceNode implements Node {
     // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
     if (this.bus.events && this.baseDk) try {
       await this.grants.fetch();
-      await this.grants.upkeep();
+      // An own helper grant unused for 90 days by the helper's report expires: the helper is told (review 19 H5).
+      for (const e of [...this.grants.own.values()]) if (e.helper && expired(e, this.now, this.grants.lastUsed.get(e.id))) this.grants.end(this.kp.pub, e.id);
+      if (this.grants.helperEnds.length) await this.#publishEnds(new Map()).catch(() => {});
+      // A change that couldn't be published (relays down), or an event under an older state's data key, is
+      // published now (review 19 M3); otherwise an uncounted one is re-sent.
+      const st = this.dataKeys.current().state, sent = this.grants.lastSent[0]?.tags.find((t) => t[0] === 'state')?.[1];
+      if (this.grants.dirty || (sent && sent !== st)) await this.grants.publish().catch(() => {});
+      else await this.grants.upkeep();
       for (const e of (await this.bus.events.query({ kinds: [KIND_GRANTS], authors: [this.g] })).events)
         if ((e.tags.find((t: string[]) => t[0] === 'd')?.[1] ?? '').startsWith('keykin-')) this.#protect(e.id);
     } catch { /* relays out of reach: next time */ }
@@ -303,6 +310,7 @@ export class DeviceNode implements Node {
     } catch { /* relays out of reach: next time */ }
     this.lastFetchAt = this.now;
     if (this.undoOutbox.length) await this.flushUndos();
+    if (this.role === 'helper') { await this.nip46.helperPrune().catch(() => {}); await this.helperReportNow().catch(() => {}); }
     // Sites' requests kept for this home are answered only now, after the grants' ends (review 16 M5).
     for (const e of nipQueue) try { await this.nip46.handle(e); } catch { /* one never wedges the rest */ }
   }
@@ -657,7 +665,8 @@ export class DeviceNode implements Node {
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       reissued: [...this.reissued], reissueEphs: [...this.reissueEphs], blamed: [...this.blamed], forceReissue: [...this.forceReissue],
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox });
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox,
+      helperReport: this.helperReport, unnamed: [...this.unnamed], report: { key: this.reportKey, at: this.reportAt, seq: this.reportSeq } });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
    *  by §3.4, every share against the commitments, and the member key a current device holding exactly
@@ -683,6 +692,8 @@ export class DeviceNode implements Node {
     d.members.load(x.members);
     d.#lists = new Map(x.lists ?? []);
     d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? [];
+    d.helperReport = x.helperReport ?? null; d.unnamed = new Map(x.unnamed ?? []);
+    d.reportKey = x.report?.key ?? ''; d.reportAt = x.report?.at ?? 0; d.reportSeq = x.report?.seq ?? 0;
     if (x.recEv && x.state) {
       const rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey });
       const m = computeMembership(rec, x.changes);
@@ -984,7 +995,8 @@ export class DeviceNode implements Node {
     query: async () => (await dev.bus.events?.query({ kinds: [KIND_GRANTS], authors: [dev.g] })) ?? { events: [], answered: 0, asked: 0 },
     recorded: () => dev.recordedRelays(),
     get publishTo() { return dev.bus?.events?.publishTo ? (e: NostrEvent, relays: string[]) => dev.bus.events!.publishTo!(e, relays) : undefined; },
-    get queryEach() { return dev.bus?.events?.queryEach ? (relays: string[]) => dev.bus.events!.queryEach!({ kinds: [KIND_GRANTS], authors: [dev.g] }, relays) : undefined; },
+    get queryEach() { return dev.bus?.events?.queryEach ? (relays: string[], ds: string[]) => dev.bus.events!.queryEach!({ kinds: [KIND_GRANTS], authors: [dev.g], '#d': ds }, relays) : undefined; },
+    helperLists: (signer) => !!dev.helperReport?.grants.some((x) => x.signer === signer),
   }))(this);
   /** Doors §2's recorded relays: the epoch record's, and the current seat holders'. */
   recordedRelays(): string[] {
@@ -1000,10 +1012,8 @@ export class DeviceNode implements Node {
     const homes = new Map<string, any[]>();
     for (const { by, id } of list) {
       if (by === this.kp.pub) {
-        const e = this.grants.own.get(id);
         for (const g of this.nip46.grants.values()) if (g.entry === id) await this.nip46.end(g.signer);
         this.grants.end(by, id);
-        if (e?.helper && e.signer && this.helperKey()) homes.set(this.helperKey()!, [...(homes.get(this.helperKey()!) ?? []), { by, id, at: this.now, signer: e.signer }]);
         continue;
       }
       this.grants.end(by, id);
@@ -1026,6 +1036,9 @@ export class DeviceNode implements Node {
     await this.#publishEnds(homes);
   }
   async #publishEnds(homes: Map<string, any[]>) {
+    // Own helper grants that ended, by any path: their signer tombstones go to the helper too (review 19 H2).
+    const h = this.helperKey();
+    if (h && this.grants.helperEnds.length) { homes.set(h, [...(homes.get(h) ?? []), ...this.grants.helperEnds]); this.grants.helperEnds = []; }
     this.persist();
     if (this.baseDk) try { await this.grants.publish(); } catch { this.publishGrantsSoon(); }
     for (const [to, tombstones] of homes) {
@@ -1040,10 +1053,11 @@ export class DeviceNode implements Node {
     const m = this.m!;
     if (!m.devices.has(from) || m.removed.has(from) || !Array.isArray(b?.tombstones)) return 'junk';
     const ts = b.tombstones.slice(0, 512).filter((t: any) => t && typeof t === 'object');
-    if (this.role === 'helper') { void this.nip46.helperEnds(from, ts); return 'kept'; }
+    if (this.role === 'helper') { void this.nip46.helperEnds(from, ts).catch(() => {}); return 'kept'; }
     const gone = new Set(this.grants.takeEnds(ts));
-    for (const g of this.nip46.grants.values()) if (g.entry && gone.has(g.entry) && !g.endedAt) void this.nip46.end(g.signer);
+    for (const g of this.nip46.grants.values()) if (g.entry && gone.has(g.entry) && !g.endedAt) void this.nip46.end(g.signer).catch(() => {});
     if (gone.size) this.publishGrantsSoon();
+    if (this.grants.helperEnds.length) void this.#publishEnds(new Map()).catch(() => {});
     return 'kept';
   }
   /** The account's helper member key, if it has one. */
@@ -1061,23 +1075,33 @@ export class DeviceNode implements Node {
     return a.bunker;
   }
   /** The helper's latest report (§4), and the signer keys its grants that no device's list names were first seen. */
-  helperReport: { at: number; grants: { signer: string; asker: string; site: string; made: number; last_used?: number }[]; logouts: string[] } | null = null;
-  #unnamed = new Map<string, number>();
+  helperReport: { at: number; seq: number; grants: { signer: string; asker: string; site: string; made: number; last_used?: number }[]; logouts: string[] } | null = null;
+  unnamed = new Map<string, number>();
   #takeHelperReport(from: string, b: any): 'kept' | 'junk' {
     if (from !== this.helperKey() || !Array.isArray(b?.grants)) return 'junk';
+    // Never an older report than the one held (review 19 L3).
+    if (!Number.isSafeInteger(b.seq) || b.seq <= (this.helperReport?.seq ?? 0)) return 'junk';
     const grants = b.grants.slice(0, 1024).filter((x: any) => x && /^[0-9a-f]{64}$/.test(x.signer ?? '') && typeof x.asker === 'string');
-    this.helperReport = { at: this.now, grants, logouts: Array.isArray(b.logouts) ? b.logouts.filter((x: any) => typeof x === 'string').slice(0, 1024) : [] };
+    const logouts: string[] = Array.isArray(b.logouts) ? b.logouts.filter((x: any) => typeof x === 'string' && /^[0-9a-f]{64}$/.test(x)).slice(0, 1024) : [];
+    this.helperReport = { at: this.now, seq: b.seq, grants, logouts };
+    // The helper sees a site's use: an own helper grant's last use comes from its report, so it never expires while
+    // used (review 19 H5); one the site logged out of ends here too (L2), with nothing to send the helper.
+    for (const e of [...this.grants.own.values()]) if (e.helper && e.signer) {
+      const x = grants.find((y: any) => y.signer === e.signer && y.asker === this.kp.pub);
+      if (x && Number.isSafeInteger(x.last_used) && x.last_used <= this.now + 600) this.grants.usedAt(e.id, x.last_used);
+      if (logouts.includes(e.signer)) { this.grants.end(this.kp.pub, e.id); this.grants.helperEnds = this.grants.helperEnds.filter((t) => t.signer !== e.signer); this.publishGrantsSoon(); }
+    }
     // A grant ended here that the helper still reports gets its tombstone again (the helper reads no union): one
     // this device tombstoned, or its own helper grant no longer in its list.
     const bySigner = new Map(this.grants.tombstones.filter((t) => t.signer).map((t) => [t.signer!, t]));
     const again = grants.filter((x: any) => bySigner.has(x.signer) || (x.asker === this.kp.pub && ![...this.grants.own.values()].some((e) => e.signer === x.signer)))
       .map((x: any) => bySigner.get(x.signer) ?? { by: this.kp.pub, id: '', at: this.now, signer: x.signer });
-    if (again.length) void this.#publishEnds(new Map([[from, again]]));
+    if (again.length) void this.#publishEnds(new Map([[from, again]])).catch(() => {});
     // Your helper answers a site none of your devices set up (§2): after the next report plus two hours.
     const named = new Set(this.grants.all().filter((e) => e.helper && e.signer).map((e) => e.signer!));
     for (const x of grants) {
-      if (named.has(x.signer)) { this.#unnamed.delete(x.signer); continue; }
-      const first = this.#unnamed.get(x.signer); if (first === undefined) { this.#unnamed.set(x.signer, this.now); continue; }
+      if (named.has(x.signer)) { this.unnamed.delete(x.signer); continue; }
+      const first = this.unnamed.get(x.signer); if (first === undefined) { this.unnamed.set(x.signer, this.now); continue; }
       if (this.now - first >= 7200 && !this.notices.some((n) => n.kind === 'helper_unknown_site')) this.notices.push({ kind: 'helper_unknown_site', member: from });
     }
     return 'kept';
@@ -1086,15 +1110,16 @@ export class DeviceNode implements Node {
   async helperReportNow(force = false) {
     if (this.role !== 'helper') return;
     const body = this.nip46.helperReport();
-    const key = JSON.stringify(body.grants.map((x: any) => [x.signer, x.last_used ?? 0]));
-    if (!force && key === this.#reportKey && this.now - this.#reportAt < 3600) return;
-    this.#reportKey = key; this.#reportAt = this.now;
+    const key = JSON.stringify([body.grants.map((x: any) => [x.signer, x.last_used ?? 0]), body.logouts]);
+    // Hourly, or after 50 signed events, or when the grants changed (Helper module §4).
+    if (!force && this.nip46.signedSinceReport < 50 && (key === this.reportKey && this.now - this.reportAt < 3600)) return;
+    this.reportKey = key; this.reportAt = this.now; this.reportSeq++; this.nip46.signedSinceReport = 0;
     for (const d of this.m!.devices) if (!this.m!.removed.has(d)) {
-      const w = wrap(this.kp.sk, d, { type: 'helper_report', ...body });
+      const w = wrap(this.kp.sk, d, { type: 'helper_report', seq: this.reportSeq, ...body });
       for (const s of this.servers()) await this.bus.send(this.kp, s.key, msg('deliver', this.g, this.epochId, 'member', { to: d, wrap: w })).catch(() => {});
     }
   }
-  #reportKey = ''; #reportAt = 0;
+  reportKey = ''; reportAt = 0; reportSeq = 0;
 
   /** Core §6.7.9's quiet Backup line: which servers haven't helped sign this week. */
   signWatch = new SignWatch();
@@ -1206,6 +1231,7 @@ export class DeviceNode implements Node {
           // Helper module §2: on the helper, for a current device; the helper is the grant's home.
           if (this.role !== 'helper') return { type: 'error', code: 'not_helper' };
           if (!this.m!.devices.has(from) || this.m!.removed.has(from)) return { type: 'error', code: 'not_device' };
+          if (this.nip46.helperFull()) return { type: 'error', code: 'too_many', detail: 'the helper answers for as many sites as it may' };
           if (!Array.isArray(body.relays) || !body.relays.length || body.relays.some((r: any) => typeof r !== 'string' || !/^wss?:\/\/\S+$/.test(r) || r.length > 256)) return { type: 'error', code: 'malformed' };
           const bunker = this.nip46.mintBunker(body.relays.slice(0, 8), String(body.site ?? '').slice(0, 256), ['sign-in', 'post'], from);
           return { type: 'helper_link', bunker, signer: new URL(bunker).hostname };

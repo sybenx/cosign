@@ -146,7 +146,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     private val pushKeys = HashMap<String, JSONObject>()
     val members = Members()
     /** The account's grants (Doors §1–§2): this device's, signed by it, and every device's, for listing. */
-    val grants = GrantStore(this)
+    val grants = GrantStore(this).also { g -> g.helperLists = { sg -> helperReport?.optJSONArray("grants")?.let { a -> (0 until a.length()).any { a.getJSONObject(it).optString("signer") == sg } } == true } }
     /** Doors §1's evidence for decrypts to the account itself, and the ids of the account's grant events. */
     /** Device policy §1's metadata, synced: this device's records and every other current device's. */
     val meta = MetaStore(this)
@@ -389,11 +389,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val homes = LinkedHashMap<String, MutableList<JSONObject>>(); val mine = HashSet<String>()
         val helper = helperKey()
         for ((by, id) in list) {
-            if (by == pub) {
-                val e = grants.own[id]; grants.end(by, id); mine += id
-                if (e?.optBoolean("helper") == true && e.has("signer") && helper != null) homes.getOrPut(helper) { ArrayList() } += JSONObject().put("by", by).put("id", id).put("at", net.now).put("signer", e.getString("signer"))
-                continue
-            }
+            if (by == pub) { grants.end(by, id); mine += id; continue }
             grants.end(by, id)
             val t = grants.tombstone(by, id) ?: continue
             homes.getOrPut(by) { ArrayList() } += t
@@ -413,7 +409,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         helperKey()?.let { h -> homes[h] = mutableListOf(JSONObject().put("by", h).put("id", "*").put("at", net.now).put("before", before)) }
         publishEnds(homes)
     }
-    private fun publishEnds(homes: Map<String, List<JSONObject>>) {
+    private fun publishEnds(given: Map<String, List<JSONObject>>) {
+        // Own helper grants that ended, by any path: their signer tombstones go to the helper too (review 19 H2).
+        val homes = LinkedHashMap<String, MutableList<JSONObject>>(); for ((k, v) in given) homes[k] = v.toMutableList()
+        helperKey()?.let { h -> if (grants.helperEnds.isNotEmpty()) { homes.getOrPut(h) { ArrayList() } += grants.helperEnds.toList(); grants.helperEnds.clear() } }
         save()
         if (baseDk.isNotEmpty()) try { publishGrants() } catch (_: Exception) { publishGrantsSoon() }
         for ((to, ts) in homes) {
@@ -429,6 +428,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val a = b.optJSONArray("tombstones") ?: return "junk"
         val gone = grants.takeEnds((0 until minOf(a.length(), 512)).mapNotNull { a.optJSONObject(it) })
         if (gone.isNotEmpty()) { ended(gone.toSet()); publishGrantsSoon() }
+        if (grants.helperEnds.isNotEmpty()) Thread { try { publishEnds(emptyMap()) } catch (_: Exception) {} }.apply { isDaemon = true }.start()
         return "kept"
     }
     /** "Let *helper* answer for this site" (Helper module §2): the helper mints the link and is the grant's home; the
@@ -447,9 +447,19 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     private val unnamed = HashMap<String, Long>()
     private fun takeHelperReport(from: String, b: JSONObject): String {
         if (from != helperKey()) return "junk"
+        // Never an older report than the one held (review 19 L3).
+        val seq = (b.opt("seq") as? Number)?.toLong() ?: return "junk"
+        if (seq <= (helperReport?.optLong("seq") ?: 0)) return "junk"
         val a = b.optJSONArray("grants") ?: return "junk"
         val gs = (0 until minOf(a.length(), 1024)).mapNotNull { a.optJSONObject(it) }.filter { Regex("^[0-9a-f]{64}$").matches(it.optString("signer")) && it.has("asker") }
-        helperReport = JSONObject().put("at", net.now).put("grants", JSONArray(gs))
+        val logouts = b.optJSONArray("logouts")?.let { l -> (0 until minOf(l.length(), 1024)).mapNotNull { l.opt(it) as? String } }?.toSet() ?: emptySet()
+        helperReport = JSONObject().put("at", net.now).put("seq", seq).put("grants", JSONArray(gs))
+        // A helper grant's last use comes from the report (H5); one the site logged out of ends here too (L2).
+        for (e in grants.own.values.toList()) if (e.optBoolean("helper") && e.has("signer")) {
+            val sg = e.getString("signer")
+            gs.firstOrNull { it.getString("signer") == sg && it.optString("asker") == pub }?.let { x -> (x.opt("last_used") as? Number)?.toLong()?.let { if (it <= net.now + 600) grants.usedAt(e.getString("id"), it) } }
+            if (sg in logouts) { grants.end(pub, e.getString("id")); grants.helperEnds.removeIf { it.optString("signer") == sg }; publishGrantsSoon() }
+        }
         // A grant ended here that the helper still reports gets its tombstone again (the helper reads no union).
         val bySigner = grants.tombstonesWithSigner().associateBy { it.getString("signer") }
         val ownSigners = grants.own.values.mapNotNull { it.optString("signer").ifEmpty { null } }.toSet()
@@ -523,7 +533,13 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         if (baseDk.isNotEmpty()) try {
             // Doors §2: from the counted relays, a majority of them (and of the last publish's set) for a good fetch.
             val evs = grants.fetch(net)
-            grants.upkeep(net)
+            // An own helper grant unused for 90 days by the helper's report expires: the helper is told (review 19 H5).
+            for (e in grants.own.values.toList()) if (e.optBoolean("helper") && Grants.expired(e, net.now, grants.lastUsedOf(e.getString("id")))) grants.end(pub, e.getString("id"))
+            if (grants.helperEnds.isNotEmpty()) publishEnds(emptyMap())
+            // A change that couldn't be published, or an event under an older state's data key, is published now (M3).
+            val sent = grants.lastSent.firstOrNull()?.optJSONArray("tags")?.let { t -> (0 until t.length()).map { t.getJSONArray(it) }.firstOrNull { it.optString(0) == "state" }?.optString(1) }
+            // Off this thread: a site's request waiting on this catch-up never waits on a publish too.
+            if (grants.dirty || (sent != null && sent != dataKey().first)) publishGrantsSoon() else grants.upkeep(net)
             for (e in evs) if ((e.tag("d") ?: "").startsWith("keykin-")) protect(e.id)
             // Device policy §1: the indexes first by d (a site's own 30078 events can't crowd them out, M6), then
             // the parts they name; this device's own at most every 10 minutes.

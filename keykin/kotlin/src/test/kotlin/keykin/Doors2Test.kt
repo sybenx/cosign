@@ -18,10 +18,14 @@ class Doors2Test {
         assertEquals(rec, h.toFetch(rec, 1000L + 17 * 86400))
         h.fetched(rec, rec, rec, 1000L + 17 * 86400); assertEquals(rec, h.counted(rec))
         val own = RelayHealth(); for (k in 0 until 20) own.fetched(rec, emptyList(), rec, k * 86400L); assertEquals(rec, own.counted(rec))
-        val b = RelayHealth(); for (t in listOf(0L, 6 * 3600L, 13 * 3600L)) b.published(mapOf("c" to "blocked: no"), t); assertEquals(listOf("a", "b"), b.counted(rec))
-        val w = RelayHealth(); w.published(mapOf("c" to "error: read-only"), 0); assertEquals(listOf("a", "b"), w.writable(rec)); assertEquals(rec, w.counted(rec))
+        // blocked:/restricted: over 12 hours makes it fetch-only, written to again weekly; passing refusals never count.
+        val b = RelayHealth(); for (t in listOf(0L, 6 * 3600L, 13 * 3600L)) b.published(mapOf("c" to "blocked: no"), t)
+        assertEquals(listOf("a", "b"), b.writable(rec, 14 * 3600L)); assertEquals(rec, b.counted(rec)); assertEquals(rec, b.writable(rec, 13 * 3600L + 7 * 86400))
+        val w = RelayHealth(); for (r in listOf("publish timed out", "rate-limited: slow", "auth-required: x", "error: busy")) w.published(mapOf("c" to r), 0); assertEquals(rec, w.writable(rec, 1))
+        // A relay that stays dead through 5-minute fetches is dropped after 7 days (review 19 H3).
+        val dead = RelayHealth(); var t = 0L; while (t <= 8 * 86400) { dead.fetched(rec, listOf("a", "b"), rec, t); t += 300 }; assertEquals(listOf("a", "b"), dead.counted(rec))
         assertTrue(RelayHealth.majority(listOf("a", "b"), rec)); assertFalse(RelayHealth.majority(listOf("a"), rec)); assertFalse(RelayHealth.majority(emptyList(), emptyList()))
-        val back = RelayHealth(); back.load(b.dump()); assertEquals(listOf("a", "b"), back.counted(rec))
+        val back = RelayHealth(); back.load(b.dump()); assertEquals(listOf("a", "b"), back.writable(rec, 14 * 3600L))
     }
 
     @Test fun wildcardsAndDeliveredEnds() {
@@ -32,7 +36,7 @@ class Doors2Test {
         val b = d.grants.make("https://b.example", "b", "nip55", "pkg@1", listOf("sign-in"))
         // An end naming one grant, then a wildcard for every grant made before a time.
         assertEquals(listOf(a.getString("id")), d.grants.takeEnds(listOf(JSONObject().put("by", d.pub).put("id", a.getString("id")).put("at", 1))))
-        assertEquals(listOf(b.getString("id")), d.grants.takeEnds(listOf(JSONObject().put("by", d.pub).put("id", "*").put("at", 1).put("before", System.currentTimeMillis() / 1000 + 5))))
+        assertEquals(listOf(b.getString("id")), d.grants.takeEnds(listOf(JSONObject().put("by", d.pub).put("id", "*").put("at", 1).put("before", System.currentTimeMillis() / 1000 - 115))))
         assertTrue(d.grants.own.isEmpty())
         // Another device's ends never touch this one's grants.
         val c = d.grants.make("https://c.example", "c", "nip55", "pkg@1", listOf("sign-in"))

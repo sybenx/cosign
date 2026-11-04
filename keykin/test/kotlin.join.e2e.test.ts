@@ -38,7 +38,7 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-kj-')))));
   net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await createByDkg({ net: net as any, fronts });
+  const acc = await createByDkg({ net: net as any, fronts, relays });
   const A = acc.A;
   // A redeal first: the welcome then names a state after it, whose commitment the Kotlin device rebuilds.
   const r0: Change[] = [{ redeal: { dealer: A.kp.pub } }];

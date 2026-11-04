@@ -31,7 +31,7 @@ test('nak signs and encrypts as the account through a Kotlin NIP-46 home', { ski
   await new Promise((r) => setTimeout(r, 1200));
   net = new RelayNet({ relays: [url], timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await create({ net: net as any });            // TS servers in this process, over the relay
+  const acc = await create({ net: net as any, relays: [url] });            // TS servers in this process, over the relay
   const dir = mkdtempSync(join(tmpdir(), 'kk-kn-'));
   writeFileSync(join(dir, 'device.json'), acc.A.snapshot());
   net.kill(acc.A.kp.pub);                                    // the TS device steps aside (one member, §4.6)
