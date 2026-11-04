@@ -19,10 +19,10 @@ class ReissueTest {
         d.takeDelivery(env.wrap(unhex(v.getString("dealer_sk")), d.pub, b, 1))
         d.takeChanges((0 until step0.getJSONArray("changes").length()).map { Event.of(step0.getJSONArray("changes").getJSONObject(it)) })
         val id = d.ids.single()
-        val item = d.reissueItemFor(id)!!
+        val (item, eph) = d.reissueItemFor(id)!!
         val seat = d.rec.getJSONObject("seats").getJSONArray("backup")
         val input = JSONObject().put("g", d.g).put("redeal", d.view.redeals[id]!!.r).put("item", item).put("K", d.view.backup).put("devices", JSONArray(d.memberKeys()))
-            .put("backup_seat", seat).put("release", b.getString("release")).put("paper_sk", v.getString("paper_sk"))
+            .put("backup_seat", seat).put("release", b.getString("release")).put("paper_sk", v.getString("paper_sk")).put("eph", eph)
         val f = File.createTempFile("reissue", ".json").also { it.writeText(input.toString()); it.deleteOnExit() }
         val root = File(System.getProperty("keykin.upkeep")).parentFile.parentFile
         val p = ProcessBuilder("node", File(root, "vectors/check-reissue.ts").path, f.path).directory(root).redirectErrorStream(true).start()
@@ -31,5 +31,6 @@ class ReissueTest {
         val r = JSONObject(out)
         assertEquals(JSONObject.NULL, r.opt("check"), out)
         assertEquals(true, r.getBoolean("opens"), out)
+        assertEquals("ok", r.getString("device"), "another TS device opens it from the reissue_eph: $out")
     }
 }

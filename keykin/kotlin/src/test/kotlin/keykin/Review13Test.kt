@@ -58,13 +58,24 @@ class Review13Test {
         }
     }
 
-    @Test fun aPaperItemThatIsNoItemIsShownAndItsValuesKept() {
+    @Test fun aPaperItemThatIsNoItemProvesNothingAndItsValuesAreKept() {
+        // Core 14.20: a missing or unbound item is "missing": applied, the values kept for a re-issue, no line.
         val dealer = unhex(v.getString("dealer_sk"))
         val d = fresh(); val b = realBody(d).put("paper_item", "x")
         d.takeDelivery(env.wrap(dealer, d.pub, b, 1)); d.takeChanges(events(step0.getJSONArray("changes")))
         assertEquals(step0.getJSONObject("after").getString("state"), d.ctx.state, "applied, as TS does")
-        assertTrue(d.notices.any { it.optString("kind") == "bad_paper_item" })
+        assertTrue(d.notices.none { it.optString("kind") == "bad_backup_piece" })
         assertEquals(d.ids, d.keptRedeals)
+    }
+
+    @Test fun anEphForAnotherItemProvesNothing() {
+        // The dealer's paper_eph names its item by hash: an item changed on the way is "missing", never proof.
+        val d = fresh(); val b = realBody(d)
+        d.takeDelivery(step0.getJSONArray("deliveries").getJSONObject(0)); d.takeChanges(events(step0.getJSONArray("changes")))
+        val r = d.view.redeals[b.getString("redeal")]!!.r
+        val other = JSONObject(b.getJSONObject("paper_item").toString()).put("box", "00".repeat(60))
+        assertEquals("missing", Upkeep.checkItem(r, other, b.getString("release"), b.getJSONObject("paper_eph"), null, listOf(), r.getString("paper_item")))
+        assertTrue(d.keptRedeals.isEmpty(), "the honest item verified")
     }
 
     @Test fun m5TheStateSurvivesARestart() {

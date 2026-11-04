@@ -42,7 +42,7 @@ class UpkeepTest {
             val rm = after.getJSONArray("removed")
             assertEquals((0 until rm.length()).map { rm.getJSONObject(it).let { x -> listOf(x.get("seq").toString(), x.getString("key"), x.getString("why"), x.optString("change"), x.optString("state")) } },
                 d.members.removed(0).map { listOf(it.seq.toString(), it.key, it.why, it.change ?: "", it.state ?: "") }, "step $k removed")
-            assertTrue(d.notices.none { it.optString("kind") == "bad_paper_item" || it.optString("kind") == "bad_delivery" }, d.notices.toString())
+            assertTrue(d.notices.none { it.optString("kind") == "bad_backup_piece" || it.optString("kind") == "bad_delivery" }, d.notices.toString())
         }
         // The data under the first state is still readable; the removal was told twice (logged, then its state).
         val first = steps.getJSONObject(0).getJSONObject("after")
@@ -55,7 +55,7 @@ class UpkeepTest {
         // The paper item of the first delivery opens under its release seed and conversation key.
         val d = Device.fromSnapshot(v.getString("before"), RelayNet(emptyList()))
         val body = Envelope().unwrap(d.sk, v.getJSONArray("steps").getJSONObject(0).getJSONArray("deliveries").getJSONObject(0)).body
-        val opened = Upkeep.openItem(body.getJSONObject("paper_item"), body.getString("release"), body.getString("paper_ck"))
+        val opened = Upkeep.openItem(body.getJSONObject("paper_item"), body.getString("release"), ephSk = body.getJSONObject("paper_eph").getString("eph"))
         assertEquals(body.getString("redeal"), opened.getString("redeal"))
     }
 }

@@ -1,23 +1,47 @@
 // Members over real Nostr relays (core §9) for the Kotlin device: kind 21059 wraps, re-sent until
-// answered, the answer matched by the request id. The JDK's own WebSocket, so no extra dependency;
-// an Android build may swap in OkHttp behind the same calls.
+// answered, the answer matched by the request id. The socket is a `Wire`: the JDK's on the JVM
+// (JdkWire.kt), OkHttp on Android (keykin-android). A dropped relay is redialled, its subscriptions re-sent.
 package keykin
 
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.WebSocket
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 private const val ANSWER_TTL_S = 600L
 private const val SEEN_MAX = 50_000
 
-class RelayNet(private val relays: List<String>, private val env: Envelope = Envelope(), private val timeoutMs: Long = 9000, private val resendMs: Long = 1500) {
-    private val socks = ArrayList<WebSocket>()
+/** A relay socket: text frames in and out. */
+interface WireSocket { fun send(text: String): Boolean; fun close() }
+interface Wire { fun open(url: String, onText: (String) -> Unit, onClosed: () -> Unit): WireSocket }
+
+class RelayNet(private val relays: List<String>, private val env: Envelope = Envelope(), private val timeoutMs: Long = 9000, private val resendMs: Long = 1500,
+               private val wire: Wire? = null) {
+    /** One per relay, redialled when it drops; `subs` are re-sent on every dial. */
+    private inner class Conn(val url: String) {
+        @Volatile var sock: WireSocket? = null
+        @Volatile var closed = false
+        private var backoff = 1000L
+        fun dial() {
+            if (closed) return
+            sock = try { (wire ?: Keykin.wire ?: refuse("no_wire", "set Keykin.wire")).open(url, { t -> try { onMessage(t) } catch (_: Exception) {} }, { dropped() }) } catch (e: KeykinException) { throw e } catch (_: Exception) { null }
+            if (sock == null) { dropped(); return }
+            backoff = 1000L
+            for (f in subs.values) sock?.send(f())
+        }
+        fun dropped() {
+            sock = null
+            if (closed) return
+            val wait = backoff; backoff = minOf(backoff * 2, 30_000L)
+            redial.schedule({ dial() }, wait, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }
+        fun send(text: String) { sock?.send(text) }
+    }
+    private val conns = ArrayList<Conn>()
+    /** Subscriptions by id, as a REQ to send (made fresh at each dial, so `since` stays recent). */
+    private val subs = ConcurrentHashMap<String, () -> String>()
+    private val redial = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "keykin-relay-redial").also { it.isDaemon = true } }
     private val waiting = ConcurrentHashMap<String, CompletableFuture<JSONObject>>()   // "to:id" → answer
     private val hosted = ConcurrentHashMap<String, ByteArray>()                         // our keys
     /** What answers requests sent to one of our keys (null: answers, or ignores, nothing). */
@@ -31,14 +55,6 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     }))
     private val parts = ConcurrentHashMap<String, Parts.Reassembler>()
 
-    private inner class Listener : WebSocket.Listener {
-        private val buf = StringBuilder()
-        override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
-            buf.append(data)
-            if (last) { val s = buf.toString(); buf.setLength(0); try { onMessage(s) } catch (_: Exception) {} }
-            ws.request(1); return null
-        }
-    }
     /** Raw-event subscriptions (Doors §3.3), by subscription id, each with its own seen set. */
     private val watches = ConcurrentHashMap<String, Pair<(JSONObject) -> Unit, MutableSet<String>>>()
     private fun onMessage(text: String) {
@@ -70,16 +86,18 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     }
 
     fun connect(): RelayNet {
-        val client = HttpClient.newHttpClient()
-        for (r in relays) socks += client.newWebSocketBuilder().buildAsync(URI(r), Listener()).get(10, TimeUnit.SECONDS)
+        for (r in relays) conns += Conn(r).also { it.dial() }
         return this
     }
+    private fun sendAll(text: String) { for (c in conns) try { c.send(text) } catch (_: Exception) {} }
     /** Receive what is addressed to this key. */
     fun host(sk: ByteArray, pub: String, handler: ((String, JSONObject, Long) -> JSONObject?)? = null) {
         hosted[pub] = sk
         if (handler != null) handlers[pub] = handler
-        val req = JSONArray(listOf("REQ", "kk-${pub.take(12)}", JSONObject().put("kinds", JSONArray(listOf(21059))).put("#p", JSONArray(listOf(pub))).put("since", System.currentTimeMillis() / 1000 - 5))).toString()
-        for (s in socks) s.sendText(req, true).get(5, TimeUnit.SECONDS)
+        val id = "kk-${pub.take(12)}"
+        val req = { JSONArray(listOf("REQ", id, JSONObject().put("kinds", JSONArray(listOf(21059))).put("#p", JSONArray(listOf(pub))).put("since", now - 60))).toString() }
+        subs[id] = req
+        sendAll(req())
     }
     /** Publish a raw event to every relay. */
     fun publishEvent(e: JSONObject) = publish(e)
@@ -87,12 +105,13 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     fun watch(filter: JSONObject, cb: (JSONObject) -> Unit): () -> Unit {
         val id = "kw-" + hex(ByteArray(6).also { java.security.SecureRandom().nextBytes(it) })
         watches[id] = cb to ConcurrentHashMap.newKeySet()
-        if (!filter.has("since")) filter.put("since", now - 5)
-        val req = JSONArray(listOf("REQ", id, filter)).toString()
-        for (s in socks) try { s.sendText(req, true).get(5, TimeUnit.SECONDS) } catch (_: Exception) {}
-        return { watches.remove(id); val close = JSONArray(listOf("CLOSE", id)).toString(); for (s in socks) try { s.sendText(close, true).get(2, TimeUnit.SECONDS) } catch (_: Exception) {} }
+        val from = if (filter.has("since")) filter.getLong("since") else now - 5
+        val req = { JSONArray(listOf("REQ", id, JSONObject(filter.toString()).put("since", maxOf(from, now - 600)))).toString() }
+        subs[id] = req
+        sendAll(req())
+        return { watches.remove(id); subs.remove(id); sendAll(JSONArray(listOf("CLOSE", id)).toString()) }
     }
-    private fun publish(w: JSONObject) { val msg = JSONArray(listOf("EVENT", w)).toString(); for (s in socks) try { s.sendText(msg, true).get(5, TimeUnit.SECONDS) } catch (_: Exception) {} }
+    private fun publish(w: JSONObject) = sendAll(JSONArray(listOf("EVENT", w)).toString())
     val now: Long get() = System.currentTimeMillis() / 1000
     private fun prune() {
         val t = now; if (t - pruned < 60) return
@@ -117,5 +136,5 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         waiting.remove("$to:$id")
         return if (f.isDone) f.get() else JSONObject().put("type", "error").put("code", "unreachable")
     }
-    fun close() { for (s in socks) try { s.sendClose(WebSocket.NORMAL_CLOSURE, "").get(2, TimeUnit.SECONDS) } catch (_: Exception) {} }
+    fun close() { for (c in conns) { c.closed = true; try { c.sock?.close() } catch (_: Exception) {} }; redial.shutdownNow() }
 }

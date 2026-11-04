@@ -9,6 +9,8 @@ import org.json.JSONObject
 import java.io.File
 
 fun main(args: Array<String>) {
+    // A test harness: the JDK's socket, and a TS snapshot's soft lock may be used (never in an app).
+    Keykin.wire = JdkWire; Keykin.allowSoftLock = true
     val net = RelayNet(args[1].split(",")).connect()
     try {
         // The first argument is a TS device's snapshot, or `join:<invite code>` to join as a new device.

@@ -11,7 +11,7 @@ import java.net.URI
 import java.net.URLDecoder
 import java.security.SecureRandom
 
-class Nip46Home(private val d: Device, private val net: RelayNet, private val secp: Secp = Secp.Reference) {
+class Nip46Home(private val d: Device, private val net: RelayNet, private val secp: Secp = Keykin.secp) {
     class Grant(val signer: String, val signerSk: ByteArray, var client: String?, val secret: String?, var linkExpires: Long?, val relays: List<String>, var endedAt: Long? = null)
     class Held(val id: String, val signer: String, val event: Unsigned, val at: Long)
     val grants = LinkedHashMap<String, Grant>()

@@ -69,8 +69,8 @@ object Approve {
 
 /** Everything a dealer makes for one redeal (§6.7.3). The deltas live only here until the co-sign; call
  *  `destroy()` then or on any failure. */
-class Dealt(val redeal: JSONObject, val deltas: MutableMap<String, Map<Long, BigInteger>>, val releaseSeed: String, val dkSeed: String, val paperCk: String, val paperItem: JSONObject) {
-    fun destroy() { deltas.clear() }
+class Dealt(val redeal: JSONObject, val deltas: MutableMap<String, Map<Long, BigInteger>>, val releaseSeed: String, val dkSeed: String, var paperEph: String, val paperItem: JSONObject, val paperValues: List<BigInteger>) {
+    fun destroy() { deltas.clear(); paperEph = "" }
 }
 
 object Deal {
@@ -81,13 +81,15 @@ object Deal {
     /** XChaCha20-Poly1305 under a release seed (§7.2): `nonce ‖ ciphertext ‖ tag`. */
     fun wrapUnder(seed: String, plain: ByteArray): ByteArray = XChaCha.seal(unhex(seed), ByteArray(24).also(rnd::nextBytes), plain)
     /** One material item (§7.2): sealed to the backup key K (NIP-44 from a fresh key), wrapped under a release seed. */
+    /** Returns the item and its ephemeral secret (hex): devices get it as `paper_eph` / `reissue_eph` and derive
+     *  the conversation key themselves, exactly as K will from its side (core 14.20). */
     fun sealItem(kind: String, redeal: String?, K: String, releaseSeed: String, body: JSONObject): Pair<JSONObject, String> {
         val eph = ByteArray(32).also { rnd.nextBytes(it); it[0] = (it[0].toInt() and 0x7f).toByte() }
-        val ck = Nip44.conversationKey(Secp.Reference, eph, K)
+        val ck = Nip44.conversationKey(Keykin.secp, eph, K)
         val inner = Nip44.encrypt(Jcs.of(body), ck)
-        val item = JSONObject().put("kind", kind).put("redeal", redeal ?: JSONObject.NULL).put("to", K).put("eph", Secp.Reference.pub(eph)).put("box", hex(wrapUnder(releaseSeed, utf8(inner))))
-        eph.fill(0)
-        return item to hex(ck)
+        val item = JSONObject().put("kind", kind).put("redeal", redeal ?: JSONObject.NULL).put("to", K).put("eph", Keykin.secp.pub(eph)).put("box", hex(wrapUnder(releaseSeed, utf8(inner))))
+        val out = hex(eph); eph.fill(0); ck.fill(0)
+        return item to out
     }
 
     /** Deal a redeal for the post-change view (§6.7.3): `members` maps each recipient's key to its indices
@@ -99,12 +101,13 @@ object Deal {
         val deltas = members.mapValues { (_, idx) -> idx.associateWith(::f) }.toMutableMap()
         val releaseSeed = seed(); val dkSeed = seed()
         val id = hex(ByteArray(16).also(rnd::nextBytes))
-        val (item, ck) = sealItem("paper", id, paperTo, releaseSeed, JSONObject().put("redeal", id).put("d", JSONArray(backupSeat.map { scalarHex(f(it)) })).put("b", JSONArray(backupSeat)).put("dk_seed", dkSeed))
-        val r = JSONObject().put("id", id).put("dealer", Secp.Reference.pub(dealerSk)).put("D", JSONArray(D.map(::comp))).put("paper_to", paperTo)
+        val paper = backupSeat.map(::f)
+        val (item, eph) = sealItem("paper", id, paperTo, releaseSeed, JSONObject().put("redeal", id).put("d", JSONArray(paper.map(::scalarHex))).put("b", JSONArray(backupSeat)).put("dk_seed", dkSeed))
+        val r = JSONObject().put("id", id).put("dealer", Keykin.secp.pub(dealerSk)).put("D", JSONArray(D.map(::comp))).put("paper_to", paperTo)
             .put("paper_item", Upkeep.itemHash(item)).put("dk", hex(sha(unhex(dkSeed)))).put("rs", hex(sha(unhex(releaseSeed))))
             .put("base", JSONArray(base.sorted())).put("abandons", JSONArray(abandons.sorted()))
-        r.put("sig", Secp.Reference.schnorrSign(Approvals.detached("redeal", g, Json.obj(Jcs.of(r))), dealerSk, ByteArray(32).also(rnd::nextBytes)))
-        return Dealt(r, deltas, releaseSeed, dkSeed, ck, item)
+        r.put("sig", Keykin.secp.schnorrSign(Approvals.detached("redeal", g, Json.obj(Jcs.of(r))), dealerSk, ByteArray(32).also(rnd::nextBytes)))
+        return Dealt(r, deltas, releaseSeed, dkSeed, eph, item, paper)
     }
 
     /** The post-change view of a list (§6.7.3): who gets deltas. Never an outgoing seat holder, never a

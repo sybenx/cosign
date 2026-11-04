@@ -36,7 +36,7 @@ object Rules {
         "challenge" to setOf("ask"), "hold" to setOf("member"), "release_request" to setOf("member"), "deliver" to setOf("member"))
     private val repeated = setOf("cancel", "withdraw", "upload", "upload_held", "push_register", "push_unregister", "notify_register", "paper_reissue",
         "helper_stop", "helper_resume", "account_delete", "deleted", "heir_request", "heir_remove",
-        "delta", "paper_ck", "dk_seed", "release_seed", "paper_item", "welcome", "repair_sigma", "change", "ack")
+        "delta", "paper_eph", "reissue_eph", "dk_seed", "release_seed", "paper_item", "welcome", "repair_sigma", "change", "ack")
     /** §5.6: null when fresh, else the refusal code. */
     fun lifetime(type: String, cls: String, age: Long): String? {
         // Core 13.12: types outside the table are `member` if a sender repeats them until answered, else `ask`.

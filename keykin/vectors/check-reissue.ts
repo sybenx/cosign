@@ -2,7 +2,7 @@
 // holder check it: `node vectors/check-reissue.ts <in.json>` with {g, redeal, item, K, devices, backup_seat,
 // release, paper_sk}; prints {check: null | <refusal>, opens: <the values match the clear ones>}.
 import { readFileSync } from 'node:fs';
-import { checkReissue, openItem } from '../src/redeal.ts';
+import { checkReissue, openItem, checkItem, itemHash } from '../src/redeal.ts';
 import { hexToBytes } from '../src/bytes.ts';
 import { mul, scalarFrom, compHex } from '../src/curve.ts';
 
@@ -13,4 +13,7 @@ try {
   const v = openItem(x.item, x.release, { backupSk: hexToBytes(x.paper_sk) });
   opens = v.redeal === x.redeal.id && JSON.stringify(v.b) === JSON.stringify(x.backup_seat) && v.d.every((d: string, k: number) => compHex(mul(scalarFrom(d))) === x.item.clear[k]);
 } catch { /* opens stays false */ }
-console.log(JSON.stringify({ check, opens }));
+// And as another device checks it (core 14.20): from the reissue_eph, against the values it kept.
+let device = 'skipped';
+if (x.eph) device = checkItem(x.redeal, x.item, x.release, { redeal: x.redeal.id, item: itemHash(x.item), eph: x.eph }, null, x.backup_seat);
+console.log(JSON.stringify({ check, opens, device }));

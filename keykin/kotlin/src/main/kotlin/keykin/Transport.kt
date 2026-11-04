@@ -8,6 +8,14 @@ import org.json.JSONObject
 import java.math.BigInteger
 import java.security.SecureRandom
 
+/** Process-wide choices: the secret-key implementation (an Android build sets libsecp256k1 at start), the
+ *  relays' socket, and whether a snapshot's software lock may be used (tests only). */
+object Keykin {
+    @Volatile var secp: Secp = Secp.Reference
+    @Volatile var wire: Wire? = null
+    @Volatile var allowSoftLock = false
+}
+
 /** Secret-key operations. `Reference` is plain BigInteger arithmetic, not constant-time: tests and the
  *  differential probes only. An Android build plugs in libsecp256k1 (secp256k1-kmp), as Cosign does. */
 interface Secp {
@@ -162,7 +170,7 @@ object Nip44 {
 }
 
 /** NIP-59 as Core uses it (§9.1). */
-class Envelope(private val secp: Secp = Secp.Reference, private val rnd: SecureRandom = SecureRandom()) {
+class Envelope(private val secp: Secp = Keykin.secp, private val rnd: SecureRandom = SecureRandom()) {
     private fun rand(n: Int) = ByteArray(n).also { rnd.nextBytes(it) }
     /** A signed event as JSON, its id by NIP-01 and its signature by BIP-340. */
     fun sign(sk: ByteArray, kind: Int, createdAt: Long, tags: List<List<String>>, content: String): JSONObject {

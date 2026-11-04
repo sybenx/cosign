@@ -42,7 +42,9 @@ class DealerTest {
         assertTrue(schnorrVerify(r.getString("sig"), Approvals.detached("redeal", d.g, Json.obj(Jcs.of(JSONObject(r.toString()).also { it.remove("sig") }))), d.pub))
         val applied = Upkeep.apply(d.g, d.state, r, dl.deltas[d.pub]!!, backupSeat, emptySet())
         assertEquals(d.ids + r.getString("id"), applied.state.ids)
-        assertTrue(Upkeep.verifyPaperItem(r, dl.paperItem, dl.releaseSeed, dl.paperCk, backupSeat))
+        assertEquals("ok", Upkeep.checkItem(r, dl.paperItem, dl.releaseSeed, JSONObject().put("redeal", r.getString("id")).put("item", Upkeep.itemHash(dl.paperItem)).put("eph", dl.paperEph), Triple(backupSeat, dl.paperValues, dl.dkSeed), backupSeat, r.getString("paper_item")))
+        // An eph for another item proves nothing.
+        assertEquals("missing", Upkeep.checkItem(r, dl.paperItem, dl.releaseSeed, JSONObject().put("redeal", r.getString("id")).put("item", Upkeep.itemHash(dl.paperItem)).put("eph", "11".repeat(32)), Triple(backupSeat, dl.paperValues, dl.dkSeed), backupSeat, r.getString("paper_item")))
         // Every other recipient's deltas are on D too.
         for ((k, ds) in dl.deltas) for ((i, x) in ds) assertEquals(mul(x), Upkeep.deriveDelta(Upkeep.dPoints(r), java.math.BigInteger.valueOf(i)), "$k $i")
     }

@@ -7,7 +7,9 @@ import org.json.JSONObject
 import java.math.BigInteger
 
 object FrostNative {
-    init { System.load(System.getProperty("keykin.frostlib") ?: error("set keykin.frostlib to libkeykin_frost")) }
+    // On the JVM, the library at `keykin.frostlib`; on Android, keykin-android calls `loadLibrary` from the APK.
+    init { System.getProperty("keykin.frostlib")?.let { System.load(it) } }
+    fun loadLibrary(name: String) = System.loadLibrary(name)
     @JvmStatic external fun call(name: String, args: String): String
     fun call(name: String, vararg a: Any): String = call(name, JSONArray(a.map { it.toString() }).toString())
 }

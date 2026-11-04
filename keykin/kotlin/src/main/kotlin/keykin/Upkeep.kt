@@ -75,6 +75,8 @@ object Upkeep {
     fun checkDelivery(r: JSONObject, from: String, body: JSONObject, toDevice: Boolean) {
         if (from != r.getString("dealer")) refuse("not_dealer", "a delta comes only from its redeal's dealer")
         if (toDevice && !body.has("dk")) refuse("missing_seed", "a device's delivery carries the data-key seed")
+        // And the release seed: without it the device could neither re-issue nor read the item (review 14 M2).
+        if (toDevice && !body.has("release")) refuse("missing_seed", "a device's delivery carries the release seed")
         fun seed(f: String) = (body.opt(f) as? String)?.takeIf { HEX32.matches(it) } ?: refuse("bad_seed", "$f: 32 bytes of hex")
         if (body.has("release") && hex(sha(unhex(seed("release")))) != r.getString("rs")) refuse("bad_seed", "release seed")
         if (body.has("dk") && hex(sha(unhex(seed("dk")))) != r.getString("dk")) refuse("bad_seed", "data-key seed")
@@ -82,34 +84,65 @@ object Upkeep {
 
     /** §7.2: an item's hash, over the item without its `sig`. */
     fun itemHash(item: JSONObject): String = hex(sha(utf8(Jcs.of(JSONObject(item.toString()).also { it.remove("sig") }))))
-    /** Open an item with its conversation key, under its release seed. */
-    fun openItem(item: JSONObject, releaseSeed: String, ck: String): JSONObject {
+    /** Open an item under its release seed, with the conversation key derived from its ephemeral secret
+     *  towards its `to` (core 14.20: never a key taken from the sender), or from K's secret towards its `eph`. */
+    fun openItem(item: JSONObject, releaseSeed: String, ephSk: String? = null, backupSk: ByteArray? = null): JSONObject {
         val inner = Json.utf8Strict(XChaCha.open(unhex(releaseSeed), unhex(item.getString("box"))))
-        return Json.obj(Nip44.decrypt(inner, unhex(ck)))
+        val ck = if (ephSk != null) Nip44.conversationKey(Keykin.secp, unhex(ephSk), item.getString("to")) else Nip44.conversationKey(Keykin.secp, backupSk!!, item.getString("eph"))
+        return Json.obj(Nip44.decrypt(inner, ck))
     }
-    /** §6.7.1 step 0: the redeal's pinned paper item, carrying `δ(b)` on `D` for the backup seat and the
-     *  pinned data-key seed. True sets the "paper item verified" bit. */
-    fun verifyPaperItem(r: JSONObject, item: JSONObject, releaseSeed: String, ck: String, backupSeat: List<Long>): Boolean = try {
-        if (itemHash(item) != r.getString("paper_item") || item.optString("to") != r.getString("paper_to")) false
-        else {
-            val v = openItem(item, releaseSeed, ck); val D = dPoints(r)
+    /** Core 14.20 §6.7.1 step 0 (and §6.7.6 for a re-issued item), as TS `checkItem`: "missing" when `pe` isn't
+     *  bound to this redeal and item (or isn't the item's key), which proves nothing; "bad" when a bound one
+     *  doesn't open the item or opens it to other contents than `own` (proof against the sealer); "ok". `own`
+     *  null: no own values to compare. `pinned`: the hash the redeal pins (the dealer's item, to `paper_to`). */
+    fun checkItem(r: JSONObject, item: JSONObject?, releaseSeed: String, pe: JSONObject?, own: Triple<List<Long>, List<BigInteger>, String>?, backupSeat: List<Long>, pinned: String? = null): String {
+        if (item == null || pe == null || pe.opt("redeal") != r.getString("id") || item.opt("redeal") != r.getString("id")) return "missing"
+        val eph = pe.opt("eph") as? String ?: return "missing"
+        val h = try { itemHash(item) } catch (_: Exception) { return "missing" }
+        if (pe.opt("item") != h) return "missing"
+        if (pinned != null && (pinned != h || item.opt("to") != r.getString("paper_to"))) return "missing"
+        if (!HEX32.matches(eph) || try { Keykin.secp.pub(unhex(eph)) != item.opt("eph") } catch (_: Exception) { true }) return "missing"
+        val v = try { openItem(item, releaseSeed, ephSk = eph) } catch (_: Exception) { return "bad" }
+        return try {
+            val D = dPoints(r)
             val b = v.getJSONArray("b").let { a -> (0 until a.length()).map { Json.long(a.get(it)) } }
-            val d = v.getJSONArray("d")
-            b == backupSeat && d.length() == b.size && b.indices.all { k -> mul(scalar(d.get(k))) == deriveDelta(D, BigInteger.valueOf(b[k])) } &&
-                hex(sha(unhex(v.getString("dk_seed")))) == r.getString("dk")
-        }
-    } catch (_: Exception) { false }
+            val d = v.getJSONArray("d").let { a -> (0 until a.length()).map { scalar(a.get(it)) } }
+            val dk = v.opt("dk_seed") as? String
+            when {
+                v.opt("redeal") != r.getString("id") || b != backupSeat || d.size != b.size -> "bad"
+                !b.indices.all { k -> mul(d[k]) == deriveDelta(D, BigInteger.valueOf(b[k])) } -> "bad"
+                dk == null || hex(sha(unhex(dk))) != r.getString("dk") -> "bad"
+                own != null && (own.first != backupSeat || own.second != d || own.third != dk) -> "bad"
+                else -> "ok"
+            }
+        } catch (_: Exception) { "bad" }
+    }
 
     /** §6.7.6 re-issue: the paper values this device kept for a redeal, sealed to the current backup key K
      *  under that redeal's release seed, with `δ(b)·G` in the clear, signed by this device's member key as
      *  `detached("paper-reissue", item without its sig)` (core 14.19 §5.9). K learns only what devices know. */
-    fun reissueItem(g: String, r: JSONObject, K: String, kept: JSONObject, sk: ByteArray): JSONObject {
+    /** Returns the item and its ephemeral secret, which the other devices get as `reissue_eph` (core 14.20). */
+    fun reissueItem(g: String, r: JSONObject, K: String, kept: JSONObject, sk: ByteArray): Pair<JSONObject, String> {
         val d = kept.getJSONArray("d").let { a -> (0 until a.length()).map { scalar(a.get(it)) } }
         val body = JSONObject().put("redeal", r.getString("id")).put("d", JSONArray(d.map(::scalarHex))).put("b", kept.getJSONArray("b")).put("dk_seed", kept.getString("dk"))
-        val (item, _) = Deal.sealItem("reissue", r.getString("id"), K, kept.getString("release"), body)
-        item.put("clear", JSONArray(d.map { comp(mul(it)!!) })).put("by", Secp.Reference.pub(sk))
-        return item.put("sig", Secp.Reference.schnorrSign(Approvals.detached("paper-reissue", g, Json.obj(Jcs.of(item))), sk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }))
+        val (item, eph) = Deal.sealItem("reissue", r.getString("id"), K, kept.getString("release"), body)
+        item.put("clear", JSONArray(d.map { comp(mul(it)!!) })).put("by", Keykin.secp.pub(sk))
+        return item.put("sig", Keykin.secp.schnorrSign(Approvals.detached("paper-reissue", g, Json.obj(Jcs.of(item))), sk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) })) to eph
     }
+    /** §6.7.6: what a server checks of a re-issued item, as TS `checkReissue`; null, or the refusal. */
+    fun checkReissue(g: String, r: JSONObject, item: JSONObject, K: String, isDevice: (String) -> Boolean, backupSeat: List<Long>): String? = try {
+        val by = item.opt("by") as? String
+        val clear = item.optJSONArray("clear")
+        val D = dPoints(r)
+        when {
+            item.opt("kind") != "reissue" || item.opt("redeal") != r.getString("id") -> "bad_item"
+            item.opt("to") != K -> "not_current_backup"
+            by == null || !isDevice(by) -> "not_device"
+            !schnorrVerify(item.optString("sig"), Approvals.detached("paper-reissue", g, Json.obj(Jcs.of(JSONObject(item.toString()).also { it.remove("sig") }))), by) -> "bad_signature"
+            clear == null || clear.length() != backupSeat.size || !backupSeat.indices.all { k -> clear.getString(k) == comp(deriveDelta(D, BigInteger.valueOf(backupSeat[k]))!!) } -> "bad_clear"
+            else -> null
+        }
+    } catch (_: Exception) { "bad_item" }
     private val HEX32 = Regex("^[0-9a-f]{64}$")
     /** A scalar as §9.5 writes it: 64 lowercase hex, below N (TS `scalarFrom`). */
     fun scalar(h: Any?): BigInteger {

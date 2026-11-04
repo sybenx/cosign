@@ -343,7 +343,7 @@ export class ServerNode implements Node {
           try {
             const iid = this.inbox.deliver({ from: r.dealer, to: it.to, wrap: it.wrap as NostrEvent, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey });
             // §8.2: in the inbox first, and only then pushed, so a sleeping device wakes and fetches.
-            this.pushTo(it.to, 'ask', iid, it.wrap);
+            this.pushTo(it.to, 'ask', iid, it.wrap, { budget: `deliver:${r.dealer}` });
           } catch { /* full or removed */ }
         again = true;
       }
@@ -454,17 +454,18 @@ export class ServerNode implements Node {
     const n = signNotice(this.rec!.g, this.host, { ...this.notice, member: this.kp.pub });
     for (const mem of this.m.members.values()) if (mem.kind === 'device' && !this.m.removed.has(mem.key)) await this.bus.send(this.kp, mem.key, n);
   }
-  /** §8.2: one Web Push to `member`'s address for `cls`, RFC 8291-encrypted, signed with this seat's VAPID key. */
   /** The re-issued item this server keeps from `by` for a redeal and backup key (§6.7.6): the first one. */
   heldReissue(by: string, redeal: string, K: string): Item | undefined {
     return this.items.find((x) => x.kind === 'reissue' && x.redeal === redeal && x.by === by && x.to === K);
   }
-  pushTo(member: string, cls: 'sign' | 'ask' | 'notice', id: string, wrap?: unknown, o: { wait?: boolean } = {}) {
+  /** §8.2: one Web Push to `member`'s address for `cls`, RFC 8291-encrypted, signed with this seat's VAPID key.
+   *  `budget` counts it apart (a delivery's sender has its own push budget, §8.2; review 14 L1). */
+  pushTo(member: string, cls: 'sign' | 'ask' | 'notice', id: string, wrap?: unknown, o: { wait?: boolean; budget?: string } = {}) {
     // A removed member's addresses are dropped (core §8.1, review 9 L2).
     if (this.co && this.m.removed.has(member)) { this.pushReg.unregister(member); return false; }
     const addr = this.pushReg.for(member, cls);
     if (!addr || !this.vapidSk) return false;
-    if (!this.pushLimit(addr.url, !!o.wait)) return false;
+    if (!this.pushLimit(o.budget ? `${addr.url}#${o.budget}` : addr.url, !!o.wait)) return false;
     // A push that fails never replaces the answer it follows (review 9 M2).
     try {
       this.bus.pushes?.push({ url: addr.url, authorization: vapidHeader(addr.url, this.vapidSk, this.now), body: encryptPush(pushPayload(this.host, cls, id, wrap), addr), at: this.now });
@@ -566,7 +567,7 @@ export class ServerNode implements Node {
       case 'cancels_get': return { type: 'cancels', cancels: this.co.cancels };
       case 'upload_status': { const u = this.uploads.get(body.redeal); return { type: 'upload_status', held: !!u && this.now - u.at < 7 * 86400 }; }
       case 'deliver':
-        this.pushTo(body.to, 'ask', this.inbox.deliver({ from, to: body.to, wrap: body.wrap, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey }), body.wrap);
+        this.pushTo(body.to, 'ask', this.inbox.deliver({ from, to: body.to, wrap: body.wrap, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey }), body.wrap, { budget: `deliver:${from}` });
         return { type: 'ack' };
       case 'inbox_get': if (m.removed.has(from)) refuse('removed');
         // §8.2: with every recovery, hold or heir wait running for the account, each with its end.

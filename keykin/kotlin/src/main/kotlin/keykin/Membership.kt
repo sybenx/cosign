@@ -176,12 +176,12 @@ object Approvals {
 data class RedealInfo(val r: JSONObject, val listHash: String, val changeId: String)
 /** A remove (`self` when approved by the removed device itself) or an add, with who approved it. */
 data class RemoveInfo(val key: String, val changeId: String, val listHash: String, val self: Boolean)
-data class AddInfo(val key: String, val changeId: String, val approver: String?)
+data class AddInfo(val key: String, val changeId: String, val approver: String?, val hasLock: Boolean = false)
 /** A paper change (§4.3, F7): its new key, the state its base item was made at, its list. */
 data class PaperInfo(val key: String, val state: Set<String>, val listHash: String)
 data class MembershipView(val devices: List<String>, val removed: List<String>, val seats: Map<String, String?>, val backup: String?, val refused: List<String>, val invariant: Boolean, val locks: Map<String, String?>, val members: List<Member> = emptyList(),
                           val redeals: Map<String, RedealInfo> = emptyMap(), val abandoned: Set<String> = emptySet(), val removes: List<RemoveInfo> = emptyList(), val adds: List<AddInfo> = emptyList(), val recordDevices: List<String> = emptyList(),
-                          val papers: List<PaperInfo> = emptyList())
+                          val papers: List<PaperInfo> = emptyList(), val lockChanges: Set<String> = emptySet())
 
 /** §3.2, §6.7.2: the membership as a function of the record and the *set* of changes. */
 object Membership {
@@ -358,10 +358,11 @@ object Membership {
                 ?: a.optJSONObject("paper")?.optString("member")?.ifEmpty { null } ?: a.optJSONObject("self")?.optString("member")?.ifEmpty { null }
                 ?: a.optJSONObject("recovery")?.optString("backup")?.ifEmpty { null } }
         val removes = accepted.filter { it.type == "remove" }.map { RemoveInfo(it.change.getString("remove"), it.ev.id, it.listHash, it.c.optJSONObject("approval")?.has("self") == true) }
-        val addInfos = accepted.filter { it.type == "add" }.map { AddInfo(it.change.getJSONObject("add").getString("key"), it.ev.id, approver(it)) }
+        val addInfos = accepted.filter { it.type == "add" }.map { val a = it.change.getJSONObject("add"); AddInfo(a.getString("key"), it.ev.id, approver(it), !a.isNull("lock")) }
+        val lockChanges = accepted.filter { it.type == "lock" }.map { it.ev.id }.toSet()
         val papers = accepted.filter { it.type == "paper" }.map { val p = it.change.getJSONObject("paper"); PaperInfo(p.getString("key"), strs(p.optJSONArray("state")).toSet(), it.listHash) }
         return MembershipView(entries.filter { it.kind == "device" }.map { it.key }.distinct().sorted(), removed.sorted(),
             seats.mapValues { (_, v) -> if (v != null && v in removed) null else v }, backupKey, refused.sorted(), invariant, locks,
-            entries.map { if (it.kind == "device") it.copy(lock = lockObjs[it.key]) else it }, redeals, abandoned, removes, addInfos, recDevices.map { it.key }, papers)
+            entries.map { if (it.kind == "device") it.copy(lock = lockObjs[it.key]) else it }, redeals, abandoned, removes, addInfos, recDevices.map { it.key }, papers, lockChanges)
     }
 }

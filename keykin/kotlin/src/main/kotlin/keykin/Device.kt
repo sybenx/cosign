@@ -17,10 +17,12 @@ private const val PENDING_TTL_S = 7 * 86400L
 /** Change events taken from one message, and kept refused for later (review 13 H1). */
 private const val CHANGES_PER_MESSAGE = 1024
 private const val REFUSED_MAX = 256
+/** How long a device waits on another's re-issued item before re-issuing its own (core 14.20 §6.7.6). */
+private const val REISSUE_WAIT_S = 7 * 86400L
 
 class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: List<Event>, ids: List<String>, shares: Map<Long, BigInteger>, private val net: RelayNet,
              private var baseDk: String = "", dkSeeds: List<String> = emptyList()) {
-    val pub: String = Secp.Reference.pub(sk)
+    val pub: String = Keykin.secp.pub(sk)
     val g: String = rec.getString("g"); val epochId: String = rec.getJSONObject("epoch").getString("id")
     private val env = Envelope()
     /** The change set in force (§3.2), and the ones refused for now (kept: a later change may admit them). */
@@ -44,30 +46,100 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     val notices = java.util.concurrent.CopyOnWriteArrayList<JSONObject>()
     /** Every state this device has held, oldest first (core §4.5: older keys read older data). */
     private val dkHistory = ArrayList<List<String>>()
-    /** §6.7.6: for every applied redeal whose paper item this device couldn't verify, re-issue the paper values
-     *  it kept to the current backup key, at every server; then destroy them. Values for redeals the current
-     *  paper already covers (its change's state, or the redeal that came with it) just go. */
-    fun reissueMissing(): Int {
+    /** §6.7.6 re-issue (core 14.20), as TS: `reissued` the hash this device re-issued per `redeal:K`; `reissueEphs`
+     *  the other devices' by `from:redeal:K`; `blamed` the ones proven bad; `forceReissue` the `redeal:K`s this
+     *  device re-issues despite a pending eph. */
+    private val reissued = HashMap<String, String>()
+    private val reissueEphs = HashMap<String, JSONObject>()
+    private val blamed = HashSet<String>()
+    private val forceReissue = HashSet<String>()
+    private val reissuing = Any()
+    /** By this device: for every applied redeal whose paper item it couldn't verify, its kept values sealed to the
+     *  current K, once per redeal and K; the item to every server, `reissue_eph` to the other devices; the bit
+     *  once two servers (or every live one, if fewer) confirm they hold it by hash. It waits while another
+     *  device's `reissue_eph` for that redeal and K is pending. Returns how many it re-issued now. */
+    fun reissueMissing(): Int = synchronized(reissuing) {
         val v = view; val K = v.backup ?: return 0
         val pc = v.papers.firstOrNull { it.key == K }
         var n = 0
-        for (id in state.ids.sorted()) {
+        for (id in state.ids.sorted()) try {
             val (k, r) = synchronized(this) { kept[id] to v.redeals[id]?.r }
             val covered = pc != null && (id in pc.state || v.redeals.values.any { it.listHash == pc.listHash && it.r.getString("id") == id })
-            if (covered || paperVerified["$K:$id"] == true) { synchronized(this) { kept.remove(id) }; continue }
-            if (k == null || r == null) continue
-            val item = Upkeep.reissueItem(g, r, K, k, sk)
-            var took = 0
-            for (s in servers()) if (net.send(sk, s.key, msg("paper_reissue", "member").put("item", item)).optString("type") == "ack") took++
-            if (took == 0) continue
-            synchronized(this) { paperVerified["$K:$id"] = true; kept.remove(id) }
+            if (covered || synchronized(this) { paperVerified["$K:$id"] } == true) { synchronized(this) { kept.remove(id) }; continue }
+            if (k == null || r == null || k.optString("release").isEmpty()) continue
+            val key = "$id:$K"
+            val prev = synchronized(this) { reissued[key] }
+            if (prev != null) { confirmReissue(id, K, prev); continue }
+            val waiting = synchronized(this) { reissueEphs.values.any { it.optString("redeal") == id && it.optString("K") == K && net.now - it.optLong("at") <= REISSUE_WAIT_S } }
+            if (waiting && synchronized(this) { key !in forceReissue }) continue
+            val (item, eph) = Upkeep.reissueItem(g, r, K, k, sk)
+            val hash = Upkeep.itemHash(item)
+            synchronized(this) { reissued[key] = hash }; save()
+            var answered = 0; var held = 0
+            for (s in servers()) {
+                val a = net.send(sk, s.key, msg("paper_reissue", "member").put("item", item))
+                if (a.optString("type") != "error" || a.optString("code") != "unreachable") answered++
+                if (a.optString("type") == "reissue_held" && a.optString("item") == hash) held++
+            }
+            // reissue_eph to the other devices only: an ordinary delivery, live at once (§8.2).
+            for (x in v.members.filter { it.kind == "device" && it.key != pub && it.key !in v.removed }) {
+                val w = env.wrap(sk, x.key, JSONObject().put("type", "reissue_eph").put("redeal", id).put("K", K).put("item", hash).put("eph", eph), net.now)
+                for (s in servers()) net.send(sk, s.key, msg("deliver", "member").put("to", x.key).put("wrap", w))
+                net.tell(sk, x.key, JSONObject().put("type", "delta_push").put("wrap", w))
+            }
+            if (held >= maxOf(1, minOf(2, answered))) synchronized(this) { paperVerified["$K:$id"] = true; kept.remove(id) }
             n++
-        }
+        } catch (_: Exception) { /* one redeal's re-issue never stops the next (review 14 M2) */ }
         save()
-        return n
+        n
+    }
+    /** The re-issuer's bit, once servers confirm by hash that they hold its item. */
+    private fun confirmReissue(id: String, K: String, hash: String) {
+        var answered = 0; var held = 0
+        for (s in servers()) {
+            val a = net.send(sk, s.key, msg("reissue_get", "ask").put("by", pub).put("redeal", id).put("K", K))
+            if (a.optString("code") != "unreachable") answered++
+            if ((a.opt("item") as? JSONObject)?.let { Upkeep.itemHash(it) } == hash) held++
+        }
+        if (held >= maxOf(1, minOf(2, answered))) synchronized(this) { paperVerified["$K:$id"] = true; kept.remove(id) }
+    }
+    /** Another device's re-issued item (core 14.20): fetched from two live servers holding the one its `reissue_eph`
+     *  names, its clear values checked, opened from the eph secret and K, compared with this device's kept values;
+     *  only then the bit and the values go. Proof of a bad item: keep, re-issue once, a dismissable line naming the
+     *  re-issuer, and its later reissue_eph for that redeal and K ignored. */
+    fun checkReissues() {
+        val v = view; val K = v.backup
+        val seat = ints(rec.getJSONObject("seats").getJSONArray("backup"))
+        for ((k, e) in synchronized(this) { reissueEphs.toMap() }) try {
+            val id = e.getString("redeal"); val from = e.getString("from")
+            if (synchronized(this) { k in blamed }) { synchronized(this) { reissueEphs.remove(k) }; continue }
+            if (net.now - e.optLong("at") > REISSUE_WAIT_S) { synchronized(this) { reissueEphs.remove(k); forceReissue += "$id:${e.getString("K")}" }; continue }
+            if (e.getString("K") != K) continue                        // another K: missing, until it expires
+            val r = v.redeals[id]?.r ?: continue
+            if (id !in state.ids) continue
+            val own = synchronized(this) { kept[id] }
+            if (synchronized(this) { paperVerified["$K:$id"] } == true && own == null) { synchronized(this) { reissueEphs.remove(k) }; continue }
+            var held = 0; var item: JSONObject? = null
+            for (s in servers()) {
+                val it = net.send(sk, s.key, msg("reissue_get", "ask").put("by", from).put("redeal", id).put("K", K)).opt("item") as? JSONObject ?: continue
+                if (Upkeep.itemHash(it) == e.getString("item")) { held++; item = it }
+            }
+            if (held < 2 || item == null) continue                     // fewer than two hold it: wait, no line
+            if (Upkeep.checkReissue(g, r, item, K, { x -> x in v.devices || x in v.removed }, seat) != null) continue
+            // A device that kept no values has nothing to lose: the clear δ(b)·G check is enough.
+            val res = if (own == null) "ok" else Upkeep.checkItem(r, item, own.getString("release"), JSONObject().put("redeal", id).put("item", e.getString("item")).put("eph", e.getString("eph")),
+                Triple(seat, own.getJSONArray("d").let { a -> (0 until a.length()).map { Upkeep.scalar(a.get(it)) } }, own.getString("dk")), seat)
+            if (res == "missing") continue
+            synchronized(this) {
+                reissueEphs.remove(k)
+                if (res == "ok") { paperVerified["$K:$id"] = true; kept.remove(id) }
+                else { blamed += k; forceReissue += "$id:$K"; notices += JSONObject().put("kind", "bad_backup_piece").put("member", from).put("redeal", id).put("dismissable", true) }
+            }
+        } catch (_: Exception) { /* one never wedges the rest */ }
+        save()
     }
     /** For tests: a re-issue item for a redeal whose values this device keeps, without sending it. */
-    internal fun reissueItemFor(id: String): JSONObject? = synchronized(this) { kept[id] }?.let { k -> Upkeep.reissueItem(g, view.redeals[id]!!.r, view.backup!!, k, sk) }
+    internal fun reissueItemFor(id: String): Pair<JSONObject, String>? = synchronized(this) { kept[id] }?.let { k -> Upkeep.reissueItem(g, view.redeals[id]!!.r, view.backup!!, k, sk) }
 
     /** §8.1: one push address per server and wake class, each with its own RFC 8291 keys, so addresses can't
      *  be linked across servers or accounts. By address URL: the secret, the auth secret, the class. */
@@ -97,6 +169,19 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     private fun handle(from: String, body: JSONObject): JSONObject? = when (body.optString("type")) {
         "change" -> { val a = body.optJSONArray("events"); if (a != null) takeChanges((0 until minOf(a.length(), CHANGES_PER_MESSAGE)).mapNotNull { a.optJSONObject(it)?.let(Event::of) }); JSONObject().put("type", "ack") }
         "join_hello" -> try { inviter?.onHello(from, body, net.now) } catch (_: KeykinException) { null }
+        // §4.3 step 4: the kept backup secret goes once a lock change committed (review 14 M4), or comes anew after an F7.
+        "kept_done" -> synchronized(this) {
+            val v = view; val c = body.optString("change")
+            if (from !in v.devices || from in v.removed) JSONObject().put("type", "error").put("code", "not_device")
+            else if (c !in v.lockChanges && v.adds.none { it.changeId == c && it.hasLock }) JSONObject().put("type", "error").put("code", "no_lock_change")
+            else { carried.remove("keptSecret"); save(); JSONObject().put("type", "ack") }
+        }
+        "kept_new" -> synchronized(this) {
+            val v = view; val secret = body.opt("secret") as? String
+            if (from !in v.devices || from in v.removed) JSONObject().put("type", "error").put("code", "not_device")
+            else if (secret == null || !Regex("^[0-9a-f]{64}$").matches(secret) || Keykin.secp.pub(unhex(secret)) != v.backup) JSONObject().put("type", "error").put("code", "not_current_backup")
+            else { carried.put("keptSecret", secret); save(); JSONObject().put("type", "ack") }
+        }
         "delta_push" -> { body.optJSONObject("wrap")?.let { takeDelivery(it) }; applyAll(); JSONObject().put("type", "ack") }
         else -> null
     }
@@ -134,7 +219,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         if (wiped) return
         wiped = true; state = ShareState(emptySet(), state.C, emptyMap())
         baseDk = ""; dkSeeds.clear(); releaseSeeds.clear(); pending.clear(); kept.clear(); paperVerified.clear(); dkHistory.clear()
-        notices.clear(); onSiteRequest = null; carried = JSONObject(); pushKeys.clear()
+        notices.clear(); onSiteRequest = null; carried = JSONObject(); pushKeys.clear(); inviter = null
+        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear()
         for (cb in gone) try { cb() } catch (_: Exception) {}
         save()
     }
@@ -144,6 +230,19 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     @Synchronized fun takeDelivery(w: JSONObject): String {
         if (wiped) return "junk"
         val o = try { env.unwrap(sk, w) } catch (_: Exception) { return "junk" }
+        if (o.body.optString("type") == "reissue_eph") {
+            // §6.7.6 (core 14.20): from a current device, bound to its redeal, K and item; checked in checkReissues.
+            val b = o.body; val v = view
+            if (o.from !in v.devices || o.from in v.removed || o.from == pub) return "junk"
+            val fields = listOf("redeal", "K", "item", "eph").map { b.opt(it) as? String }
+            if (fields.any { it == null } || !Regex("^[0-9a-f]{32}$").matches(fields[0]!!)) return "junk"
+            val k = "${o.from}:${fields[0]}:${fields[1]}"
+            if (k in blamed || k in reissueEphs) return "junk"
+            if (reissueEphs.size >= 256) return "full"
+            reissueEphs[k] = JSONObject().put("redeal", fields[0]).put("K", fields[1]).put("item", fields[2]).put("eph", fields[3]).put("from", o.from).put("at", net.now)
+            save()
+            return "kept"
+        }
         val id = o.body.opt("redeal") as? String
         if (o.body.optString("type") != "delta" || id == null || !Regex("^[0-9a-f]{32}$").matches(id) || o.body.optJSONArray("deltas") == null) return "junk"
         val v = view; val r = v.redeals[id]?.r
@@ -175,18 +274,19 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
                 // Any fault in a dealer's delivery drops it: it never wedges every later apply (review 13 M2).
                 try {
                     Upkeep.checkDelivery(info.r, from, d, true)
-                    // §6.7.1 step 0: the paper item, opened with its conversation key; a bad one is shown.
                     val pk = "${view.backup}:$id"
-                    if (d.has("paper_item") && d.has("paper_ck")) {
-                        val item = d.opt("paper_item") as? JSONObject; val ck = d.opt("paper_ck") as? String
-                        val ok = item != null && ck != null && Upkeep.verifyPaperItem(info.r, item, d.optString("release"), ck, backup)
-                        paperVerified[pk] = ok
-                        if (!ok) notices += JSONObject().put("kind", "bad_paper_item").put("member", from)
-                    }
                     val dl = d.getJSONArray("deltas")
                     val deltas = (0 until dl.length()).associate { dl.getJSONArray(it).let { p -> Json.long(p.get(0)) to Upkeep.scalar(p.get(1)) } }
                     if (deltas.size != dl.length()) refuse("bad_redeal", "an index twice")
                     val applied = Upkeep.apply(g, state, info.r, deltas, backup, view.abandoned)
+                    // §6.7.1 step 0 (core 14.20): with δ(b1), δ(b2) worked out and before the old share goes, open the
+                    // paper item from its own eph secret and compare. Missing or unbound: no bit and no line (it is
+                    // re-issued). Bound but wrong: proof against the dealer, a dismissable line naming it.
+                    val res = Upkeep.checkItem(info.r, d.opt("paper_item") as? JSONObject, d.getString("release"), d.opt("paper_eph") as? JSONObject,
+                        Triple(backup, applied.paperValues, d.optString("dk")), backup, info.r.getString("paper_item"))
+                    d.remove("paper_eph")
+                    if (res == "ok") paperVerified[pk] = true
+                    if (res == "bad") notices += JSONObject().put("kind", "bad_backup_piece").put("member", from).put("redeal", id).put("dismissable", true)
                     state = applied.state
                     // §6.7.1 step 3: keep δ(b) and the data-key seed until the current paper's item is verified.
                     if (paperVerified[pk] != true) kept[id] = JSONObject().put("b", org.json.JSONArray(backup)).put("d", org.json.JSONArray(applied.paperValues.map(::scalarHex)))
@@ -216,6 +316,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         x.optJSONArray("refused")?.let { a -> refused = (0 until minOf(a.length(), REFUSED_MAX)).mapNotNull { a.optJSONObject(it)?.let(Event::of) } }
         x.optJSONArray("dkHistory")?.let { a -> dkHistory.clear(); for (k in 0 until a.length()) dkHistory += strsOf(a.getJSONArray(k)) }
         x.optJSONArray("pushKeys")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> pushKeys[p.getString(0)] = p.getJSONObject(1) } }
+        x.optJSONArray("reissued")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> reissued[p.getString(0)] = p.getString(1) } }
+        x.optJSONArray("reissueEphs")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> (p.opt(1) as? JSONObject)?.let { e -> if (e.has("from")) reissueEphs[p.getString(0)] = e } } }
+        x.optJSONArray("blamed")?.let { a -> for (k in 0 until a.length()) blamed += a.getString(k) }
+        x.optJSONArray("forceReissue")?.let { a -> for (k in 0 until a.length()) forceReissue += a.getString(k) }
         members.load(x.optJSONObject("members"))
         afterState()
     }
@@ -238,6 +342,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("pendingDeltas", ja(pending.flatMap { (id, m) -> m.map { (from, b) -> ja(listOf("$id:$from", b)) } })).put("notices", ja(notices.toList()))
             .put("dkHistory", ja(dkHistory.map { ja(it) })).put("members", members.dump())
             .put("pushKeys", ja(pushKeys.map { (u, k) -> ja(listOf(u, k)) }))
+            .put("reissued", ja(reissued.map { (k, h) -> ja(listOf(k, h)) })).put("reissueEphs", ja(reissueEphs.map { (k, e) -> ja(listOf(k, e)) }))
+            .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted()))
         if (!x.has("name")) x.put("name", "kotlin")
         return x.toString()
     }
@@ -269,7 +375,9 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             net.send(sk, s.key, msg("inbox_ack", "ask").put("iids", iids))
         }
         applyAll()
-        if (notices.any { it.optString("kind") == "bad_paper_item" }) reissueMissing()
+        // §6.7.6 (core 14.20): check others' re-issued items before destroying anything, then re-issue what's left.
+        checkReissues()
+        reissueMissing()
     }
 
     /** This device's lock (§6.1), if it has one: what approves its lists. */
@@ -282,8 +390,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
      *  applies its own delta and destroys the rest. `list` names the redeal as `{redeal: {dealer: <this key>}}`. */
     fun submit(list: JSONArray, approval: JSONObject): List<JSONObject> {
         if (wiped) refuse("wiped")
-        val v = view; val st = state
+        Approvals.shape(list)                                // one redeal at most, and a list the servers accept (review 14 L6)
+        val (v, st) = synchronized(this) { view to state }
         val ph = Approvals.placeholder(list)
+        var own: Pair<String, JSONObject>? = null
         val backupSeat = ints(rec.getJSONObject("seats").getJSONArray("backup"))
         val post = Deal.postListView(v, list)
         var dealt: Dealt? = null
@@ -300,12 +410,17 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
                 for (x in post.values) {
                     val body = JSONObject().put("type", "delta").put("redeal", id).put("deltas", JSONArray(dl.deltas[x.key]!!.toSortedMap().map { (i, d) -> JSONArray(listOf(i, scalarHex(d))) }))
                     if (x.kind != "helper") body.put("release", dl.releaseSeed)
-                    if (x.kind == "device") body.put("dk", dl.dkSeed).put("paper_ck", dl.paperCk).put("paper_item", dl.paperItem)
-                    // The dealer's own delivery too: the co-signer wants one for every recipient (§6.7.3).
-                    if (x.key == pub) synchronized(this) { pending.getOrPut(id) { LinkedHashMap() }[pub] = JSONObject(body.toString()).put("from", pub).put("at", net.now) }
+                    if (x.kind == "device") body.put("dk", dl.dkSeed).put("paper_eph", JSONObject().put("redeal", id).put("item", Upkeep.itemHash(dl.paperItem)).put("eph", dl.paperEph))
+                        .put("paper_item", dl.paperItem)
+                    // Our own delivery is applied only after the co-sign, and never stored before it (review 14 M1).
+                    if (x.key == pub) own = id to JSONObject(body.toString()).put("from", pub).put("at", net.now)
+                    // The dealer's own delivery is uploaded too: the co-signer wants one for every recipient (§6.7.3).
                     val w = env.wrap(sk, x.key, body, net.now)
                     wraps[x.key] = w
-                    items.put(JSONObject().put("type", "delta").put("to", x.key).put("release", x.kind != "helper").put("wrap", w))
+                    val item = JSONObject().put("type", "delta").put("to", x.key).put("release", x.kind != "helper").put("wrap", w)
+                    // Core 14.20: a sealed paper_eph and a dk_seed for every post-list device, declared by type.
+                    if (x.kind == "device") item.put("paper_eph", true).put("dk_seed", true)
+                    items.put(item)
                 }
                 val up = msg("upload", "member").put("list", ph).put("approval", approval).put("redeal", id).put("items", items).put("paper_item", dl.paperItem)
                 for (s in post.values.filter { it.kind == "server" }) net.send(sk, s.key, JSONObject(up.toString()))
@@ -323,13 +438,14 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
                 net.tell(sk, x.key, JSONObject().put("type", "change").put("events", evArr))
                 wraps[x.key]?.let { net.tell(sk, x.key, JSONObject().put("type", "delta_push").put("wrap", it)) }
             }
+            own?.let { (id, b) -> synchronized(this) { pending.getOrPut(id) { LinkedHashMap() }[pub] = b } }
             takeChanges(signed.map { Event.of(it) })
             applyAll()
             return signed
         } finally {
-            dealt?.destroy()
-            // Our own delta is applied by now, or never will be: it goes with the rest of δ.
-            dealt?.let { d -> synchronized(this) { pending[d.redeal.getString("id")]?.remove(pub) } }
+            dealt?.destroy(); own?.second?.let { it.remove("deltas"); it.remove("paper_eph") }
+            // Our own delta is applied by now, or never will be: it goes with the rest of δ, in storage too.
+            dealt?.let { d -> synchronized(this) { pending[d.redeal.getString("id")]?.remove(pub) }; save() }
         }
     }
     /** Register an address with every server for each wake class; `endpoint(server, cls)` gives the URL
@@ -367,21 +483,25 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val inv = inviter ?: refuse("no_invite")
         val a = inv.accepted ?: refuse("no_hello")
         if (!inv.confirmed) refuse("not_confirmed", "the person has not typed the new device's number")
-        val v = view
-        val seats = rec.getJSONObject("seats")
-        val taken = (v.members.flatMap { it.shares } + listOf("servers", "backup", "helper").flatMap { ints(seats.getJSONArray(it)) } +
-            (0 until rec.getJSONArray("members").length()).flatMap { member(rec.getJSONArray("members").getJSONObject(it)).shares }).toSet()
-        var salt = 0L
-        while (true) { val idx = Codes.deviceIndices(g, epochId, a.n, salt); if (idx.toSet().size == 3 && idx.none { it in taken }) break; salt++ }
-        val indices = Codes.deviceIndices(g, epochId, a.n, salt)
-        val list = JSONArray().put(JSONObject().put("add", JSONObject().put("key", a.n).put("kind", "device").put("lock", a.lock ?: JSONObject.NULL).put("salt", salt)))
-        submit(list, approveLock(list))
-        // The repair: this device and one live server, each index sealed to the new device (§4.2 step 3).
+        // The add, once: a retry after a failed repair or welcome finds it committed and goes on (review 14 M3).
+        if (view.members.none { it.key == a.n && it.kind == "device" }) {
+            val v = view
+            val seats = rec.getJSONObject("seats")
+            val taken = (v.members.flatMap { it.shares } + listOf("servers", "backup", "helper").flatMap { ints(seats.getJSONArray(it)) } +
+                (0 until rec.getJSONArray("members").length()).flatMap { member(rec.getJSONArray("members").getJSONObject(it)).shares }).toSet()
+            var salt = 0L
+            while (true) { val idx = Codes.deviceIndices(g, epochId, a.n, salt); if (idx.toSet().size == 3 && idx.none { it in taken }) break; salt++ }
+            val list = JSONArray().put(JSONObject().put("add", JSONObject().put("key", a.n).put("kind", "device").put("lock", a.lock ?: JSONObject.NULL).put("salt", salt)))
+            submit(list, approveLock(list))
+        }
+        val indices = view.members.first { it.key == a.n }.shares
+        // The repair: this device and one live server, each index sealed to the new device (§4.2 step 3). Any
+        // fault in one server's answers moves on to the next.
         val st = state
         var last = "no_server"
         val sigmas = servers().firstNotNullOfOrNull { s ->
             try { indices.flatMap { i -> repair(st, listOf(Signer(pub, st.shares.keys.sorted()), Signer(s.key, s.shares)), i, a.n, "add") } }
-            catch (e: KeykinException) { last = e.code; null }
+            catch (e: KeykinException) { last = e.code; null } catch (_: Exception) { last = "repair_failed"; null }
         } ?: refuse(last)
         for (w in sigmas) net.publishEvent(w)
         // §4.2 step 4: the welcome, with what a device holds of the account.
@@ -477,7 +597,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     /** The account's current device member keys. */
     fun memberKeys(): List<String> = view.devices.filter { it !in view.removed }.sorted()
     /** Sign `message` under a registered domain with this device's member key (MemberSig). */
-    fun signAsMember(domain: String, message: ByteArray): Pair<String, String> = MemberSig.sign(Secp.Reference, sk, domain, message) to pub
+    fun signAsMember(domain: String, message: ByteArray): Pair<String, String> = MemberSig.sign(Keykin.secp, sk, domain, message) to pub
     /** The seated servers, as members. */
     fun servers() = view.members.filter { it.kind == "server" }
     companion object {
@@ -492,13 +612,13 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val sh = st.getJSONArray("shares")
             val shares = (0 until sh.length()).associate { sh.getJSONArray(it).let { p -> Json.long(p.get(0)) to BigInteger(p.getString(1), 16) } }
             val seeds = x.optJSONArray("dkSeeds")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            return Device(unhex(x.getString("kp")), recEv, rec, changes, ids, shares, net, x.optString("baseDk"), seeds).also { it.restore(x); it.lock = SoftLock.fromStored(x.optJSONObject("lock")) }
+            return Device(unhex(x.getString("kp")), recEv, rec, changes, ids, shares, net, x.optString("baseDk"), seeds).also { it.restore(x); if (Keykin.allowSoftLock) it.lock = SoftLock.fromStored(x.optJSONObject("lock")) }
         }
         /** Join an account by its invite code (core §4.1–§4.2): hello, nonce, the 6-digit check shown by
          *  `onCheck`, then the welcome and the sigmas, checked. */
         fun join(code: String, net: RelayNet, onCheck: (String) -> Unit, timeoutMs: Long = 120_000): Device {
             val sk = ByteArray(32).also { java.security.SecureRandom().nextBytes(it); it[0] = (it[0].toInt() and 0x7f).toByte() }
-            val pub = Secp.Reference.pub(sk)
+            val pub = Keykin.secp.pub(sk)
             val j = Joiner(pub, null, net.now, parseCode(code))
             val welcome = java.util.concurrent.CompletableFuture<Pair<String, JSONObject>>()
             // Sigmas by (sender, index), one each and a bounded number: a stranger can't grow them (review 12 L2).
