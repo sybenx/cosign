@@ -20,6 +20,7 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     /** What answers requests sent to one of our keys (null: answers, or ignores, nothing). */
     private val handlers = ConcurrentHashMap<String, (String, JSONObject, Long) -> JSONObject?>()
     private val answered = ConcurrentHashMap<String, JSONObject>()
+    private val handlerPool = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-relay-handlers").also { it.isDaemon = true } }
     private val seen = ConcurrentHashMap.newKeySet<String>()
     private val parts = ConcurrentHashMap<String, Parts.Reassembler>()
 
@@ -31,10 +32,16 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
             ws.request(1); return null
         }
     }
+    /** Raw-event subscriptions (Doors §3.3), by subscription id, each with its own seen set. */
+    private val watches = ConcurrentHashMap<String, Pair<(JSONObject) -> Unit, MutableSet<String>>>()
     private fun onMessage(text: String) {
         val m = JSONArray(text)
         if (m.optString(0) != "EVENT" || m.length() < 3) return
         val e = m.getJSONObject(2)
+        watches[m.optString(1)]?.let { (cb, seenHere) ->
+            if (seenHere.add(e.optString("id"))) try { if (verifyEvent(Event.of(Json.obj(e.toString())))) cb(e) } catch (_: Exception) {}
+            return
+        }
         if (!seen.add(e.optString("id"))) return
         val to = e.optJSONArray("tags")?.let { t -> (0 until t.length()).map { t.getJSONArray(it) }.firstOrNull { it.optString(0) == "p" }?.optString(1) } ?: return
         val sk = hosted[to] ?: return
@@ -47,8 +54,11 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         // A message with no id (a repair sigma) is handed on each time; only requests are answered once.
         val id = body.optString("id")
         val key = "${o.from}:$id"
-        val ans = (if (id.isNotEmpty()) answered[key] else null) ?: (h(o.from, body, o.sentAt) ?: return).put("re", id).put("__answer", true).also { if (id.isNotEmpty()) answered[key] = it }
-        for (part in Parts.split(ans)) publish(env.wrap(sk, o.from, part, now))
+        // Handlers run off the listener thread too, so one that sends and waits never blocks its own answer.
+        handlerPool.execute {
+            val ans = (if (id.isNotEmpty()) answered[key] else null) ?: (try { h(o.from, body, o.sentAt) } catch (_: Exception) { null } ?: return@execute).put("re", id).put("__answer", true).also { if (id.isNotEmpty()) answered[key] = it }
+            for (part in Parts.split(ans)) publish(env.wrap(sk, o.from, part, now))
+        }
     }
 
     fun connect(): RelayNet {
@@ -62,6 +72,17 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         if (handler != null) handlers[pub] = handler
         val req = JSONArray(listOf("REQ", "kk-${pub.take(12)}", JSONObject().put("kinds", JSONArray(listOf(21059))).put("#p", JSONArray(listOf(pub))).put("since", System.currentTimeMillis() / 1000 - 5))).toString()
         for (s in socks) s.sendText(req, true).get(5, TimeUnit.SECONDS)
+    }
+    /** Publish a raw event to every relay. */
+    fun publishEvent(e: JSONObject) = publish(e)
+    /** Subscribe to raw events; returns a function that stops it. */
+    fun watch(filter: JSONObject, cb: (JSONObject) -> Unit): () -> Unit {
+        val id = "kw-" + hex(ByteArray(6).also { java.security.SecureRandom().nextBytes(it) })
+        watches[id] = cb to ConcurrentHashMap.newKeySet()
+        if (!filter.has("since")) filter.put("since", now - 5)
+        val req = JSONArray(listOf("REQ", id, filter)).toString()
+        for (s in socks) try { s.sendText(req, true).get(5, TimeUnit.SECONDS) } catch (_: Exception) {}
+        return { watches.remove(id); val close = JSONArray(listOf("CLOSE", id)).toString(); for (s in socks) try { s.sendText(close, true).get(2, TimeUnit.SECONDS) } catch (_: Exception) {} }
     }
     private fun publish(w: JSONObject) { val msg = JSONArray(listOf("EVENT", w)).toString(); for (s in socks) try { s.sendText(msg, true).get(5, TimeUnit.SECONDS) } catch (_: Exception) {} }
     val now: Long get() = System.currentTimeMillis() / 1000

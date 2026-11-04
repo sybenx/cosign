@@ -22,6 +22,9 @@ fun main(args: Array<String>) {
                 when (c.getString("cmd")) {
                     "sign" -> d.sign(1, c.getString("content"))
                     "datakey" -> d.dataKey().let { (st, k) -> JSONObject().put("state", st).put("key", hex(k)) }
+                    // Be a NIP-46 home (Doors §3.3): print a bunker:// link, then answer sites for `seconds`.
+                    "bunker" -> { val home = Nip46Home(d, net); println(JSONObject().put("bunker", home.mintBunker(args[1].split(","))).toString()); System.out.flush()
+                        Thread.sleep(c.optLong("seconds", 30) * 1000); JSONObject().put("served", true) }
                     "nip44" -> JSONObject().put("result", d.nip44(c.getString("peer"), c.getString("text"), c.optBoolean("encrypt", true)))
                     "nip04" -> JSONObject().put("result", d.nip04(c.getString("peer"), c.getString("text"), c.optBoolean("encrypt", true)))
                     else -> JSONObject().put("error", "unknown command")

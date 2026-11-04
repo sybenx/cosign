@@ -105,10 +105,10 @@ class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, val i
     }
 
     /** Sign an event with the first server that gives a partial. */
-    fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList()): JSONObject {
+    fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList(), createdAt: Long = net.now): JSONObject {
         var last = "no_server"
         for (s in servers()) {
-            val r = OneCall(ctx, shares, Signer(s.key, s.shares), Unsigned(g, net.now, kind, tags, content))
+            val r = OneCall(ctx, shares, Signer(s.key, s.shares), Unsigned(g, createdAt, kind, tags, content))
             val a = net.send(sk, s.key, r.request)
             if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; continue }
             return r.finish(a)
