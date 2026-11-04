@@ -23,6 +23,7 @@ android {
     // The TS-made vectors, for the on-device tests (Android's own org.json, libsecp256k1, the APK's FROST).
     sourceSets["androidTest"].assets.srcDir("../../vectors")
     testOptions { unitTests.isReturnDefaultValues = true }
+    buildFeatures { aidl = true }
 }
 // The headless test device and the JDK relay socket are desktop-only.
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {

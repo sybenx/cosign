@@ -2,4 +2,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application>
+        <!-- Everything that holds or uses a share runs in its own process, ":signer" (Proc.kt): the device,
+             FROST, the relays its servers use, NIP-55. The app's own process reaches it only through
+             KeykinService, which hands back results and public state, never key material. -->
+        <service android:name="keykin.android.KeykinService" android:process=":signer" android:exported="false" />
+        <!-- Listening in the background (Doors §3.3): relays, the NIP-46 home and inbox fetches stay alive. -->
+        <service android:name="keykin.android.ListenService" android:process=":signer" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Answers signing requests for the person's own Nostr account as they arrive, as a signer app does." />
+        </service>
+        <!-- The Android signer in the background (NIP-55): granted apps get answers without the app opening. -->
+        <provider android:name="keykin.android.Nip55Provider" android:process=":signer" android:exported="true"
+            android:authorities="${applicationId}.GET_PUBLIC_KEY;${applicationId}.SIGN_EVENT;${applicationId}.NIP04_ENCRYPT;${applicationId}.NIP04_DECRYPT;${applicationId}.NIP44_ENCRYPT;${applicationId}.NIP44_DECRYPT" />
+    </application>
 </manifest>

@@ -121,18 +121,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
             }
         }
     }
-    /** As device/doors.ts siteGuard: never the account's machinery. */
-    private fun siteGuard(kind: Int, tags: List<List<String>>) {
-        if (kind == 30242 || kind == 24302) refuse("declined", "account machinery")
-        if (kind in 1244..1247) refuse("declined", "a key-family event is the person's own act, never a site's")
-        val backups = listOfNotNull(d.view.backup)
-        val signposts = backups.map { hex(sha(utf8("keykin-beacon/1"), unhex(it))) }.toSet()
-        val dTag = tags.firstOrNull { it.size >= 2 && it[0] == "d" }?.get(1) ?: ""
-        if (kind == 30078 && (dTag.lowercase() in signposts || dTag.startsWith("keykin-"))) refuse("declined", "the account's signpost and keykin- data are never a site's to write")
-        if (kind == 5) for (t in tags) { val v = (t.getOrNull(1) ?: "").lowercase()
-            if (t.getOrNull(0) == "a" && ((signposts.any { v.contains(it) } && v.contains(d.g)) || v.contains(":keykin-"))) refuse("declined", "a deletion of the account's signpost or keykin- data") }
-    }
-    private fun mayDecrypt(peer: String) { if (peer.lowercase() == d.g) refuse("declined", "the account's own data is not a site's to read") }
+    private fun siteGuard(kind: Int, tags: List<List<String>>) = Doors.siteGuard(d, kind, tags)
+    private fun mayDecrypt(peer: String) = Doors.mayDecrypt(d, peer)
 
     private fun reply(g: Grant, to: String, body: JSONObject, nip04: Boolean) {
         val text = body.toString()
