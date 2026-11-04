@@ -57,8 +57,23 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
 
     /** Raw-event subscriptions (Doors §3.3), by subscription id, each with its own seen set. */
     private val watches = ConcurrentHashMap<String, Pair<(JSONObject) -> Unit, MutableSet<String>>>()
+    /** One-shot queries by subscription id: what came, and how many relays haven't said EOSE yet. */
+    private val queries = ConcurrentHashMap<String, Pair<MutableList<JSONObject>, java.util.concurrent.CountDownLatch>>()
+    /** The stored events matching `filter`, from every relay, until each says EOSE (or `timeoutMs`). */
+    fun query(filter: JSONObject, timeoutMs: Long = 4000): List<Event> {
+        val id = "kq-" + hex(ByteArray(6).also { java.security.SecureRandom().nextBytes(it) })
+        val got = java.util.Collections.synchronizedList(ArrayList<JSONObject>())
+        val latch = java.util.concurrent.CountDownLatch(conns.count { it.sock != null })
+        queries[id] = got to latch
+        sendAll(JSONArray(listOf("REQ", id, filter)).toString())
+        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        queries.remove(id); sendAll(JSONArray(listOf("CLOSE", id)).toString())
+        return synchronized(got) { got.toList() }.map { Event.of(it) }.filter { verifyEvent(it) }.distinctBy { it.id }
+    }
     private fun onMessage(text: String) {
         val m = JSONArray(text)
+        if (m.optString(0) == "EOSE") { queries[m.optString(1)]?.second?.countDown(); return }
+        if (m.optString(0) == "EVENT" && m.length() >= 3) queries[m.optString(1)]?.let { (got, _) -> got += m.getJSONObject(2); return }
         if (m.optString(0) != "EVENT" || m.length() < 3) return
         val e = m.getJSONObject(2)
         watches[m.optString(1)]?.let { (cb, seenHere) ->

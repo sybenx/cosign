@@ -145,6 +145,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
      *  be linked across servers or accounts. By address URL: the secret, the auth secret, the class. */
     private val pushKeys = HashMap<String, JSONObject>()
     val members = Members()
+    /** The account's grants (Doors §1–§2): this device's, signed by it, and every device's, for listing. */
+    val grants = GrantStore(this)
+    /** The base data key, for the grant event's `d` (Doors §2): never leaves the device. */
+    internal fun baseDataKey(): String = baseDk
     /** A site's NIP-46 request a watching server kept for us (Doors §3.3): the home takes it. */
     @Volatile var onSiteRequest: ((JSONObject) -> Unit)? = null
     /** Called with this device's state, as `snapshot()` writes it, after every change: the app stores it
@@ -220,7 +224,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         wiped = true; state = ShareState(emptySet(), state.C, emptyMap())
         baseDk = ""; dkSeeds.clear(); releaseSeeds.clear(); pending.clear(); kept.clear(); paperVerified.clear(); dkHistory.clear()
         notices.clear(); onSiteRequest = null; carried = JSONObject(); pushKeys.clear(); inviter = null
-        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear()
+        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear(); grants.clear()
         for (cb in gone) try { cb() } catch (_: Exception) {}
         save()
     }
@@ -321,6 +325,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         x.optJSONArray("blamed")?.let { a -> for (k in 0 until a.length()) blamed += a.getString(k) }
         x.optJSONArray("forceReissue")?.let { a -> for (k in 0 until a.length()) forceReissue += a.getString(k) }
         members.load(x.optJSONObject("members"))
+        grants.load(x.optJSONObject("grants"))
         afterState()
     }
     private fun afterState() {
@@ -343,7 +348,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("dkHistory", ja(dkHistory.map { ja(it) })).put("members", members.dump())
             .put("pushKeys", ja(pushKeys.map { (u, k) -> ja(listOf(u, k)) }))
             .put("reissued", ja(reissued.map { (k, h) -> ja(listOf(k, h)) })).put("reissueEphs", ja(reissueEphs.map { (k, e) -> ja(listOf(k, e)) }))
-            .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted()))
+            .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted())).put("grants", grants.dump())
         if (!x.has("name")) x.put("name", "kotlin")
         return x.toString()
     }
@@ -378,7 +383,11 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         // §6.7.6 (core 14.20): check others' re-issued items before destroying anything, then re-issue what's left.
         checkReissues()
         reissueMissing()
+        // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
+        if (baseDk.isNotEmpty()) try { grants.take(net.query(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))))); save() } catch (_: Exception) {}
     }
+    /** Publish this device's grants (after a change to them: a new grant, a widen, an end). */
+    fun publishGrants(): List<JSONObject> = grants.publish(net).also { save() }
 
     /** This device's lock (§6.1), if it has one: what approves its lists. */
     @Volatile var lock: Lock? = null
