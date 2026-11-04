@@ -33,6 +33,36 @@ class Device(snapshot: String, private val net: RelayNet) {
     }
     /** The seated servers, as members. */
     fun servers() = view.members.filter { it.kind == "server" }
+    /** The x coordinate of `x·P` for a peer's x-only key (core §5.5), from one server's checked answer. */
+    fun ecdhX(peer: String): ByteArray {
+        var last = "no_server"
+        for (s in servers()) {
+            val co = Signer(s.key, s.shares)
+            val req = Ecdh.request(ctx, shares.keys.sorted(), co, listOf("02$peer"))
+            try { return unhex(Ecdh.finish(ctx, req, shares, co, net.send(sk, s.key, req))[0].substring(2)) } catch (e: KeykinException) { last = e.code }
+        }
+        refuse(last)
+    }
+    /** NIP-44 v2 as the account, with `peer`. */
+    fun nip44(peer: String, text: String, encrypt: Boolean): String {
+        val ck = hmac(utf8("nip44-v2"), ecdhX(peer))
+        return if (encrypt) Nip44.encrypt(text, ck) else Nip44.decrypt(text, ck)
+    }
+    /** NIP-04 as the account, with `peer`: AES-256-CBC under the shared x. */
+    fun nip04(peer: String, text: String, encrypt: Boolean): String {
+        val key = javax.crypto.spec.SecretKeySpec(ecdhX(peer), "AES")
+        val c = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
+        val b64 = java.util.Base64.getEncoder(); val d64 = java.util.Base64.getDecoder()
+        if (encrypt) {
+            val iv = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+            c.init(javax.crypto.Cipher.ENCRYPT_MODE, key, javax.crypto.spec.IvParameterSpec(iv))
+            return b64.encodeToString(c.doFinal(utf8(text))) + "?iv=" + b64.encodeToString(iv)
+        }
+        val parts = text.split("?iv="); if (parts.size != 2) refuse("malformed", "nip04 payload")
+        c.init(javax.crypto.Cipher.DECRYPT_MODE, key, javax.crypto.spec.IvParameterSpec(d64.decode(parts[1])))
+        return Json.utf8Strict(c.doFinal(d64.decode(parts[0])))
+    }
+
     /** Sign an event with the first server that gives a partial. */
     fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList()): JSONObject {
         var last = "no_server"

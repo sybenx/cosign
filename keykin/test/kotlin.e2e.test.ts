@@ -6,10 +6,12 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { RelayNet } from '../runtime/relay.ts';
 import { createByDkg } from '../sim/account.ts';
-import { verifyEvent } from '../src/event.ts';
+import { verifyEvent, newKey } from '../src/event.ts';
+import * as nip44 from 'nostr-tools/nip44';
+import * as nip04 from 'nostr-tools/nip04';
 
 const root = join(import.meta.dirname, '..');
 const java = '/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home';
@@ -36,11 +38,23 @@ test('a Kotlin device signs through three TS server processes over relays', { sk
   const snap = join(mkdtempSync(join(tmpdir(), 'kk-kt-')), 'device.json');
   writeFileSync(snap, acc.A.snapshot());
   net.kill(acc.A.kp.pub);
-  const r = spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=${snap} ${relays.join(',')} gm-from-kotlin`], { env: { ...process.env, JAVA_HOME: java }, encoding: 'utf8', timeout: 300_000 });
-  const line = r.stdout.trim().split('\n').pop()!;
-  const ev = JSON.parse(line);
-  assert.equal(ev.error, undefined, `Kotlin refused: ${line} ${r.stderr.slice(-500)}`);
+  // The Kotlin device signs, and encrypts and decrypts as the account (ECDH with a TS co-signer, §5.5).
+  const peer = newKey();
+  const fromPeer = nip44.v2.encrypt('from the peer', nip44.v2.utils.getConversationKey(peer.sk, acc.g));
+  const fromPeer04 = await nip04.encrypt(peer.sk, acc.g, 'nip04 from the peer');
+  const cmds = join(dirname(snap), 'cmds.json');
+  writeFileSync(cmds, JSON.stringify([{ cmd: 'sign', content: 'gm-from-kotlin' }, { cmd: 'nip44', peer: peer.pub, text: 'to the peer from kotlin' },
+    { cmd: 'nip44', peer: peer.pub, text: fromPeer, encrypt: false }, { cmd: 'nip04', peer: peer.pub, text: 'nip04 from kotlin' }, { cmd: 'nip04', peer: peer.pub, text: fromPeer04, encrypt: false }]));
+  const r = spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=${snap} ${relays.join(',')} ${cmds}`], { env: { ...process.env, JAVA_HOME: java }, encoding: 'utf8', timeout: 300_000 });
+  const out = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
+  assert.equal(out.length, 5, r.stdout + r.stderr.slice(-500));
+  const [ev, e44, d44, e04, d04] = out;
+  assert.equal(ev.error, undefined, `Kotlin refused: ${JSON.stringify(ev)}`);
   assert.equal(ev.pubkey, acc.g);
   assert.equal(ev.content, 'gm-from-kotlin');
   assert.ok(verifyEvent(ev), 'the TS side verifies what the Kotlin device signed with a TS server');
+  assert.equal(nip44.v2.decrypt(e44.result, nip44.v2.utils.getConversationKey(peer.sk, acc.g)), 'to the peer from kotlin');
+  assert.equal(d44.result, 'from the peer');
+  assert.equal(await nip04.decrypt(peer.sk, acc.g, e04.result), 'nip04 from kotlin');
+  assert.equal(d04.result, 'nip04 from the peer');
 });

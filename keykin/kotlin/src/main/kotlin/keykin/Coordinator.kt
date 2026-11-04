@@ -54,3 +54,30 @@ class OneCall(private val ctx: RoundContext, private val shares: Map<Long, BigIn
     /** Discard the nonces (another co-signer answered first, §5.1). */
     fun abandon() { mine = null }
 }
+
+/** The coordinator's side of a decryption (core §5.5): one co-signer's weighted answers, every proof
+ *  checked, summed with this device's own weighted parts into `x·Q`. The own part is share arithmetic in
+ *  the BigInteger reference curve: an Android build does it in libsecp256k1, as it does signing. */
+object Ecdh {
+    fun request(ctx: RoundContext, myIndices: List<Long>, co: Signer, points: List<String>): JSONObject =
+        JSONObject().put("v", 1).put("type", "ecdh").put("g", ctx.g).put("epoch", ctx.epochId).put("id", hex(ByteArray(16).also { SecureRandom().nextBytes(it) }))
+            .put("cls", "sign").put("state", ctx.state).put("points", JSONArray(points)).put("signers", JSONArray((myIndices + co.indices).sorted()))
+    fun finish(ctx: RoundContext, req: JSONObject, shares: Map<Long, BigInteger>, co: Signer, answer: JSONObject): List<String> {
+        if (answer.optString("type") != "ecdh_partial") refuse(answer.optString("code").ifEmpty { "no_answer" }, "member ${co.key}")
+        val points = req.getJSONArray("points").let { a -> (0 until a.length()).map { a.getString(it) } }
+        val signers = req.getJSONArray("signers").let { a -> (0 until a.length()).map { Json.long(a.get(it)) } }
+        val answers = answer.optJSONArray("answers") ?: refuse("bad_answer", "one answer list per point")
+        if (answers.length() != points.size) refuse("bad_answer", "one answer list per point")
+        return points.mapIndexed { q, Q ->
+            val perQ = answers.getJSONArray(q).let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+            val got = perQ.map { Json.long(it.get("i")) }
+            if (got.size != co.indices.size || got.toSet().size != got.size || !co.indices.all { it in got }) refuse("bad_answer", "indices must equal the member's indices exactly")
+            for (a in perQ) if (!verifyDleq(ctx.g, ctx.epochId, ctx.state, signers, ctx.C, Q, Json.long(a.get("i")), a.getString("Y"), a.getString("R1"), a.getString("R2"), a.getString("z")))
+                refuse("bad_proof", "index ${a.get("i")}")
+            var acc: Pt? = null
+            for (a in perQ) acc = add(acc, point(a.getString("Y")))
+            for ((i, s) in shares) acc = add(acc, mul(lagrange(BigInteger.valueOf(i), signers.map(BigInteger::valueOf)).multiply(s).mod(N), point(Q)))
+            comp(acc ?: refuse("bad_answer", "the identity"))
+        }
+    }
+}
