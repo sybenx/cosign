@@ -57,4 +57,24 @@ class GrantsTest {
         assertEquals("wallet", Grants.scopeForDecrypt(g, g, """[["privkey","x"]]"""))
         assertEquals("private-data", Grants.scopeForDecrypt(g, g, "a note"))
     }
+
+    @Test fun aNip46SiteGetsOnlyItsScopes() {
+        // The home's scope checks, without relays: a bound grant is a store entry; what it lacks is asked once.
+        val d = device()
+        val home = Nip46Home(d, RelayNet(emptyList()))
+        val link = home.mintBunker(listOf("ws://127.0.0.1:1"), "coracle")
+        val signer = java.net.URI(link).host; val secret = link.substringAfter("secret=")
+        val client = "cd".repeat(32)
+        fun call(method: String, vararg p: String) = home.answer(home.grants[signer]!!, client, method, p.toList())
+        assertEquals("ack", call("connect", signer, secret).getString("result"))
+        assertEquals(d.g, call("get_public_key").getString("result"))
+        assertTrue(call("nip44_encrypt", "ef".repeat(32), "hi").getString("error").startsWith("permission: dms"))
+        assertTrue(call("sign_event", JSONObject().put("kind", 3).put("content", "").put("tags", JSONArray()).toString()).getString("error").startsWith("permission: lists"))
+        assertEquals(setOf("dms", "lists"), home.asks[signer]?.toSet())
+        val e = d.grants.all().single { it.getString("door") == "nip46" }
+        assertEquals(setOf("post", "sign-in"), d.grants.scopesOf(e))
+        // Signed out elsewhere (here: ended in the store): the site is revoked.
+        d.grants.end(d.pub, e.getString("id"))
+        assertTrue(call("get_public_key").getString("error").startsWith("revoked:"))
+    }
 }

@@ -35,7 +35,7 @@ test('nak signs and encrypts as the account through a Kotlin NIP-46 home', { ski
   const dir = mkdtempSync(join(tmpdir(), 'kk-kn-'));
   writeFileSync(join(dir, 'device.json'), acc.A.snapshot());
   net.kill(acc.A.kp.pub);                                    // the TS device steps aside (one member, §4.6)
-  writeFileSync(join(dir, 'cmds.json'), JSON.stringify([{ cmd: 'bunker', seconds: 90 }]));
+  writeFileSync(join(dir, 'cmds.json'), JSON.stringify([{ cmd: 'bunker', seconds: 90, scopes: 'sign-in,post,dms' }]));
   spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'classes'], { env: { ...process.env, JAVA_HOME: java } });
   const kt = spawn(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=${join(dir, 'device.json')} ${url} ${join(dir, 'cmds.json')}`], { env: { ...process.env, JAVA_HOME: java }, stdio: ['ignore', 'pipe', 'inherit'] });
   procs.push(kt);

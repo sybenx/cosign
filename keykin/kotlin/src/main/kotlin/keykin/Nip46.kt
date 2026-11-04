@@ -12,10 +12,28 @@ import java.net.URLDecoder
 import java.security.SecureRandom
 
 class Nip46Home(private val d: Device, private val net: RelayNet, private val secp: Secp = Keykin.secp) {
-    class Grant(val signer: String, val signerSk: ByteArray, var client: String?, val secret: String?, var linkExpires: Long?, val relays: List<String>, var endedAt: Long? = null)
+    /** `entry`: the grant store's entry once a client is bound (Doors §1); `offered`: the scopes the link offered. */
+    class Grant(val signer: String, val signerSk: ByteArray, var client: String?, val secret: String?, var linkExpires: Long?, val relays: List<String>, var endedAt: Long? = null,
+                var entry: String? = null, val offered: List<String> = listOf("sign-in", "post"), val site: String = "")
     class Held(val id: String, val signer: String, val event: Unsigned, val at: Long)
     val grants = LinkedHashMap<String, Grant>()
     val held = LinkedHashMap<String, Held>()
+    /** Scopes sites asked for that the person hasn't answered, by signer (Doors §1: asked the first time). */
+    val asks = LinkedHashMap<String, MutableSet<String>>()
+    @Synchronized fun allowScope(signer: String, scope: String) {
+        val g = grants[signer] ?: refuse("unknown_grant"); d.grants.widen(g.entry ?: refuse("unknown_grant"), listOf(scope)); asks[signer]?.remove(scope)
+    }
+    private fun bind(g: Grant, client: String) {
+        g.client = client
+        g.entry = d.grants.make(client, g.site, "nip46", client, g.offered, g.relays, g.signer).getString("id")
+    }
+    private fun has(g: Grant, scope: String): Boolean {
+        val e = g.entry?.let { d.grants.own[it] }
+        if (e != null && scope in d.grants.scopesOf(e)) { d.grants.used(e.getString("id")); return true }
+        asks.getOrPut(g.signer) { LinkedHashSet() } += scope
+        return false
+    }
+    private fun ask(scope: String) = err("permission: $scope needs your OK on your phone")
     private val seen = LinkedHashMap<String, Long>()
     private var stop: (() -> Unit)? = null
     private val env = Envelope(secp)
@@ -29,20 +47,20 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         // Sites' requests a watching server kept for this device come here (review 11 M1).
         d.onSiteRequest = { e -> worker.execute { try { handle(e) } catch (_: Exception) {} } }
     }
-    fun mintBunker(relays: List<String>): String {
-        val sk = key(); val g = Grant(secp.pub(sk), sk, null, hex(rand(16)), net.now + 600, relays)
+    fun mintBunker(relays: List<String>, site: String = "", scopes: List<String> = listOf("sign-in", "post")): String {
+        val sk = key(); val g = Grant(secp.pub(sk), sk, null, hex(rand(16)), net.now + 600, relays, offered = scopes, site = site)
         grants[g.signer] = g; listen()
         return "bunker://${g.signer}?" + relays.joinToString("&") { "relay=" + java.net.URLEncoder.encode(it, "UTF-8") } + "&secret=${g.secret}"
     }
-    fun acceptNostrconnect(uri: String): Grant {
+    fun acceptNostrconnect(uri: String, scopes: List<String> = listOf("sign-in", "post")): Grant {
         val u = URI(uri); if (u.scheme != "nostrconnect") refuse("malformed", "not a nostrconnect code")
         val client = u.host ?: refuse("malformed", "client key")
         if (!Regex("^[0-9a-f]{64}$").matches(client)) refuse("malformed", "client key")
         val q = (u.rawQuery ?: "").split("&").filter { it.contains("=") }.map { it.split("=", limit = 2).let { kv -> kv[0] to URLDecoder.decode(kv[1], "UTF-8") } }
         val relays = q.filter { it.first == "relay" }.map { it.second }.distinct().take(8)
         if (relays.isEmpty() || relays.any { !Regex("^wss?://\\S+$").matches(it) || it.length > 256 }) refuse("malformed", "relays")
-        val sk = key(); val g = Grant(secp.pub(sk), sk, client, null, null, relays)
-        grants[g.signer] = g; listen()
+        val sk = key(); val g = Grant(secp.pub(sk), sk, null, null, null, relays, offered = scopes, site = q.firstOrNull { it.first == "name" }?.second ?: "")
+        bind(g, client); grants[g.signer] = g; listen()
         reply(g, client, JSONObject().put("id", hex(rand(8))).put("result", q.firstOrNull { it.first == "secret" }?.second ?: "ack"), false)
         return g
     }
@@ -73,24 +91,26 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
 
     private fun err(s: String) = JSONObject().put("error", s)
     private fun ok(s: String) = JSONObject().put("result", s)
-    private fun answer(g: Grant, from: String, method: String, params: List<String>): JSONObject {
+    internal fun answer(g: Grant, from: String, method: String, params: List<String>): JSONObject {
         if (g.endedAt != null) return err("revoked: this site was disconnected")
         if (method == "connect") {
             if (g.client == null) {
                 val exp = g.linkExpires
                 if (g.secret == null || params.getOrNull(1) != g.secret || exp == null || net.now > exp) return err("not-connected: this link has expired or is wrong; mint a new one")
-                g.client = from; g.linkExpires = null; return ok("ack")
+                bind(g, from); g.linkExpires = null; return ok("ack")
             }
             return if (from == g.client) ok("ack") else err("not-connected: this link belongs to another client; mint a new one")
         }
         if (from != g.client) return err("not-connected: connect first")
+        // A grant ended on another device (a tombstone, a removal) ends here too.
+        if (g.entry != null && d.grants.own[g.entry!!] == null) { end(g); return err("revoked: this site was disconnected") }
         return try {
             when (method) {
                 "ping" -> ok("pong")
-                "get_public_key" -> ok(d.g)
+                "get_public_key" -> if (has(g, "sign-in")) ok(d.g) else ask("sign-in")
                 "get_relays" -> ok(JSONObject().also { o -> g.relays.forEach { o.put(it, JSONObject().put("read", true).put("write", true)) } }.toString())
                 "switch_relays" -> ok(JSONArray(g.relays).toString())
-                "logout" -> { g.endedAt = net.now; ok("ack") }
+                "logout" -> { end(g); ok("ack") }
                 "sign_event" -> {
                     val x = Json.obj(params.getOrNull(0) ?: refuse("malformed"))
                     // A site's event (§9.5): an empty or absent pubkey is ours; any other is refused.
@@ -98,6 +118,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                     val kind = Json.long(x.opt("kind")).toInt()
                     val tags = x.optJSONArray("tags")?.let { t -> (0 until t.length()).map { k -> t.getJSONArray(k).let { a -> (0 until a.length()).map { a.getString(it) } } } } ?: emptyList()
                     siteGuard(kind, tags)
+                    val need = Grants.scopeForEvent(kind); if (!has(g, need)) return ask(need)
                     val content = x.optString("content")
                     val at = if (x.has("created_at")) Json.long(x.get("created_at")) else net.now
                     try { ok(d.sign(kind, content, tags, at).toString()) }
@@ -107,10 +128,20 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                         err("held: approve on your phone")
                     }
                 }
-                "nip44_encrypt" -> ok(d.nip44(params[0], params[1], true))
-                "nip44_decrypt" -> { mayDecrypt(params[0]); ok(d.nip44(params[0], params[1], false)) }
-                "nip04_encrypt" -> ok(d.nip04(params[0], params[1], true))
-                "nip04_decrypt" -> { mayDecrypt(params[0]); ok(d.nip04(params[0], params[1], false)) }
+                // Encrypting to the account's own key is `post`, to anyone else `dms`; decrypting with others is `dms`,
+                // to the account itself released only under the scope its plaintext needs (Doors §1).
+                "nip44_encrypt", "nip04_encrypt" -> {
+                    val need = if (params[0].lowercase() == d.g) "post" else "dms"; if (!has(g, need)) return ask(need)
+                    ok(if (method == "nip44_encrypt") d.nip44(params[0], params[1], true) else d.nip04(params[0], params[1], true))
+                }
+                "nip44_decrypt", "nip04_decrypt" -> {
+                    if (!Regex("^[0-9a-fA-F]{64}$").matches(params[0])) refuse("declined", "a peer key is 32 bytes of hex")
+                    if (params[0].lowercase() != d.g && !has(g, "dms")) return ask("dms")
+                    val plain = if (method == "nip44_decrypt") d.nip44(params[0].lowercase(), params[1], false) else d.nip04(params[0].lowercase(), params[1], false)
+                    val need = Grants.scopeForDecrypt(d.g, params[0].lowercase(), plain)
+                    if (need != "dms" && !has(g, need)) return ask(need)
+                    ok(plain)
+                }
                 else -> err("unsupported: $method")
             }
         } catch (e: KeykinException) {
@@ -122,7 +153,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         }
     }
     private fun siteGuard(kind: Int, tags: List<List<String>>) = Doors.siteGuard(d, kind, tags)
-    private fun mayDecrypt(peer: String) = Doors.mayDecrypt(d, peer)
+    /** End a grant here: its key answers `revoked:` from now on, and its entry ends in the grant store. */
+    private fun end(g: Grant) { g.endedAt = net.now; g.entry?.let { d.grants.end(d.pub, it) }; asks.remove(g.signer); held.entries.removeIf { it.value.signer == g.signer } }
 
     private fun reply(g: Grant, to: String, body: JSONObject, nip04: Boolean) {
         val text = body.toString()
