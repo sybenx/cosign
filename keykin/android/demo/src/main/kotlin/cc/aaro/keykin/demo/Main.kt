@@ -64,6 +64,7 @@ class Main : Activity() {
         try {
             say(when (c.getString("cmd")) {
                 "open" -> JSONObject().put("ready", true).put("stored", store.load() != null)
+                "echo" -> JSONObject().put("code", c.optString("code")).put("relays", c.optString("relays"))
                 "join" -> {
                     val d = Device.join(c.getString("code"), netFor(c), { check -> say(JSONObject().put("check", check)) })
                     d.persist = { store.save(it) }; store.save(d.snapshot()); device = d

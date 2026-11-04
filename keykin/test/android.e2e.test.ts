@@ -46,7 +46,10 @@ function logcat() {
   createInterface({ input: p.stdout! }).on('line', (l) => { if (!l.startsWith('{')) return; const x = JSON.parse(l); const w = waiting.shift(); if (w) w(x); else lines.push(x); });
   return () => new Promise<any>((res, rej) => { const x = lines.shift(); if (x) return res(x); waiting.push(res); setTimeout(() => rej(new Error('no line from the app')), 180_000); });
 }
-const run = (cmd: string, extra: string[] = []) => sh('shell', 'am', 'start', '-n', 'cc.aaro.keykin.demo/.Main', '--es', 'cmd', cmd, '--es', 'relays', appRelays, ...extra);
+// `adb shell` hands the line to the device's shell: every value is quoted (an invite code has `&` in it).
+const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
+const run = (cmd: string, extra: string[] = []) => sh('shell', 'am', 'start', '-n', 'cc.aaro.keykin.demo/.Main', '--es', 'cmd', cmd, '--es', 'relays', q(appRelays),
+  ...extra.map((x) => (x.startsWith('--') ? x : q(x))));
 
 test('the keykin-android demo joins by invite code on an emulator, checked both ways, and signs', { skip: (!serial && 'set KEYKIN_ANDROID_SERIAL to an emulator this test may use') || (!haveNak && 'nak not installed') || (!existsSync(apk) && 'build the demo: (cd android && ./gradlew :demo:assembleDebug)'), timeout: 600_000 }, async () => {
   for (const u of relays) procs.push(spawn('nak', ['serve', '--hostname', '127.0.0.1', '--port', u.split(':').pop()!], { stdio: 'ignore' }));
