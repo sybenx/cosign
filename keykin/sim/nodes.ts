@@ -464,11 +464,11 @@ export class DeviceNode implements Node {
   /** §8.1: one gateway address per server and wake class, pinned to that server's VAPID key, each with
    *  its own RFC 8291 keys, so the addresses can't be linked across servers or accounts. */
   pushKeys = new Map<string, { sk: Uint8Array; auth: Uint8Array; vapid: string; cls: string }>();
-  async registerPush(): Promise<number> {
+  async registerPush(o: { gateway?: string } = {}): Promise<number> {
     let n = 0;
     for (const s of this.servers()) {
       const addresses = (['sign', 'ask', 'notice'] as const).map((cls) => {
-        const sk = p256.utils.randomSecretKey(), auth = randomBytes(16), url = `https://gw.test/${bytesToHex(randomBytes(16))}`;
+        const sk = p256.utils.randomSecretKey(), auth = randomBytes(16), url = `${o.gateway ?? 'https://gw.test'}/${bytesToHex(randomBytes(16))}`;
         this.pushKeys.set(url, { sk, auth, vapid: s.vapid!, cls });
         return { cls, url, p256dh: b64u(p256.getPublicKey(sk, false)), auth: b64u(auth) };
       });

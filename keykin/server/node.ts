@@ -54,7 +54,7 @@ export class ServerNode implements Node {
   enrolSecret = randomBytes(32);
   /** What this server's enrol replies say (Server profile §4). The simulation's defaults; the runtime
    *  sets the month's secret id and its own endpoints. */
-  profile = { secretId: '2026-11', https: '', relays: ['wss://r.test'], operator: '' };
+  profile = { secretId: '2026-11', https: '', relays: ['wss://r.test'], operator: '', allowHttpPush: false };
   enrollR: any = null;
   vapidSk: Uint8Array | null = null;
   enroll(g: string, now: number) {
@@ -156,6 +156,17 @@ export class ServerNode implements Node {
       n.co.restore(x.co.co);
     }
     return n;
+  }
+
+  /** The waits running for the account (core §8.2's `inbox_get`): not cancelled or withdrawn, and not
+   *  yet ended. */
+  runningWaits() {
+    const co = this.co!, now = this.now;
+    return [
+      ...[...co.recoveries.values()].filter((r) => !r.cancelled && !r.withdrawn && now < r.end).map((r) => ({ kind: 'recovery', wait: r.wait, end: r.end })),
+      ...[...co.holds.values()].filter((h) => !h.cancelled && now < h.end).map((h) => ({ kind: 'hold', wait: h.wait, end: h.end })),
+      ...[...co.heirWaits].filter(([, w]) => !w.cancelled && now < w.end).map(([wait, w]) => ({ kind: 'heir', wait, end: w.end })),
+    ];
   }
 
   /** Account admin §1.1: creation by DKG. A throwaway DKG key (signed by the host key, destroyed when
@@ -454,7 +465,8 @@ export class ServerNode implements Node {
         this.inbox.deliver({ from, to: body.to, wrap: body.wrap, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey });
         return { type: 'ack' };
       case 'inbox_get': if (m.removed.has(from)) refuse('removed');
-        return { type: 'inbox', items: this.inbox.get(from, this.now), ...(m.devices.has(from) ? { stops: [...this.co.stops.keys()] } : {}) };
+        // §8.2: with every recovery, hold or heir wait running for the account, each with its end.
+        return { type: 'inbox', items: this.inbox.get(from, this.now), waits: this.runningWaits(), ...(m.devices.has(from) ? { stops: [...this.co.stops.keys()] } : {}) };
       case 'inbox_ack': this.inbox.ack(from, body.iids); return { type: 'ack' };
       case 'repair_start': return this.repairStart(from, body);
       case 'repair_finish': return this.co.repairFinish(from, body);
@@ -504,7 +516,7 @@ export class ServerNode implements Node {
           if (!mem || this.m.removed.has(from)) refuse('not_member');
           if (mem!.kind !== 'device') refuse('helper_refused');
           if (body.type === 'push_unregister') this.pushReg.unregister(from);
-          else this.pushReg.register(from, sentAt, body.addresses);
+          else this.pushReg.register(from, sentAt, body.addresses, { allowHttp: this.profile.allowHttpPush });
           return { type: 'ack', re: body.id };
         }
         const a = this.co.handle(from, body, sentAt);

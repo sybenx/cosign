@@ -91,3 +91,17 @@ test('§8.1–§8.3 in the simulation: a device registers with every server; a h
   const stranger = newKey();
   assert.equal((await acc.bus.send(stranger, acc.servers[0].kp.pub, msg('push_register', acc.g, acc.epochId, 'member', { addresses: [] }))).code, 'not_member');
 });
+
+test('§8.2: inbox_get lists every running wait with its end; a cancelled or ended one is gone', async () => {
+  const { create } = await import('../sim/account.ts');
+  const { msg } = await import('../sim/nodes.ts');
+  const { wireEvent } = await import('../src/event.ts');
+  const acc = await create();
+  const S = acc.servers[0];
+  const vanish = wireEvent({ pubkey: acc.g, created_at: acc.bus.now, kind: 62, tags: [], content: '' });
+  const n = await acc.bus.send(acc.A.kp, S.kp.pub, { ...msg('hold', acc.g, acc.epochId, 'member'), event: vanish });
+  const inbox = await acc.bus.send(acc.A.kp, S.kp.pub, msg('inbox_get', acc.g, acc.epochId, 'ask'));
+  assert.deepEqual(inbox.waits, [{ kind: 'hold', wait: n.wait, end: n.end }]);
+  acc.bus.advance(S.co!.W + 1);
+  assert.deepEqual((await acc.bus.send(acc.A.kp, S.kp.pub, msg('inbox_get', acc.g, acc.epochId, 'ask'))).waits, [], 'ended');
+});

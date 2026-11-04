@@ -11,6 +11,7 @@
 //   KEYKIN_PORT        HTTP port (default 8711); KEYKIN_BIND (default 127.0.0.1)
 //   KEYKIN_PUSH_HOSTS  comma-separated push gateway hosts
 //   KEYKIN_TRUST_PROXY 1 to take the client IP from X-Forwarded-For
+//   KEYKIN_PUSH_HTTP   1 to accept plain-http push addresses: a local test gateway only, never in a deployment
 
 import { RelayNet } from '../runtime/relay.ts';
 import { FileStore, KeyRing } from '../runtime/store.ts';
@@ -29,7 +30,7 @@ const net = new RelayNet({ relays, log: env.KEYKIN_DEBUG ? (s) => console.log(s)
 await net.connect();
 let host: Host;
 net.pushes = new PushSender({ allow: list(env.KEYKIN_PUSH_HOSTS), onGone: (url) => { for (const n of host.nodes.values()) for (const [m, a] of n.pushReg.dump()) if (a.addrs.some((x) => x.url === url)) n.pushReg.dead(m, url); } });
-host = new Host({ net, hosting: net, store, profile: { https: env.KEYKIN_HTTPS ?? '', relays, operator: env.KEYKIN_OPERATOR ?? '', name: env.KEYKIN_NAME ?? 'keykin' } }).start();
+host = new Host({ net, hosting: net, store, profile: { https: env.KEYKIN_HTTPS ?? '', relays, operator: env.KEYKIN_OPERATOR ?? '', name: env.KEYKIN_NAME ?? 'keykin', allowHttpPush: env.KEYKIN_PUSH_HTTP === '1' } }).start();
 const http = serveHttp({ net, limits: host.limits, port: Number(env.KEYKIN_PORT ?? 8711), bind: env.KEYKIN_BIND ?? '127.0.0.1', trustProxy: env.KEYKIN_TRUST_PROXY === '1',
   status: () => ({ host: host.key.pub, seats: host.nodes.size }) });
 console.log(JSON.stringify({ started: true, host: host.key.pub, seats: host.nodes.size, relays, port: Number(env.KEYKIN_PORT ?? 8711) }));

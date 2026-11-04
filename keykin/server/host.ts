@@ -13,7 +13,8 @@ import type { Node, Transport } from '../runtime/net.ts';
 
 export interface Store { save(k: string, t: string): void; load(k: string): string | null; list(): string[]; destroy(k: string): void }
 /** What a host announces in its enrol replies. */
-export interface HostProfile { https: string; relays: string[]; operator: string; name: string }
+/** `allowHttpPush`: accept plain-http push addresses (a local test gateway only). */
+export interface HostProfile { https: string; relays: string[]; operator: string; name: string; allowHttpPush?: boolean }
 /** Where hosted nodes become reachable: RelayNet's `add`, or the Bus's. */
 export interface Hosting { add(node: Node): unknown; kill?(pub: string): void }
 
@@ -81,7 +82,7 @@ export class Host {
     const s = this.secret();
     const n = new ServerNode(this.net, this.profile.name);
     n.host = this.key; n.enrolSecret = new Uint8Array(s.secret);
-    n.profile = { secretId: s.id, https: this.profile.https, relays: this.profile.relays, operator: this.profile.operator || this.key.pub };
+    n.profile = { secretId: s.id, https: this.profile.https, relays: this.profile.relays, operator: this.profile.operator || this.key.pub, allowHttpPush: !!this.profile.allowHttpPush };
     // A node re-keys when it enrols: host it under its member key from then on.
     const self = this;
     n.bus = new Proxy(this.net, { get(t, p) { return p === 'rekey' ? (_old: string, node: ServerNode) => { self.#host(node); self.save(node); } : (t as any)[p]; } });
@@ -109,7 +110,7 @@ export class Host {
   start() {
     for (const k of this.store.list().filter((x) => x.startsWith('seat-'))) {
       const n = ServerNode.restore(this.net, this.store.load(k)!);
-      n.host = this.key;
+      n.host = this.key; n.profile.allowHttpPush = !!this.profile.allowHttpPush;
       this.#host(n);
     }
     Object.defineProperty(this.front, 'kp', { value: this.key });

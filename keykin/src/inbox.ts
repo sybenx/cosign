@@ -77,7 +77,7 @@ export interface PushAddress { cls: 'sign' | 'ask' | 'notice'; url: string; p256
 
 /** §8.1's `addresses`, checked: one per wake class, an https URL, a 65-byte P-256 point and a 16-byte auth
  *  secret, both base64url. */
-export function parseAddresses(v: unknown): PushAddress[] {
+export function parseAddresses(v: unknown, o: { allowHttp?: boolean } = {}): PushAddress[] {
   if (!Array.isArray(v) || v.length > 3) refuse('malformed', 'addresses');
   const seen = new Set<string>();
   return (v as unknown[]).map((a: any) => {
@@ -85,7 +85,7 @@ export function parseAddresses(v: unknown): PushAddress[] {
     seen.add(a.cls);
     let url: URL;
     try { url = new URL(a.url); } catch { return refuse('malformed', 'url'); }
-    if (url.protocol !== 'https:' || typeof a.url !== 'string') refuse('malformed', 'an https url');
+    if (!(url.protocol === 'https:' || (o.allowHttp && url.protocol === 'http:')) || typeof a.url !== 'string') refuse('malformed', 'an https url');
     const k = fromB64u(a.p256dh), auth = fromB64u(a.auth);
     if (k.length !== 65 || k[0] !== 4 || auth.length !== 16) refuse('malformed', 'p256dh and auth');
     // A point on the curve, or every later push to it would fail (review 9 M2).
@@ -98,8 +98,8 @@ export function parseAddresses(v: unknown): PushAddress[] {
  *  never copied to another server. */
 export class PushRegistry {
   #by = new Map<string, { at: number; addrs: PushAddress[] }>();
-  register(member: string, at: number, addrs: unknown) {
-    const parsed = parseAddresses(addrs);
+  register(member: string, at: number, addrs: unknown, o: { allowHttp?: boolean } = {}) {
+    const parsed = parseAddresses(addrs, o);
     const cur = this.#by.get(member);
     if (cur && cur.at > at) return false;
     this.#by.set(member, { at, addrs: parsed }); return true;
