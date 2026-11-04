@@ -1261,6 +1261,13 @@ There are no aborts, no busy state, no leases and no clock that matters.
   next open: "Your lock stopped working. Scan your paper or use a second device to restore it." A lone
   device without a lock gets a quiet suggestion, never a push, to add a second device (a browser
   extension on a laptop counts).
+- When, over 7 days, a server left at least 3 `sign` requests on 2 different days unanswered for their
+  whole lifetime (no valid partial, even late, and no `error`), while another server co-signed each of
+  them: one quiet line on Backup, "S3 hasn't helped sign this week", with a "Move its piece" button (F4).
+  An `error` answer (a burst, a hold, `stale`) never counts, so a site can't bring the line by making a
+  server refuse. No card, no dot; the person can hide it for a week, and it goes away once the server
+  gives a valid partial on two days. It may show for a server that is only slow, or one a relay cuts off;
+  it is information, never a trigger.
 
 #### 6.7.10 Who may ask, and what co-signers also refuse
 
@@ -1660,6 +1667,12 @@ before `"9"` in JCS, unlike a JavaScript object's own key order).
   addresses, not power.
 - **One Face ID per dead server**, and no automatic replacement: a standing order would let a thief plus
   one week-dead server seat a server.
+- **A server that answers but won't co-sign isn't detected automatically.** Unless it answers `deleted`
+  or "unknown account" or gives a confirmed shutdown notice (§6.7.7), it never counts as dead for F1, so
+  it keeps its seat until the person moves it (F4), prompted only by §6.7.9's quiet line; one that sends
+  refusals, or refuses only recovery, helper or Upkeep rounds, brings no line at all. Signing still works
+  through the other servers. While it sits in a seat, a paper recovery relies on the other two servers,
+  and one more dead server ends paper-only recovery.
 - **Two servers dead and every device lost before replacement** ends paper-only recovery.
 - **A lone device without a working lock** (a passcode-only phone, a new fingerprint enrolled, an
   extension, a Mac without Touch ID) needs the paper in hand to add a device, make a paper, re-lock or
@@ -1802,10 +1815,6 @@ Each is a short document of its own, and none may weaken anything above.
 - **Upkeep** (§6.7) needs its own red-team round and vectors (`vectors/vectors.md`, case 12).
 - Repair with mixed-weight helpers relies on `frost-core`'s `repairable` module; its behaviour with a
   helper holding 3 indices must be pinned by vectors.
-- **A server that answers but never co-signs** (implementation item 48 a). It is not "dead" for F1, so
-  only F4 by hand moves it. An automatic test from ordinary signing misfires on healthy servers (routing
-  sends a server mostly the requests others were slow on, and per-server burst counters differ), so it
-  waits for a decision: a daily probe event, or no automatic trigger.
 
 ## 14. Test vectors
 
@@ -2148,5 +2157,6 @@ draft 8).
 ## Changes in draft 14.18
 
 From the reference implementation's item 48 (b): a kind 5's `a` value hits the signpost when it contains
-both `g` and a signpost `d`, whatever its kind part or splitting (§6.7.5). Item 48 (a), a server that
-answers but never co-signs, is open (§13).
+both `g` and a signpost `d`, whatever its kind part or splitting (§6.7.5). Item 48 (a), by the hub's Q10
+answer (b): a server that answers but won't co-sign is not detected automatically. It is stated as a limit
+in §10, and §6.7.9 adds a quiet Backup line with a button to move it by hand (F4).

@@ -326,10 +326,12 @@ fields extend core's `notice` and `error` (core §11.1 keeps unknown fields).
   applies to servers too: shares, seat keys and enrol secrets sit only as ciphertext in anything with
   history (snapshots, replicas), with the key kept outside it, so deleting the key destroys them. If its endpoints
   change, it sends `notice {endpoints}` (§4). An operator that can't move this way closes instead.
-- **Going quiet, or refusing.** A server that has been unreachable for 7 days, or that answers but keeps
-  refusing to co-sign, can be replaced by the person through F1/F4 (core §6.7.6).
-  - The app tells the person once, calmly ("Your server at home has been quiet for a week"), offers to
-    move its piece, and keeps a quiet dot until the seat has moved.
+- **Going quiet, or refusing.** A server that has been unreachable for 7 days can be replaced through F1
+  (core §6.7.6); one that answers but keeps refusing to co-sign only by hand, through F4 (core §6.7.9's
+  quiet line, §10).
+  - For a quiet server the app tells the person once, calmly ("Your server at home has been quiet for a
+    week"), offers to move its piece, and keeps a quiet dot until the seat has moved. A refusing server
+    gets only the quiet line: no card, no dot.
   - The move is one approval (a lock, two devices, or the paper).
   - The person may also choose a server outside the list, with the same approval.
   - The app never swaps a server without the person.
