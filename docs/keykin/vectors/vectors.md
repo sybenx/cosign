@@ -16,7 +16,7 @@ For [Keykin Core](../core.md) draft 14.19, §14 (computed vectors generated for 
   differential run (implementation commit 4e0bf96). It is copied from there, not generated here.
 - **Member-key signatures for apps** in [`membersig.json`](membersig.json) (core §5.9): valid domain,
   message, digest and signature cases, and domains a device must refuse. From the implementation's
-  deaab29.
+  630f4ac (refused leading-zero versions and an over-long message included).
 
 Done (Phase 1) when the TypeScript and Kotlin implementations both pass every vector, and a fuzzed
 parser has run against every message type in core §9.4.

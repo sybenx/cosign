@@ -24,6 +24,14 @@
  ],
  "refused_domains": [
   {
+   "domain": "x/01",
+   "why": "a domain is lowercase segments ending in a version, like nostr-vault/ksig/1"
+  },
+  {
+   "domain": "nostr-vault/ksig/01",
+   "why": "a domain is lowercase segments ending in a version, like nostr-vault/ksig/1"
+  },
+  {
    "domain": "keykin-pair/1",
    "why": "keykin and cosign domains are Keykin Core's own"
   },
@@ -59,5 +67,12 @@
    "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1",
    "why": "a domain is a short string"
   }
- ]
+ ],
+ "refused_messages": [
+  {
+   "domain": "nostr-vault/ksig/1",
+   "length": 65537
+  }
+ ],
+ "accepted_message_length": 65536
 }
