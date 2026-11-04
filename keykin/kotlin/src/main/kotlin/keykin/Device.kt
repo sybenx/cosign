@@ -72,6 +72,10 @@ class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, val i
         if (ids.isNotEmpty()) refuse("unsupported", "a state after a redeal")
         return Codes.stateHash(ids) to hkdf32(unhex(baseDk), utf8("keykin-dk/1"))
     }
+    /** The account's current device member keys. */
+    fun memberKeys(): List<String> = view.devices.filter { it !in view.removed }.sorted()
+    /** Sign `message` under a registered domain with this device's member key (MemberSig). */
+    fun signAsMember(domain: String, message: ByteArray): Pair<String, String> = MemberSig.sign(Secp.Reference, sk, domain, message) to pub
     /** The seated servers, as members. */
     fun servers() = view.members.filter { it.kind == "server" }
     /** The x coordinate of `x·P` for a peer's x-only key (core §5.5), from one server's checked answer. */
