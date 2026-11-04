@@ -14,7 +14,8 @@ import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
 import { finalizeEvent, verifyEvent as ntVerify } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes, randomBytes, strictJson, KeykinError } from '../src/bytes.ts';
-import { newKey, pubOf, type NostrEvent } from '../src/event.ts';
+import { newKey, pubOf, siteEvent, type NostrEvent } from '../src/event.ts';
+import { what } from '../src/codes.ts';
 import { msg } from '../src/msg.ts';
 import { unwrap } from '../src/transport.ts';
 import type { DeviceNode } from './node.ts';
@@ -134,8 +135,15 @@ export class Nip46Home {
         case 'sign_event': {
           const ev = strictJson(String(params[0]));
           siteGuard({ kind: ev?.kind, tags: Array.isArray(ev?.tags) ? ev.tags : [] }, this.d.g, this.#backupKeys());
-          const signed = await this.d.sign(ev);
-          return { result: JSON.stringify(signed) };
+          try { return { result: JSON.stringify(await this.d.sign(ev)) }; }
+          catch (err) {
+            // Held (Doors §3.3, Device policy §4, review 11 L4): kept on this home for the person, who
+            // approves it with the lock or lets a hold's wait pass; the result is published, not returned.
+            if ((err as KeykinError).code !== 'needs_approval') throw err;
+            const h = { id: bytesToHex(randomBytes(8)), signer: g.signer, event: siteEvent({ ...ev, created_at: ev?.created_at ?? now }, this.d.g), at: now, wait: null as string | null };
+            this.held.set(h.id, h); this.d.persist();
+            return { error: 'held: approve on your phone' };
+          }
         }
         case 'nip44_encrypt': return { result: await this.d.nip44(String(params[0]), String(params[1]), true) };
         case 'nip44_decrypt': siteMayDecrypt(String(params[0]), this.d.g); return { result: await this.d.nip44(String(params[0]), String(params[1]), false) };
@@ -160,6 +168,45 @@ export class Nip46Home {
   }
 
   // --- the wake path ---------------------------------------------------------------------------
+  // --- held events (Doors §3.3, Device policy §4) ----------------------------------------------
+  /** Site events waiting for the person: shown on the home, approved with the lock or by a hold. */
+  held = new Map<string, { id: string; signer: string; event: any; at: number; wait: string | null }>();
+  /** Approve with the lock: sign it unchanged, and publish it to the grant's relays and the account's. */
+  async approveHeld(id: string): Promise<NostrEvent> {
+    const h = this.held.get(id); if (!h) throw new KeykinError('unknown_held');
+    const { id: _id, ...ev } = h.event;
+    const evId = h.event.id;
+    if (!this.d.lock) throw new KeykinError('needs_approval', 'this device has no lock: start a hold instead');
+    const signed = await this.d.sign(ev, { approval: { lock: { member: this.d.kp.pub, assertion: this.d.lock.assert(this.d.g, what.sign(evId)) } } as any });
+    await this.#publishHeld(h, signed);
+    return signed;
+  }
+  /** Lockless: start a hold at every server (core §5.8); `releaseHeld` once its wait has passed. */
+  async holdHeld(id: string): Promise<string> {
+    const h = this.held.get(id); if (!h) throw new KeykinError('unknown_held');
+    let wait: string | null = null;
+    for (const s of this.d.servers()) {
+      const a = await this.d.bus.send(this.d.kp, s.key, msg('hold', this.d.g, this.d.epochId, 'member', { event: h.event }));
+      if (a?.kind === 'hold') wait = a.wait;
+    }
+    if (!wait) throw new KeykinError('no_server', 'no server started the hold');
+    h.wait = wait; this.d.persist();
+    return wait;
+  }
+  async releaseHeld(id: string): Promise<NostrEvent> {
+    const h = this.held.get(id); if (!h?.wait) throw new KeykinError('unknown_held');
+    const { id: _id, ...ev } = h.event;
+    const signed = await this.d.sign(ev, { hold: h.wait });
+    await this.#publishHeld(h, signed);
+    return signed;
+  }
+  declineHeld(id: string) { this.held.delete(id); this.d.persist(); }
+  async #publishHeld(h: { id: string; signer: string }, signed: NostrEvent) {
+    const g = this.grants.get(h.signer);
+    await this.#events.publishEvent(signed, [...new Set([...(g?.relays ?? []), ...(this.d.rec?.relays ?? [])])]);
+    this.held.delete(h.id); this.d.persist();
+  }
+
   /** A watch_set that didn't reach its server; sent again on the next wake. */
   watchPending = false;
   /** Ask `server` (a seated server's member key) to watch this home's grants; or re-send the set. */
@@ -192,7 +239,10 @@ export class Nip46Home {
   /** Every backup key the account has had: the signpost names come from them. */
   #backupKeys() { const m = this.d.m!; return [...new Set([m.backupKey, ...m.accepted.filter((p) => p.type === 'paper').map((p) => (p.c.change as any).paper.key)].filter(Boolean) as string[])]; }
 
-  dump() { return { grants: [...this.grants.values()], watching: this.watching, seen: [...this.#seen] }; }
-  load(x: any) { this.grants = new Map((x?.grants ?? []).map((g: Grant) => [g.signer, g])); this.watching = x?.watching ?? null; this.#seen = new Map(x?.seen ?? []); }
+  dump() { return { grants: [...this.grants.values()], watching: this.watching, seen: [...this.#seen], held: [...this.held.values()] }; }
+  load(x: any) {
+    this.grants = new Map((x?.grants ?? []).map((g: Grant) => [g.signer, g])); this.watching = x?.watching ?? null; this.#seen = new Map(x?.seen ?? []);
+    this.held = new Map((x?.held ?? []).map((h: any) => [h.id, h]));
+  }
 }
 export { pubOf };

@@ -116,3 +116,43 @@ test('watching: only from a current device about its own grants; a removed home 
   await c.call(g.signer, 'ping');
   assert.ok(!S.watches.has(B.kp.pub), 'dropped once the home is removed');
 });
+
+test('review 11 L4: a held event waits on its home; the lock approves it, or a hold passes; the home publishes it', async () => {
+  const acc = await create();
+  const bus = acc.bus as Bus;
+  const { signer, secret } = bunker(acc.A.nip46.mintBunker(['ws://relay.test']));
+  const c = client(bus);
+  await c.call(signer, 'connect', [signer, secret]);
+  const vanish = { kind: 62, content: '', tags: [['relay', 'ALL_RELAYS']], created_at: bus.now };
+  assert.match((await c.call(signer, 'sign_event', [JSON.stringify(vanish)])).error, /^held:/);
+  const [h] = [...acc.A.nip46.held.values()];
+  assert.ok(h && h.event.kind === 62);
+  const published = new Promise<any>((res) => { const w = bus.events.watch({ kinds: [62] }, (e) => { w.close(); res(e); }); });
+  const signed = await acc.A.nip46.approveHeld(h.id);
+  assert.ok(verifyEvent(signed) && signed.pubkey === acc.g);
+  assert.equal((await published).id, signed.id, 'the home published it itself');
+  assert.equal(acc.A.nip46.held.size, 0);
+  // Declined: gone, nothing signed. And a held event survives a restart.
+  await c.call(signer, 'sign_event', [JSON.stringify({ ...vanish, created_at: bus.now + 1 })]);
+  const [h2] = [...acc.A.nip46.held.values()];
+  assert.equal(DeviceNode.restore(bus, acc.A.snapshot()).nip46.held.size, 1);
+  acc.A.nip46.declineHeld(h2.id);
+  assert.equal(acc.A.nip46.held.size, 0);
+});
+
+test('review 11 L4, lockless: a hold at every server, and once its wait passes the event is signed unchanged', async () => {
+  const acc = await create({ lockless: true });
+  const bus = acc.bus as Bus;
+  const { signer, secret } = bunker(acc.A.nip46.mintBunker(['ws://relay.test']));
+  const c = client(bus);
+  await c.call(signer, 'connect', [signer, secret]);
+  await c.call(signer, 'sign_event', [JSON.stringify({ kind: 62, content: '', tags: [], created_at: bus.now })]);
+  const [h] = [...acc.A.nip46.held.values()];
+  await assert.rejects(acc.A.nip46.approveHeld(h.id), /needs_approval/);
+  await acc.A.nip46.holdHeld(h.id);
+  await assert.rejects(acc.A.nip46.releaseHeld(h.id), /hold_not_passed|needs_approval|no_answer/);
+  bus.advance(acc.servers[0].co!.W + 1);
+  const signed = await acc.A.nip46.releaseHeld(h.id);
+  assert.equal(signed.id, h.event.id, 'unchanged: the hold was on its event id');
+  assert.ok(verifyEvent(signed));
+});
