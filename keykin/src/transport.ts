@@ -4,7 +4,8 @@
 
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import * as nip44 from 'nostr-tools/nip44';
-import { bytesToHex, randomBytes, refuse, utf8ToBytes, strictJson, utf8Strict, fromB64 } from './bytes.ts';
+import { bytesToHex, randomBytes, refuse, utf8ToBytes, strictJson, utf8Strict, fromB64, concatBytes } from './bytes.ts';
+import { base64 } from '@scure/base';
 import { nip44Open } from './nip44.ts';
 import { eventId, verifyEvent, eventShape, type NostrEvent } from './event.ts';
 import { KIND_RUMOR } from './types.ts';
@@ -59,7 +60,7 @@ export function split(body: any): any[] {
   if (bytes.length > MAX_MESSAGE) refuse('too_large');
   if (bytes.length <= PART_BYTES) return [body];
   const of = bytesToHex(randomBytes(16)), m = Math.ceil(bytes.length / PART_BYTES);
-  return Array.from({ length: m }, (_, k) => ({ v: 1, type: 'part', of, k, m, cls: body.cls, data: Buffer.from(bytes.slice(k * PART_BYTES, (k + 1) * PART_BYTES)).toString('base64') }));
+  return Array.from({ length: m }, (_, k) => ({ v: 1, type: 'part', of, k, m, cls: body.cls, data: base64.encode(bytes.slice(k * PART_BYTES, (k + 1) * PART_BYTES)) }));
 }
 
 /** Reassembles parts by `(sender, of)`; refuses over 512 KB; drops parts whose message expired. */
@@ -80,7 +81,7 @@ export class Reassembler {
     this.#open.set(key, p);
     if (p.got.some((x) => x === undefined)) return null;
     this.#open.delete(key);
-    const all = Buffer.concat(p.got as Uint8Array[]);
+    const all = concatBytes(...(p.got as Uint8Array[]));
     return strictJson(utf8Strict(all));
   }
   prune(at: number) { for (const [k, p] of this.#open) if (at - p.first > LIFETIME_S[p.cls] + 30) this.#open.delete(k); }

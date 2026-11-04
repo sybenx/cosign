@@ -4,7 +4,7 @@
 
 import { bytesToHex, refuse, jcs } from './bytes.ts';
 import { what, listHash, detachedDigest, selfDigest, waitedDigest, recoveryWaitId } from './codes.ts';
-import { checkAssertion, type LockPub, type SoftLock } from './lock.ts';
+import { checkAssertion, type LockPub, type Lock } from './lock.ts';
 import { schnorrSign, schnorrVerify, type KeyPair } from './event.ts';
 import { changeType, type Approval, type Change, type Waited } from './types.ts';
 
@@ -79,7 +79,7 @@ const pairBody = (w: Uint8Array, r: string) => ({ what: bytesToHex(w), r });
 
 // --- builders (devices) ----------------------------------------------------------------
 
-export const approveLock = (g: string, epochId: string, list: Change[], expiry: number, member: string, lock: SoftLock): Approval =>
+export const approveLock = (g: string, epochId: string, list: Change[], expiry: number, member: string, lock: Lock): Approval =>
   ({ expiry, lock: { member, assertion: lock.assert(g, changeWhat(g, epochId, list, expiry)) } });
 
 export function approvePair(g: string, epochId: string, list: Change[], expiry: number, first: KeyPair, second: KeyPair, r: string): Approval {

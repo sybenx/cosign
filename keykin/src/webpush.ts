@@ -8,7 +8,7 @@ import { p256 } from '@noble/curves/nist.js';
 import { gcm } from '@noble/ciphers/aes.js';
 import { extract, expand } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { concatBytes, utf8ToBytes, randomBytes, b64u, fromB64u, strictJson, utf8Strict, KeykinError, type Bytes } from './bytes.ts';
+import { concatBytes, utf8ToBytes, randomBytes, b64u, fromB64u, strictJson, utf8Strict, KeykinError, type Bytes, bytesToHex } from './bytes.ts';
 
 const RS = 4096;
 const info = (s: string, ...rest: Bytes[]) => concatBytes(utf8ToBytes(s), new Uint8Array([0]), ...rest);
@@ -76,7 +76,7 @@ export function checkVapid(header: string, url: string, pinnedVapidHex: string, 
   if (!m) return 'vapid_header';
   try {
     const k = fromB64u(m[4]);
-    if (Buffer.from(k).toString('hex') !== pinnedVapidHex) return 'vapid_key';
+    if (bytesToHex(k) !== pinnedVapidHex) return 'vapid_key';
     const head = strictJson(utf8Strict(fromB64u(m[1]))), claims = strictJson(utf8Strict(fromB64u(m[2])));
     if (head?.alg !== 'ES256' || head?.typ !== 'JWT') return 'vapid_alg';
     if (claims?.aud !== new URL(url).origin) return 'vapid_aud';

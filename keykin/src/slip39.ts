@@ -5,7 +5,7 @@
 import { hmac } from '@noble/hashes/hmac.js';
 import { pbkdf2 } from '@noble/hashes/pbkdf2.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { randomBytes, concatBytes, utf8ToBytes, refuse } from './bytes.ts';
+import { randomBytes, concatBytes, utf8ToBytes, refuse, bytesToHex, hexToBytes } from './bytes.ts';
 import { WORDS } from './slip39-words.ts';
 
 const RADIX = 10, ID_BITS = 15, META_WORDS = 4, CHECKSUM_WORDS = 3, MIN_WORDS = 20;
@@ -105,7 +105,7 @@ export function encodeShare(s: Share): string {
   const valueBits = s.value.length * 8, padded = Math.ceil(valueBits / RADIX) * RADIX;
   let n = BigInt(s.id);
   for (const [v, bits] of [[s.ext ? 1 : 0, 1], [s.e, 4], [s.gi, 4], [s.gt - 1, 4], [s.g - 1, 4], [s.mi, 4], [s.mt - 1, 4]] as [number, number][]) n = (n << BigInt(bits)) | BigInt(v);
-  n = (n << BigInt(padded)) | BigInt('0x' + (Buffer.from(s.value).toString('hex') || '0'));
+  n = (n << BigInt(padded)) | BigInt('0x' + (bytesToHex(s.value) || '0'));
   const words = (ID_BITS + 1 + 4 + 4 * 5 + padded) / RADIX;
   const data = Array.from({ length: words }, (_, k) => Number((n >> BigInt(RADIX * (words - 1 - k))) & 1023n));
   return [...data, ...rs1024Create(s.ext, data)].map((i) => WORDS[i]).join(' ');
@@ -129,7 +129,7 @@ export function decodeShare(mnemonic: string): Share {
   const valueBytes = (valueBitsPadded - padLen) / 8;
   const v = n & ((1n << BigInt(valueBitsPadded)) - 1n);
   if (v >> BigInt(valueBytes * 8) !== 0n) refuse('slip39', 'invalid padding');
-  const value = Uint8Array.from(Buffer.from(v.toString(16).padStart(valueBytes * 2, '0'), 'hex'));
+  const value = hexToBytes(v.toString(16).padStart(valueBytes * 2, '0'));
   if (value.length * 8 < 128) refuse('slip39', 'invalid master secret length');
   return { id: field(25, 15), ext, e: field(20, 4), gi: field(16, 4), gt: field(12, 4) + 1, g: field(8, 4) + 1, mi: field(4, 4), mt: field(0, 4) + 1, value };
 }

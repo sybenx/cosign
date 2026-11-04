@@ -35,6 +35,7 @@ export function softLock(rpId = 'keykin.test', sk: Uint8Array = p256.utils.rando
   let count = 0;
   return {
     pub, rpId, sk,
+    stored: () => ({ soft: { rp: rpId, sk: bytesToHex(sk) } }),
     assert(g: string, w: Bytes, flags = UP | UV): Assertion {
       const authData = new Uint8Array(37);
       authData.set(sha256(utf8ToBytes(rpId)), 0);
@@ -47,5 +48,9 @@ export function softLock(rpId = 'keykin.test', sk: Uint8Array = p256.utils.rando
   };
 }
 export type SoftLock = ReturnType<typeof softLock>;
+/** A device's lock (§6.1), however it is held: the simulation's `softLock`, an Android Keystore key
+ *  with BIOMETRIC_STRONG, a Secure Enclave key. `stored` is what a snapshot may keep of it: a soft lock's
+ *  key; a hardware lock gives only its public part, and the app reopens it on restore. */
+export interface Lock { pub: LockPub; assert(g: string, w: Bytes, flags?: number): Assertion; stored?(): unknown }
 export const FLAGS = { UP, UV };
 export { randomBytes };

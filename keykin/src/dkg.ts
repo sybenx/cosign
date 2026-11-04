@@ -2,12 +2,11 @@
 // one participant per index (the device's 1, 2, 3 and the backup seat's 5, 6; the servers' 4, 7, 8).
 // The commitment for the epoch record is rebuilt from the share points and checked against all of them.
 
-import { createRequire } from 'node:module';
 import { idHex, liftX, pointFrom, rebuildCommitment, derivePoint, mul, scalarFrom, type Commitment } from './curve.ts';
 import { hedge } from './frost.ts';
 import { sha, refuse, utf8ToBytes } from './bytes.ts';
+import { W } from './wasm.ts';
 
-const W: any = createRequire(import.meta.url)('../frost-wasm/keykin_frost.js');
 const byIndex = (hexId: string) => Number(BigInt('0x' + hexId));
 
 export interface Round1 { secret: string; package: string }
