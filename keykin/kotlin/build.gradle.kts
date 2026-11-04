@@ -1,6 +1,10 @@
 plugins {
     kotlin("jvm") version "2.0.21"
+    application
 }
+
+// A headless Kotlin device for cross-language tests (test/kotlin.e2e.test.ts).
+application { mainClass.set("keykin.HeadlessKt") }
 
 repositories { mavenCentral() }
 
@@ -31,4 +35,14 @@ tasks.test {
             throw GradleException("${lib.path} has no JNI bindings (built without --features jni). $hint")
     }
     testLogging { events("passed", "failed"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
+}
+
+// `run` loads the same FROST library, checked the same way.
+tasks.named<JavaExec>("run") {
+    val lib = file("../frost/target/release/" + if (System.getProperty("os.name").startsWith("Mac")) "libkeykin_frost.dylib" else "libkeykin_frost.so")
+    systemProperty("keykin.frostlib", lib.absolutePath)
+    doFirst {
+        if (!lib.exists() || !String(lib.readBytes(), Charsets.ISO_8859_1).contains("Java_keykin_FrostNative_call"))
+            throw GradleException("${lib.path} is missing or has no JNI bindings. Build it with: (cd keykin/frost && cargo build --release --features jni)")
+    }
 }
