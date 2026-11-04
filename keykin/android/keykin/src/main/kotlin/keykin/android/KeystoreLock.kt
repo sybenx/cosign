@@ -66,6 +66,7 @@ class KeystoreLock private constructor(val alias: String, val rpId: String) : Lo
             }
             return KeystoreLock(alias, rpId)
         }
+        fun exists(alias: String) = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.containsAlias(alias)
         fun destroy(alias: String) { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(alias) }
     }
 }

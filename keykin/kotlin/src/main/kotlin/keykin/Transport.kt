@@ -23,6 +23,10 @@ interface Secp {
     fun schnorrSign(msg: ByteArray, sk: ByteArray, aux: ByteArray): String
     /** The shared point's x coordinate (32 bytes), for NIP-44's conversation key. */
     fun ecdhX(sk: ByteArray, pubX: String): ByteArray
+    /** `k·G` and `k·P` for a secret scalar (a share, a delta, a polynomial coefficient, a paper value): an
+     *  Android build does these in libsecp256k1, constant-time (review 15 M8). Public scalars use Curve.kt's. */
+    fun mulG(k: BigInteger): Pt = mul(k) ?: refuse("malformed", "the identity")
+    fun mulPoint(k: BigInteger, p: Pt): Pt = mul(k, p) ?: refuse("malformed", "the identity")
 
     object Reference : Secp {
         private fun d(sk: ByteArray) = BigInteger(1, sk).also { require(it.signum() > 0 && it < N) { "secret key out of range" } }

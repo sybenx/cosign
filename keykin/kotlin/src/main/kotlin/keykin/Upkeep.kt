@@ -30,10 +30,10 @@ object Upkeep {
     fun checkOwnShares(g: String, shares: Map<Long, BigInteger>, C: List<Pt?>, device: Boolean) {
         val G0 = liftXHex(g)
         if (C[0] != G0) refuse("bad_commitment", "C0 is not the group point")
-        for ((i, s) in shares) if (mul(s) != derive(C, BigInteger.valueOf(i))) refuse("bad_share", "index $i")
+        for ((i, s) in shares) if (Keykin.secp.mulG(s) != derive(C, BigInteger.valueOf(i))) refuse("bad_share", "index $i")
         if (device) {
             if (shares.size != 3) refuse("bad_share", "a device holds 3 shares")
-            val pts = listOf(BigInteger.ZERO to G0) + shares.map { (i, s) -> BigInteger.valueOf(i) to mul(s)!! }
+            val pts = listOf(BigInteger.ZERO to G0) + shares.map { (i, s) -> BigInteger.valueOf(i) to Keykin.secp.mulG(s) }
             if (rebuild(pts) != C) refuse("bad_commitment", "the commitment does not rebuild from this device's points")
         }
     }
@@ -61,7 +61,7 @@ object Upkeep {
         applicable(s, r, abandoned)?.let { refuse("cannot_apply", it) }
         val D = dPoints(r)
         if (deltas.keys != s.shares.keys) refuse("bad_redeal", "a delta for each index")
-        for ((i, d) in deltas) if (mul(d) != deriveDelta(D, BigInteger.valueOf(i))) refuse("bad_delta", "index $i")
+        for ((i, d) in deltas) if (Keykin.secp.mulG(d) != deriveDelta(D, BigInteger.valueOf(i))) refuse("bad_delta", "index $i")
         val C = addRedeal(s.C, D)
         val shares = s.shares.mapValues { (i, v) -> (v + deltas.getValue(i)).mod(N) }
         checkOwnShares(g, shares, C, true)
@@ -110,7 +110,7 @@ object Upkeep {
             val dk = v.opt("dk_seed") as? String
             when {
                 v.opt("redeal") != r.getString("id") || b != backupSeat || d.size != b.size -> "bad"
-                !b.indices.all { k -> mul(d[k]) == deriveDelta(D, BigInteger.valueOf(b[k])) } -> "bad"
+                !b.indices.all { k -> Keykin.secp.mulG(d[k]) == deriveDelta(D, BigInteger.valueOf(b[k])) } -> "bad"
                 dk == null || hex(sha(unhex(dk))) != r.getString("dk") -> "bad"
                 own != null && (own.first != backupSeat || own.second != d || own.third != dk) -> "bad"
                 else -> "ok"
@@ -126,7 +126,7 @@ object Upkeep {
         val d = kept.getJSONArray("d").let { a -> (0 until a.length()).map { scalar(a.get(it)) } }
         val body = JSONObject().put("redeal", r.getString("id")).put("d", JSONArray(d.map(::scalarHex))).put("b", kept.getJSONArray("b")).put("dk_seed", kept.getString("dk"))
         val (item, eph) = Deal.sealItem("reissue", r.getString("id"), K, kept.getString("release"), body)
-        item.put("clear", JSONArray(d.map { comp(mul(it)!!) })).put("by", Keykin.secp.pub(sk))
+        item.put("clear", JSONArray(d.map { comp(Keykin.secp.mulG(it)) })).put("by", Keykin.secp.pub(sk))
         return item.put("sig", Keykin.secp.schnorrSign(Approvals.detached("paper-reissue", g, Json.obj(Jcs.of(item))), sk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) })) to eph
     }
     /** §6.7.6: what a server checks of a re-issued item, as TS `checkReissue`; null, or the refusal. */

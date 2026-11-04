@@ -1,6 +1,8 @@
 // What a door may ask of the account (Doors §2, as device/doors.ts): a site over NIP-46, an app over NIP-55, or
 // the app's own main process, which draws strangers' content, never gets the account's machinery signed (the
-// signpost, keykin- data, epoch records, changes, key-family events) nor reads what the account encrypted to itself.
+// signpost, keykin- data, epoch records, changes, key-family events). Sites and other apps never read what the
+// account encrypted to itself (`mayDecrypt`). The app's own main process can, through keykin-android's
+// `nip44Own`, as Cosign's does for its NIP-78 app data: that is the app's choice to make (review 15 M9).
 package keykin
 
 object Doors {

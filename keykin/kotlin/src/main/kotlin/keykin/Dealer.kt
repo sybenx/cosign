@@ -97,7 +97,7 @@ object Deal {
     fun deal(g: String, dealerSk: ByteArray, base: Collection<String>, members: Map<String, List<Long>>, paperTo: String, backupSeat: List<Long>, abandons: List<String> = emptyList()): Dealt {
         val d = listOf(scalar(), scalar(), scalar())
         fun f(x: Long): BigInteger { val xi = BigInteger.valueOf(x); var acc = BigInteger.ZERO; var p = xi; for (c in d) { acc = (acc + c * p).mod(N); p = (p * xi).mod(N) }; return acc }
-        val D = d.map { mul(it)!! }
+        val D = d.map { Keykin.secp.mulG(it) }
         val deltas = members.mapValues { (_, idx) -> idx.associateWith(::f) }.toMutableMap()
         val releaseSeed = seed(); val dkSeed = seed()
         val id = hex(ByteArray(16).also(rnd::nextBytes))

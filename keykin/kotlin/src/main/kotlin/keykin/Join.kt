@@ -71,7 +71,7 @@ class Joiner(val n: String, val lock: JSONObject?, now: Long, scanned: Code?) {
             val fromInviter = at.firstOrNull { it.optString("from") == m } ?: refuse("sigma_missing", "the inviter's sigma")
             val fromServer = at.firstOrNull { it.optString("from") in servers } ?: refuse("sigma_missing", "a server's sigma")
             val share = Frost.repairShare(C, listOf(fromInviter.getString("sigma"), fromServer.getString("sigma")), i)
-            if (mul(share) != derive(C, BigInteger.valueOf(i))) refuse("repair_failed", "share $i")
+            if (Keykin.secp.mulG(share) != derive(C, BigInteger.valueOf(i))) refuse("repair_failed", "share $i")
             share
         }
         return Joined(rec, recEv, changes, view, shares, C, ids)

@@ -14,6 +14,8 @@ class OkWire(private val client: OkHttpClient = OkHttpClient.Builder().pingInter
     override fun open(url: String, onText: (String) -> Unit, onClosed: () -> Unit): WireSocket {
         val ws = client.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) { try { onText(text) } catch (_: Exception) {} }
+            // The relay is closing: close our side at once, so RelayNet redials instead of writing into it (L10).
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null); onClosed() }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = onClosed()
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = onClosed()
         })

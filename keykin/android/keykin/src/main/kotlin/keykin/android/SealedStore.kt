@@ -15,6 +15,10 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 class SealedStore(context: Context, private val name: String) {
+    init {
+        Proc.signerOnly("SealedStore")
+        require(Regex("^[a-z0-9-]{1,40}$").matches(name)) { "a store name is lowercase letters, digits and dashes" }
+    }
     private val file = File(context.noBackupFilesDir, "keykin-$name.sealed")
     private val alias = "keykin-store-$name"
     private val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -29,7 +33,9 @@ class SealedStore(context: Context, private val name: String) {
     @Synchronized fun save(text: String) {
         val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         val out = c.iv + c.doFinal(text.toByteArray(Charsets.UTF_8))
-        val tmp = File(file.path + ".tmp"); tmp.writeBytes(out); if (!tmp.renameTo(file)) { file.delete(); tmp.renameTo(file) }
+        val tmp = File(file.path + ".tmp")
+        java.io.FileOutputStream(tmp).use { it.write(out); it.fd.sync() }
+        if (!tmp.renameTo(file)) { file.delete(); if (!tmp.renameTo(file)) throw java.io.IOException("could not store the sealed state") }
     }
     @Synchronized fun load(): String? {
         if (!file.exists()) return null
@@ -38,6 +44,7 @@ class SealedStore(context: Context, private val name: String) {
         val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, k, GCMParameterSpec(128, b.copyOfRange(0, 12))) }
         return String(c.doFinal(b.copyOfRange(12, b.size)), Charsets.UTF_8)
     }
+    fun exists() = file.exists()
     /** The membership's end: the key goes first, then the file. */
     @Synchronized fun destroy() { ks.deleteEntry(alias); file.delete() }
 }

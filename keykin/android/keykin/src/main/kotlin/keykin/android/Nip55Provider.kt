@@ -1,8 +1,7 @@
 // The Android signer in the background (NIP-55's content resolver), in the signer process: apps the person
-// granted ask here and get an answer without the app opening. Everything else answers null, and the asking
-// app opens the `nostrsigner:` activity (Nip55Request) instead: an app not granted, a decryption it wasn't
-// granted, anything that needs an approval, or servers out of reach. The same Doors guards as a site's: never
-// the account's machinery, never the account's own data.
+// granted ask here and get an answer without the app opening, for what the grant covers (connecting, the kinds
+// the person allowed, messages), at most 60 signatures an hour per app. Everything else answers null, and the
+// asking app opens the `nostrsigner:` activity (Nip55Request) instead. The same Doors guards as a site's.
 package keykin.android
 
 import android.content.ContentProvider
@@ -13,23 +12,33 @@ import android.net.Uri
 import keykin.Doors
 
 class Nip55Provider : ContentProvider() {
+    private val signed = HashMap<String, ArrayDeque<Long>>()
     override fun onCreate(): Boolean { Memberships.init(context!!); return true }
+    @Synchronized private fun budget(app: String): Boolean {
+        val now = System.currentTimeMillis() / 1000; val q = signed.getOrPut(app) { ArrayDeque() }
+        while (q.isNotEmpty() && now - q.first() > 3600) q.removeFirst()
+        if (q.size >= 60) return false
+        q.addLast(now); return true
+    }
 
     override fun query(uri: Uri, projection: Array<String>?, selection: String?, selectionArgs: Array<String>?, sortOrder: String?): Cursor? {
         val type = uri.authority?.substringAfterLast('.') ?: return null
         // NIP-55 puts [payload, pubkey, current_user] in the projection; some apps use selectionArgs.
         val args = projection?.takeIf { it.isNotEmpty() } ?: selectionArgs ?: return null
         val pkg = callingPackage ?: return null
-        val grant = Memberships.grantFor(pkg) ?: return null
-        val d = Memberships.signer(grant.slot).device ?: return null
         val current = args.getOrNull(2)
-        if (!current.isNullOrBlank() && current != d.g) return null
-        val payload = args.getOrNull(0) ?: ""
-        val peer = args.getOrNull(1) ?: ""
         return try {
+            val grant = Memberships.grantFor(pkg, current) ?: return null
+            val d = Memberships.signer(grant.slot).device ?: return null
+            if (!current.isNullOrBlank() && current != d.g) return null
+            val payload = args.getOrNull(0) ?: ""
+            val peer = args.getOrNull(1) ?: ""
             when (type) {
                 "GET_PUBLIC_KEY" -> row("result" to d.g)
-                "SIGN_EVENT" -> Nip55.sign(d, payload).let { row("result" to it.getString("sig"), "signature" to it.getString("sig"), "event" to it.toString()) }
+                "SIGN_EVENT" -> {
+                    if (Nip55.kindOf(payload) !in grant.kinds || !budget(grant.app)) return null
+                    Nip55.sign(d, payload).let { row("result" to it.getString("sig"), "signature" to it.getString("sig"), "event" to it.toString()) }
+                }
                 "NIP44_ENCRYPT", "NIP44_DECRYPT", "NIP04_ENCRYPT", "NIP04_DECRYPT" -> {
                     if (!grant.dm) return null
                     Doors.mayDecrypt(d, peer)

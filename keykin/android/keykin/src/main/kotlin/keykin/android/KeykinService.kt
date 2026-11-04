@@ -8,7 +8,6 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.RemoteCallbackList
 import android.util.Log
-import keykin.Doors
 import keykin.KeykinException
 import keykin.Nip44
 import org.json.JSONArray
@@ -20,6 +19,8 @@ class KeykinService : Service() {
     /** Every call that touches a membership runs here, in order; every message to the UI goes out from `out`. */
     private val work = Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-signer").also { it.isDaemon = true } }
     private val out = Executors.newSingleThreadExecutor()
+    /** A join waits up to two minutes for the welcome: on its own thread, so other calls go on (review 15 L5). */
+    private val joins = Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-join").also { it.isDaemon = true } }
     /** What the UI shows while a join runs, by slot (the check digits, an error). */
     private val joining = HashMap<String, JSONObject>()
 
@@ -29,7 +30,7 @@ class KeykinService : Service() {
         Memberships.init(this)
         work.execute { for (slot in slots()) open(slot) }
     }
-    override fun onDestroy() { clients.kill(); work.shutdown(); out.shutdown(); super.onDestroy() }
+    override fun onDestroy() { clients.kill(); work.shutdown(); joins.shutdown(); out.shutdown(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder = binder
 
     private fun slots() = Memberships.slots()
@@ -39,6 +40,8 @@ class KeykinService : Service() {
     private fun stateOf(slot: String): JSONObject {
         val x = JSONObject().put("slot", slot)
         joining[slot]?.let { j -> for (k in j.keys()) x.put(k, j.get(k)) }
+        Memberships.signer(slot)
+        Memberships.openError(slot)?.let { x.put("open_error", it) }
         val d = Memberships.signer(slot).device ?: return x.put("joined", false)
         val (self, asOf, keys) = d.members.devices()
         return x.put("joined", true).put("device", self).put("account", d.g).put("state", asOf).put("wiped", d.wiped)
@@ -61,24 +64,24 @@ class KeykinService : Service() {
             val slot = Memberships.addSlot(); val ss = slots(); send { it.slots(ss.toTypedArray()) }
             slot
         }
-        override fun join(slot: String, code: String, relays: String) = work.execute {
+        override fun join(slot: String, code: String, relays: String) = joins.execute {
             val rs = relays.split(",").filter { it.isNotBlank() }
-            Memberships.setRelays(slot, rs)
-            joining[slot] = JSONObject().put("joining", true); publish(slot)
             try {
-                open(slot).join(code, rs) { check -> joining[slot] = JSONObject().put("joining", true).put("check", check); publish(slot) }
-                joining.remove(slot)
-            } catch (e: KeykinException) { joining[slot] = JSONObject().put("error", e.code) } catch (e: Exception) { joining[slot] = JSONObject().put("error", "internal") }
-            publish(slot)
+                Memberships.checkSlot(slot)
+                val s = onWork { open(slot) }
+                // Never over a membership this slot holds, opened or not (review 15 M4).
+                if (s.device != null || Memberships.openError(slot) != null) throw KeykinException("already_joined")
+                onWork { joining[slot] = JSONObject().put("joining", true); publish(slot) }
+                s.join(code, rs) { check -> work.execute { joining[slot] = JSONObject().put("joining", true).put("check", check); publish(slot) } }
+                onWork { Memberships.setRelays(slot, rs); Memberships.joined(slot); joining.remove(slot) }
+            } catch (e: KeykinException) { onWork { joining[slot] = JSONObject().put("error", e.code) } } catch (e: Exception) { onWork { joining[slot] = JSONObject().put("error", "internal") } }
+            work.execute { publish(slot) }
         }
         override fun signOwn(slot: String, event: String): String = onWork {
             try {
                 val d = Memberships.signer(slot).device ?: throw KeykinException("no_membership")
-                val e = JSONObject(event)
-                val kind = e.getInt("kind"); val tags = e.optJSONArray("tags")?.let { a -> (0 until a.length()).map { i -> a.getJSONArray(i).let { t -> (0 until t.length()).map { t.getString(it) } } } } ?: emptyList()
                 // The main process draws strangers' content: its events pass the same guard a site's do (Doors §2).
-                Doors.siteGuard(d, kind, tags)
-                JSONObject().put("event", d.sign(kind, e.optString("content"), tags, e.optLong("created_at", System.currentTimeMillis() / 1000))).toString()
+                JSONObject().put("event", Nip55.sign(d, event)).toString()
             } catch (x: KeykinException) { JSONObject().put("error", x.code).toString() } catch (x: Exception) { JSONObject().put("error", "malformed").toString() }
         }
         override fun nip44Own(slot: String, text: String, encrypt: Boolean): String? = onWork {

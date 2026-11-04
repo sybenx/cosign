@@ -50,7 +50,7 @@ function logcat() {
 }
 // `adb shell` hands the line to the device's shell: every value is quoted (an invite code has `&` in it).
 const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
-const run = (cmd: string, extra: string[] = []) => sh('shell', 'am', 'start', '-n', 'cc.aaro.keykin.demo/.Main', '--es', 'cmd', cmd, '--es', 'relays', q(appRelays),
+const run = (cmd: string, extra: string[] = []) => sh('shell', 'am', 'start', '-n', 'cc.aaro.keykin.demo/.Drive', '--es', 'cmd', cmd, '--es', 'relays', q(appRelays),
   ...extra.map((x) => (x.startsWith('--') ? x : q(x))));
 
 test('the keykin-android demo joins by invite code on an emulator, checked both ways, and signs', { skip: (!serial && 'set KEYKIN_ANDROID_SERIAL to an emulator this test may use') || (!haveNak && 'nak not installed') || (!existsSync(apk) && 'build the demo: (cd android && ./gradlew :demo:assembleDebug)'), timeout: 600_000 }, async () => {

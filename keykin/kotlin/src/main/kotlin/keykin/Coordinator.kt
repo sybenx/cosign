@@ -81,7 +81,7 @@ object Ecdh {
                 refuse("bad_proof", "index ${a.get("i")}")
             var acc: Pt? = null
             for (a in perQ) acc = add(acc, point(a.getString("Y")))
-            for ((i, s) in shares) acc = add(acc, mul(lagrange(BigInteger.valueOf(i), signers.map(BigInteger::valueOf)).multiply(s).mod(N), point(Q)))
+            for ((i, s) in shares) acc = add(acc, Keykin.secp.mulPoint(lagrange(BigInteger.valueOf(i), signers.map(BigInteger::valueOf)).multiply(s).mod(N), point(Q)))
             comp(acc ?: refuse("bad_answer", "the identity"))
         }
     }

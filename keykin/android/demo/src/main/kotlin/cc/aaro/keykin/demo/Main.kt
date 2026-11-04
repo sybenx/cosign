@@ -53,7 +53,10 @@ class Main : Activity() {
     }
     override fun onNewIntent(i: Intent) { super.onNewIntent(i); handle(i) }
     private fun handle(i: Intent?) {
-        val cmd = i?.getStringExtra("cmd") ?: run { run(JSONObject().put("cmd", "open")); return }
+        // Commands come only through the `.Drive` alias, which needs DUMP (the shell has it; other apps don't):
+        // the launcher entry is exported, and must not let any app join, sign or forget (review 15 M3).
+        val driven = i?.component?.className?.endsWith(".Drive") == true
+        val cmd = i?.getStringExtra("cmd")?.takeIf { driven } ?: run { run(JSONObject().put("cmd", "open")); return }
         run(JSONObject().put("cmd", cmd).put("code", i.getStringExtra("code") ?: "").put("relays", i.getStringExtra("relays") ?: RELAYS)
             .put("content", i.getStringExtra("content") ?: "gm from the keykin-android demo"))
     }
@@ -65,7 +68,6 @@ class Main : Activity() {
             val k = client.signer()
             when (c.getString("cmd")) {
                 "open" -> say(JSONObject().put("ready", true).put("slot", prefs.getString("slot", null) ?: JSONObject.NULL))
-                "echo" -> say(JSONObject().put("code", c.optString("code")).put("relays", c.optString("relays")))
                 "join" -> {
                     val slot = prefs.getString("slot", null) ?: k.add().also { prefs.edit().putString("slot", it).apply() }
                     told.clear(); k.join(slot, c.getString("code"), c.getString("relays"))

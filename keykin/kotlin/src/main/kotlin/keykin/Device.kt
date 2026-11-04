@@ -616,10 +616,11 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         }
         /** Join an account by its invite code (core §4.1–§4.2): hello, nonce, the 6-digit check shown by
          *  `onCheck`, then the welcome and the sigmas, checked. */
-        fun join(code: String, net: RelayNet, onCheck: (String) -> Unit, timeoutMs: Long = 120_000): Device {
+        fun join(code: String, net: RelayNet, onCheck: (String) -> Unit, timeoutMs: Long = 120_000, lock: Lock? = null): Device {
             val sk = ByteArray(32).also { java.security.SecureRandom().nextBytes(it); it[0] = (it[0].toInt() and 0x7f).toByte() }
             val pub = Keykin.secp.pub(sk)
-            val j = Joiner(pub, null, net.now, parseCode(code))
+            // The hello names this device's lock, if it has one: the inviter's add registers it (core §4.2, §6.1).
+            val j = Joiner(pub, lock?.pub, net.now, parseCode(code))
             val welcome = java.util.concurrent.CompletableFuture<Pair<String, JSONObject>>()
             // Sigmas by (sender, index), one each and a bounded number: a stranger can't grow them (review 12 L2).
             val sigmas = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
@@ -654,7 +655,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             for (k in listOf(from) + r.view.members.filter { it.kind == "server" }.map { it.key }) net.tell(sk, k, JSONObject().put("type", "ack"))
             // The welcome carries the base data key and every data-key seed (core §4.2 step 4, §4.5).
             val seeds = w.optJSONArray("dk")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? String)?.takeIf { s -> Regex("^[0-9a-f]{64}$").matches(s) } } } ?: emptyList()
-            return Device(sk, r.recEv, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds)
+            return Device(sk, r.recEv, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds).also { it.lock = lock }
         }
     }
     /** The x coordinate of `x·P` for a peer's x-only key (core §5.5), from one server's checked answer. */

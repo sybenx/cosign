@@ -1,60 +1,79 @@
 // NIP-55 for an activity the app draws in the signer process (`nostrsigner:` intents): what is asked, by which
 // app, and the answer once the person decided. The library draws nothing; the app shows `Request.describe()`
-// and the buttons, then calls `approve` or `deny`.
+// and its buttons, then calls `approve` or `deny`. An approval does what was asked once; only `remember` makes
+// it silent next time, and only for that: connecting, that event kind, or messages (review 15 M1).
 package keykin.android
 
 import android.app.Activity
 import android.content.Intent
 import keykin.Device
 import keykin.Doors
+import keykin.Json
 import keykin.KeykinException
 import org.json.JSONArray
 import org.json.JSONObject
 
 object Nip55 {
-    /** Sign a site's or app's event (NIP-01 JSON, its id, pubkey and sig ignored), with the Doors guard. */
+    /** Sign an app's or site's event (NIP-01 JSON; its id, pubkey and sig ignored), read strictly (§9.5: no
+     *  duplicate keys, typed fields), with the Doors guard. */
     fun sign(d: Device, eventJson: String): JSONObject {
-        val e = JSONObject(eventJson)
-        val kind = e.getInt("kind")
-        val tags = (e.optJSONArray("tags") ?: JSONArray()).let { a -> (0 until a.length()).map { i -> a.getJSONArray(i).let { t -> (0 until t.length()).map { t.getString(it) } } } }
+        val e = Json.obj(eventJson)
+        val kind = (e.opt("kind") as? Number)?.toInt()?.takeIf { it in 0..65535 } ?: throw KeykinException("malformed", "kind")
+        val content = e.opt("content") as? String ?: throw KeykinException("malformed", "content")
+        val ta = e.opt("tags") ?: JSONArray()
+        if (ta !is JSONArray) throw KeykinException("malformed", "tags")
+        val tags = (0 until ta.length()).map { i -> (ta.get(i) as? JSONArray ?: throw KeykinException("malformed", "tags")).let { t -> (0 until t.length()).map { t.get(it) as? String ?: throw KeykinException("malformed", "tags") } } }
+        val at = e.opt("created_at")?.let { (it as? Number)?.toLong() ?: throw KeykinException("malformed", "created_at") } ?: (System.currentTimeMillis() / 1000)
         Doors.siteGuard(d, kind, tags)
-        return d.sign(kind, e.optString("content"), tags, e.optLong("created_at", System.currentTimeMillis() / 1000))
+        return d.sign(kind, content, tags, at)
     }
+    fun kindOf(payload: String): Int? = try { (Json.obj(payload).opt("kind") as? Number)?.toInt() } catch (_: Exception) { null }
 
     class Request(val type: String, val payload: String, val peer: String, val id: String?, val caller: String?, val current: String?) {
         /** A sentence for the screen: which app wants what. */
         fun describe(): String = (caller ?: "An app") + when (type) {
             "get_public_key" -> " wants to connect to your account"
-            "sign_event" -> " wants to sign: " + (try { JSONObject(payload).let { "kind ${it.getInt("kind")}, " + it.optString("content").take(80) } } catch (_: Exception) { "an event" })
-            "nip44_encrypt", "nip04_encrypt" -> " wants to encrypt a message"
+            "sign_event" -> " wants to sign: " + (try { Json.obj(payload).let { "kind ${it.opt("kind")}, " + (it.opt("content") as? String ?: "").take(80) } } catch (_: Exception) { "an event" })
+            "nip44_encrypt", "nip04_encrypt" -> " wants to send a message as you"
             "nip44_decrypt", "nip04_decrypt" -> " wants to read your messages"
             else -> " asks for $type"
         }
     }
-    /** The request in a `nostrsigner:` intent, or null. `caller` is the calling package (Activity.callingPackage). */
+    /** The request in a `nostrsigner:` intent, or null. `caller` is the calling package (Activity.callingPackage).
+     *  The payload is the URI's text as sent, never decoded or cut at a `#` (review 15 M2). */
     fun parse(i: Intent, caller: String?): Request? {
         if (i.scheme != "nostrsigner") return null
         val type = i.getStringExtra("type") ?: return null
-        return Request(type, i.data?.schemeSpecificPart ?: "", i.getStringExtra("pubkey") ?: "", i.getStringExtra("id"), caller, i.getStringExtra("current_user"))
+        var payload = i.dataString?.removePrefix("nostrsigner:") ?: ""
+        // Some apps percent-encode the whole payload: an encoded JSON object starts %7B.
+        if (payload.startsWith("%7B", ignoreCase = true)) payload = java.net.URLDecoder.decode(payload, "UTF-8")
+        return Request(type, payload, i.getStringExtra("pubkey") ?: "", i.getStringExtra("id"), caller, i.getStringExtra("current_user"))
     }
-    /** The person approved: grant the app (in `slot`; `dm` for messages), do it, and answer. */
-    fun approve(a: Activity, r: Request, slot: String, dm: Boolean = false) {
-        val pkg = r.caller ?: return deny(a)
-        Memberships.init(a)
-        Memberships.grant(slot, pkg, dm || r.type.endsWith("decrypt") || r.type.endsWith("encrypt")) ?: return deny(a)
-        val d = Memberships.signer(slot).device ?: return deny(a)
-        val out = Intent()
+    /** The person approved: do it once, answer, and (with `remember`) let the app ask that again silently. Runs off
+     *  the main thread; any fault is a denial, never a crash of the signer process. */
+    fun approve(a: Activity, r: Request, remember: Boolean = false) {
         try {
+            val pkg = r.caller ?: return deny(a, r)
+            Memberships.init(a)
+            val slot = Memberships.slotFor(r.current) ?: return deny(a, r)
+            val d = Memberships.signer(slot).device ?: return deny(a, r)
+            if (!r.current.isNullOrBlank() && r.current != d.g) return deny(a, r)
+            val out = Intent()
             when (r.type) {
                 "get_public_key" -> out.putExtra("result", d.g).putExtra("package", a.packageName)
                 "sign_event" -> sign(d, r.payload).let { out.putExtra("result", it.getString("sig")).putExtra("signature", it.getString("sig")).putExtra("event", it.toString()) }
                 "nip44_encrypt", "nip44_decrypt" -> { Doors.mayDecrypt(d, r.peer); out.putExtra("result", d.nip44(r.peer, r.payload, r.type.endsWith("encrypt"))) }
                 "nip04_encrypt", "nip04_decrypt" -> { Doors.mayDecrypt(d, r.peer); out.putExtra("result", d.nip04(r.peer, r.payload, r.type.endsWith("encrypt"))) }
-                else -> return deny(a)
+                else -> return deny(a, r)
             }
-        } catch (_: KeykinException) { return deny(a) }
-        r.id?.let { out.putExtra("id", it) }
-        a.setResult(Activity.RESULT_OK, out); a.finish()
+            // The grant only once it worked, and only for what was asked (connecting comes with any).
+            Memberships.grant(slot, pkg, kind = if (remember && r.type == "sign_event") kindOf(r.payload) else null, dm = remember && r.type.startsWith("nip"))
+            r.id?.let { out.putExtra("id", it) }
+            a.setResult(Activity.RESULT_OK, out); a.finish()
+        } catch (_: Exception) { deny(a, r) }
     }
-    fun deny(a: Activity) { a.setResult(Activity.RESULT_CANCELED); a.finish() }
+    /** NIP-55's rejection: `rejected`, and the request's id. */
+    fun deny(a: Activity, r: Request? = null) {
+        a.setResult(Activity.RESULT_CANCELED, Intent().putExtra("rejected", true).also { i -> r?.id?.let { i.putExtra("id", it) } }); a.finish()
+    }
 }

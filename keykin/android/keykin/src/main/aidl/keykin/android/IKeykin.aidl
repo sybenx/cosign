@@ -16,7 +16,9 @@ interface IKeykin {
     oneway void join(String slot, String code, String relays);
     /** Sign the app's own event (JSON without id, pubkey, sig): {"event": …} or {"error": code}. */
     String signOwn(String slot, String event);
-    /** NIP-44 with the account itself (to-self app data): the other side is always this account. Null on failure. */
+    /** NIP-44 with the account itself (to-self app data): the other side is always this account. This reads every
+     *  to-self payload the account holds (private lists, a wallet), so the app calls it only for its own data and
+     *  never on a stranger's behalf. Null on failure. */
     String nip44Own(String slot, String text, boolean encrypt);
     /** Catch up with every server (changes, inbox); the state follows. */
     oneway void fetch(String slot);

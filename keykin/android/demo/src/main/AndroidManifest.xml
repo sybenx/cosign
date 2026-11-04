@@ -9,6 +9,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Tests drive the demo through this alias only: DUMP is the shell's, never an ordinary app's. -->
+        <activity-alias android:name=".Drive" android:targetActivity=".Main" android:exported="true" android:permission="android.permission.DUMP" />
         <!-- NIP-55's screen runs in the signer process, beside the provider and the shares. -->
         <activity android:name=".Nip55Activity" android:process=":signer" android:exported="true">
             <intent-filter>

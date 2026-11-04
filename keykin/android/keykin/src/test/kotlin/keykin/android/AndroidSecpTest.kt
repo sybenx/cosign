@@ -16,6 +16,9 @@ class AndroidSecpTest {
             assertEquals(Secp.Reference.pub(sk), AndroidSecp.pub(sk))
             assertEquals(Secp.Reference.schnorrSign(msg, sk, aux), AndroidSecp.schnorrSign(msg, sk, aux))
             assertEquals(hex(Secp.Reference.ecdhX(sk, Secp.Reference.pub(other))), hex(AndroidSecp.ecdhX(sk, AndroidSecp.pub(other))))
+            val k = java.math.BigInteger(1, sk); val p = Secp.Reference.mulG(java.math.BigInteger(1, other))
+            assertEquals(Secp.Reference.mulG(k), AndroidSecp.mulG(k))
+            assertEquals(Secp.Reference.mulPoint(k, p), AndroidSecp.mulPoint(k, p))
         }
     }
 }
