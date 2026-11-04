@@ -98,7 +98,8 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   // for the screen), it gets the account's key and a NIP-44 encryption the peer can open.
   const query = (type: string, projection: string) => sh('shell', 'content', 'query', '--uri', `content://cc.aaro.keykin.demo.${type}`, '--projection', q(projection)).stdout;
   assert.doesNotMatch(query('GET_PUBLIC_KEY', 'x:y:z'), /result=/, 'no grant, no answer');
-  sh('shell', 'am', 'broadcast', '-n', 'cc.aaro.keykin.demo/.DebugGrant', '--es', 'pkg', 'com.android.shell', '--ez', 'dm', 'true');
+  // Scopes as Doors §1 names them: signing in and messages; not the account's private data.
+  sh('shell', 'am', 'broadcast', '-n', 'cc.aaro.keykin.demo/.DebugGrant', '--es', 'pkg', 'com.android.shell', '--es', 'scopes', 'sign-in,dms');
   assert.equal((await next()).granted, true);
   assert.match(query('GET_PUBLIC_KEY', `x:y:${A.g}`), new RegExp(`result=${A.g}`), 'the granted app gets the account\'s key');
   const peer = newKey();

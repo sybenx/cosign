@@ -13,6 +13,10 @@ export interface RelayNetOpts { relays: string[]; timeoutMs?: number; resendMs?:
 
 const CHUNK = 400;                 // keys per subscription: one `#p` list, not one subscription per key (review 10 C1)
 
+/** How far behind ours a sender's clock may be for its live messages still to reach us (they are then judged
+ *  by their lifetime, core §5.6; replays by the answered-id cache). */
+const CLOCK_SLACK_S = 120;
+
 export class RelayNet implements Transport {
   o: Required<RelayNetOpts>;
   /** One connection per relay URL, null while it is down (reconnected with backoff, review 10 H1). */
@@ -60,7 +64,9 @@ export class RelayNet implements Transport {
     if (!c || !subs) return;
     subs[k]?.close();
     const keys = this.#chunks[k];
-    subs[k] = keys.length ? c.subscribe([{ kinds: [KIND_WRAP_LIVE], '#p': keys, since: this.now - 5 }], {
+    // A sender's clock may run behind ours: take what the freshness rules (§5.6) still accept, which they then
+    // judge, rather than only the last few seconds (a phone 20 s slow could otherwise reach no one).
+    subs[k] = keys.length ? c.subscribe([{ kinds: [KIND_WRAP_LIVE], '#p': keys, since: this.now - CLOCK_SLACK_S }], {
       onevent: (e) => { const to = (e as NostrEvent).tags.find((t) => t[0] === 'p')?.[1]; if (to && this.hosted.has(to)) void this.onWrap(to, e as NostrEvent); },
     }) : null;
   }
@@ -92,7 +98,7 @@ export class RelayNet implements Transport {
   #watchOn(url: string, w: { f: Filter; cb: (e: any) => void; subs: Map<string, { close(): void }>; seen: Set<string> }) {
     const c = this.conns.get(url) ?? this.#extraConn.get(url); if (!c) return;
     w.subs.get(url)?.close();
-    w.subs.set(url, c.subscribe([{ ...w.f, ...(w.f.since === undefined ? { since: this.now - 5 } : {}) } as any], {
+    w.subs.set(url, c.subscribe([{ ...w.f, ...(w.f.since === undefined ? { since: this.now - CLOCK_SLACK_S } : {}) } as any], {
       onevent: (e) => { if (w.seen.has(e.id)) return; w.seen.add(e.id); if (w.seen.size > 20_000) w.seen.clear(); w.cb(e); },
     }));
   }

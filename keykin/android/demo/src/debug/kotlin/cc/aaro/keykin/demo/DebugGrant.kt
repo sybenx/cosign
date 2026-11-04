@@ -12,8 +12,9 @@ class DebugGrant : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         Memberships.init(c)
         val slot = Memberships.slots().firstOrNull()
-        val kind = i.getIntExtra("kind", -1).takeIf { it >= 0 }
-        val g = slot?.let { Memberships.grant(it, i.getStringExtra("pkg") ?: return, kind = kind, dm = i.getBooleanExtra("dm", false)) }
+        val pkg = i.getStringExtra("pkg") ?: return
+        val scopes = (i.getStringExtra("scopes") ?: "sign-in").split(",").filter { it.isNotBlank() }
+        val g = slot?.let { Memberships.grant(it, pkg, pkg, scopes) }
         Log.i("KeykinDemo", """{"granted":${g != null}}""")
     }
 }

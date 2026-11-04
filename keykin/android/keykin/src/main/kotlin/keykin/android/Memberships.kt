@@ -1,8 +1,7 @@
 // The memberships on this phone, by slot, in the signer process: one KeykinSigner each, the relays each was
 // joined over, why one couldn't be opened, and the apps each has granted (NIP-55). KeykinService, Nip55Provider
-// and the NIP-55 screen share it. Grants are kept here, by package, signing-certificate digest and install
-// (Doors §3.2), scoped: connecting, the event kinds the person allowed, and messages (review 15 M1); as Doors §1
-// says, they become to-self encrypted events synced between devices once Doors' grant store is built.
+// and the NIP-55 screen share it. NIP-55 grants are entries in each membership's grant store (Doors §1–§2): by
+// package and signing-certificate digest, on this install, with Doors' scopes, synced so every device lists them.
 package keykin.android
 
 import android.content.Context
@@ -49,47 +48,46 @@ object Memberships {
         failed.remove(slot)
         store.update { d ->
             d.put("slots", JSONArray(slots() - slot)); d.optJSONObject("relays")?.remove(slot)
-            d.optJSONObject("grants")?.let { g -> for (k in g.keys().asSequence().toList()) if (k.startsWith("$slot|")) g.remove(k) }
         }
     }
 
-    // --- NIP-55 grants -------------------------------------------------------------------------------
-    /** An app's identity: its package, the SHA-256 of its signing certificates, and when it was installed, so an
-     *  impostor under the same name, or the same app uninstalled and installed again, holds no old grant. */
-    fun appId(pkg: String): String? = try {
+    // --- NIP-55 grants (Doors §1–§2: entries in the membership's grant store, synced between devices) ------
+    /** An app's site: its package and the SHA-256 of its signing certificates (Doors §3.2), so an impostor under
+     *  the same name is another site; its connection: this install, so a reinstall is a new connection. */
+    fun appSite(pkg: String): Pair<String, String>? = try {
         val info = app.packageManager.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)
         val certs = info.signingInfo?.apkContentsSigners?.map { hex(sha(it.toByteArray())) }?.sorted() ?: return null
-        "$pkg:" + hex(sha((certs.joinToString(",") + "@" + info.firstInstallTime).toByteArray()))
+        ("$pkg:" + hex(sha(certs.joinToString(",").toByteArray()))) to ("install:${info.firstInstallTime}")
     } catch (_: Exception) { null }
-    data class Grant(val slot: String, val app: String, val kinds: Set<Int>, val dm: Boolean, val at: Long)
-    private fun grantOf(slot: String, id: String, o: JSONObject) = Grant(slot, id, o.optJSONArray("kinds")?.let { a -> (0 until a.length()).map { a.getInt(it) }.toSet() } ?: emptySet(), o.optBoolean("dm"), o.optLong("at"))
-    /** Add to `pkg`'s grant in `slot`: connecting always; `kind` to sign silently; `dm` for messages. */
-    @Synchronized fun grant(slot: String, pkg: String, kind: Int? = null, dm: Boolean = false): Grant? {
-        checkSlot(slot)
-        val id = appId(pkg) ?: return null
-        var out: Grant? = null
-        store.update { d ->
-            val gs = d.optJSONObject("grants") ?: JSONObject().also { d.put("grants", it) }
-            val o = gs.optJSONObject("$slot|$id") ?: JSONObject().put("kinds", JSONArray()).put("dm", false)
-            if (kind != null && (0 until o.getJSONArray("kinds").length()).none { o.getJSONArray("kinds").getInt(it) == kind }) o.getJSONArray("kinds").put(kind)
-            if (dm) o.put("dm", true)
-            o.put("at", System.currentTimeMillis() / 1000)
-            gs.put("$slot|$id", o); out = grantOf(slot, id, o)
-        }
-        return out
-    }
-    /** The grant `pkg` holds now: in the slot whose account is `current` when it names one, else the first. */
+    data class Grant(val slot: String, val id: String, val scopes: Set<String>)
+    /** The grant `pkg` holds on this connection: in the slot whose account is `current` when it names one. */
     @Synchronized fun grantFor(pkg: String, current: String? = null): Grant? {
-        val id = appId(pkg) ?: return null
-        val gs = store.get().optJSONObject("grants") ?: return null
+        val (site, conn) = appSite(pkg) ?: return null
         for (s in slots()) {
-            val o = gs.optJSONObject("$s|$id") ?: continue
-            if (!current.isNullOrBlank() && signer(s).device?.g != current) continue
-            return grantOf(s, id, o)
+            val d = signer(s).device ?: continue
+            if (!current.isNullOrBlank() && d.g != current) continue
+            val e = d.grants.forSite(site, "nip55", conn) ?: continue
+            return Grant(s, e.getString("id"), d.grants.scopesOf(e))
         }
         return null
     }
-    @Synchronized fun revoke(slot: String, pkg: String) { appId(pkg)?.let { id -> store.update { it.optJSONObject("grants")?.remove("$slot|$id") } } }
+    /** A human act on this phone ("Allow *app*"): the app's grant in `slot` gets `scopes` (sign-in always), made or
+     *  widened, and published so every device lists it. */
+    @Synchronized fun grant(slot: String, pkg: String, says: String, scopes: Collection<String>): Grant? {
+        checkSlot(slot)
+        val (site, conn) = appSite(pkg) ?: return null
+        val d = signer(slot).device ?: return null
+        val want = (scopes + "sign-in").toSet()
+        val e = d.grants.forSite(site, "nip55", conn)?.let { old -> if (d.grants.scopesOf(old).containsAll(want)) old else d.grants.widen(old.getString("id"), want.toList()) }
+            ?: d.grants.make(site, says, "nip55", conn, want.toList())
+        Thread { try { d.publishGrants() } catch (_: Exception) {} }.start()
+        return Grant(slot, e.getString("id"), d.grants.scopesOf(e))
+    }
+    @Synchronized fun revoke(slot: String, pkg: String) {
+        val (site, conn) = appSite(pkg) ?: return
+        val d = signer(slot).device ?: return
+        d.grants.forSite(site, "nip55", conn)?.let { d.grants.end(d.pub, it.getString("id")); Thread { try { d.publishGrants() } catch (_: Exception) {} }.start() }
+    }
     /** The slot whose account is `current` (NIP-55's current_user), or the first. */
     @Synchronized fun slotFor(current: String?): String? = slots().firstOrNull { current.isNullOrBlank() || signer(it).device?.g == current }
 }

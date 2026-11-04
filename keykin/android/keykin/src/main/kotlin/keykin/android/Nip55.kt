@@ -1,13 +1,14 @@
 // NIP-55 for an activity the app draws in the signer process (`nostrsigner:` intents): what is asked, by which
 // app, and the answer once the person decided. The library draws nothing; the app shows `Request.describe()`
 // and its buttons, then calls `approve` or `deny`. An approval does what was asked once; only `remember` makes
-// it silent next time, and only for that: connecting, that event kind, or messages (review 15 M1).
+// it silent next time, and only for the scope it needed (Doors §1), recorded in the synced grant store.
 package keykin.android
 
 import android.app.Activity
 import android.content.Intent
 import keykin.Device
 import keykin.Doors
+import keykin.Grants
 import keykin.Json
 import keykin.KeykinException
 import org.json.JSONArray
@@ -26,6 +27,14 @@ object Nip55 {
         val at = e.opt("created_at")?.let { (it as? Number)?.toLong() ?: throw KeykinException("malformed", "created_at") } ?: (System.currentTimeMillis() / 1000)
         Doors.siteGuard(d, kind, tags)
         return d.sign(kind, content, tags, at)
+    }
+    /** The scope a request needed (Doors §1), for remembering it. */
+    fun scopeOf(d: Device, r: Request, result: String?): String? = when (r.type) {
+        "get_public_key" -> "sign-in"
+        "sign_event" -> kindOf(r.payload)?.let { Grants.scopeForEvent(it) }
+        "nip44_encrypt", "nip04_encrypt" -> if (r.peer.lowercase() == d.g) "post" else "dms"
+        "nip44_decrypt", "nip04_decrypt" -> Grants.scopeForDecrypt(d.g, r.peer, result)
+        else -> null
     }
     fun kindOf(payload: String): Int? = try { (Json.obj(payload).opt("kind") as? Number)?.toInt() } catch (_: Exception) { null }
 
@@ -62,12 +71,12 @@ object Nip55 {
             when (r.type) {
                 "get_public_key" -> out.putExtra("result", d.g).putExtra("package", a.packageName)
                 "sign_event" -> sign(d, r.payload).let { out.putExtra("result", it.getString("sig")).putExtra("signature", it.getString("sig")).putExtra("event", it.toString()) }
-                "nip44_encrypt", "nip44_decrypt" -> { Doors.mayDecrypt(d, r.peer); out.putExtra("result", d.nip44(r.peer, r.payload, r.type.endsWith("encrypt"))) }
-                "nip04_encrypt", "nip04_decrypt" -> { Doors.mayDecrypt(d, r.peer); out.putExtra("result", d.nip04(r.peer, r.payload, r.type.endsWith("encrypt"))) }
+                "nip44_encrypt", "nip44_decrypt" -> out.putExtra("result", d.nip44(r.peer, r.payload, r.type.endsWith("encrypt")))
+                "nip04_encrypt", "nip04_decrypt" -> out.putExtra("result", d.nip04(r.peer, r.payload, r.type.endsWith("encrypt")))
                 else -> return deny(a, r)
             }
-            // The grant only once it worked, and only for what was asked (connecting comes with any).
-            Memberships.grant(slot, pkg, kind = if (remember && r.type == "sign_event") kindOf(r.payload) else null, dm = remember && r.type.startsWith("nip"))
+            // The grant only once it worked: connecting always, and with `remember` the scope this needed.
+            Memberships.grant(slot, pkg, r.caller ?: pkg, if (remember) listOfNotNull(scopeOf(d, r, out.getStringExtra("result"))) else emptyList())
             r.id?.let { out.putExtra("id", it) }
             a.setResult(Activity.RESULT_OK, out); a.finish()
         } catch (_: Exception) { deny(a, r) }

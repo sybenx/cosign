@@ -1,6 +1,6 @@
 // The Android signer in the background (NIP-55's content resolver), in the signer process: apps the person
-// granted ask here and get an answer without the app opening, for what the grant covers (connecting, the kinds
-// the person allowed, messages), at most 60 signatures an hour per app. Everything else answers null, and the
+// granted ask here and get an answer without the app opening, for what the grant's scopes cover (Doors §1:
+// sign-in, post, lists, dms, private-data, wallet), at most 60 signatures an hour per app. Everything else answers null, and the
 // asking app opens the `nostrsigner:` activity (Nip55Request) instead. The same Doors guards as a site's.
 package keykin.android
 
@@ -9,7 +9,7 @@ import android.content.ContentValues
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
-import keykin.Doors
+import keykin.Grants
 
 class Nip55Provider : ContentProvider() {
     private val signed = HashMap<String, ArrayDeque<Long>>()
@@ -34,16 +34,21 @@ class Nip55Provider : ContentProvider() {
             val payload = args.getOrNull(0) ?: ""
             val peer = args.getOrNull(1) ?: ""
             when (type) {
-                "GET_PUBLIC_KEY" -> row("result" to d.g)
+                "GET_PUBLIC_KEY" -> if ("sign-in" in grant.scopes) row("result" to d.g) else null
                 "SIGN_EVENT" -> {
-                    if (Nip55.kindOf(payload) !in grant.kinds || !budget(grant.app)) return null
-                    Nip55.sign(d, payload).let { row("result" to it.getString("sig"), "signature" to it.getString("sig"), "event" to it.toString()) }
+                    val kind = Nip55.kindOf(payload) ?: return null
+                    if (Grants.scopeForEvent(kind) !in grant.scopes || !budget(grant.id)) return null
+                    Nip55.sign(d, payload).let { d.grants.used(grant.id); row("result" to it.getString("sig"), "signature" to it.getString("sig"), "event" to it.toString()) }
                 }
-                "NIP44_ENCRYPT", "NIP44_DECRYPT", "NIP04_ENCRYPT", "NIP04_DECRYPT" -> {
-                    if (!grant.dm) return null
-                    Doors.mayDecrypt(d, peer)
-                    val encrypt = type.endsWith("ENCRYPT")
-                    row("result" to if (type.startsWith("NIP44")) d.nip44(peer, payload, encrypt) else d.nip04(peer, payload, encrypt))
+                "NIP44_ENCRYPT", "NIP04_ENCRYPT" -> {
+                    if ((if (peer.lowercase() == d.g) "post" else "dms") !in grant.scopes) return null
+                    row("result" to if (type.startsWith("NIP44")) d.nip44(peer, payload, true) else d.nip04(peer, payload, true))
+                }
+                "NIP44_DECRYPT", "NIP04_DECRYPT" -> {
+                    // With someone else's key, dms; to the account itself, released only under the scope its plaintext needs.
+                    val plain = if (type.startsWith("NIP44")) d.nip44(peer, payload, false) else d.nip04(peer, payload, false)
+                    if (Grants.scopeForDecrypt(d.g, peer, plain) !in grant.scopes) return null
+                    row("result" to plain)
                 }
                 else -> null
             }

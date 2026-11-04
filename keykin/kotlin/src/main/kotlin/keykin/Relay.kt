@@ -11,6 +11,9 @@ import java.util.concurrent.TimeUnit
 
 private const val ANSWER_TTL_S = 600L
 private const val SEEN_MAX = 50_000
+/** How far behind ours a sender's clock may be for its live messages still to reach us (judged then by their
+ *  lifetime, core §5.6, and replays by the answered cache). */
+private const val CLOCK_SLACK_S = 120L
 
 /** A relay socket: text frames in and out. */
 interface WireSocket { fun send(text: String): Boolean; fun close() }
@@ -110,7 +113,7 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         hosted[pub] = sk
         if (handler != null) handlers[pub] = handler
         val id = "kk-${pub.take(12)}"
-        val req = { JSONArray(listOf("REQ", id, JSONObject().put("kinds", JSONArray(listOf(21059))).put("#p", JSONArray(listOf(pub))).put("since", now - 60))).toString() }
+        val req = { JSONArray(listOf("REQ", id, JSONObject().put("kinds", JSONArray(listOf(21059))).put("#p", JSONArray(listOf(pub))).put("since", now - CLOCK_SLACK_S))).toString() }
         subs[id] = req
         sendAll(req())
     }
@@ -120,7 +123,7 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     fun watch(filter: JSONObject, cb: (JSONObject) -> Unit): () -> Unit {
         val id = "kw-" + hex(ByteArray(6).also { java.security.SecureRandom().nextBytes(it) })
         watches[id] = cb to ConcurrentHashMap.newKeySet()
-        val from = if (filter.has("since")) filter.getLong("since") else now - 5
+        val from = if (filter.has("since")) filter.getLong("since") else now - CLOCK_SLACK_S
         val req = { JSONArray(listOf("REQ", id, JSONObject(filter.toString()).put("since", maxOf(from, now - 600)))).toString() }
         subs[id] = req
         sendAll(req())
