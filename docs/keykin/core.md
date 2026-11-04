@@ -738,7 +738,7 @@ be read as one Core makes, and no Core flow can be made to produce one.
 - **What a verifier needs.** The device API also gives an app:
   - `members.devices()`: `{self, asOf, keys}`, the current **device** member keys from this device's view
     (the epoch record and changes in force), this device's own key, the `state` it is at (§5.1's hash of
-    the sorted redeal ids), and for each key `added_by` and `flagged` (§6.7.6 F5's "added by a device you removed"; a flagged key is current, but an app SHOULD treat it as removed for an allowlist until the person keeps it);
+    the sorted redeal ids), and for each key `added_by` and `flagged` (§6.7.6 F5's "added by a device you removed"; a flagged key is current, but an app SHOULD treat it as removed for an allowlist until the person keeps it, which the Keykin app records with `members.keep(key)`);
   - `members.removed(since)`: a durable log, kept for the account's life, of `{key, why, change, state}`
     for every key that leaves the device set here, `why` being `remove`, `self` or `void` (§3.2's
     conflicting adds), and `state` `null` until that change's redeal has applied, then the post-redeal
