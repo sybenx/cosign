@@ -7,7 +7,7 @@ import { Relay } from 'nostr-tools/relay';
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
 import { wrap, unwrap, split, Reassembler, KIND_WRAP_LIVE } from '../src/transport.ts';
 import type { KeyPair, NostrEvent } from '../src/event.ts';
-import { unreachable, type Node, type Transport } from '../sim/bus.ts';
+import { unreachable, type Node, type Transport } from './net.ts';
 
 export interface RelayNetOpts { relays: string[]; timeoutMs?: number; resendMs?: number; log?: (s: string) => void }
 

@@ -4,15 +4,8 @@
 import { wrap, unwrap } from '../src/transport.ts';
 import type { KeyPair, NostrEvent } from '../src/event.ts';
 
-export interface Node { kp: KeyPair; handle(from: string, body: any, sentAt: number): any }
-/** What nodes send through: the in-memory Bus here, or runtime/relay.ts over real relays. */
-/** Marks an answer the transport made up itself (unreachable, timed out): a server can't send a symbol,
- *  so a sealed `error` never looks like silence (review 9 M4). */
-export const TRANSPORT_FAILED = Symbol('transport_failed');
-export const unreachable = () => ({ type: 'error', code: 'unreachable', [TRANSPORT_FAILED]: true });
-export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any, o?: { timeoutMs?: number }): Promise<any>; kill?(pub: string): void; rekey?(oldPub: string, node: Node): void; pushes?: PushOut[] }
-/** A Web Push request as a gateway receives it. */
-export interface PushOut { url: string; authorization: string; body: Uint8Array; at: number }
+export { TRANSPORT_FAILED, unreachable, type Node, type Transport, type PushOut } from '../runtime/net.ts';
+import { unreachable, type Node, type Transport, type PushOut } from '../runtime/net.ts';
 
 export class Bus implements Transport {
   now: number;

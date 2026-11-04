@@ -4,5 +4,5 @@
     "allowImportingTsExtensions": true, "noEmit": true, "strict": true, "skipLibCheck": true,
     "lib": ["es2022", "dom"], "types": ["node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "sim/**/*.ts", "runtime/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "sim/**/*.ts", "runtime/**/*.ts", "server/**/*.ts", "device/**/*.ts"]
 }
