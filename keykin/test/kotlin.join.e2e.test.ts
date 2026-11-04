@@ -40,6 +40,10 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   await net.connect();
   const acc = await createByDkg({ net: net as any, fronts });
   const A = acc.A;
+  // A redeal first: the welcome then names a state after it, whose commitment the Kotlin device rebuilds.
+  const r0: Change[] = [{ redeal: { dealer: A.kp.pub } }];
+  await A.submit(r0, A.approveLock(r0));
+  assert.equal(A.state!.ids.size, 1);
   A.inviter = new Inviter({ g: A.g, m: A.kp.pub, now: net.now });
   const code = A.inviter.invite(relays);
 

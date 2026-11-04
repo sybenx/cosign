@@ -209,10 +209,14 @@ export class DeviceNode implements Node {
   takeDelivery(w: NostrEvent) {
     const o = unwrap(this.kp.sk, w);
     if (o.body.type === 'delta') {
-      // Only the redeal's dealer's delta counts; a stranger's never replaces it (§6.7.3).
+      // Only the redeal's dealer's delta counts (§6.7.3). Before the redeal is known, one per sender and
+      // bounded, so a stranger's never stands in for the dealer's; the dealer's is picked once it arrives.
       const r = this.m!.redeals.get(o.body.redeal)?.r;
       if (r && o.from !== r.dealer) return;
-      this.pendingDeltas.set(o.body.redeal, { ...o.body, from: o.from });
+      const k = `${o.body.redeal}:${o.from}`;
+      const same = [...this.pendingDeltas.keys()].filter((x) => x.startsWith(`${o.body.redeal}:`)).length;
+      if (!this.pendingDeltas.has(k) && (same >= 8 || this.pendingDeltas.size >= 512)) return;
+      this.pendingDeltas.set(k, { ...o.body, from: o.from });
     }
   }
   /** Apply every redeal we hold a delta for (§6.7.1), checking our rebuilt commitment each time. */
@@ -221,9 +225,10 @@ export class DeviceNode implements Node {
     for (let again = true; again;) {
       again = false;
       for (const { r } of m.redeals.values()) {
-        const d = this.pendingDeltas.get(r.id);
+        const d = this.pendingDeltas.get(`${r.id}:${r.dealer}`);
+        const drop = () => { for (const k of [...this.pendingDeltas.keys()]) if (k.startsWith(`${r.id}:`)) this.pendingDeltas.delete(k); };
         if (!d || applicable(this.state!, r, m.abandoned)) continue;
-        try { checkDelivery(r, d.from ?? r.dealer, d, this.role === 'device'); } catch { this.pendingDeltas.delete(r.id); this.notices.push({ kind: 'bad_delivery', member: d.from }); continue; }
+        try { checkDelivery(r, d.from ?? r.dealer, d, this.role === 'device'); } catch { drop(); this.notices.push({ kind: 'bad_delivery', member: d.from }); continue; }
         // §6.7.1 step 0: the paper item, opened with its conversation key; a bad one is shown.
         if (d.paper_item && d.paper_ck) {
           const ok = verifyPaperItem(r, d.paper_item, d.release, d.paper_ck, m.record.seats.backup);
@@ -232,7 +237,7 @@ export class DeviceNode implements Node {
         }
         const deltas = new Map<number, bigint>(d.deltas.map(([i, x]: [number, string]) => [i, scalarFrom(x)]));
         const { state, paperValues } = applyRedeal(m.g, this.state!, r, deltas, true, m.record.seats.backup, m.abandoned);
-        this.state = state; this.pendingDeltas.delete(r.id);
+        this.state = state; drop();
         // §6.7.1 step 3: keep δ(b) and the data-key seed until the current paper's item is verified, or,
         // on the device running an F7, until its paper change commits (14.12).
         const verified = this.paperVerified.get(`${m.backupKey}:${r.id}`) === true;
@@ -298,7 +303,7 @@ export class DeviceNode implements Node {
     this.takeChanges(signed);
     if (dealt && !this.wiped) {
       const mine = dealt.deltas.get(this.kp.pub);
-      if (mine) this.pendingDeltas.set(dealt.redeal.id, { type: 'delta', redeal: dealt.redeal.id, deltas: [...mine].map(([i, d]) => [i, scalarHex(d)]), release: dealt.releaseSeed, dk: dealt.dkSeed,
+      if (mine) this.pendingDeltas.set(`${dealt.redeal.id}:${this.kp.pub}`, { type: 'delta', redeal: dealt.redeal.id, deltas: [...mine].map(([i, d]) => [i, scalarHex(d)]), release: dealt.releaseSeed, dk: dealt.dkSeed,
         paper_ck: dealt.paperCk, paper_item: dealt.paperItem, from: this.kp.pub });
       this.applyAll();
       dealt.destroy();

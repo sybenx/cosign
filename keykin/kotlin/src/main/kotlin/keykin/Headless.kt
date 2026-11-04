@@ -1,7 +1,7 @@
 // A headless Kotlin device, for cross-language tests (test/kotlin.e2e.test.ts): load a TS device's
 // snapshot, run each command of a JSON list over the given relays, print one JSON line per result.
 //   keykin.HeadlessKt <snapshot.json> <relay,relay> <commands.json>
-//   commands: [{"cmd":"sign","content":"…"}, {"cmd":"nip44"|"nip04","peer":"<hex>","text":"…","encrypt":true}]
+//   commands: [{"cmd":"sign","content":"…"}, {"cmd":"nip44"|"nip04","peer":"<hex>","text":"…","encrypt":true}, {"cmd":"fetch"}, {"cmd":"members"}, {"cmd":"datakey"}]
 package keykin
 
 import org.json.JSONArray
@@ -21,6 +21,11 @@ fun main(args: Array<String>) {
             val out = try {
                 when (c.getString("cmd")) {
                     "sign" -> d.sign(1, c.getString("content"))
+                    // Catch up from every server (changes, then the inbox) and say where this device now is.
+                    "fetch" -> { d.fetch(); JSONObject().put("state", d.ctx.state).put("ids", JSONArray(d.ids.sorted())) }
+                    "members" -> d.members.devices().let { (self, asOf, keys) -> JSONObject().put("self", self).put("asOf", asOf)
+                        .put("keys", JSONArray(keys.map { JSONObject().put("key", it.key).put("added_by", it.addedBy ?: JSONObject.NULL).put("flagged", it.flagged) }))
+                        .put("removed", JSONArray(d.members.removed(0).map { it.json() })) }
                     "datakey" -> d.dataKey().let { (st, k) -> JSONObject().put("state", st).put("key", hex(k)) }
                     // Be a NIP-46 home (Doors §3.3): print a bunker:// link, then answer sites for `seconds`.
                     "bunker" -> { val home = Nip46Home(d, net); println(JSONObject().put("bunker", home.mintBunker(args[1].split(","))).toString()); System.out.flush()

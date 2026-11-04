@@ -22,6 +22,7 @@ tasks.test {
     systemProperty("keykin.behaviour", file("../vectors/behaviour.json").absolutePath)
     systemProperty("keykin.cosigner", file("../vectors/cosigner.json").absolutePath)
     systemProperty("keykin.membersig", file("../vectors/membersig.json").absolutePath)
+    systemProperty("keykin.upkeep", file("../vectors/upkeep.json").absolutePath)
     systemProperty("keykin.slip39words", file("../vectors/slip39/wordlist.txt").absolutePath)
     systemProperty("keykin.slip39vectors", file("../vectors/slip39/vectors.json").absolutePath)
     // Built by `cargo build --release --features jni` in ../frost. A plain `cargo build` leaves out the JNI

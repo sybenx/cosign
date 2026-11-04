@@ -62,9 +62,8 @@ class Joiner(val n: String, val lock: JSONObject?, now: Long, scanned: Code?) {
         if (me == null || me.kind != "device") refuse("no_add", "no valid change adds this key")
         if (Jcs.of(me.lock ?: JSONObject.NULL) != Jcs.of(lock ?: JSONObject.NULL)) refuse("no_add", "the add names another lock")
         val st = welcome.getJSONArray("state"); val ids = (0 until st.length()).map { st.getString(it) }
-        // The commitments at a state after a redeal are Upkeep's (not yet ported): a first join only.
-        if (ids.isNotEmpty()) refuse("unsupported", "a welcome at a state after a redeal")
-        val C = (0 until rec.getJSONArray("commitment").length()).map { point(rec.getJSONArray("commitment").getString(it)) }
+        // The commitment at the welcome's state, from the redeals it names (each a change in the set).
+        val C = Upkeep.commitmentAt(rec, view, ids)
         val sh = Codes.stateHash(ids)
         val servers = view.members.filter { it.kind == "server" }.map { it.key }.toSet()
         val shares = me.shares.associateWith { i ->

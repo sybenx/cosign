@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent } from 'nostr-tools/pure';
+import { wrap, unwrap } from '../src/transport.ts';
 import { create, invite, recover } from '../sim/account.ts';
 import { newKey } from '../src/event.ts';
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
@@ -83,3 +84,25 @@ test('L3: a library hears when the device holds no data key any more', async () 
   assert.equal(gone, 1);
   assert.throws(() => acc.A.dataKeys.current(), /no_data_key/);
 });
+
+test('a stranger\'s delivery for a redeal not yet known never stands in for the dealer\'s', async () => {
+  const acc = await create();
+  const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
+  acc.bus.kill(B.kp.pub);
+  // The dealer's delivery to B, as A uploads it.
+  let mine: any;
+  const send = acc.bus.send.bind(acc.bus);
+  acc.bus.send = (async (from: any, to: string, body: any) => { if (body?.type === 'upload') mine ??= body.items.find((x: any) => x.to === B.kp.pub)?.wrap; return send(from, to, body); }) as any;
+  const r: Change[] = [{ redeal: { dealer: acc.A.kp.pub } }];
+  await acc.A.submit(r, acc.A.approveLock(r));
+  acc.bus.send = send;
+  const body = JSON.parse(JSON.stringify(unwrapFor(B, mine)));
+  // Before B knows the redeal: the dealer's delivery, then a stranger's copy of it.
+  B.takeDelivery(mine);
+  B.takeDelivery(wrap(newKey().sk, B.kp.pub, body));
+  B.takeChanges(acc.A.changes);
+  B.applyAll();
+  assert.deepEqual([...B.state!.ids], [...acc.A.state!.ids], 'the dealer\'s delivery applied');
+  assert.ok(!B.notices.some((n) => n.kind === 'bad_delivery'));
+});
+const unwrapFor = (d: any, w: any) => unwrap(d.kp.sk, w).body;

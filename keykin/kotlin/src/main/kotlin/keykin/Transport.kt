@@ -66,6 +66,52 @@ object ChaCha20 {
     }
 }
 
+/** XChaCha20-Poly1305 (core §7.2's release-seed wrap: nonce ‖ ciphertext ‖ tag), written out like ChaCha20:
+ *  HChaCha20 for the subkey, then RFC 8439's AEAD with no associated data. Only opening is needed here. */
+object XChaCha {
+    private fun rotl(v: Int, c: Int) = (v shl c) or (v ushr (32 - c))
+    private fun le(b: ByteArray, o: Int) = (b[o].toInt() and 0xff) or ((b[o + 1].toInt() and 0xff) shl 8) or ((b[o + 2].toInt() and 0xff) shl 16) or ((b[o + 3].toInt() and 0xff) shl 24)
+    fun hchacha(key: ByteArray, nonce16: ByteArray): ByteArray {
+        val x = IntArray(16)
+        x[0] = 0x61707865; x[1] = 0x3320646e; x[2] = 0x79622d32; x[3] = 0x6b206574
+        for (i in 0 until 8) x[4 + i] = le(key, 4 * i)
+        for (i in 0 until 4) x[12 + i] = le(nonce16, 4 * i)
+        fun qr(a: Int, b: Int, c: Int, d: Int) {
+            x[a] += x[b]; x[d] = rotl(x[d] xor x[a], 16); x[c] += x[d]; x[b] = rotl(x[b] xor x[c], 12)
+            x[a] += x[b]; x[d] = rotl(x[d] xor x[a], 8); x[c] += x[d]; x[b] = rotl(x[b] xor x[c], 7)
+        }
+        repeat(10) { qr(0, 4, 8, 12); qr(1, 5, 9, 13); qr(2, 6, 10, 14); qr(3, 7, 11, 15); qr(0, 5, 10, 15); qr(1, 6, 11, 12); qr(2, 7, 8, 13); qr(3, 4, 9, 14) }
+        val out = ByteArray(32)
+        for ((k, w) in (intArrayOf(x[0], x[1], x[2], x[3], x[12], x[13], x[14], x[15])).withIndex()) for (j in 0 until 4) out[4 * k + j] = (w ushr (8 * j)).toByte()
+        return out
+    }
+    private val P1305 = BigInteger.ONE.shiftLeft(130) - BigInteger.valueOf(5)
+    private fun leNum(b: ByteArray) = BigInteger(1, b.reversedArray())
+    fun poly1305(key: ByteArray, msg: ByteArray): ByteArray {
+        val rb = key.copyOfRange(0, 16)
+        for (i in intArrayOf(3, 7, 11, 15)) rb[i] = (rb[i].toInt() and 15).toByte()
+        for (i in intArrayOf(4, 8, 12)) rb[i] = (rb[i].toInt() and 252).toByte()
+        val r = leNum(rb); val sKey = leNum(key.copyOfRange(16, 32))
+        var acc = BigInteger.ZERO
+        for (o in msg.indices step 16) acc = ((acc + leNum(msg.copyOfRange(o, minOf(o + 16, msg.size)) + byteArrayOf(1))) * r).mod(P1305)
+        val t = (acc + sKey).toByteArray().reversedArray().copyOf(16)
+        return t
+    }
+    private fun pad16(n: Int) = ByteArray((16 - n % 16) % 16)
+    private fun le64(n: Long) = ByteArray(8) { (n ushr (8 * it)).toByte() }
+    /** Open `nonce(24) ‖ ciphertext ‖ tag(16)` under `key`; refuses a bad tag. */
+    fun open(key: ByteArray, box: ByteArray): ByteArray {
+        if (box.size < 40) refuse("malformed", "a sealed box")
+        val sub = hchacha(key, box.copyOfRange(0, 16))
+        val n12 = ByteArray(4) + box.copyOfRange(16, 24)
+        val ct = box.copyOfRange(24, box.size - 16); val tag = box.copyOfRange(box.size - 16, box.size)
+        val polyKey = ChaCha20.xor(sub, n12, ByteArray(32), 0)
+        val mac = poly1305(polyKey, ct + pad16(ct.size) + le64(0) + le64(ct.size.toLong()))
+        if (!java.security.MessageDigest.isEqual(mac, tag)) refuse("bad_box", "the tag does not match")
+        return ChaCha20.xor(sub, n12, ct, 1)
+    }
+}
+
 /** NIP-44 v2. */
 object Nip44 {
     private fun expand(prk: ByteArray, info: ByteArray, len: Int): ByteArray {
