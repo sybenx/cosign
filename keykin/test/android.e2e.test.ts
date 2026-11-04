@@ -106,6 +106,10 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   const ct = /result=(\S+)/.exec(query('NIP44_ENCRYPT', `hello-from-the-phone:${peer.pub}:${A.g}`))?.[1];
   assert.ok(ct, 'an encryption');
   assert.equal(nip44.v2.decrypt(ct!, nip44.v2.utils.getConversationKey(peer.sk, A.g)), 'hello-from-the-phone', 'the peer opens what the phone encrypted as the account');
+  // The grant is listed through the signer service (Doors §1–§2), with the scopes it was given.
+  run('grants');
+  let listed = await next(); while (!listed.grants) listed = await next();
+  assert.deepEqual(listed.grants.map((x: any) => [x.door, x.scopes]), [['nip55', ['dms', 'sign-in']]]);
   // The account's own data is never an app's to read.
   const own = nip44.v2.encrypt('to-self', nip44.v2.utils.getConversationKey(newKey().sk, A.g));
   assert.doesNotMatch(query('NIP44_DECRYPT', `${own}:${A.g}:${A.g}`), /result=/, 'the account\'s own data stays the account\'s');

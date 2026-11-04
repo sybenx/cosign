@@ -75,6 +75,7 @@ class Main : Activity() {
                 "sign" -> say(JSONObject(k.signOwn(slot(), JSONObject().put("kind", 1).put("content", c.optString("content")).put("tags", org.json.JSONArray()).toString())).let { it.optJSONObject("event") ?: it })
                 "state" -> say(client.states[slot()] ?: JSONObject().put("error", "no_state"))
                 "fetch" -> k.fetch(slot())
+                "grants" -> say(JSONObject().put("grants", org.json.JSONArray(k.grants(slot()))))
                 "forget" -> { k.forget(slot()); prefs.edit().remove("slot").apply(); say(JSONObject().put("forgotten", true)) }
                 else -> say(JSONObject().put("error", "unknown command"))
             }

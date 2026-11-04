@@ -25,4 +25,18 @@ interface IKeykin {
     oneway void fetch(String slot);
     /** The membership's end on this phone: its sealed state and key go. */
     oneway void forget(String slot);
+
+    /** Every live grant on the account (Doors §1–§2), from every device, for listing: JSON
+     *  [{by, id, says, site, door, connection, scopes, made, last_used}]. Public data only. */
+    String grants(String slot);
+    /** Sign one out, anywhere: an own one ends here, another device's gets a tombstone; published. */
+    oneway void endGrant(String slot, String by, String id);
+
+    /** Pair requests this phone was asked to approve (core §6.2): JSON [{id, from, list, expiry}]. */
+    String pairAsks(String slot);
+    /** The person typed `code` for pair request `id`: true if it matched and this phone signed. */
+    boolean pairApprove(String slot, String id, String code);
+    /** Remove device `key` with a pair: asks device `with` and returns the 6-digit code to show; once the person
+     *  typed it there, the list is dealt and submitted, and the slot's state says how it went ("pair"). */
+    String removeWithPair(String slot, String key, String with);
 }

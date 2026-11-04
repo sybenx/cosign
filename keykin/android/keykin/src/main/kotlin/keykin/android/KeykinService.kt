@@ -96,6 +96,35 @@ class KeykinService : Service() {
             try { Memberships.signer(slot).device?.let { d -> d.nip44(d.g, text, encrypt) } } catch (_: Exception) { null }
         }
         override fun fetch(slot: String) = work.execute { try { Memberships.signer(slot).device?.fetch() } catch (e: Exception) { Log.w(TAG, "fetch: $e") }; publish(slot) }
+        override fun grants(slot: String): String = onWork {
+            val d = Memberships.signer(slot).device ?: return@onWork "[]"
+            JSONArray(d.grants.all().map { e -> JSONObject().also { o -> for (k in listOf("by", "id", "says", "site", "door", "connection", "scopes", "made", "last_used")) e.opt(k)?.let { o.put(k, it) } } }).toString()
+        }
+        override fun endGrant(slot: String, by: String, id: String) = work.execute {
+            Memberships.signer(slot).device?.let { d -> d.grants.end(by, id); d.publishGrantsSoon() }; publish(slot)
+        }
+        override fun pairAsks(slot: String): String = onWork {
+            val d = Memberships.signer(slot).device ?: return@onWork "[]"
+            JSONArray(d.pairAsks.values.map { JSONObject().put("id", it.getString("id")).put("from", it.getString("from")).put("list", it.getJSONArray("list")).put("expiry", it.getLong("expiry")) }).toString()
+        }
+        override fun pairApprove(slot: String, id: String, code: String): Boolean = onWork {
+            try { Memberships.signer(slot).device?.pairApprove(id, code) ?: false } catch (_: Exception) { false }
+        }
+        override fun removeWithPair(slot: String, key: String, with: String): String? = onWork {
+            val d = Memberships.signer(slot).device ?: return@onWork null
+            val list = JSONArray().put(JSONObject().put("remove", key)).put(JSONObject().put("redeal", JSONObject().put("dealer", d.pub)))
+            val (code, approval) = try { d.pairStart(list, with) } catch (_: Exception) { return@onWork null }
+            joining[slot] = JSONObject().put("pair", JSONObject().put("status", "waiting").put("code", code)); publish(slot)
+            // Waiting for the other device off the work thread; the list goes once it signed (or the wait ends).
+            joins.execute {
+                val status = try {
+                    val a = approval.get(10, java.util.concurrent.TimeUnit.MINUTES) ?: throw KeykinException("refused")
+                    onWork { d.submit(list, a) }; "done"
+                } catch (e: KeykinException) { e.code } catch (_: Exception) { "expired" }
+                work.execute { joining[slot] = JSONObject().put("pair", JSONObject().put("status", status)); publish(slot) }
+            }
+            code
+        }
         override fun forget(slot: String) = work.execute {
             Memberships.forget(slot); joining.remove(slot)
             val ss = slots(); send { it.slots(ss.toTypedArray()) }

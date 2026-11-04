@@ -116,4 +116,14 @@ class OnDeviceTest {
         assertEquals(listOf("a", "b"), with(keykin.Json) { o }.let { x -> x.keys().asSequence().toList().sorted() })
         Envelope()   // with AndroidSecp underneath
     }
+
+    @Test fun aPapersWordsReadAsInTs() {
+        val v = asset("backup-words.json"); val ok = v.getJSONArray("valid")
+        for (k in 0 until ok.length()) ok.getJSONObject(k).let { x ->
+            val words = x.getJSONArray("words").let { a -> (0 until a.length()).map { a.getString(it) } }
+            assertEquals(x.getString("secret"), hex(keykin.Backup.readBackupWords(words)))
+        }
+        val seed = v.getJSONArray("wallet_seed").let { a -> (0 until a.length()).map { a.getString(it) } }
+        try { keykin.Backup.readBackupWords(seed); fail() } catch (e: KeykinException) { assertEquals("wallet_seed", e.code) }
+    }
 }

@@ -20,6 +20,8 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     sourceSets["main"].kotlin.srcDir("../../kotlin/src/main/kotlin")
+    // The shared core's resources too: the BIP-39 word list a paper's 24 words are read with.
+    sourceSets["main"].resources.srcDir("../../kotlin/src/main/resources")
     // The TS-made vectors, for the on-device tests (Android's own org.json, libsecp256k1, the APK's FROST).
     sourceSets["androidTest"].assets.srcDir("../../vectors")
     testOptions { unitTests.isReturnDefaultValues = true }
