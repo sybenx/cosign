@@ -3,7 +3,7 @@
 // and the server runtime (server/main.ts) all run the same code.
 
 import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes, b64u, strictJson } from '../src/bytes.ts';
-import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH, what } from '../src/codes.ts';
+import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, seatedAskDigest, signpostD, signpostH, what } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
@@ -502,6 +502,10 @@ export class ServerNode implements Node {
         // that key, with the host signature outside the seal over SHA-256("keykin-seated/1" ‖ H ‖ challenge ‖ ct).
         const key = [m.backupKey, ...m.devices].find((k) => k && bytesToHex(sha(hexToBytes(k))) === body.h);
         if (!key) return { type: 'error', code: 'not_seated' };
+        // Server profile §3 "seated? is verified" (core 14.19): a challenge this server issued to the asker,
+        // signed by the key asked about under its tag. Anything else learns nothing.
+        if (typeof body.challenge !== 'string' || !schnorrVerify(body.sig, seatedAskDigest(body.h, body.challenge), key) || !this.co.takeChallenge(body.challenge, from, this.now))
+          return { type: 'error', code: 'not_seated' };
         const servers = [...m.seats.values()].filter((x) => x.holder?.kind === 'server').map((x) => ({ host: x.holder!.host, https: x.holder!.https, relays: x.holder!.relays ?? [] }));
         const ct = nip44.v2.encrypt(JSON.stringify({ g: m.g, epoch: m.epochId, servers }), nip44.v2.utils.getConversationKey(this.host.sk, key));
         return { type: 'seated', ct, host: this.host.pub, sig: schnorrSign(seatedDigest(body.h, hexToBytes(body.challenge), new TextEncoder().encode(ct)), this.host.sk) };
@@ -520,7 +524,7 @@ export class ServerNode implements Node {
       case 'paper_reissue': {
         const r = m.redeals.get(body.item?.redeal)?.r;
         if (!r || !m.devices.has(from) || body.item.by !== from) refuse('not_device');
-        const e = checkReissue(r!, body.item, m.backupKey!, (k) => m.devices.has(k), m.record.seats.backup);
+        const e = checkReissue(m.g, r!, body.item, m.backupKey!, (k) => m.devices.has(k), m.record.seats.backup);
         if (e) refuse(e);
         // Every distinct valid one, at most one per device and redeal.
         if (!this.items.some((x) => x.kind === "reissue" && x.redeal === r!.id && x.by === from)) this.items.push(body.item);

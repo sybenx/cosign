@@ -12,7 +12,9 @@
 import { sha, utf8ToBytes, concatBytes, refuse, type Bytes } from '../src/bytes.ts';
 import { schnorrSign, schnorrVerify } from '../src/event.ts';
 
-const SHAPE = /^[a-z0-9][a-z0-9.-]*(\/[a-z0-9.-]+)*\/[0-9]+$/;
+// Core 14.19 §5.9: the version has no leading zeros; a message is at most 65,536 bytes.
+const SHAPE = /^[a-z0-9][a-z0-9.-]*(\/[a-z0-9.-]+)*\/(0|[1-9][0-9]*)$/;
+export const MESSAGE_MAX = 65_536;
 const RESERVED = /^(keykin|cosign)/;
 
 /** Domains callers may sign under. A library registers its own once, at load. */
@@ -35,6 +37,7 @@ export const registeredDomains = () => [...registered].sort();
 export function memberDigest(domain: string, message: Bytes): Bytes {
   const f = domainFault(domain); if (f) refuse('bad_domain', f);
   if (!registered.has(domain)) refuse('bad_domain', `${domain} is not registered`);
+  if (message.length > MESSAGE_MAX) refuse('too_large', 'a message is at most 65,536 bytes');
   return sha(concatBytes(utf8ToBytes(domain), new Uint8Array([0]), message));
 }
 /** Sign with a member key (the device's own). `aux` only for test vectors. */

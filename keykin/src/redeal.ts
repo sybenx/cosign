@@ -117,8 +117,10 @@ export { stateHash, derivePoint, liftX, scalarFrom, sha, pubOf, N };
 
 /** A redeal delivery as its receiver checks it (§6.7.2, §6.7.3): sealed by the redeal's dealer, and
  *  every seed it carries matching the hash the group-signed redeal pins. Throws to refuse. */
-export function checkDelivery(r: Redeal, from: string, body: { release?: string; dk?: string }) {
+export function checkDelivery(r: Redeal, from: string, body: { release?: string; dk?: string }, toDevice = false) {
   if (from !== r.dealer) refuse('not_dealer', 'a delta comes only from its redeal\'s dealer');
+  // A device's delivery carries the data-key seed: without it the device could never read new data (review 12 L3).
+  if (toDevice && body.dk === undefined) refuse('missing_seed', 'a device\'s delivery carries the data-key seed');
   if (body.release !== undefined && shaHex(hexToBytes(body.release)) !== r.rs) refuse('bad_seed', 'release seed');
   if (body.dk !== undefined && shaHex(hexToBytes(body.dk)) !== r.dk) refuse('bad_seed', 'data-key seed');
 }
@@ -140,18 +142,20 @@ export function verifyPaperItem(r: Redeal, item: Item, releaseSeed: string, ck: 
 /** §6.7.6 re-issue: a device seals the paper values it kept for a redeal to the current backup key K, as
  *  a supplementary item under that redeal's release seed, with the `δ(b)·G` values in the clear, signed
  *  by its member key. K learns only what devices already know. */
-export function reissueItem(r: Redeal, K: string, releaseSeed: string, values: { b: number[]; d: bigint[]; dk: string }, by: KeyPair): Item {
+/** Core 14.19 §5.9: a member key signs the item as `detached("paper-reissue", item without its sig)`. */
+const reissueDigest = (g: string, it: Item) => detachedDigest('paper-reissue', g, { ...it, sig: undefined });
+export function reissueItem(g: string, r: Redeal, K: string, releaseSeed: string, values: { b: number[]; d: bigint[]; dk: string }, by: KeyPair): Item {
   const { item } = sealItem('reissue', r.id, K, releaseSeed, { redeal: r.id, d: values.d.map(scalarHex), b: values.b, dk_seed: values.dk });
   const full: Item = { ...item, clear: values.d.map((x) => compHex(mul(x))), by: by.pub };
-  return { ...full, sig: schnorrSign(sha(itemHash(full)), by.sk) };
+  return { ...full, sig: schnorrSign(reissueDigest(g, full), by.sk) };
 }
 /** What a server (and any device) checks before keeping a re-issued item: for the current K, from a
  *  current device that signed it, and clear values on the redeal's commitments. */
-export function checkReissue(r: Redeal, item: Item, K: string, isDevice: (k: string) => boolean, backupSeat: number[]): string | null {
+export function checkReissue(g: string, r: Redeal, item: Item, K: string, isDevice: (k: string) => boolean, backupSeat: number[]): string | null {
   if (item.kind !== 'reissue' || item.redeal !== r.id) return 'bad_item';
   if (item.to !== K) return 'not_current_backup';
   if (!item.by || !isDevice(item.by)) return 'not_device';
-  if (!schnorrVerify(item.sig, sha(itemHash(item)), item.by)) return 'bad_signature';
+  if (!schnorrVerify(item.sig, reissueDigest(g, item), item.by)) return 'bad_signature';
   if (!item.clear || !reissueClearOk(r, backupSeat, item.clear)) return 'bad_clear';
   return null;
 }

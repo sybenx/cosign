@@ -23,6 +23,15 @@ import { siteGuard, siteMayDecrypt } from './doors.ts';
 
 export const KIND_NIP46 = 24133;
 const LINK_S = 600, ENDED_KEEP_S = 30 * 86400, WINDOW_S = 120;
+const HELD_PER_GRANT = 8, HELD_MAX = 64, HELD_TTL_S = 7 * 86400;
+/** A replaceable or addressable event's list: kind, and `d` for addressable kinds. */
+export const listKey = (e: any): string | null => {
+  const k = e?.kind;
+  if (!Number.isSafeInteger(k)) return null;
+  if (k === 0 || k === 3 || (k >= 10000 && k < 20000)) return `${k}`;
+  if (k >= 30000 && k < 40000) return `${k}:${(e.tags ?? []).find((t: string[]) => t[0] === 'd')?.[1] ?? ''}`;
+  return null;
+};
 
 export interface Grant {
   signer: string; signerSk: string; client: string | null; secret: string | null; linkExpires: number | null;
@@ -77,7 +86,10 @@ export class Nip46Home {
   /** End a grant: its key answers `revoked:` for 30 days, then is forgotten. */
   async end(signer: string) {
     const g = this.grants.get(signer); if (!g) return;
-    g.endedAt = this.d.now; this.d.persist(); await this.watchSet().catch(() => {});
+    g.endedAt = this.d.now;
+    // Its held events go with it: nothing a site asked for is signed after it was disconnected (review 12 H1).
+    for (const [k, h] of this.held) if (h.signer === signer) this.held.delete(k);
+    this.d.persist(); await this.watchSet().catch(() => {});
   }
 
   /** Answer sites while awake: subscribed to every grant's requests. */
@@ -135,13 +147,22 @@ export class Nip46Home {
         case 'sign_event': {
           const ev = strictJson(String(params[0]));
           siteGuard({ kind: ev?.kind, tags: Array.isArray(ev?.tags) ? ev.tags : [] }, this.d.g, this.#backupKeys());
+          // Device policy §4: while a hold for this list is pending, this site's changes to it wait (review 12 H3).
+          const lk = listKey(ev);
+          if (lk && [...this.held.values()].some((x) => x.wait && x.signer === g.signer && listKey(x.event) === lk)) return { error: 'try-later: a held change to this list is waiting' };
           try { return { result: JSON.stringify(await this.d.sign(ev)) }; }
           catch (err) {
             // Held (Doors §3.3, Device policy §4, review 11 L4): kept on this home for the person, who
             // approves it with the lock or lets a hold's wait pass; the result is published, not returned.
             if ((err as KeykinError).code !== 'needs_approval') throw err;
-            const h = { id: bytesToHex(randomBytes(8)), signer: g.signer, event: siteEvent({ ...ev, created_at: ev?.created_at ?? now }, this.d.g), at: now, wait: null as string | null };
-            this.held.set(h.id, h); this.d.persist();
+            const event = siteEvent({ ...ev, created_at: ev?.created_at ?? now }, this.d.g);
+            this.#expireHeld();
+            // One entry per event, at most 8 per site and 64 in all (review 12 H2).
+            if (![...this.held.values()].some((x) => x.event.id === event.id)) {
+              if ([...this.held.values()].filter((x) => x.signer === g.signer).length >= HELD_PER_GRANT || this.held.size >= HELD_MAX) return { error: 'try-later: too many events waiting for you' };
+              const h = { id: event.id, signer: g.signer, event, at: now, wait: null as string | null };
+              this.held.set(h.id, h); this.d.persist();
+            }
             return { error: 'held: approve on your phone' };
           }
         }
@@ -172,8 +193,23 @@ export class Nip46Home {
   /** Site events waiting for the person: shown on the home, approved with the lock or by a hold. */
   held = new Map<string, { id: string; signer: string; event: any; at: number; wait: string | null }>();
   /** Approve with the lock: sign it unchanged, and publish it to the grant's relays and the account's. */
-  async approveHeld(id: string): Promise<NostrEvent> {
+  /** A held event of a live grant, or refused; one a newer version of its list overtook is dropped. */
+  #heldLive(id: string) {
+    this.#expireHeld();
     const h = this.held.get(id); if (!h) throw new KeykinError('unknown_held');
+    const g = this.grants.get(h.signer);
+    if (!g || g.endedAt) { this.held.delete(id); this.d.persist(); throw new KeykinError('revoked', 'the site was disconnected'); }
+    // Device policy §4: a newer version of the same list exists, so the held one is dropped, never published.
+    const lk = listKey(h.event), newer = lk ? this.d.latestList(lk) : 0;
+    if (lk && newer > h.event.created_at) {
+      this.held.delete(id); this.d.notices.push({ kind: 'held_dropped', member: h.signer }); this.d.persist();
+      throw new KeykinError('superseded', 'the list changed since: the held change was dropped');
+    }
+    return h;
+  }
+  #expireHeld() { for (const [k, h] of this.held) if (this.d.now - h.at > HELD_TTL_S) this.held.delete(k); }
+  async approveHeld(id: string): Promise<NostrEvent> {
+    const h = this.#heldLive(id);
     const { id: _id, ...ev } = h.event;
     const evId = h.event.id;
     if (!this.d.lock) throw new KeykinError('needs_approval', 'this device has no lock: start a hold instead');
@@ -183,7 +219,7 @@ export class Nip46Home {
   }
   /** Lockless: start a hold at every server (core §5.8); `releaseHeld` once its wait has passed. */
   async holdHeld(id: string): Promise<string> {
-    const h = this.held.get(id); if (!h) throw new KeykinError('unknown_held');
+    const h = this.#heldLive(id);
     let wait: string | null = null;
     for (const s of this.d.servers()) {
       const a = await this.d.bus.send(this.d.kp, s.key, msg('hold', this.d.g, this.d.epochId, 'member', { event: h.event }));
@@ -194,7 +230,7 @@ export class Nip46Home {
     return wait;
   }
   async releaseHeld(id: string): Promise<NostrEvent> {
-    const h = this.held.get(id); if (!h?.wait) throw new KeykinError('unknown_held');
+    const h = this.#heldLive(id); if (!h.wait) throw new KeykinError('unknown_held', 'no hold was started');
     const { id: _id, ...ev } = h.event;
     const signed = await this.d.sign(ev, { hold: h.wait });
     await this.#publishHeld(h, signed);

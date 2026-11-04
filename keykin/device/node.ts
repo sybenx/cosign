@@ -12,9 +12,10 @@ import { computeMembership, takenIndices, signpostCount, signpostServers, adopt,
 import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall, ecdhRequest, ecdhFinish } from '../src/coordinator.ts';
 import { nip44Open } from '../src/nip44.ts';
-import { Nip46Home } from './nip46.ts';
+import { Nip46Home, listKey } from './nip46.ts';
 import { DataKeys } from './datakey.ts';
 import { memberSign } from './membersig.ts';
+import { Members } from './members.ts';
 import { extract } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { cbc } from '@noble/ciphers/aes.js';
@@ -105,7 +106,7 @@ export class DeviceNode implements Node {
     this.m = computeMembership(this.rec!, this.changes);
     this.co = new CoSigner({ me: this.kp, kind: this.role, now: () => this.now, record: this.rec!, changes: this.changes, state: this.state!, policy: (e, f) => this.policy(e, f) });
     if (this.m.removed.has(this.kp.pub)) this.wipe();
-    this.#reportRemovals();
+    this.members.update();
     this.persist();
   }
   /** A removed or wiped member destroys everything it holds (core §7.3), the backup secret, push keys and
@@ -133,22 +134,27 @@ export class DeviceNode implements Node {
     // The site's event as §9.5 reads it: absent fields filled, its id, sig and extra fields dropped.
     const { id: _id, ...event } = siteEvent({ created_at: this.now, kind: 1, ...ev }, this.g);
     let lastErr = 'no_server';
+    // A refusal that says what the event needs wins over a server that didn't answer (review 12 H4).
+    const telling = new Set(['needs_approval', 'hold_not_passed', 'declined', 'dated_ahead', 'machinery', 'wrong_pubkey']);
+    const note = (code: string) => { if (!telling.has(lastErr)) lastErr = code; };
     // Core §6.7.9: requests a server left with nothing (no answer, or a partial that doesn't verify; an
     // `error` never counts), reported once another server co-signed the same event.
     const silent: { host: string; id: string }[] = [];
     for (const s of this.servers()) {
-      if (!this.bus.alive(s.key)) { lastErr = 'unreachable'; continue; }
+      if (!this.bus.alive(s.key)) { note('unreachable'); continue; }
       for (let tries = 0; tries < 2; tries++) {
         const r = new OneCall(this.ctx(), this.me(), { key: s.key, indices: s.shares }, event, extra);
         const a = await this.bus.send(this.kp, s.key, r.request);
         if (a?.type === 'stale') { r.abandon(); await this.fetch(); continue; }
         // No answer: nothing at all, or the transport's own timeout (never an error the server sealed).
-        if (a === null || a === undefined || a[TRANSPORT_FAILED]) { r.abandon(); silent.push({ host: s.host!, id: r.request.id }); lastErr = 'no_answer'; break; }
-        if (a?.type !== 'partial') { r.abandon(); lastErr = a?.code ?? 'no_answer'; this.lastDetail = a?.detail; break; }
+        if (a === null || a === undefined || a[TRANSPORT_FAILED]) { r.abandon(); silent.push({ host: s.host!, id: r.request.id }); note('no_answer'); break; }
+        if (a?.type !== 'partial') { r.abandon(); note(a?.code ?? 'no_answer'); if (a?.code && telling.has(a.code)) lastErr = a.code; this.lastDetail = a?.detail; break; }
         let signed: NostrEvent;
-        try { signed = r.finish(a); } catch (e) { silent.push({ host: s.host!, id: r.request.id }); lastErr = (e as KeykinError).code ?? 'bad_partial'; break; }
+        try { signed = r.finish(a); } catch (e) { silent.push({ host: s.host!, id: r.request.id }); note((e as KeykinError).code ?? 'bad_partial'); break; }
         for (const x of silent) this.signWatch.unanswered(x.host, x.id, this.now, true);
         this.signWatch.partial(s.host!, r.request.id, this.now);
+        const lk = listKey(signed);
+        if (lk && signed.created_at > (this.#lists.get(lk) ?? 0)) { this.#lists.set(lk, signed.created_at); }
         return signed;
       }
     }
@@ -217,7 +223,7 @@ export class DeviceNode implements Node {
       for (const { r } of m.redeals.values()) {
         const d = this.pendingDeltas.get(r.id);
         if (!d || applicable(this.state!, r, m.abandoned)) continue;
-        try { checkDelivery(r, d.from ?? r.dealer, d); } catch { this.pendingDeltas.delete(r.id); this.notices.push({ kind: 'bad_delivery', member: d.from }); continue; }
+        try { checkDelivery(r, d.from ?? r.dealer, d, this.role === 'device'); } catch { this.pendingDeltas.delete(r.id); this.notices.push({ kind: 'bad_delivery', member: d.from }); continue; }
         // §6.7.1 step 0: the paper item, opened with its conversation key; a bad one is shown.
         if (d.paper_item && d.paper_ck) {
           const ok = verifyPaperItem(r, d.paper_item, d.release, d.paper_ck, m.record.seats.backup);
@@ -374,7 +380,7 @@ export class DeviceNode implements Node {
       if (paperState.has(id) || id === own || this.paperVerified.get(`${K}:${id}`)) { this.kept.delete(id); continue; }
       const v = this.kept.get(id), r = m.redeals.get(id)?.r;
       if (!v || !r) continue;                                     // nothing to re-issue from: a new paper (quiet dot)
-      const item = reissueItem(r, K, v.release, v, this.kp);
+      const item = reissueItem(this.g, r, K, v.release, v, this.kp);
       for (const s of this.servers()) await this.bus.send(this.kp, s.key, msg('paper_reissue', this.g, this.epochId, 'member', { item }));
       this.paperVerified.set(`${K}:${id}`, true);
       this.kept.delete(id);
@@ -440,7 +446,7 @@ export class DeviceNode implements Node {
       kept: [...this.kept].map(([k, x]) => [k, { ...x, d: x.d.map(scalarHex) }]), paperVerified: [...this.paperVerified],
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), dkHistory: this.dataKeys.dump() });
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists] });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
    *  by §3.4, every share against the commitments, and the member key a current device holding exactly
@@ -462,6 +468,8 @@ export class DeviceNode implements Node {
     d.signWatch.load(x.signWatch);
     d.nip46.load(x.nip46);
     d.dataKeys.load(x.dkHistory);
+    d.members.load(x.members);
+    d.#lists = new Map(x.lists ?? []);
     if (x.recEv && x.state) {
       const rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey });
       const m = computeMembership(rec, x.changes);
@@ -516,44 +524,20 @@ export class DeviceNode implements Node {
   }
 
   // --- for other protocols: the account's devices, and signing with this device's member key ------
-  /** The account's current device member keys (helpers, servers and the backup are not devices). */
-  memberKeys(): string[] { return this.m ? [...this.m.devices].filter((k) => !this.m!.removed.has(k)).sort() : []; }
-  #knownDevices: Set<string> | null = null;     // removed device keys already reported
-  #removedListeners = new Set<(x: { removed: string[]; state: string }) => void>();
-  /** Called when devices left the account (a remove or report-lost), once the redeal after it has been
-   *  applied, with the state hash that redeal brought. Returns a function that stops it. */
-  onMemberRemoved(cb: (x: { removed: string[]; state: string }) => void): () => void { this.#removedListeners.add(cb); return () => void this.#removedListeners.delete(cb); }
-  #afterState() { this.dataKeys.note(); this.#reportRemovals(); }
-  /** Report each removed device once the redeal of its own list is part of this device's state, whichever
-   *  arrived first (the redeal's delivery or the remove change). What was removed before this device's
-   *  first state is history, not news. */
-  #reportRemovals() {
-    if (this.wiped || !this.m || !this.state) return;
-    const m = this.m, ids = this.state.ids;
-    const everDevices = new Set([...this.rec!.members.filter((x) => x.kind === 'device').map((x) => x.key),
-      ...m.accepted.filter((p) => p.type === 'add').map((p) => (p.c.change as any).add.key as string)]);
-    const landed: string[] = [];
-    for (const p of m.accepted) {
-      if (p.type !== 'remove') continue;
-      const k = (p.c.change as any).remove as string;
-      if (!everDevices.has(k) || !m.removed.has(k)) continue;
-      const redeals = m.accepted.filter((q) => q.listHash === p.listHash && q.type === 'redeal').map((q) => (q.c.change as any).redeal.id as string);
-      if (redeals.some((r) => ids.has(r))) landed.push(k);
-    }
-    const first = this.#knownDevices === null;
-    const reported = this.#knownDevices ?? new Set<string>();
-    const removed = first ? [] : [...new Set(landed)].filter((k) => !reported.has(k)).sort();
-    for (const k of landed) reported.add(k);
-    this.#knownDevices = reported;
-    if (!removed.length) return;
-    const state = stateHash(ids);
-    for (const cb of this.#removedListeners) { try { cb({ removed, state }); } catch { /* a listener never wedges the device */ } }
-  }
+  /** The account's devices and removals, for apps that check member-key signatures (core 14.19 §5.9). */
+  members = new Members(this);
+  /** The current device member keys (helpers, servers and the backup are not devices). */
+  memberKeys(): string[] { return this.members.devices().keys.map((k) => k.key); }
+  #afterState() { this.dataKeys.note(); this.members.update(); }
   /** Sign `message` under a registered `domain` with this device's member key (device/membersig.ts). */
   signAsMember(domain: string, message: Uint8Array): { sig: string; key: string } {
     if (this.wiped) refuse('wiped');
     return { sig: memberSign(this.kp.sk, domain, message), key: this.kp.pub };
   }
+
+  /** The newest version of each list this device signed (Device policy §4): kind (and d) → created_at. */
+  #lists = new Map<string, number>();
+  latestList(key: string) { return this.#lists.get(key) ?? 0; }
 
   /** The data key (core §4.5), for libraries that encrypt the account's own data. */
   dataKeys = new DataKeys(this);

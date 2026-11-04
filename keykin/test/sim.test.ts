@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { create, invite, replaceServer, recover } from '../sim/account.ts';
 import { approvePair, approvePaper } from '../src/approval.ts';
-import { verifyEvent } from '../src/event.ts';
+import { verifyEvent, schnorrSign } from '../src/event.ts';
 import { KIND_WRAP_STORED } from '../src/transport.ts';
 import { mul, derivePoint, liftX } from '../src/curve.ts';
 import { msg } from '../sim/nodes.ts';
@@ -203,7 +203,7 @@ test('need_seeds: a device gives seeds to a current device (data key too) or a s
 test('§6.7.5: after every printed server is replaced, the paper finds today\'s servers by forwarding notes and seated?', async () => {
   const acc = await create();
   const printed = acc.servers.map((x) => x.kp.pub);
-  const Ys = [];
+  const Ys: any[] = [];
   for (const [k, i] of [4, 7, 8].entries()) { acc.bus.kill(printed[k]); Ys.push(await replaceServer(acc, acc.A, i, (l) => acc.A.approveLock(l))); acc.bus.revive(printed[k]); }
   for (const p of printed) await acc.bus.send(acc.A.kp, p, { type: 'change', events: acc.A.changes });   // removal notices reach them
   assert.ok(acc.servers.every((x) => x.retired));
@@ -219,12 +219,20 @@ test('§6.7.5: after every printed server is replaced, the paper finds today\'s 
   const { seatedDigest } = codesMod;
   const { schnorrVerify } = await import('../src/event.ts');
   const nip44 = await import('nostr-tools/nip44');
-  const h = hx(sha(hb(acc.paper.pub))), challenge = hx(randomBytes(16));
-  const r = await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge });
+  const h = hx(sha(hb(acc.paper.pub)));
+  const ask = async (key = acc.paper) => { const c = (await acc.bus.send(acc.paper, Ys[0].kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'))).challenge;
+    return { c, sig: schnorrSign(codesMod.seatedAskDigest(hx(sha(hb(key.pub))), c), key.sk) }; };
+  const { c: challenge, sig } = await ask();
+  // Core 14.19: unsigned, or signed raw, it learns nothing.
+  assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge })).code, 'not_seated');
+  assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge, sig: schnorrSign(hb(challenge.padEnd(64, '0')), acc.paper.sk) })).code, 'not_seated');
+  const r = await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge, sig });
   assert.ok(schnorrVerify(r.sig, seatedDigest(h, hb(challenge), new TextEncoder().encode(r.ct)), r.host));
   const body = JSON.parse(nip44.v2.decrypt(r.ct, nip44.v2.utils.getConversationKey(acc.paper.sk, r.host)));
   assert.deepEqual(body.servers.map((x: any) => x.host).sort(), Ys.map((y) => y.host.pub).sort());
-  assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h: hx(sha(hb(newKey().pub))), challenge })).code, 'not_seated');
+  assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge, sig })).code, 'not_seated', 'a challenge is used once');
+  const stranger = newKey(); const s2 = await ask(stranger);
+  assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h: hx(sha(hb(stranger.pub))), challenge: s2.c, sig: s2.sig })).code, 'not_seated');
 });
 test('a replaced server that slept through its removal learns it from peers before starting a recovery wait', async () => {
   const acc = await create();
@@ -341,7 +349,7 @@ test('§6.7.6 re-issue: a redeal applied during an F7 reaches the new paper by a
   assert.equal(acc.A.kept.size, 0, 'the kept paper values are destroyed');
   // A forged re-issue (clear values off the commitments) is refused.
   const { reissueItem } = await import('../src/redeal.ts');
-  const bad = reissueItem(missed, K.pub, acc.A.seeds.get(missed.id)!, { b: [5, 6], d: [1n, 2n], dk: '00'.repeat(32) }, B.kp);
+  const bad = reissueItem(acc.g, missed, K.pub, acc.A.seeds.get(missed.id)!, { b: [5, 6], d: [1n, 2n], dk: '00'.repeat(32) }, B.kp);
   assert.equal((await acc.bus.send(B.kp, acc.servers[0].kp.pub, msg('paper_reissue', acc.g, acc.epochId, 'member', { item: bad }))).code, 'bad_clear');
   // Recovery with K sums the base, the re-issued item and the F7 redeal's own item.
   acc.bus.kill(acc.A.kp.pub); acc.bus.kill(B.kp.pub);

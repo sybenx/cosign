@@ -46,19 +46,50 @@ test('no domain reaches a core message: keykin and cosign are refused, and the 0
   void detachedDigest;
 });
 
-test('memberKeys is the current devices; onMemberRemoved fires after the redeal, with its state hash', async () => {
+test('members (core 14.19 §5.9): devices() with added_by; a removal logged at once, then with its post-redeal state', async () => {
   const acc = await create();
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
-  const C = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
-  assert.deepEqual(acc.A.memberKeys(), [acc.A.kp.pub, B.kp.pub, C.kp.pub].sort());
+  const C = await invite(acc, acc.A, (l) => acc.A.approveLock(l), { lock: true });
+  const D = await invite(acc, C, (l) => C.approveLock(l));           // C adds D
+  await acc.A.fetch(); await B.fetch();
+  const dv = acc.A.members.devices();
+  assert.equal(dv.self, acc.A.kp.pub);
+  assert.equal(dv.asOf, acc.A.dataKeys.current().state);
+  const by = Object.fromEntries(dv.keys.map((k) => [k.key, k.added_by]));
+  assert.deepEqual([by[acc.A.kp.pub], by[B.kp.pub], by[D.kp.pub]], [null, acc.A.kp.pub, C.kp.pub]);
+  assert.ok(dv.keys.every((k) => !k.flagged));
   const seenA: any[] = [], seenB: any[] = [];
-  acc.A.onMemberRemoved((x) => seenA.push(x));
-  B.onMemberRemoved((x) => seenB.push(x));
+  acc.A.members.onRemoved((e) => seenA.push(e));
+  B.members.onRemoved((e) => seenB.push(e));
+  // C is reported lost.
   const lost: Change[] = [{ remove: C.kp.pub }, { redeal: { dealer: acc.A.kp.pub } }];
   await acc.A.submit(lost, acc.A.approveLock(lost));
   await B.fetch();
   const state = acc.A.dataKeys.current().state;
-  assert.deepEqual(seenA, [{ removed: [C.kp.pub], state }], 'once, on the dealer, with the new state');
-  assert.deepEqual(seenB, [{ removed: [C.kp.pub], state }], 'and on another device');
-  assert.deepEqual(acc.A.memberKeys(), [acc.A.kp.pub, B.kp.pub].sort());
+  for (const seen of [seenA, seenB]) {
+    const rs = seen.filter((e) => e.removed).map((e) => e.removed);
+    assert.deepEqual(rs.map((r) => [r.key, r.why, r.state]), [[C.kp.pub, 'remove', null], [C.kp.pub, 'remove', state]], 'at once, then with the post-redeal hash');
+    assert.ok(seen.some((e) => e.flagged === D.kp.pub), 'D, added by a removed device, is flagged');
+  }
+  assert.equal(acc.A.members.removed().length, 1);
+  const [entry] = acc.A.members.removed();
+  assert.equal(entry.state, state);
+  assert.deepEqual(acc.A.members.removed(entry.seq), [], 'an app replays from where it stopped');
+  assert.ok(!acc.A.members.devices().keys.some((k) => k.key === C.kp.pub));
+  assert.ok(acc.A.members.devices().keys.find((k) => k.key === D.kp.pub)!.flagged);
+  acc.A.members.keep(D.kp.pub);
+  assert.ok(!acc.A.members.devices().keys.find((k) => k.key === D.kp.pub)!.flagged, 'kept by the person');
+  assert.deepEqual(acc.A.memberKeys(), [acc.A.kp.pub, B.kp.pub, D.kp.pub].sort());
+  // The log is durable: an app that was down reads it after a restart.
+  const { DeviceNode } = await import('../device/node.ts');
+  const back = DeviceNode.restore(acc.bus, acc.A.snapshot());
+  assert.deepEqual(back.members.removed().map((e) => [e.key, e.state]), [[C.kp.pub, state]]);
+});
+
+test('core 14.19: a message over 65,536 bytes is refused, and so is a version with a leading zero', async () => {
+  const acc = await create();
+  assert.throws(() => acc.A.signAsMember('nostr-vault/ksig/1', new Uint8Array(65_537)), /too_large/);
+  assert.ok(memberVerify(acc.A.signAsMember('nostr-vault/ksig/1', new Uint8Array(65_536)).sig, 'nostr-vault/ksig/1', new Uint8Array(65_536), acc.A.kp.pub));
+  assert.ok(domainFault('x/01') && domainFault('nostr-vault/ksig/01') && !domainFault('x/0') && !domainFault('x/10'));
+  for (const r of V.refused_messages) assert.throws(() => memberDigest(r.domain, new Uint8Array(r.length)), /too_large/);
 });

@@ -4,7 +4,8 @@
 package keykin
 
 object MemberSig {
-    private val SHAPE = Regex("^[a-z0-9][a-z0-9.-]*(/[a-z0-9.-]+)*/[0-9]+$")
+    private val SHAPE = Regex("^[a-z0-9][a-z0-9.-]*(/[a-z0-9.-]+)*/(0|[1-9][0-9]*)$")
+    const val MESSAGE_MAX = 65_536
     private val registered = java.util.concurrent.ConcurrentHashMap.newKeySet<String>().apply { add("nostr-vault/ksig/1") }
     fun fault(domain: String): String? = when {
         domain.length > 128 -> "a domain is a short string"
@@ -16,6 +17,7 @@ object MemberSig {
     fun digest(domain: String, message: ByteArray): ByteArray {
         fault(domain)?.let { refuse("bad_domain", it) }
         if (domain !in registered) refuse("bad_domain", "$domain is not registered")
+        if (message.size > MESSAGE_MAX) refuse("too_large", "a message is at most 65,536 bytes")
         return sha(utf8(domain), byteArrayOf(0), message)
     }
     fun sign(secp: Secp, sk: ByteArray, domain: String, message: ByteArray, aux: ByteArray = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }) =

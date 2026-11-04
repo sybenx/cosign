@@ -53,13 +53,25 @@ export class DataKeys {
   /** The key for data written under `state`, if this device held that state; null otherwise. */
   forState(state: string): Uint8Array | null {
     this.note();
-    const ids = [...this.history, [...(this.d.state?.ids ?? [])]].find((x) => stateHash(x) === state);
+    const ids = this.#candidates().find((x) => stateHash(x) === state);
     return ids ? this.#derive(ids) : null;
   }
+  /** Every state the account has been at, as far as this device can tell: the ones it held, the record's
+   *  empty state, and each redeal's base plus itself. A device that joined or recovered late holds the
+   *  seeds of earlier redeals too (core §7.2), so it reads what was written before it (review 12 R1). */
+  #candidates(): string[][] {
+    const out = [...this.history, [...(this.d.state?.ids ?? [])], []];
+    for (const [id, x] of this.d.m?.redeals ?? []) out.push([...new Set([...(x.r.base ?? []), id])].sort());
+    return out;
+  }
   /** Every state whose data this device can read, oldest first. */
-  states(): string[] { this.note(); return this.history.filter((ids) => this.#derive(ids)).map(stateHash); }
+  states(): string[] { this.note(); return [...new Set(this.#candidates().filter((ids) => this.#derive(ids)).map(stateHash))]; }
   /** Called with the new key whenever a redeal moves it on. Returns a function that stops it. */
   onRotate(cb: (k: DataKey) => void): () => void { this.#listeners.add(cb); return () => void this.#listeners.delete(cb); }
+  /** Called when this device holds no data key any more (wiped, or removed from the account): a library
+   *  stops using any key it cached (review 12 L3). Listeners run before the device saves its state. */
+  onGone(cb: () => void): () => void { this.#gone.add(cb); return () => void this.#gone.delete(cb); }
+  #gone = new Set<() => void>();
 
   /** The device moved to a state (core §6.7.1): remember it, and tell listeners if the key changed. */
   note() {
@@ -73,6 +85,6 @@ export class DataKeys {
   }
   dump() { return this.history; }
   load(x: unknown) { this.history = Array.isArray(x) ? (x as string[][]) : []; }
-  clear() { this.history = []; }
+  clear() { this.history = []; for (const cb of this.#gone) { try { cb(); } catch { /* never wedges the wipe */ } } }
 }
 export { bytesToHex };
