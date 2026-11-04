@@ -5,6 +5,7 @@ import org.json.JSONObject
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /** vectors/metadata.json, made by the TS reference: a Kotlin device judges a decrypt on another device's synced
  *  records, as TS does; and the TS reference reads what Kotlin publishes (vectors/check-metadata.ts). */
@@ -30,5 +31,22 @@ class MetadataTest {
         val p = ProcessBuilder("node", File(root, "vectors/check-metadata.ts").path, f.path).directory(root).redirectErrorStream(true).start()
         val out = JSONObject(p.inputStream.bufferedReader().readText().trim().lines().last()); p.waitFor()
         assertEquals(1, out.getInt("owners"), out.toString())
+    }
+
+    @Test fun monthsAreCalendarMonthsInAsciiWhateverTheLocale() {
+        val was = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("fa-IR"))
+            assertEquals("2026-03", MetaStore.monthOf(java.time.Instant.parse("2026-03-31T12:00:00Z").epochSecond))
+            assertEquals(listOf("2026-03", "2026-02", "2026-01"), MetaStore.lastMonths(java.time.Instant.parse("2026-03-31T12:00:00Z").epochSecond, 3))
+        } finally { java.util.Locale.setDefault(was) }
+    }
+    @Test fun aFloodShedsTheOldestNeverTheSync() {
+        val d = device()
+        val ev = Evidence()
+        repeat(Evidence.PER_OWNER + 10) { ev.encrypted(Nip44.encrypt("x$it", ByteArray(32) { 3 }), "dev:flooder") }
+        assertEquals(Evidence.PER_OWNER, ev.owners.values.count { "dev:flooder" in it })
+        repeat(7000) { d.meta.encrypted(Nip44.encrypt("y$it", ByteArray(32) { 5 }), "${d.pub}:${it % 40}") }
+        assertTrue(d.meta.unsignedForTest(d.g).isNotEmpty(), "built, trimmed to fit, no throw")
     }
 }

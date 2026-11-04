@@ -17,7 +17,7 @@ import org.json.JSONObject
 object Nip55 {
     /** Sign an app's or site's event (NIP-01 JSON; its id, pubkey and sig ignored), read strictly (§9.5: no
      *  duplicate keys, typed fields), with the Doors guard. */
-    fun sign(d: Device, eventJson: String): JSONObject {
+    fun sign(d: Device, eventJson: String, owner: String = "member"): JSONObject {
         val e = Json.obj(eventJson)
         val kind = (e.opt("kind") as? Number)?.toInt()?.takeIf { it in 0..65535 } ?: throw KeykinException("malformed", "kind")
         val content = e.opt("content") as? String ?: throw KeykinException("malformed", "content")
@@ -26,7 +26,7 @@ object Nip55 {
         val tags = (0 until ta.length()).map { i -> (ta.get(i) as? JSONArray ?: throw KeykinException("malformed", "tags")).let { t -> (0 until t.length()).map { t.get(it) as? String ?: throw KeykinException("malformed", "tags") } } }
         val at = e.opt("created_at")?.let { (it as? Number)?.toLong() ?: throw KeykinException("malformed", "created_at") } ?: (System.currentTimeMillis() / 1000)
         Doors.siteGuard(d, kind, tags)
-        return d.sign(kind, content, tags, at)
+        return d.sign(kind, content, tags, at, owner)
     }
     /** The scope a request needed (Doors §1), for remembering it. */
     fun scopeOf(d: Device, r: Request, result: String?): String? = when (r.type) {
@@ -81,16 +81,21 @@ object Nip55 {
             val slot = Memberships.slotFor(r.current) ?: return deny(a, r)
             val d = Memberships.signer(slot).device ?: return deny(a, r)
             if (!r.current.isNullOrBlank() && r.current != d.g) return deny(a, r)
+            // The scope this needs, judged with the evidence, as the screen named it: "Always" stores that, never more
+            // (review 17 H1).
+            val scope = scopeNeeded(d, r)
+            // The app's grant (connecting) first, so what it encrypts or gets signed is recorded as its own (L3).
+            val grant = Memberships.grant(slot, pkg, r.caller ?: pkg, emptyList()) ?: return deny(a, r)
+            val owner = "${d.pub}:${grant.id}"
             val out = Intent()
             when (r.type) {
                 "get_public_key" -> out.putExtra("result", d.g).putExtra("package", a.packageName)
-                "sign_event" -> sign(d, r.payload).let { out.putExtra("result", it.getString("sig")).putExtra("signature", it.getString("sig")).putExtra("event", it.toString()) }
-                "nip44_encrypt", "nip44_decrypt" -> out.putExtra("result", d.nip44(r.peer, r.payload, r.type.endsWith("encrypt")))
+                "sign_event" -> sign(d, r.payload, owner).let { out.putExtra("result", it.getString("sig")).putExtra("signature", it.getString("sig")).putExtra("event", it.toString()) }
+                "nip44_encrypt", "nip44_decrypt" -> out.putExtra("result", d.nip44(r.peer, r.payload, r.type.endsWith("encrypt"), owner))
                 "nip04_encrypt", "nip04_decrypt" -> out.putExtra("result", d.nip04(r.peer, r.payload, r.type.endsWith("encrypt")))
                 else -> return deny(a, r)
             }
-            // The grant only once it worked: connecting always, and with `remember` the scope this needed.
-            Memberships.grant(slot, pkg, r.caller ?: pkg, if (remember) listOfNotNull(scopeOf(d, r, out.getStringExtra("result"))) else emptyList())
+            if (remember && scope != null && scope != "malformed") Memberships.grant(slot, pkg, r.caller ?: pkg, listOf(scope))
             r.id?.let { out.putExtra("id", it) }
             a.setResult(Activity.RESULT_OK, out); a.finish()
         } catch (_: Exception) { deny(a, r) }

@@ -36,6 +36,11 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         return false
     }
     private fun ask(scope: String) = err("permission: $scope needs your OK on your phone")
+    private val crypt = HashMap<String, ArrayDeque<Long>>()
+    @Synchronized private fun budget(signer: String): Boolean {
+        val q = crypt.getOrPut(signer) { ArrayDeque() }; while (q.isNotEmpty() && net.now - q.first() > 3600) q.removeFirst()
+        if (q.size >= 300) return false; q.addLast(net.now); return true
+    }
     private val seen = LinkedHashMap<String, Long>()
     private var stop: (() -> Unit)? = null
     private val env = Envelope(secp)
@@ -126,7 +131,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                     for (n in needs) if (!has(g, n)) return ask(n)
                     val content = x.optString("content")
                     val at = if (x.has("created_at")) Json.long(x.get("created_at")) else net.now
-                    try { ok(d.sign(kind, content, tags, at).toString()) }
+                    // Signed for this grant: the evidence records who got each ciphertext signed (review 17 M1).
+                    try { ok(d.sign(kind, content, tags, at, "${d.pub}:${g.entry}").toString()) }
                     catch (e: KeykinException) {
                         if (e.code != "needs_approval") throw e
                         val h = Held(hex(rand(8)), g.signer, Unsigned(d.g, at, kind, tags, content), net.now); held[h.id] = h
@@ -137,6 +143,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                 // to the account itself released only under the scope its plaintext needs (Doors §1).
                 "nip44_encrypt", "nip04_encrypt" -> {
                     val need = if (params[0].lowercase() == d.g) "post" else "dms"; if (!has(g, need)) return ask(need)
+                    // At most 300 encryptions to self an hour per site: each becomes a metadata record (review 17 H2).
+                    if (need == "post" && !budget(g.signer)) return err("try-later: too many encryptions; wait a while")
                     // An encryption to self is recorded for this grant: evidence for its later decrypts.
                     ok(if (method == "nip44_encrypt") d.nip44(params[0], params[1], true, "${d.pub}:${g.entry}") else d.nip04(params[0], params[1], true))
                 }

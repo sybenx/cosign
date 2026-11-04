@@ -39,7 +39,7 @@ class Nip55Provider : ContentProvider() {
                 "SIGN_EVENT" -> {
                     val kind = Nip55.kindOf(payload) ?: return null
                     if (Grants.scopeForEvent(kind) !in grant.scopes || !budget(grant.id)) return null
-                    Nip55.sign(d, payload).let { d.grants.used(grant.id); row("result" to it.getString("sig"), "signature" to it.getString("sig"), "event" to it.toString()) }
+                    Nip55.sign(d, payload, "${d.pub}:${grant.id}").let { d.grants.used(grant.id); row("result" to it.getString("sig"), "signature" to it.getString("sig"), "event" to it.toString()) }
                 }
                 "NIP44_ENCRYPT", "NIP04_ENCRYPT" -> {
                     if ((if (peer.lowercase() == d.g) "post" else "dms") !in grant.scopes || !budget("crypt:${grant.id}", 300)) return null

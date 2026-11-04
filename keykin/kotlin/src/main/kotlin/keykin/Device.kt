@@ -153,6 +153,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     /** Doors §1's evidence for a decrypt to the account itself: every current device's records. */
     val evidence: Evidence get() = meta.evidence()
     val protectedIds: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet())
+    /** The account's keykin- events (every device's grants and metadata): no site deletes one by id (review 17 M6). */
+    private fun protect(id: String) = synchronized(protectedIds) { protectedIds += id; if (protectedIds.size > 50_000) protectedIds.remove(protectedIds.first()) }
     /** When this device last caught up with the servers (Doors §2: no site is answered on older news). */
     @Volatile var lastFetchAt = 0L
     private val grantPublisher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "keykin-grants").also { it.isDaemon = true } }
@@ -412,9 +414,15 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
         if (baseDk.isNotEmpty()) try {
             val (evs, answered, asked) = net.queryCounted(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))))
-            grants.take(evs, answered, asked); for (e in evs) protectedIds += e.id
-            // Device policy §1: every device's records, from the same fetch; this device's own at most every 10 minutes.
-            meta.take(evs)
+            grants.take(evs, answered, asked)
+            for (e in evs) if ((e.tag("d") ?: "").startsWith("keykin-")) protect(e.id)
+            // Device policy §1: the indexes first by d (a site's own 30078 events can't crowd them out, M6), then
+            // the parts they name; this device's own at most every 10 minutes.
+            val cur = view.devices.filter { it !in view.removed }
+            val ix = net.query(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))).put("#d", JSONArray(cur.map { MetaStore.indexD(baseDk, it) })))
+            meta.take(ix)
+            val named = meta.namedParts(ix)
+            meta.take(ix + if (named.isEmpty()) emptyList() else net.query(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))).put("#d", JSONArray(named))))
             if (meta.dirty.isNotEmpty() && net.now - meta.lastAt >= 600) try { meta.publish(net) } catch (_: Exception) {}
             save()
         } catch (_: Exception) {}
@@ -810,7 +818,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
 
     /** Sign an event with the first server that gives a partial. */
-    fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList(), createdAt: Long = net.now): JSONObject {
+    fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList(), createdAt: Long = net.now, owner: String = "member"): JSONObject {
         var last = "no_server"
         val st = state; if (wiped) refuse("wiped"); val c = RoundContext(g, epochId, st.hash, st.C)
         for (s in servers()) {
@@ -818,7 +826,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val a = net.send(sk, s.key, r.request)
             if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; continue }
             // A faulty or hostile server's bad partial counts as silence: try the next one (review 12 L1).
-            try { return r.finish(a).also { ev -> meta.event(kind, content); if (kind == Grants.KIND) protectedIds += ev.getString("id") } } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
+            try { return r.finish(a).also { ev ->
+                // Not the account's own keykin- events (grants, metadata): they'd feed back into the snapshot (review 17 M3).
+                val keykinD = kind == Grants.KIND && (tags.firstOrNull { it.size >= 2 && it[0] == "d" }?.get(1) ?: "").startsWith("keykin-")
+                if (keykinD) protect(ev.getString("id")) else meta.event(kind, content, owner) } } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
         }
         refuse(last)
     }

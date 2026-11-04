@@ -118,15 +118,14 @@ object Grants {
         if (plaintext == null) return "private-data"
         val h = payload?.let { Evidence.hashOf(it) }
         if (payload != null && h == null) return "malformed"
-        val kinds = h?.let { evidence?.kinds?.get(it) }?.toList() ?: emptyList()
-        val owners = h?.let { evidence?.owners?.get(it) }
         fun ofKind(k: Int) = if (k in WALLET_KINDS) "wallet" else if (k in LIST_KINDS) "lists" else if (k == 4 || k == 14) "dms" else "private-data"
         var need: String? = null
-        if (kinds.isNotEmpty()) {
-            val vouched = owners != null && ("member" in owners || (owner != null && owner in owners))
-            val classes = kinds.map(::ofKind)
-            if (vouched) need = classes.maxByOrNull { RANK[it]!! }
-            else if (owners.isNullOrEmpty() && classes.all { it == "lists" }) need = "lists"
+        if (h != null && evidence != null) {
+            // Evidence: events whose ciphertext the same grant (or the member app) both encrypted and got signed.
+            val vouched = evidence.vouched(h).map(::ofKind)
+            val all = evidence.allKinds(h).map(::ofKind)
+            if (vouched.isNotEmpty()) need = (vouched + all.filter { RANK[it]!! > RANK["lists"]!! }).maxByOrNull { RANK[it]!! }
+            else if (evidence.owners[h].isNullOrEmpty() && all.isNotEmpty() && all.all { it == "lists" }) need = "lists"
         }
         if (need == "lists" && !listPlaintextOk(plaintext)) need = if (looksWallet(plaintext)) "wallet" else "private-data"
         if (need != null) return if (need == "private-data" && looksWallet(plaintext)) "wallet" else need
@@ -144,25 +143,42 @@ object Grants {
     } catch (_: Exception) { false }
 }
 
-/** What this device knows of the account's own ciphertexts (Device policy §1, its own part), as TS `Evidence`. */
+/** What this device knows of the account's own ciphertexts (Device policy §1), as TS `Evidence`: by ciphertext
+ *  hash, the events carrying it as `kind:signer`, and who encrypted it. An event is evidence only if the same grant
+ *  (or the member app) both encrypted and signed it (review 17 M1). */
 class Evidence {
-    val kinds = LinkedHashMap<String, MutableSet<Int>>()
+    val kinds = LinkedHashMap<String, MutableSet<String>>()
     val owners = LinkedHashMap<String, MutableSet<String>>()
+    private val count = HashMap<String, Int>()
     companion object {
+        const val PER_OWNER = 2000
         fun hashOf(payload: String): String? = try { val b = java.util.Base64.getDecoder().decode(payload); if (java.util.Base64.getEncoder().encodeToString(b) == payload) hex(sha(b)) else null } catch (_: Exception) { null }
     }
-    @Synchronized fun encrypted(payload: String, owner: String) { hashOf(payload)?.let { owners.getOrPut(it) { LinkedHashSet() } += owner; cap() } }
-    @Synchronized fun event(kind: Int, content: String) { hashOf(content)?.let { kinds.getOrPut(it) { LinkedHashSet() } += kind; cap() } }
+    @Synchronized fun encrypted(payload: String, owner: String) {
+        val h = hashOf(payload) ?: return
+        val s = owners.getOrPut(h) { LinkedHashSet() }; if (owner in s) return
+        if (owner != "member" && (count[owner] ?: 0) >= PER_OWNER) { if (s.isEmpty()) owners.remove(h); return }
+        s += owner; count[owner] = (count[owner] ?: 0) + 1; cap()
+    }
+    @Synchronized fun event(kind: Int, content: String, signer: String = "member") { hashOf(content)?.let { kinds.getOrPut(it) { LinkedHashSet() } += "$kind:$signer"; cap() } }
+    @Synchronized fun vouched(h: String): List<Int> {
+        val os = owners[h] ?: return emptyList()
+        return (kinds[h] ?: emptySet<String>()).mapNotNull { x -> val i = x.indexOf(':'); if (i > 0 && x.substring(i + 1) in os) x.substring(0, i).toIntOrNull() else null }
+    }
+    @Synchronized fun allKinds(h: String): List<Int> = (kinds[h] ?: emptySet<String>()).mapNotNull { it.substringBefore(':').toIntOrNull() }
+    @Synchronized fun trim(n: Int) { for (m in listOf<MutableMap<String, *>>(kinds, owners)) m.keys.take(n).toList().forEach { m.remove(it) }; recount() }
+    @Synchronized fun size() = kinds.size + owners.size
+    private fun recount() { count.clear(); for (os in owners.values) for (o in os) count[o] = (count[o] ?: 0) + 1 }
     private fun cap() { for (m in listOf<MutableMap<String, *>>(kinds, owners)) while (m.size > 20_000) m.remove(m.keys.first()) }
     @Synchronized fun dump(): JSONObject = JSONObject().put("kinds", JSONArray(kinds.map { (h, k) -> JSONArray(listOf(h, JSONArray(k.toList()))) })).put("owners", JSONArray(owners.map { (h, o) -> JSONArray(listOf(h, JSONArray(o.toList()))) }))
     @Synchronized fun load(x: JSONObject?) {
-        kinds.clear(); owners.clear(); if (x == null) return
-        x.optJSONArray("kinds")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> kinds[p.getString(0)] = p.getJSONArray(1).let { k -> (0 until k.length()).map { k.getInt(it) }.toMutableSet() } } }
+        kinds.clear(); owners.clear(); if (x == null) { recount(); return }
+        x.optJSONArray("kinds")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> kinds[p.getString(0)] = p.getJSONArray(1).let { k -> (0 until k.length()).map { j -> k.get(j).let { y -> if (y is Number) "${y.toInt()}:member" else y.toString() } }.toMutableSet() } } }
         x.optJSONArray("owners")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> owners[p.getString(0)] = p.getJSONArray(1).let { k -> (0 until k.length()).map { k.getString(it) }.toMutableSet() } } }
+        recount()
     }
-    @Synchronized fun clear() { kinds.clear(); owners.clear() }
+    @Synchronized fun clear() { kinds.clear(); owners.clear(); count.clear() }
 }
-
 /** One device's grants (Doors §1–§2), as TS `GrantStore`. */
 class GrantStore(private val d: Device) {
     val own = LinkedHashMap<String, JSONObject>()
