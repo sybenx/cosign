@@ -2,7 +2,9 @@
 // with review 11's fixes: per-site signer keys that never leave the device, bunker:// links bound to the
 // first client and dead after 10 minutes, nostrconnect:// codes, the methods and their errors, the
 // machinery guard and no decryption of the account's own data (device/doors.ts), requests only within
-// 2 minutes and each once, held events kept for the person. Watching (the wake path) follows.
+// 2 minutes and each once, held events kept for the person and approved by the lock or a hold, and the wake path
+// (watch_set to one watching server, whose kept requests arrive with each catch-up). Its state (signer keys
+// included) is a part of the device's sealed snapshot, as TS keeps it.
 package keykin
 
 import org.json.JSONArray
@@ -14,8 +16,11 @@ import java.security.SecureRandom
 class Nip46Home(private val d: Device, private val net: RelayNet, private val secp: Secp = Keykin.secp) {
     /** `entry`: the grant store's entry once a client is bound (Doors §1); `offered`: the scopes the link offered. */
     class Grant(val signer: String, val signerSk: ByteArray, var client: String?, val secret: String?, var linkExpires: Long?, val relays: List<String>, var endedAt: Long? = null,
-                var entry: String? = null, val offered: List<String> = listOf("sign-in", "post"), val site: String = "")
-    class Held(val id: String, val signer: String, val event: Unsigned, val at: Long)
+                var entry: String? = null, val offered: List<String> = listOf("sign-in", "post"), val site: String = "", var connectedAt: Long? = null)
+    class Held(val id: String, val signer: String, val event: Unsigned, val at: Long, var wait: String? = null)
+    /** The server this home asked to watch for it (one per account), and whether a watch_set is still to send. */
+    @Volatile var watching: String? = null; private set
+    @Volatile var watchPending = false; private set
     val grants = LinkedHashMap<String, Grant>()
     val held = LinkedHashMap<String, Held>()
     /** Scopes sites asked for that the person hasn't answered, by signer (Doors §1: asked the first time). */
@@ -24,10 +29,25 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         val g = grants[signer] ?: refuse("unknown_grant"); d.grants.widen(g.entry ?: refuse("unknown_grant"), listOf(scope)); asks[signer]?.remove(scope); d.publishGrantsSoon()
     }
     private fun bind(g: Grant, client: String) {
-        g.client = client
+        g.client = client; g.connectedAt = net.now
         g.entry = d.grants.make(client, g.site, "nip46", client, g.offered, g.relays, g.signer).getString("id")
         d.publishGrantsSoon()
+        // A watching server keeps this site's requests while the phone sleeps, and pushes (Doors §3.3).
+        if (watching == null) watching = d.servers().firstOrNull()?.key
+        try { watchSet() } catch (_: Exception) { watchPending = true }
+        d.saveNow()
     }
+    /** Ask the watching server to watch this home's live grants (an empty set stops it). */
+    fun watchSet() {
+        val server = watching ?: return
+        val gs = JSONArray(synchronized(this) { grants.values.filter { it.endedAt == null }.map { JSONObject().put("signer", it.signer).put("client", it.client ?: JSONObject.NULL).put("relays", JSONArray(it.relays)) } })
+        val a = d.send(server, d.msg("watch_set", "ask").put("grants", gs))
+        if (a.optString("type") != "ack") { watchPending = true; refuse(a.optString("code").ifEmpty { "watch_set_failed" }) }
+        watchPending = false; d.saveNow()
+    }
+    /** Woken (a push, or the app opened): a pending watch_set first, then a catch-up, which also hands this home
+     *  every site request the watching server kept. */
+    fun wake() { if (watchPending) try { watchSet() } catch (_: Exception) {}; d.fetch() }
     private fun has(g: Grant, scope: String): Boolean {
         val e = g.entry?.let { d.grants.own[it] }
         // An expired grant grants nothing (review 16 M4).
@@ -49,6 +69,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     private fun key(): ByteArray = rand(32).also { it[0] = (it[0].toInt() and 0x7f).toByte() }
 
     init {
+        load(d.carriedPart("nip46"))
+        d.snapshotParts["nip46"] = { dump() }
         // A wiped or removed device's home goes with it: no grant, held event or signer key stays (review 13 M6).
         d.onGone { sleep(); synchronized(this) { grants.values.forEach { it.signerSk.fill(0) }; grants.clear(); held.clear() } }
         // A grant ended on this device or elsewhere (a delivered end, sign out of every site): its site is revoked here.
@@ -58,7 +80,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     }
     fun mintBunker(relays: List<String>, site: String = "", scopes: List<String> = listOf("sign-in", "post")): String {
         val sk = key(); val g = Grant(secp.pub(sk), sk, null, hex(rand(16)), net.now + 600, relays, offered = scopes, site = site)
-        grants[g.signer] = g; listen()
+        grants[g.signer] = g; listen(); d.saveNow()
         return "bunker://${g.signer}?" + relays.joinToString("&") { "relay=" + java.net.URLEncoder.encode(it, "UTF-8") } + "&secret=${g.secret}"
     }
     fun acceptNostrconnect(uri: String, scopes: List<String> = listOf("sign-in", "post")): Grant {
@@ -69,7 +91,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         val relays = q.filter { it.first == "relay" }.map { it.second }.distinct().take(8)
         if (relays.isEmpty() || relays.any { !Regex("^wss?://\\S+$").matches(it) || it.length > 256 }) refuse("malformed", "relays")
         val sk = key(); val g = Grant(secp.pub(sk), sk, null, null, null, relays, offered = scopes, site = q.firstOrNull { it.first == "name" }?.second ?: "")
-        bind(g, client); grants[g.signer] = g; listen()
+        grants[g.signer] = g; bind(g, client); listen()
         reply(g, client, JSONObject().put("id", hex(rand(8))).put("result", q.firstOrNull { it.first == "secret" }?.second ?: "ack"), false)
         return g
     }
@@ -77,7 +99,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         stop?.invoke()
         val live = grants.values.toList()
         // Off the relay's listener thread: answering signs, and the co-signer's answer arrives on that thread.
-        stop = if (live.isEmpty()) null else net.watch(JSONObject().put("kinds", JSONArray(listOf(24133))).put("#p", JSONArray(live.map { it.signer }))) { e -> worker.execute { try { handle(e) } catch (_: Exception) {} } }
+        // On the grants' own relays too, dialled when not yet (review 11 H3).
+        stop = if (live.isEmpty()) null else net.watch(JSONObject().put("kinds", JSONArray(listOf(24133))).put("#p", JSONArray(live.map { it.signer })), { e -> worker.execute { try { handle(e) } catch (_: Exception) {} } }, live.flatMap { it.relays }.distinct())
     }
     fun sleep() { stop?.invoke(); stop = null }
 
@@ -148,7 +171,15 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                         // A server's demand the device's own check doesn't explain: Held only when two servers demand it.
                         if (e.demands < 2) return err("try-later: a server asked for an approval; try again later")
                     }
-                    val h = Held(hex(rand(8)), g.signer, event, net.now); held[h.id] = h
+                    // One per event, at most 8 per site and 64 in all (review 12 H2).
+                    synchronized(this) {
+                        held.entries.removeIf { net.now - it.value.at > 7 * 86400 }
+                        if (held.values.none { it.event.id == event.id }) {
+                            if (held.values.count { it.signer == g.signer } >= 8 || held.size >= 64) return err("try-later: too many events waiting for you")
+                            val h = Held(event.id, g.signer, event, net.now); held[h.id] = h
+                        }
+                    }
+                    d.saveNow()
                     err("held: approve on your phone")
                 }
                 // Encrypting to the account's own key is `post`, to anyone else `dms`; decrypting with others is `dms`,
@@ -189,12 +220,87 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     }
     private fun siteGuard(kind: Int, tags: List<List<String>>) = Doors.siteGuard(d, kind, tags)
     /** End a grant here: its key answers `revoked:` from now on, and its entry ends in the grant store. */
-    private fun end(g: Grant) { g.endedAt = net.now; g.entry?.let { d.grants.end(d.pub, it); d.publishGrantsSoon() }; asks.remove(g.signer); held.entries.removeIf { it.value.signer == g.signer } }
+    private fun end(g: Grant) {
+        g.endedAt = net.now; g.entry?.let { d.grants.end(d.pub, it); d.publishGrantsSoon() }; asks.remove(g.signer); held.entries.removeIf { it.value.signer == g.signer }
+        try { watchSet() } catch (_: Exception) {}
+        d.saveNow()
+    }
+
+    // --- held events (Doors §3.3, Device policy §4) ----------------------------------------------
+    /** A held event of a live grant, or refused; one a newer version of its list overtook is dropped. */
+    @Synchronized private fun heldLive(id: String): Held {
+        val h = held[id] ?: refuse("unknown_held")
+        val g = grants[h.signer]
+        if (g == null || g.endedAt != null) { held.remove(id); d.saveNow(); refuse("revoked", "the site was disconnected") }
+        val a = if (Rules.replaceable(h.event.kind)) Kinds.addrOf(h.event.kind, h.event.tags) else null
+        val newer = a?.let { d.history.current(it) }
+        if (newer != null && newer.createdAt > h.event.createdAt) {
+            held.remove(id); d.notices += JSONObject().put("kind", "held_dropped").put("member", h.signer); d.saveNow()
+            refuse("superseded", "the list changed since: the held change was dropped")
+        }
+        return h
+    }
+    private fun ownerOf(signer: String) = "${d.pub}:${grants[signer]?.entry}"
+    /** Held events waiting for the person: {id, signer, site, kind, content (the first 200 characters), at, wait}. */
+    @Synchronized fun heldList(): JSONArray = JSONArray(held.values.map { h -> JSONObject().put("id", h.id).put("signer", h.signer).put("site", grants[h.signer]?.site ?: "")
+        .put("kind", h.event.kind).put("content", h.event.content.take(200)).put("at", h.at).put("wait", h.wait ?: JSONObject.NULL) })
+    /** Sign a held event unchanged with the lock's approval (`{"lock": {member, assertion}}` over "sign" ‖ event id),
+     *  and publish it to the site's relays and the account's. */
+    fun approveHeld(id: String, approval: JSONObject): JSONObject {
+        val h = heldLive(id); val e = h.event
+        val signed = d.sign(e.kind, e.content, e.tags, e.createdAt, ownerOf(h.signer), JSONObject().put("approval", approval))
+        publishHeld(h, signed); return signed
+    }
+    /** Lockless: start a hold at every server (core §5.8); `releaseHeld` once its wait has passed. */
+    fun holdHeld(id: String): String {
+        val h = heldLive(id)
+        var wait: String? = null
+        for (s in d.servers()) try { val a = d.send(s.key, d.msg("hold", "member").put("event", h.event.wire())); if (a.optString("kind") == "hold") wait = a.optString("wait").ifEmpty { wait } } catch (_: Exception) {}
+        h.wait = wait ?: refuse("no_server", "no server started the hold"); d.saveNow()
+        return h.wait!!
+    }
+    fun releaseHeld(id: String): JSONObject {
+        val h = heldLive(id); val wait = h.wait ?: refuse("unknown_held", "no hold was started"); val e = h.event
+        val signed = d.sign(e.kind, e.content, e.tags, e.createdAt, ownerOf(h.signer), JSONObject().put("hold", wait))
+        publishHeld(h, signed); return signed
+    }
+    /** The person declined it: a decline of that site (Device policy §6). */
+    fun declineHeld(id: String) { val h = synchronized(this) { held.remove(id) } ?: return; d.guard.declined(ownerOf(h.signer), "core"); d.saveNow() }
+    private fun publishHeld(h: Held, signed: JSONObject) {
+        net.publishEventTo(signed, (grants[h.signer]?.relays ?: emptyList()) + d.recordRelays())
+        synchronized(this) { held.remove(h.id) }; d.saveNow()
+    }
+
+    // --- durable state, as TS's dump: signer keys go with the device's sealed snapshot -------------------------
+    @Synchronized fun dump(): JSONObject = JSONObject()
+        .put("grants", JSONArray(grants.values.map { g -> JSONObject().put("signer", g.signer).put("signerSk", hex(g.signerSk)).put("client", g.client ?: JSONObject.NULL)
+            .put("secret", g.secret ?: JSONObject.NULL).put("linkExpires", g.linkExpires ?: JSONObject.NULL).put("relays", JSONArray(g.relays)).put("site", g.site)
+            .put("connectedAt", g.connectedAt ?: JSONObject.NULL).put("endedAt", g.endedAt ?: JSONObject.NULL).put("entry", g.entry ?: JSONObject.NULL).put("offered", JSONArray(g.offered)) }))
+        .put("watching", watching ?: JSONObject.NULL).put("watchPending", watchPending)
+        .put("held", JSONArray(held.values.map { h -> JSONObject().put("id", h.id).put("signer", h.signer).put("event", h.event.wire()).put("at", h.at).put("wait", h.wait ?: JSONObject.NULL) }))
+        .put("asks", JSONArray(asks.map { (k, v) -> JSONArray(listOf(k, JSONArray(v.toList()))) }))
+    @Synchronized private fun load(x: JSONObject?) {
+        if (x == null) return
+        fun str(o: JSONObject, k: String) = (o.opt(k) as? String)
+        fun num(o: JSONObject, k: String) = (o.opt(k) as? Number)?.toLong()
+        fun strs(a: JSONArray?) = a?.let { l -> (0 until l.length()).mapNotNull { l.opt(it) as? String } } ?: emptyList()
+        x.optJSONArray("grants")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { o ->
+            val signer = str(o, "signer") ?: return@let; val sk = str(o, "signerSk") ?: return@let
+            grants[signer] = Grant(signer, unhex(sk), str(o, "client"), str(o, "secret"), num(o, "linkExpires"), strs(o.optJSONArray("relays")), num(o, "endedAt"), str(o, "entry"),
+                strs(o.optJSONArray("offered")).ifEmpty { listOf("sign-in", "post") }, str(o, "site") ?: "", num(o, "connectedAt")) } }
+        watching = str(x, "watching"); watchPending = x.optBoolean("watchPending")
+        x.optJSONArray("held")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { o -> val e = o.optJSONObject("event") ?: return@let
+            val tags = e.optJSONArray("tags")?.let { t -> (0 until t.length()).map { k -> strs(t.optJSONArray(k)) } } ?: emptyList()
+            val u = Unsigned(e.optString("pubkey"), e.optLong("created_at"), e.optInt("kind"), tags, e.optString("content"))
+            held[o.optString("id")] = Held(o.optString("id"), o.optString("signer"), u, o.optLong("at"), str(o, "wait")) } }
+        x.optJSONArray("asks")?.let { a -> for (i in 0 until a.length()) a.optJSONArray(i)?.let { p -> asks[p.getString(0)] = strs(p.optJSONArray(1)).toMutableSet() } }
+        if (grants.values.any { it.endedAt == null }) listen()
+    }
 
     private fun reply(g: Grant, to: String, body: JSONObject, nip04: Boolean) {
         val text = body.toString()
         val content = if (nip04) nip04Encrypt(g.signerSk, to, text) else Nip44.encrypt(text, Nip44.conversationKey(secp, g.signerSk, to))
-        net.publishEvent(env.sign(g.signerSk, 24133, net.now, listOf(listOf("p", to)), content))
+        net.publishEventTo(env.sign(g.signerSk, 24133, net.now, listOf(listOf("p", to)), content), g.relays)
     }
     private fun nip04Key(sk: ByteArray, peer: String) = javax.crypto.spec.SecretKeySpec(secp.ecdhX(sk, peer), "AES")
     private fun nip04Encrypt(sk: ByteArray, peer: String, text: String): String {

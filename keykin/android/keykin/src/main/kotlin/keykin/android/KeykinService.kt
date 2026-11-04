@@ -48,7 +48,15 @@ class KeykinService : Service() {
         return x.put("joined", true).put("device", self).put("account", d.g).put("state", asOf).put("wiped", d.wiped)
             .put("devices", JSONArray(keys.map { JSONObject().put("key", it.key).put("flagged", it.flagged) }))
             .put("removed", JSONArray(d.members.removed(0).map { it.json() })).put("notices", JSONArray(d.notices.toList()))
+            .also { o -> hooked(slot, d); val v = d.guard.view { owner -> d.grants.own[owner.substringAfter(':')]?.optString("says") }
+                o.put("cards", v.getJSONArray("cards")).put("undos", v.getJSONArray("undos")).put("held", d.nip46.heldList())
+                .put("sites", JSONArray(d.nip46.asks.map { (k, sc) -> JSONObject().put("signer", k).put("scopes", JSONArray(sc.toList())) })) }
     }
+    /** Cards and Undo waits change outside any call: each change goes out as the slot's state at once. */
+    private val hookedSlots = java.util.Collections.synchronizedSet(HashSet<String>())
+    private fun hooked(slot: String, d: keykin.Device) { if (hookedSlots.add(slot)) d.guard.onChange = { work.execute { publish(slot) } } }
+    private fun <T> withDevice(slot: String, f: (keykin.Device) -> T): T? = Memberships.signer(slot).device?.let(f)
+    private fun errorJson(e: Exception) = JSONObject().put("error", (e as? KeykinException)?.code ?: "internal").toString()
     private fun send(f: (IKeykinClient) -> Unit) = out.execute {
         val n = clients.beginBroadcast()
         try { for (i in 0 until n) try { f(clients.getBroadcastItem(i)) } catch (e: Exception) { Log.w(TAG, "client: $e") } } finally { clients.finishBroadcast() }
@@ -62,6 +70,7 @@ class KeykinService : Service() {
             ?.split(",")?.mapNotNull { it.trim().toIntOrNull() }?.toSet() } catch (_: Exception) { null }
     }
 
+    private fun csv(x: String) = x.split(",").map { it.trim() }.filter { it.isNotEmpty() }
     private val binder = object : IKeykin.Stub() {
         override fun listen(client: IKeykinClient) {
             clients.register(client)
@@ -109,6 +118,50 @@ class KeykinService : Service() {
         override fun helperSite(slot: String, site: String, relaysCsv: String): String? = onWork {
             try { Memberships.signer(slot).device?.helperSite(site, relaysCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }) } catch (_: Exception) { null }
         }
+        // --- Device policy: cards, Undo, held events -----------------------------------------------------------
+        override fun answerCard(slot: String, id: Int, allow: Boolean) = work.execute { withDevice(slot) { it.guard.answer(id, if (allow) "allow" else "decline") }; publish(slot) }
+        override fun undoPending(slot: String, id: Int) = work.execute { withDevice(slot) { it.guard.undoPending(id) }; publish(slot) }
+        // These sign: off the call thread a card or a server can't block, as the join is.
+        override fun undoTo(slot: String, versionId: String, confirmed: Boolean): String = joins.submit<String> {
+            try { withDevice(slot) { d -> when (val r = d.undoTo(versionId, confirmed)) { is String -> JSONObject().put("needs", r).toString(); is JSONObject -> JSONObject().put("event", r).toString(); else -> JSONObject().put("error", "internal").toString() } } ?: JSONObject().put("error", "no_membership").toString() }
+            catch (e: Exception) { errorJson(e) }
+        }.get()
+        override fun undoSite(slot: String, owner: String, confirmed: Boolean): String = joins.submit<String> {
+            try { withDevice(slot) { d -> val (lists, posts) = d.undoSite(owner, confirmed)
+                JSONObject().put("lists", JSONArray(lists.map { if (it is JSONObject) JSONObject().put("event", it) else JSONObject().put("needs", it.toString()) })).put("posts", JSONArray(posts)).toString() } ?: JSONObject().put("error", "no_membership").toString() }
+            catch (e: Exception) { errorJson(e) }
+        }.get()
+        override fun postAgain(slot: String, id: String): String = joins.submit<String> {
+            try { withDevice(slot) { d -> JSONObject().put("event", d.postAgain(id)).toString() } ?: JSONObject().put("error", "no_membership").toString() } catch (e: Exception) { errorJson(e) }
+        }.get()
+        override fun holdHeld(slot: String, id: String): String = joins.submit<String> {
+            try { withDevice(slot) { d -> JSONObject().put("wait", d.nip46.holdHeld(id)).toString() } ?: JSONObject().put("error", "no_membership").toString() } catch (e: Exception) { errorJson(e) } finally { work.execute { publish(slot) } }
+        }.get()
+        override fun releaseHeld(slot: String, id: String): String = joins.submit<String> {
+            try { withDevice(slot) { d -> JSONObject().put("event", d.nip46.releaseHeld(id)).toString() } ?: JSONObject().put("error", "no_membership").toString() } catch (e: Exception) { errorJson(e) } finally { work.execute { publish(slot) } }
+        }.get()
+        override fun declineHeld(slot: String, id: String) = work.execute { withDevice(slot) { it.nip46.declineHeld(id) }; publish(slot) }
+
+        // --- the NIP-46 home ----------------------------------------------------------------------------------
+        override fun bunker(slot: String, relaysCsv: String, scopesCsv: String): String? = onWork {
+            try { withDevice(slot) { d -> d.nip46.mintBunker(csv(relaysCsv), "", csv(scopesCsv).ifEmpty { listOf("sign-in", "post") }) } } catch (_: Exception) { null }
+        }
+        override fun nostrconnect(slot: String, uri: String, scopesCsv: String): String? = onWork {
+            try { withDevice(slot) { d -> d.nip46.acceptNostrconnect(uri, csv(scopesCsv).ifEmpty { listOf("sign-in", "post") }).signer } } catch (_: Exception) { null }
+        }
+        override fun allowScope(slot: String, signer: String, scope: String) = work.execute { try { withDevice(slot) { it.nip46.allowScope(signer, scope) } } catch (e: Exception) { Log.w(TAG, "allowScope: $e") }; publish(slot) }
+
+        // --- UnifiedPush -----------------------------------------------------------------------------------------
+        override fun pushInstances(slot: String): String = onWork { JSONArray(Memberships.signer(slot).instances()).toString() }
+        override fun pushEndpoint(slot: String, instance: String, endpoint: String) = work.execute {
+            try { val s = Memberships.signer(slot); s.onEndpoint(instance, endpoint); s.registerPush() } catch (e: Exception) { Log.w(TAG, "pushEndpoint: $e") }
+        }
+        // A wake can wait on servers and sites: on its own thread, as the join is; the state follows.
+        override fun pushMessage(slot: String, instance: String, body: ByteArray) = joins.execute {
+            try { Memberships.signer(slot).onMessage(instance, body) } catch (e: Exception) { Log.w(TAG, "pushMessage: $e") }
+            work.execute { publish(slot) }
+        }
+
         override fun pairAsks(slot: String): String = onWork {
             val d = Memberships.signer(slot).device ?: return@onWork "[]"
             JSONArray(d.pairAsks.values.map { JSONObject().put("id", it.getString("id")).put("from", it.getString("from")).put("list", it.getJSONArray("list")).put("expiry", it.getLong("expiry")) }).toString()

@@ -439,6 +439,15 @@ class Guard(private val d: Device) {
     @Volatile private var recordsAt = 0L
     /** Shown to the app: a new card. */
     @Volatile var onCard: ((Card) -> Unit)? = null
+    /** Any change the app shows: a card drawn or answered, an Undo wait begun or over. */
+    @Volatile var onChange: (() -> Unit)? = null
+    private fun changed() { try { onChange?.invoke() } catch (_: Exception) {} }
+    /** The cards and Undo waits, as public JSON for the app (never a key): {cards: [...], undos: [...]}. */
+    fun view(says: (String) -> String?): JSONObject = synchronized(this) {
+        JSONObject().put("cards", JSONArray(cards.filter { it.shown }.map { c -> JSONObject().put("id", c.id).put("owner", c.owner).put("site", says(c.owner) ?: JSONObject.NULL).put("row", c.row)
+            .put("reason", c.reason).put("events", c.events.size).also { o -> c.media?.let { m -> o.put("media", JSONObject().put("files", JSONArray(m.files)).put("servers", m.servers?.let { JSONArray(it) } ?: "*").put("expiry", m.expiry).put("url", m.url ?: JSONObject.NULL)) } } }))
+            .put("undos", JSONArray(undos.values.map { u -> JSONObject().put("id", u.id).put("owner", u.owner).put("site", says(u.owner) ?: JSONObject.NULL) }))
+    }
     var undoMs = 10_000L; var cardWaitMs = 120_000L; var quietMs = 1000L
     private val now get() = d.now
 
@@ -512,7 +521,7 @@ class Guard(private val d: Device) {
             } else {
                 card = Card(++seq, owner, verdict.row, verdict.reason, mutableListOf(e), now, verdict.media)
                 cards += card
-                timers.schedule({ if (synchronized(this) { card in cards }) { card.shown = true; onCard?.invoke(card) } }, if (verdict.row == "media-delete") quietMs else 0, TimeUnit.MILLISECONDS)
+                timers.schedule({ if (synchronized(this) { card in cards }) { card.shown = true; onCard?.invoke(card); changed() } }, if (verdict.row == "media-delete") quietMs else 0, TimeUnit.MILLISECONDS)
             }
             waits.getOrPut(card.id) { ArrayList() } += f
         }
@@ -532,6 +541,7 @@ class Guard(private val d: Device) {
             fs = waits.remove(id) ?: emptyList()
         }
         for (f in fs) f.complete(a)
+        changed()
     }
     @Synchronized private fun allowed(owner: String, files: List<String>, server: String?): Boolean {
         allows.removeAll { it.until <= now }
@@ -546,7 +556,8 @@ class Guard(private val d: Device) {
     /** Each wait has its own id and remembers its site (review 18 M2, L3). */
     private fun undoWait(e: Unsigned, owner: String): Boolean {
         val w = synchronized(this) { UndoWait(++seq, owner, e.tags, CompletableFuture()).also { undos[it.id] = it } }
-        return try { w.f.get(undoMs, TimeUnit.MILLISECONDS) } catch (_: java.util.concurrent.TimeoutException) { true } catch (_: Exception) { false } finally { synchronized(this) { undos.remove(w.id) } }
+        changed()
+        return try { w.f.get(undoMs, TimeUnit.MILLISECONDS) } catch (_: java.util.concurrent.TimeoutException) { true } catch (_: Exception) { false } finally { synchronized(this) { undos.remove(w.id) }; changed() }
     }
     @Synchronized fun pendingUndos(): List<UndoWait> = undos.values.toList()
     /** Undo a waiting deletion and every twin from the same site naming the same targets: one decline (§6). */

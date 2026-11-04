@@ -26,6 +26,8 @@ class KeykinSigner(private val context: Context, val name: String = "default") {
         d.persist = { s -> if (JSONObject(s).optBoolean("wiped")) store.destroy() else store.save(s) }
         d.onGone { store.destroy(); onRemoved?.invoke() }
         if (!d.wiped) store.save(d.snapshot())
+        // The NIP-46 home comes back with its sites and listens again (Doors §3.3).
+        if (!d.wiped) d.nip46
         device = d; return d
     }
     /** The stored membership, if any, over `relays`. Throws if it is there but can't be opened: the caller keeps
@@ -58,9 +60,13 @@ class KeykinSigner(private val context: Context, val name: String = "default") {
     fun onMessage(instance: String, body: ByteArray): JSONObject? {
         val d = device ?: return null
         val p = d.onPush(endpoint(instance) ?: return null, body) ?: return null
-        if (!p.has("wrap")) d.fetch()
+        // A wake (an `ask` push for a site's request, a notice): a catch-up that also answers what the watching
+        // server kept for the NIP-46 home.
+        if (!p.has("wrap")) d.nip46.wake()
         return p
     }
+    /** This membership's Keystore lock, if it joined with one (for LockPrompt). */
+    fun lock(): KeystoreLock? = if (KeystoreLock.exists(lockAlias)) KeystoreLock.open(lockAlias) else null
     /** The membership's end on this phone: the sealed state, its key, the lock and the relays go (core §7.3). */
     fun forget() {
         device?.wipe(); device = null; store.destroy(); KeystoreLock.destroy(lockAlias)

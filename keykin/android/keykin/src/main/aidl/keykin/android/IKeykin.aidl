@@ -46,4 +46,41 @@ interface IKeykin {
     oneway void signOutEverywhere(String slot);
     /** "Let the helper answer for this site" (Helper module §2): the bunker:// link the helper minted, or null. */
     String helperSite(String slot, String site, String relaysCsv);
+
+    // --- Device policy (§2, §3, §6): what the person answers. The slot's state carries "cards" ({id, site, row,
+    // reason, media?}), "undos" ({id, site}: a deletion waiting its 10 seconds) and "held" (events held for the lock
+    // or a 3-day hold: {id, signer, site, kind, content, at, wait}).
+    /** The person's answer to a card: Allow or Decline (a decline counts towards §6's auto-declines). */
+    oneway void answerCard(String slot, int id, boolean allow);
+    /** Undo a deletion still waiting its 10 seconds (and its twins from that site); a decline of that site. */
+    oneway void undoPending(String slot, int id);
+    /** Undo a list or the profile to an earlier version (§3): {"event": …}, {"needs": "confirm"|"held"}, or {"error"}. */
+    String undoTo(String slot, String versionId, boolean confirmed);
+    /** Undo everything a site did since it connected (§3): {"lists": [...], "posts": [ids offered for deletion]}. */
+    String undoSite(String slot, String owner, boolean confirmed);
+    /** "Post again" (§3): a deleted post's content as a new event: {"event": …} or {"error"}. */
+    String postAgain(String slot, String id);
+    /** Lockless: start a 3-day hold at every server for held event `id`: {"wait": …} or {"error"}. With a lock the
+     *  app approves it from a signer-process activity instead (LockPrompt.approveSign, then approveHeld there). */
+    String holdHeld(String slot, String id);
+    /** Sign a held event once its hold's wait has passed: {"event": …} or {"error"}. */
+    String releaseHeld(String slot, String id);
+    /** The person declined a held event (a decline of that site). */
+    oneway void declineHeld(String slot, String id);
+
+    // --- the NIP-46 home on this phone (Doors §3.3): the slot's state carries "sites" asks ({signer, scopes}).
+    /** A bunker:// link for a site, over these relays, offering these scopes (comma-separated); null on failure. */
+    String bunker(String slot, String relaysCsv, String scopesCsv);
+    /** Connect a scanned nostrconnect:// code: the new grant's signer key, or null. */
+    String nostrconnect(String slot, String uri, String scopesCsv);
+    /** The person allowed `scope` for a site (asked the first time it was needed). */
+    oneway void allowScope(String slot, String signer, String scope);
+
+    // --- UnifiedPush, forwarded by the app's receiver (core §8.2): one instance per server and wake class.
+    /** The UnifiedPush instances to register, as JSON ["<server>:<cls>", ...]. */
+    String pushInstances(String slot);
+    /** UnifiedPush gave `endpoint` for `instance`; once every instance has one, the device registers them. */
+    oneway void pushEndpoint(String slot, String instance, String endpoint);
+    /** A UnifiedPush message for `instance`: decrypted and checked, a carried delivery taken, a wake. */
+    oneway void pushMessage(String slot, String instance, in byte[] body);
 }

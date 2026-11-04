@@ -35,7 +35,7 @@ test('nak signs and encrypts as the account through a Kotlin NIP-46 home', { ski
   const dir = mkdtempSync(join(tmpdir(), 'kk-kn-'));
   writeFileSync(join(dir, 'device.json'), acc.A.snapshot());
   net.kill(acc.A.kp.pub);                                    // the TS device steps aside (one member, §4.6)
-  writeFileSync(join(dir, 'cmds.json'), JSON.stringify([{ cmd: 'bunker', seconds: 90, scopes: 'sign-in,post,dms' }]));
+  writeFileSync(join(dir, 'cmds.json'), JSON.stringify([{ cmd: 'bunker', seconds: 45, scopes: 'sign-in,post,dms,lists' }, { cmd: 'approve_held' }]));
   spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'classes'], { env: { ...process.env, JAVA_HOME: java } });
   const kt = spawn(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=${join(dir, 'device.json')} ${url} ${join(dir, 'cmds.json')}`], { env: { ...process.env, JAVA_HOME: java }, stdio: ['ignore', 'pipe', 'inherit'] });
   procs.push(kt);
@@ -50,4 +50,12 @@ test('nak signs and encrypts as the account through a Kotlin NIP-46 home', { ski
   const peer = newKey();
   const n2 = await run(['encrypt', '--sec', link, '-p', peer.pub, 'a note through the Kotlin home']);
   assert.equal(nip44.v2.decrypt(n2.out.trim(), nip44.v2.utils.getConversationKey(peer.sk, acc.g)), 'a note through the Kotlin home', n2.err);
+  // A follow list left empty is Held (core §5.8): answered `held:`, kept on the home, signed once the person
+  // approves it with the lock, and published to the site's relays.
+  const n3 = await run(['event', '--sec', link, '-k', '3', url]);
+  assert.match(n3.out + n3.err, /held/, n3.out + n3.err);
+  const approved = await new Promise<any>((res) => lines.on('line', (l) => { const x = JSON.parse(l); if (x.approved || x.error) res(x); }));
+  assert.equal(approved.approved?.length, 1, JSON.stringify(approved));
+  const got = await net!.events.query({ kinds: [3], authors: [acc.g] });
+  assert.ok(got.events.some((e: any) => e.id === approved.approved[0] && verifyEvent(e)), 'the held list was published');
 });

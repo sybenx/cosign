@@ -46,6 +46,9 @@ class Main : Activity() {
                 if (state.optBoolean("joined") && told.add("joined:$slot")) say(JSONObject().put("device", state.getString("device")).put("state", state.getString("state")))
                 state.optString("error").takeIf { it.isNotEmpty() && told.add("error:$it") }?.let { say(JSONObject().put("error", it)) }
                 if (state.optBoolean("joined")) told.add("joined:$slot")
+                // Device policy's cards and held events, each said once (the person's answer is a command).
+                state.optJSONArray("cards")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { c -> if (told.add("card:${c.getInt("id")}")) say(JSONObject().put("card", c)) } }
+                state.optJSONArray("held")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { h -> if (told.add("held:${h.getString("id")}")) say(JSONObject().put("held", h)) } }
             }
         }) }
         lastSay = ::sayHere
@@ -58,7 +61,8 @@ class Main : Activity() {
         val driven = i?.component?.className?.endsWith(".Drive") == true
         val cmd = i?.getStringExtra("cmd")?.takeIf { driven } ?: run { run(JSONObject().put("cmd", "open")); return }
         run(JSONObject().put("cmd", cmd).put("code", i.getStringExtra("code") ?: "").put("relays", i.getStringExtra("relays") ?: RELAYS)
-            .put("content", i.getStringExtra("content") ?: "gm from the keykin-android demo"))
+            .put("content", i.getStringExtra("content") ?: "gm from the keykin-android demo").put("scopes", i.getStringExtra("scopes") ?: "sign-in,post")
+            .put("id", i.getStringExtra("id") ?: "").put("allow", i.getStringExtra("allow") == "true").put("signer", i.getStringExtra("signer") ?: "").put("scope", i.getStringExtra("scope") ?: ""))
     }
     private fun say(x: JSONObject) { (lastSay ?: ::sayHere)(x) }
     private fun sayHere(x: JSONObject) { val line = x.toString(); Log.i("KeykinDemo", line); runOnUiThread { out.append(line + "\n\n") } }
@@ -76,6 +80,10 @@ class Main : Activity() {
                 "state" -> say(client.states[slot()] ?: JSONObject().put("error", "no_state"))
                 "fetch" -> k.fetch(slot())
                 "grants" -> say(JSONObject().put("grants", org.json.JSONArray(k.grants(slot()))))
+                // The NIP-46 home on the phone: a bunker:// link for a site; the person's answer to a card or a scope ask.
+                "bunker" -> say(JSONObject().put("bunker", k.bunker(slot(), c.getString("relays"), c.getString("scopes")) ?: JSONObject.NULL))
+                "answer" -> { k.answerCard(slot(), c.getString("id").toInt(), c.getBoolean("allow")); say(JSONObject().put("answered", c.getString("id"))) }
+                "allow" -> { k.allowScope(slot(), c.getString("signer"), c.getString("scope")); say(JSONObject().put("allowed", c.getString("scope"))) }
                 "forget" -> { k.forget(slot()); prefs.edit().remove("slot").apply(); say(JSONObject().put("forgotten", true)) }
                 else -> say(JSONObject().put("error", "unknown command"))
             }

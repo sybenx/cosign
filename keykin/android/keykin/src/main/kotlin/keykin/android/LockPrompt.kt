@@ -34,4 +34,21 @@ object LockPrompt {
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG).setNegativeButtonText("Cancel").build(),
             BiometricPrompt.CryptoObject(pending.signature))
     }
+
+    /** Ask for the person's biometric to approve signing the held event `eventId` (core §5.8): `done` gets the
+     *  approval (`{"lock": {member, assertion}}` over "sign" ‖ event id), or null and why, as approveList. */
+    fun approveSign(a: FragmentActivity, d: Device, lock: KeystoreLock, eventId: String, title: String, subtitle: String, done: (JSONObject?, String?) -> Unit) {
+        val pending = try { lock.begin(d.g, keykin.Codes.whatSign(eventId)) }
+            catch (_: android.security.keystore.KeyPermanentlyInvalidatedException) { return done(null, "invalidated") }
+            catch (_: Exception) { return done(null, "failed") }
+        val prompt = BiometricPrompt(a, ContextCompat.getMainExecutor(a), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                try { done(JSONObject().put("lock", JSONObject().put("member", d.pub).put("assertion", lock.finish(pending))), null) } catch (_: Exception) { done(null, "failed") }
+            }
+            override fun onAuthenticationError(code: Int, msg: CharSequence) = done(null, "cancelled")
+        })
+        prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle(title).setSubtitle(subtitle)
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG).setNegativeButtonText("Cancel").build(),
+            BiometricPrompt.CryptoObject(pending.signature))
+    }
 }

@@ -129,6 +129,8 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     }
     /** Publish a raw event to every relay. */
     fun publishEvent(e: JSONObject) = publish(e)
+    /** To every relay, and to these too (a grant's own relays, dialled when not yet: Doors §3.3). */
+    fun publishEventTo(e: JSONObject, urls: List<String>) { val extra = connsFor(urls).filter { c -> c.url !in relays }; publish(e); for (c in extra) try { c.send(JSONArray(listOf("EVENT", e)).toString()) } catch (_: Exception) {} }
     private val okWaits = ConcurrentHashMap<String, CompletableFuture<Any>>()
     private val eachWaits = ConcurrentHashMap<String, java.util.concurrent.CountDownLatch>()
     /** The relays named, dialled when not yet (at most 32 more than configured). */
@@ -163,7 +165,8 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         return evs to answered
     }
     /** Subscribe to raw events; returns a function that stops it. */
-    fun watch(filter: JSONObject, cb: (JSONObject) -> Unit): () -> Unit {
+    fun watch(filter: JSONObject, cb: (JSONObject) -> Unit, extra: List<String> = emptyList()): () -> Unit {
+        if (extra.isNotEmpty()) connsFor(extra)
         val id = "kw-" + hex(ByteArray(6).also { java.security.SecureRandom().nextBytes(it) })
         watches[id] = cb to ConcurrentHashMap.newKeySet()
         val from = if (filter.has("since")) filter.getLong("since") else now - CLOCK_SLACK_S

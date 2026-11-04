@@ -38,6 +38,12 @@ function server(k: number, dir: string): Promise<string> {
   procs.push(proc);
   return new Promise((res, rej) => { let out = ''; proc.stdout!.on('data', (c) => { out += c; const l = out.split('\n').find((x) => x.includes('"started"')); if (l) res(JSON.parse(l).host); }); proc.on('exit', (c) => rej(new Error(`server exited ${c}`))); });
 }
+/** nak, run on the host; its output once it exits (or after 60 seconds). */
+const nak = (args: string[]) => new Promise<{ out: string; err: string }>((res) => {
+  const p = spawn('nak', args, { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = '';
+  p.stdout.on('data', (c) => (out += c)); p.stderr.on('data', (c) => (err += c));
+  const t = setTimeout(() => p.kill(), 60_000); p.on('exit', () => { clearTimeout(t); res({ out, err }); });
+});
 const sh = (...a: string[]) => spawnSync(adb, ['-s', serial!, ...a], { encoding: 'utf8' });
 /** The app's JSON lines from logcat (tag KeykinDemo), one at a time. */
 function logcat() {
@@ -59,7 +65,8 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-an-')))));
   net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
-  const acc = await createByDkg({ net: net as any, fronts, relays });
+  // The record names the relays as the phone reaches them (the emulator sees the host's loopback as 10.0.2.2).
+  const acc = await createByDkg({ net: net as any, fronts, relays: appRelays.split(',') });
   const A = acc.A;
   A.inviter = new Inviter({ g: A.g, m: A.kp.pub, now: net.now });
   const code = A.inviter.invite(relays);
@@ -120,4 +127,25 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   let again = await next();
   while (again.sig === undefined && again.error === undefined) again = await next();
   assert.ok(verifyEvent(again), JSON.stringify(again));
+
+  // The phone as a NIP-46 home (Doors §3.3): it mints a bunker link, and nak on the host signs through it.
+  run('bunker', ['--es', 'scopes', 'sign-in,post,lists']);
+  let b = await next(); while (b.bunker === undefined) b = await next();
+  assert.ok(b.bunker, JSON.stringify(b));
+  const link = String(b.bunker).replace(/10\.0\.2\.2/g, '127.0.0.1');
+  const lineOf = (o: { out: string; err: string }) => { const l = o.out.trim().split('\n').find((x) => x.startsWith('{')); assert.ok(l, 'nak said: ' + o.out + o.err); return JSON.parse(l!); };
+  const posted = lineOf(await nak(['event', '--sec', link, '-k', '1', '-c', 'gm through the phone\'s home', relays[0]]));
+  assert.ok(verifyEvent(posted) && posted.pubkey === A.g, 'the phone answered as the account');
+  // Device policy on the phone (§2): the person's 12 follows, then the site cuts them to 1: a Confirm card, which
+  // the person allows; only then does the site get its event.
+  const follows = Array.from({ length: 12 }, (_, k) => ['p', k.toString(16).padStart(64, '0')]);
+  await net.events.publishEvent(await A.sign({ kind: 3, tags: follows, content: '' }));
+  const cut = nak(['event', '--sec', link, '-k', '3', '-t', `p=${follows[0][1]}`, relays[0]]);
+  const first: any = await Promise.race([(async () => { let c = await next(); while (!c.card) c = await next(); return c; })(), cut.then((o) => ({ nak: o }))]);
+  assert.ok(first.card, 'no card; nak said: ' + JSON.stringify(first.nak));
+  const card = first;
+  assert.match(card.card.reason, /Remove 11 of your 12 follows/, JSON.stringify(card));
+  run('answer', ['--es', 'id', String(card.card.id), '--es', 'allow', 'true']);
+  const listEv = lineOf(await cut);
+  assert.ok(verifyEvent(listEv) && listEv.kind === 3 && listEv.tags.length === 1, JSON.stringify(listEv));
 });

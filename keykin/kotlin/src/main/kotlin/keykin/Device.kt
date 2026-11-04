@@ -211,7 +211,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         "delta_push" -> { body.optJSONObject("wrap")?.let { takeDelivery(it) }; applyAll(); JSONObject().put("type", "ack") }
         else -> null
     }
-    private fun msg(type: String, cls: String) = JSONObject().put("v", 1).put("type", type).put("g", g).put("epoch", epochId)
+    internal fun msg(type: String, cls: String) = JSONObject().put("v", 1).put("type", type).put("g", g).put("epoch", epochId)
         .put("id", hex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) })).put("cls", cls)
 
     /** §3.2: adopt changes one at a time in id order, refusing any that would break an invariant. Only
@@ -492,7 +492,9 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("reissued", ja(reissued.map { (k, h) -> ja(listOf(k, h)) })).put("reissueEphs", ja(reissueEphs.map { (k, e) -> ja(listOf(k, e)) }))
             .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted())).put("grants", grants.dump())
             .put("meta", meta.dump()).put("protectedIds", ja(synchronized(protectedIds) { protectedIds.toList() }))
-            .put("history", history.dump()).put("guard", guard.dump()).put("undoOutbox", ja(synchronized(undoOutbox) { undoOutbox.toList() }))
+            .put("history", history.dump()).put("guard", guard.dump())
+        for ((k, f) in snapshotParts) try { x.put(k, f()) } catch (_: Exception) {}
+        x.put("undoOutbox", ja(synchronized(undoOutbox) { undoOutbox.toList() }))
         if (!x.has("name")) x.put("name", "kotlin")
         return x.toString()
     }
@@ -940,11 +942,13 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
 
     /** Sign an event with the first server that gives a partial. */
-    fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList(), createdAt: Long = net.now, owner: String = "member"): JSONObject {
+    /** `extra`: an approval (`{"approval": {"lock": …}}`) or a passed hold (`{"hold": <wait id>}`) for an event core
+     *  §5.8 holds. */
+    fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList(), createdAt: Long = net.now, owner: String = "member", extra: JSONObject? = null): JSONObject {
         var last = "no_server"; var demands = 0
         val st = state; if (wiped) refuse("wiped"); val c = RoundContext(g, epochId, st.hash, st.C)
         for (s in servers()) {
-            val r = OneCall(c, st.shares, Signer(s.key, s.shares), Unsigned(g, createdAt, kind, tags, content))
+            val r = OneCall(c, st.shares, Signer(s.key, s.shares), Unsigned(g, createdAt, kind, tags, content), extra ?: JSONObject())
             val a = net.send(sk, s.key, r.request)
             // Device policy §2: how many servers demanded an approval (two, or the device's own check, make it Held).
             if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; if (last == "needs_approval") demands++; continue }
@@ -954,11 +958,20 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
                 val keykinD = kind == Grants.KIND && (tags.firstOrNull { it.size >= 2 && it[0] == "d" }?.get(1) ?: "").startsWith("keykin-")
                 if (keykinD) protect(ev.getString("id")) else meta.event(kind, content, owner)
                 // Device policy §1: the history takes it, and the records say which grant got it signed and what it did.
-                if (!keykinD && baseDk.isNotEmpty()) try { guard.signed(Event.of(ev), owner) } catch (_: Exception) {}
+                if (!keykinD && baseDk.isNotEmpty()) try { guard.signed(Event.of(ev), owner, extra?.let { it.has("approval") || it.has("hold") } == true) } catch (_: Exception) {}
             } } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
         }
         throw KeykinException(last).also { it.demands = demands }
     }
+
+    /** Parts other objects keep in this device's snapshot (the NIP-46 home), by name; read back from `carried`. */
+    internal val snapshotParts = java.util.concurrent.ConcurrentHashMap<String, () -> JSONObject>()
+    internal fun carriedPart(name: String): JSONObject? = carried.optJSONObject(name)
+    /** This device's NIP-46 home (Doors §3.3): its sites, their signer keys, held events, the watching server. */
+    val nip46: Nip46Home by lazy { Nip46Home(this, net) }
+    /** The account's relays from its record, for publishing what sites asked for (held events, Undo). */
+    fun recordRelays(): List<String> = rec.optJSONArray("relays")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+    internal fun send(to: String, body: JSONObject): JSONObject = net.send(sk, to, body)
 
     // --- Device policy (Policy.kt) ---------------------------------------------------------------
     val now: Long get() = net.now

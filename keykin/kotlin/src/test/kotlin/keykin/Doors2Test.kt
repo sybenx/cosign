@@ -46,4 +46,16 @@ class Doors2Test {
         val t = d.grants.endAll("cd".repeat(32), 100)!!
         assertEquals("*", t.getString("id")); assertEquals(100L, t.getLong("before"))
     }
+
+    @Test fun nip46HomeSurvivesARestart() {
+        val v = JSONObject(File(System.getProperty("keykin.grants")).readText())
+        val d = Device.fromSnapshot(v.getString("before"), RelayNet(emptyList()))
+        Keykin.wire = JdkWire
+        val link = d.nip46.mintBunker(listOf("ws://127.0.0.1:1"), "coracle", listOf("sign-in", "post"))
+        val signer = java.net.URI(link).host
+        val again = Device.fromSnapshot(d.snapshot(), RelayNet(emptyList()))
+        val g = again.nip46.grants[signer]!!
+        assertEquals(hex(d.nip46.grants[signer]!!.signerSk), hex(g.signerSk), "the signer key comes back")
+        assertEquals(listOf("ws://127.0.0.1:1"), g.relays); assertEquals("coracle", g.site)
+    }
 }

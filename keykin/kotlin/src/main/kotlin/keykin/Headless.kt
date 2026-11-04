@@ -76,7 +76,7 @@ fun main(args: Array<String>) {
                         .put("removed", JSONArray(d.members.removed(0).map { it.json() })) }
                     "datakey" -> d.dataKey().let { (st, k) -> JSONObject().put("state", st).put("key", hex(k)) }
                     // Be a NIP-46 home (Doors §3.3): print a bunker:// link, then answer sites for `seconds`.
-                    "bunker" -> { val home = Nip46Home(d, net); println(JSONObject().put("bunker", home.mintBunker(args[1].split(","), "", c.optString("scopes", "sign-in,post").split(",").filter { it.isNotBlank() })).toString()); System.out.flush()
+                    "bunker" -> { val home = d.nip46; println(JSONObject().put("bunker", home.mintBunker(args[1].split(","), "", c.optString("scopes", "sign-in,post").split(",").filter { it.isNotBlank() })).toString()); System.out.flush()
                         Thread.sleep(c.optLong("seconds", 30) * 1000); JSONObject().put("served", true) }
                     // Doors §2: make a grant and publish it; wait until an end made elsewhere drops it; sign out of every site.
                     "grant" -> { d.fetch(); val e = d.grants.make(c.getString("site"), c.getString("site"), "nip55", "pkg@1", listOf("sign-in", "post")); d.publishGrants()
@@ -85,6 +85,10 @@ fun main(args: Array<String>) {
                         while (System.currentTimeMillis() < end && d.grants.own.containsKey(c.getString("id"))) { Thread.sleep(1000); try { d.fetch() } catch (_: Exception) {} }
                         JSONObject().put("ended", !d.grants.own.containsKey(c.getString("id"))) }
                     "signout_all" -> { d.signOutEverywhere(); JSONObject().put("own", d.grants.own.size) }
+                    // Held events (core §5.8): the person approves each with this device's lock; or lets a hold's wait pass.
+                    "approve_held" -> { val ids = d.nip46.heldList().let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("id") } }
+                        val lock = d.lock ?: refuse("no_lock")
+                        JSONObject().put("approved", JSONArray(ids.map { id -> d.nip46.approveHeld(id, JSONObject().put("member", d.pub).put("assertion", lock.assert(d.g, Codes.whatSign(id))).let { JSONObject().put("lock", it) }).getString("id") })) }
                     "nip44" -> JSONObject().put("result", d.nip44(c.getString("peer"), c.getString("text"), c.optBoolean("encrypt", true)))
                     "nip04" -> JSONObject().put("result", d.nip04(c.getString("peer"), c.getString("text"), c.optBoolean("encrypt", true)))
                     else -> JSONObject().put("error", "unknown command")
