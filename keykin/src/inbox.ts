@@ -29,7 +29,9 @@ export function readPush(bytes: Uint8Array, hostKeys: Set<string>): any {
   return p;
 }
 
-export interface InboxItem { iid: string; at: number; to: string; from: string; wrap: NostrEvent; kind: 'delivery' | 'wait' | 'notice' | 'message'; cls: Cls; bytes: number }
+/** `group`: items counted together instead of per sender (a watching server's items per site). */
+export interface InboxItem { iid: string; at: number; to: string; from: string; wrap: NostrEvent; kind: 'delivery' | 'wait' | 'notice' | 'message'; cls: Cls; bytes: number; group?: string }
+export const PER_GROUP = 8;
 
 export const INBOX_ITEMS = 512, INBOX_BYTES = 4 * 1024 * 1024, PER_PAIR = 32;
 
@@ -38,17 +40,18 @@ export const INBOX_ITEMS = 512, INBOX_BYTES = 4 * 1024 * 1024, PER_PAIR = 32;
 export class Inbox {
   items: InboxItem[] = [];
   #n = 0;
-  deliver(o: { from: string; to: string; wrap: NostrEvent; kind: InboxItem['kind']; cls: Cls; at: number; isMember: (k: string) => boolean; isRemoved: (k: string) => boolean; isBackup: (k: string) => boolean }): string {
+  deliver(o: { from: string; to: string; wrap: NostrEvent; kind: InboxItem['kind']; cls: Cls; at: number; group?: string; isMember: (k: string) => boolean; isRemoved: (k: string) => boolean; isBackup: (k: string) => boolean }): string {
     if (o.isRemoved(o.from)) refuse('removed', 'deliver from a removed member');
     if (!o.isMember(o.from)) refuse('not_member', 'deliver only from a current member');
     if (!o.isMember(o.to)) refuse('not_member', '`to` must be a current member');
     if (o.isBackup(o.to)) refuse('backup_never_fetches');
     if (tag(o.wrap, 'p') !== o.to) refuse('bad_p', 'the wrap\'s p tag must be `to`');
-    const waiting = this.items.filter((x) => x.from === o.from && x.to === o.to).length;
-    if (waiting >= PER_PAIR) refuse('inbox_full');
+    this.cap(o.at);
+    if (o.group) { if (this.items.filter((x) => x.group === o.group && x.to === o.to).length >= PER_GROUP) refuse('inbox_full'); }
+    else if (this.items.filter((x) => x.from === o.from && x.to === o.to && !x.group).length >= PER_PAIR) refuse('inbox_full');
     const bytes = JSON.stringify(o.wrap).length;
     const iid = (++this.#n).toString(16).padStart(8, '0') + Math.random().toString(16).slice(2, 10);
-    this.items.push({ iid, at: o.at, to: o.to, from: o.from, wrap: o.wrap, kind: o.kind, cls: o.cls, bytes });
+    this.items.push({ iid, at: o.at, to: o.to, from: o.from, wrap: o.wrap, kind: o.kind, cls: o.cls, bytes, ...(o.group ? { group: o.group } : {}) });
     this.cap(o.at);
     if (!this.items.some((x) => x.iid === iid)) refuse('inbox_full');
     return iid;

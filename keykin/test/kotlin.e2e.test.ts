@@ -46,7 +46,9 @@ test('a Kotlin device signs through three TS server processes over relays', { sk
   writeFileSync(cmds, JSON.stringify([{ cmd: 'sign', content: 'gm-from-kotlin' }, { cmd: 'nip44', peer: peer.pub, text: 'to the peer from kotlin' },
     { cmd: 'nip44', peer: peer.pub, text: fromPeer, encrypt: false }, { cmd: 'nip04', peer: peer.pub, text: 'nip04 from kotlin' }, { cmd: 'nip04', peer: peer.pub, text: fromPeer04, encrypt: false }]));
   const r = spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=${snap} ${relays.join(',')} ${cmds}`], { env: { ...process.env, JAVA_HOME: java }, encoding: 'utf8', timeout: 300_000 });
-  const out = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
+  const all = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
+  assert.equal(all[0]?.device, acc.A.kp.pub, 'the Kotlin device took over this member key');
+  const out = all.slice(1);
   assert.equal(out.length, 5, r.stdout + r.stderr.slice(-500));
   const [ev, e44, d44, e04, d04] = out;
   assert.equal(ev.error, undefined, `Kotlin refused: ${JSON.stringify(ev)}`);

@@ -33,7 +33,7 @@ import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList } from '../src/approval.ts';
 import { deletedDigest, verifyDeleted } from '../src/requests.ts';
 import { F1Watch, SignWatch, signNotice, signAnswer } from '../src/f1.ts';
-import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
+import { commitmentFrom, scalarHex, scalarFrom, liftX, type Commitment } from '../src/curve.ts';
 import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import { softLock, type Lock } from '../src/lock.ts';
@@ -177,7 +177,12 @@ export class DeviceNode implements Node {
     for (const s of this.servers()) {
       const a = await this.bus.send(this.kp, s.key, msg('inbox_get', this.g, this.epochId, 'ask'));
       if (a?.type !== 'inbox') continue;
-      for (const it of a.items) try { this.takeDelivery(it.wrap); } catch { /* one bad item never wedges the rest */ }
+      for (const it of a.items) try {
+        // A site's request a watching server kept goes to the NIP-46 home, not into the void (review 11 M1).
+        const o = unwrap(this.kp.sk, it.wrap);
+        if (o.body?.type === 'nip46' && o.from === s.key) await this.nip46.handle(o.body.event);
+        else this.takeDelivery(it.wrap);
+      } catch { /* one bad item never wedges the rest */ }
       await this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid) }));
     }
     this.applyAll();
@@ -473,14 +478,20 @@ export class DeviceNode implements Node {
   // --- the account's own encryption (core §5.5): ECDH with a co-signer, never the whole key ---------
   /** The x coordinate of `x·P` for a peer's x-only key `peer`, from one server's checked answer. */
   async ecdhX(peer: string): Promise<Uint8Array> {
+    // A peer key that isn't a point is refused here, before any co-signer is asked (review 11 L5).
+    if (typeof peer !== 'string' || !/^[0-9a-f]{64}$/.test(peer)) refuse('malformed', 'peer key');
+    try { liftX(peer); } catch { refuse('malformed', 'peer key is not on the curve'); }
     const Q = '02' + peer;
     let last = 'no_server';
     for (const s of this.servers()) {
       if (!this.bus.alive(s.key)) continue;
+      for (let tries = 0; tries < 2; tries++) {
       const req = ecdhRequest(this.ctx(), [...this.state!.shares.keys()], { key: s.key, indices: s.shares }, [Q]);
       const a = await this.bus.send(this.kp, s.key, req);
+      if (a?.type === 'stale') { await this.fetch(); continue; }
       try { return hexToBytes(ecdhFinish(this.ctx(), req, this.me(), { key: s.key, indices: s.shares }, a)[0].slice(2)); }
-      catch (e) { last = (e as KeykinError).code ?? 'ecdh'; }
+      catch (e) { last = (e as KeykinError).code ?? 'ecdh'; break; }
+      }
     }
     throw new KeykinError(last);
   }

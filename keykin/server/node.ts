@@ -385,6 +385,8 @@ export class ServerNode implements Node {
       if (!hex.test(g?.signer) || !(g.client === null || hex.test(g.client)) || !Array.isArray(g.relays) || g.relays.length > 8 || g.relays.some((r: any) => typeof r !== 'string' || !/^wss?:\/\//.test(r))) refuse('malformed', 'a grant');
       return { signer: g.signer as string, client: g.client as string | null, relays: g.relays as string[] };
     });
+    // A signer key watched for another home is that home's alone (review 11 L2).
+    for (const [h, gs] of this.watches) if (h !== home && gs.some((x) => out.some((g) => g.signer === x.signer))) refuse('malformed', 'a signer key another device is home to');
     if (out.length) this.watches.set(home, out); else this.watches.delete(home);
     this.rewatch();
   }
@@ -393,10 +395,12 @@ export class ServerNode implements Node {
   rewatch() {
     this.#watchSubs.forEach((x) => x.close()); this.#watchSubs = [];
     const ev = this.bus.events;
-    const signers = [...this.watches.values()].flat().map((g) => g.signer);
+    const all = [...this.watches.values()].flat(), signers = all.map((g) => g.signer);
     if (!ev || !signers.length) return;
-    this.#watchSubs.push(ev.watch({ kinds: [24133], '#p': signers }, (e) => void this.#siteRequest(e)));
-    this.#watchSubs.push(ev.watch({ kinds: [24133], authors: signers }, (e) => this.#homeReplied(e)));
+    // On each grant's own relays (core §2 item 7), beside the server's.
+    const relays = [...new Set(all.flatMap((g) => g.relays))];
+    this.#watchSubs.push(ev.watch({ kinds: [24133], '#p': signers }, (e) => { this.#siteRequest(e).catch(() => {}); }, relays));
+    this.#watchSubs.push(ev.watch({ kinds: [24133], authors: signers }, (e) => this.#homeReplied(e), relays));
   }
   #homeReplied(e: NostrEvent) {
     if (!verifyEvent(e)) return;
@@ -410,16 +414,19 @@ export class ServerNode implements Node {
     const { home, g } = found;
     // A removed home's set is dropped; only the grant's client, or the first request to a live link.
     if (!this.m.devices.has(home) || this.m.removed.has(home)) { this.watches.delete(home); this.rewatch(); return; }
-    if (g.client === null) { if (g.firstSent) return; g.firstSent = true; } else if (e.pubkey !== g.client) return;
+    // The window first, so a stale event never uses up a live link's one forward (review 11 L1).
     if (Math.abs(this.now - e.created_at) > 120) return;
+    if (g.client === null) { if (g.firstSent) return; g.firstSent = true; } else if (e.pubkey !== g.client) return;
     this.#seen46.add(e.id); if (this.#seen46.size > 50_000) this.#seen46.clear();
     const at = this.now;
     try {
-      this.inbox.deliver({ from: this.kp.pub, to: home, wrap: wrap(this.kp.sk, home, { type: 'nip46', event: e }, { at }), kind: 'notice', cls: 'ask', at,
+      // Each site its own share of the home's inbox, so one can't crowd out another (review 11 M6).
+      this.inbox.deliver({ from: this.kp.pub, to: home, wrap: wrap(this.kp.sk, home, { type: 'nip46', event: e }, { at }), kind: 'notice', cls: 'ask', at, group: `nip46:${g.signer}`,
         isMember: (k) => this.m.members.has(k), isRemoved: (k) => this.m.removed.has(k), isBackup: (k) => k === this.m.backupKey });
     } catch { return; }
     // One push per burst, at most 60 an hour per signer key, none if the home answers within the delay.
     // `answered`: a reply from the signer key seen since this request (not a timestamp: two can share a second).
+    for (const [k, b] of this.#burst) if (!b.scheduled && b.pushes.every((t) => at - t >= 3600) && (b.pushedAt === null || at - b.pushedAt >= 3600)) this.#burst.delete(k);
     const st = this.#burst.get(g.signer) ?? { pushedAt: null, pushes: [], answered: false, scheduled: false };
     this.#burst.set(g.signer, st);
     st.answered = false;

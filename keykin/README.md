@@ -28,6 +28,16 @@ npx tsc -p .      # typecheck
 `destructive.ts` (§5.7 item 4, §5.8), `lifetimes.ts` (§5.3, §5.6), `join.ts` and `repair.ts`
 (§4), `redeal.ts` and `upkeep.ts` (§6.7, §7.2), `transport.ts` (§9), `inbox.ts` (§8).
 
+## Tests
+
+```bash
+npm test            # unit and simulation tests, in parallel
+npm run test:e2e    # end to end, one at a time: local nak relays, server processes, Docker, Kotlin
+```
+
+The end-to-end tests skip themselves when `nak`, Docker, the JNI library or JDK 21 is missing. Run in
+parallel, they compete for relays, Gradle and Docker and time out.
+
 ## Kotlin
 
 `kotlin/` is the second implementation, a JVM project (Gradle, JDK 21). It passes `vectors.json` and

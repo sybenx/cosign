@@ -12,10 +12,16 @@ import { create } from '../sim/account.ts';
 import { newKey, verifyEvent } from '../src/event.ts';
 
 const haveNak = spawnSync('nak', ['--version']).status === 0;
-const port = 17251, url = `ws://127.0.0.1:${port}`;
-let relay: ChildProcess | undefined, net: RelayNet | undefined;
-before(async () => { if (!haveNak) return; relay = spawn('nak', ['serve', '--hostname', '127.0.0.1', '--port', String(port)], { stdio: 'ignore' }); await new Promise((r) => setTimeout(r, 1200)); net = new RelayNet({ relays: [url], timeoutMs: 7000, resendMs: 1200 }); await net.connect(); });
-after(() => { net?.close(); relay?.kill(); });
+const port = 17251, url = `ws://127.0.0.1:${port}`, other = 'ws://127.0.0.1:17252';
+let relay: ChildProcess | undefined, relay2: ChildProcess | undefined, net: RelayNet | undefined;
+before(async () => {
+  if (!haveNak) return;
+  relay = spawn('nak', ['serve', '--hostname', '127.0.0.1', '--port', String(port)], { stdio: 'ignore' });
+  relay2 = spawn('nak', ['serve', '--hostname', '127.0.0.1', '--port', '17252'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 1200));
+  net = new RelayNet({ relays: [url], timeoutMs: 7000, resendMs: 1200 }); await net.connect();
+});
+after(() => { net?.close(); relay?.kill(); relay2?.kill(); });
 const run = (args: string[]) => new Promise<{ code: number; out: string; err: string }>((res) => {
   const p = spawn('nak', args, { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = '';
   p.stdout.on('data', (c) => (out += c)); p.stderr.on('data', (c) => (err += c));
@@ -46,6 +52,24 @@ test('nak and BunkerSigner sign and encrypt as the account through the device\'s
     assert.ok(verifyEvent(signed as any) && signed.pubkey === acc.g);
     const ct = await s.nip44Encrypt(peer.pub, 'from the web');
     assert.equal(await s.nip44Decrypt(peer.pub, ct), 'from the web');
+    await s.close();
+  } finally { pool.destroy(); }
+});
+
+test('a grant on a relay the device doesn\'t otherwise use: the reply goes there and requests there are answered (review 11 H3)', { skip: !haveNak && 'nak not installed', timeout: 120_000 }, async () => {
+  const acc = await create({ net: net as any });
+  const pool = new SimplePool();
+  try {
+    const clientSk = newKey().sk;
+    const { createNostrConnectURI } = await import('nostr-tools/nip46');
+    const { getPublicKey } = await import('nostr-tools/pure');
+    const secret = 'r11h3';
+    const uri = createNostrConnectURI({ clientPubkey: getPublicKey(clientSk), relays: [other], secret, name: 'site' });
+    const signerP = BunkerSigner.fromURI(clientSk, uri, { pool }, 20_000);
+    await new Promise((r) => setTimeout(r, 500));
+    await acc.A.nip46.acceptNostrconnect(uri);
+    const s = await signerP;
+    assert.equal(await s.getPublicKey(), acc.g, 'answered on the grant\'s own relay');
     await s.close();
   } finally { pool.destroy(); }
 });

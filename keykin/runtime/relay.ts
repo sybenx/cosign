@@ -53,7 +53,7 @@ export class RelayNet implements Transport {
   }
   /** Which relays are connected, for /health. */
   status() { return this.o.relays.map((url) => ({ url, up: !!this.conns.get(url) })); }
-  close() { this.#closed = true; for (const subs of this.#subs.values()) subs.forEach((x) => x?.close()); for (const c of this.conns.values()) c?.close(); }
+  close() { this.#closed = true; for (const subs of this.#subs.values()) subs.forEach((x) => x?.close()); for (const c of this.conns.values()) c?.close(); for (const c of this.#extraConn.values()) c.close(); }
 
   #subscribe(url: string, k: number) {
     const c = this.conns.get(url), subs = this.#subs.get(url);
@@ -67,18 +67,46 @@ export class RelayNet implements Transport {
   #resubscribe(k: number) { for (const url of this.conns.keys()) this.#subscribe(url, k); }
 
   // --- raw events (Doors §3.3: NIP-46 requests and replies, watching) ---------------------------
-  #watches = new Set<{ f: Filter; cb: (e: any) => void; subs: Map<string, { close(): void }> }>();
-  #watchOn(url: string, w: { f: Filter; cb: (e: any) => void; subs: Map<string, { close(): void }> }) {
-    const c = this.conns.get(url); if (!c) return;
+  // A grant names its own relays: events go to and come from those, on connections opened on demand
+  // (review 11 H3), beside the transport's own. Each watch keeps its own seen set, so two watches in one
+  // process never split an event between them (review 11 M2).
+  #extra = new Map<string, Promise<Relay | null>>();      // a dial in progress is shared, never raced
+  static readonly EXTRA_MAX = 32;
+  #watches = new Set<{ f: Filter; cb: (e: any) => void; relays: string[]; subs: Map<string, { close(): void }>; seen: Set<string> }>();
+  #extraConn = new Map<string, Relay>();
+  #relayFor(url: string): Promise<Relay | null> {
+    if (this.conns.has(url)) return Promise.resolve(this.conns.get(url) ?? null);
+    if (!/^wss?:\/\/[^\s]+$/.test(url) || url.length > 256) return Promise.resolve(null);
+    const known = this.#extra.get(url);
+    if (known) return known;
+    if (this.#extra.size >= RelayNet.EXTRA_MAX) return Promise.resolve(null);
+    const p = Relay.connect(url).then((r) => {
+      r.onclose = () => { this.#extra.delete(url); this.#extraConn.delete(url); };
+      this.#extraConn.set(url, r);
+      for (const w of this.#watches) if (w.relays.includes(url)) this.#watchOn(url, w);
+      return r;
+    }, () => { this.#extra.delete(url); return null; });
+    this.#extra.set(url, p);
+    return p;
+  }
+  #watchOn(url: string, w: { f: Filter; cb: (e: any) => void; subs: Map<string, { close(): void }>; seen: Set<string> }) {
+    const c = this.conns.get(url) ?? this.#extraConn.get(url); if (!c) return;
     w.subs.get(url)?.close();
-    w.subs.set(url, c.subscribe([{ ...w.f, ...(w.f.since === undefined ? { since: this.now - 5 } : {}) } as any], { onevent: (e) => { if (!this.seen.has(`ev:${e.id}`)) { this.seen.add(`ev:${e.id}`); w.cb(e); } } }));
+    w.subs.set(url, c.subscribe([{ ...w.f, ...(w.f.since === undefined ? { since: this.now - 5 } : {}) } as any], {
+      onevent: (e) => { if (w.seen.has(e.id)) return; w.seen.add(e.id); if (w.seen.size > 20_000) w.seen.clear(); w.cb(e); },
+    }));
   }
   events: Events = {
-    publishEvent: async (e: any) => { await Promise.allSettled([...this.conns.values()].filter(Boolean).map((c) => c!.publish(e))); },
-    watch: (f: Filter, cb: (e: any) => void) => {
-      const w = { f, cb, subs: new Map<string, { close(): void }>() };
+    publishEvent: async (e: any, relays?: string[]) => {
+      const targets = new Set<Relay>([...this.conns.values()].filter(Boolean) as Relay[]);
+      for (const u of relays ?? []) { const r = await this.#relayFor(u); if (r) targets.add(r); }
+      await Promise.allSettled([...targets].map((c) => c.publish(e)));
+    },
+    watch: (f: Filter, cb: (e: any) => void, relays: string[] = []) => {
+      const w = { f, cb, relays, subs: new Map<string, { close(): void }>(), seen: new Set<string>() };
       this.#watches.add(w);
       for (const url of this.conns.keys()) this.#watchOn(url, w);
+      for (const url of relays) if (!this.conns.has(url)) void this.#relayFor(url).then((r) => { if (r) this.#watchOn(url, w); });
       return { close: () => { this.#watches.delete(w); for (const s of w.subs.values()) s.close(); } };
     },
   };

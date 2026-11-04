@@ -18,9 +18,10 @@ import { newKey, pubOf, type NostrEvent } from '../src/event.ts';
 import { msg } from '../src/msg.ts';
 import { unwrap } from '../src/transport.ts';
 import type { DeviceNode } from './node.ts';
+import { siteGuard, siteMayDecrypt } from './doors.ts';
 
 export const KIND_NIP46 = 24133;
-const LINK_S = 600, ENDED_KEEP_S = 30 * 86400;
+const LINK_S = 600, ENDED_KEEP_S = 30 * 86400, WINDOW_S = 120;
 
 export interface Grant {
   signer: string; signerSk: string; client: string | null; secret: string | null; linkExpires: number | null;
@@ -33,8 +34,9 @@ export function parseNostrconnect(uri: string) {
   if (u.protocol !== 'nostrconnect:') throw new KeykinError('malformed', 'not a nostrconnect code');
   const client = u.hostname || u.pathname.replace(/^\/+/, '');
   if (!/^[0-9a-f]{64}$/.test(client)) throw new KeykinError('malformed', 'client key');
-  const relays = u.searchParams.getAll('relay');
-  if (!relays.length || relays.some((r) => !/^wss?:\/\//.test(r))) throw new KeykinError('malformed', 'relays');
+  // Deduplicated and capped at 8 (a server watches at most 8 per grant: review 11 M4).
+  const relays = [...new Set(u.searchParams.getAll('relay'))].slice(0, 8);
+  if (!relays.length || relays.some((r) => !/^wss?:\/\/[^\s]+$/.test(r) || r.length > 256)) throw new KeykinError('malformed', 'relays');
   return { client, relays, secret: u.searchParams.get('secret'), name: u.searchParams.get('name') ?? '', perms: u.searchParams.get('perms') ?? '' };
 }
 
@@ -42,7 +44,7 @@ export class Nip46Home {
   grants = new Map<string, Grant>();
   /** The server this home asked to watch for it (one per account, Doors §3.3), or null. */
   watching: string | null = null;
-  #seen = new Set<string>();
+  #seen = new Map<string, number>();     // request id → its created_at, while within the window
   #listening: { close(): void } | null = null;
   readonly d: DeviceNode;
   constructor(d: DeviceNode) { this.d = d; }
@@ -68,28 +70,32 @@ export class Nip46Home {
     const c = parseNostrconnect(uri);
     const g = this.#grant(c.relays, c.name, { client: c.client, connectedAt: this.d.now });
     await this.#reply(g, c.client, { id: bytesToHex(randomBytes(8)), result: c.secret ?? 'ack' });
-    await this.watchSet();
+    await this.watchSet().catch(() => {});
     return g;
   }
   /** End a grant: its key answers `revoked:` for 30 days, then is forgotten. */
   async end(signer: string) {
     const g = this.grants.get(signer); if (!g) return;
-    g.endedAt = this.d.now; this.d.persist(); await this.watchSet();
+    g.endedAt = this.d.now; this.d.persist(); await this.watchSet().catch(() => {});
   }
 
   /** Answer sites while awake: subscribed to every grant's requests. */
   listen() {
     this.#listening?.close();
-    const live = [...this.grants.values()].filter((g) => !g.endedAt || this.d.now - g.endedAt < ENDED_KEEP_S).map((g) => g.signer);
-    this.#listening = live.length ? this.#events.watch({ kinds: [KIND_NIP46], '#p': live }, (e) => void this.handle(e)) : null;
+    // An ended grant answers `revoked:` for 30 days, then it and its key are forgotten (review 11 L3).
+    for (const [k, g] of this.grants) if (g.endedAt && this.d.now - g.endedAt >= ENDED_KEEP_S) this.grants.delete(k);
+    const live = [...this.grants.values()];
+    const relays = [...new Set(live.flatMap((g) => g.relays))];
+    this.#listening = live.length ? this.#events.watch({ kinds: [KIND_NIP46], '#p': live.map((g) => g.signer) }, (e) => { this.handle(e).catch(() => {}); }, relays) : null;
   }
   sleep() { this.#listening?.close(); this.#listening = null; }
 
   /** One request from a site. False when it was nothing to answer (seen already, not ours, unreadable). */
   async handle(e: NostrEvent): Promise<boolean> {
-    if (e?.kind !== KIND_NIP46 || this.#seen.has(e.id) || !ntVerify(e as any)) return false;
-    this.#seen.add(e.id);
-    if (this.#seen.size > 10_000) this.#seen.clear();
+    // Only fresh requests (±2 minutes), each answered once even across a restart (review 11 M5).
+    if (e?.kind !== KIND_NIP46 || this.#seen.has(e.id) || Math.abs(this.d.now - e.created_at) > WINDOW_S || !ntVerify(e as any)) return false;
+    this.#seen.set(e.id, e.created_at);
+    for (const [id, at] of this.#seen) if (this.d.now - at > WINDOW_S) this.#seen.delete(id);
     const signer = e.tags.find((t) => t[0] === 'p')?.[1];
     const g = signer ? this.grants.get(signer) : undefined;
     if (!g) return false;
@@ -110,7 +116,9 @@ export class Nip46Home {
       // A link's secret binds to the first client key; that same key may connect again, any other is refused.
       if (g.client === null) {
         if (!g.secret || params[1] !== g.secret || g.linkExpires === null || now > g.linkExpires) return { error: 'not-connected: this link has expired or is wrong; mint a new one' };
-        g.client = from; g.connectedAt = now; g.linkExpires = null; this.d.persist(); await this.watchSet();
+        g.client = from; g.connectedAt = now; g.linkExpires = null; this.d.persist();
+        // Best effort: the site is answered whether or not the watching server is reachable (review 11 M3).
+        this.watchSet().catch(() => { this.watchPending = true; });
         return { result: 'ack' };
       }
       return from === g.client ? { result: 'ack' } : { error: 'not-connected: this link belongs to another client; mint a new one' };
@@ -125,19 +133,20 @@ export class Nip46Home {
         case 'logout': await this.end(g.signer); return { result: 'ack' };
         case 'sign_event': {
           const ev = strictJson(String(params[0]));
+          siteGuard({ kind: ev?.kind, tags: Array.isArray(ev?.tags) ? ev.tags : [] }, this.d.g, this.#backupKeys());
           const signed = await this.d.sign(ev);
           return { result: JSON.stringify(signed) };
         }
         case 'nip44_encrypt': return { result: await this.d.nip44(String(params[0]), String(params[1]), true) };
-        case 'nip44_decrypt': return { result: await this.d.nip44(String(params[0]), String(params[1]), false) };
+        case 'nip44_decrypt': siteMayDecrypt(String(params[0]), this.d.g); return { result: await this.d.nip44(String(params[0]), String(params[1]), false) };
         case 'nip04_encrypt': return { result: await this.d.nip04(String(params[0]), String(params[1]), true) };
-        case 'nip04_decrypt': return { result: await this.d.nip04(String(params[0]), String(params[1]), false) };
+        case 'nip04_decrypt': siteMayDecrypt(String(params[0]), this.d.g); return { result: await this.d.nip04(String(params[0]), String(params[1]), false) };
         default: return { error: `unsupported: ${method}` };
       }
     } catch (err) {
       const code = (err as KeykinError).code;
       if (code === 'needs_approval' || code === 'hold_not_passed') return { error: 'held: approve on your phone' };
-      if (code === 'declined') return { error: 'declined: not allowed for this site' };
+      if (code === 'declined') return { error: `declined: ${(err as Error).message.replace(/^declined: /, '') || 'not allowed for this site'}` };
       if (code === 'unreachable' || code === 'no_server' || code === 'no_answer') return { error: 'try-later: no server answered' };
       return { error: `declined: ${code ?? 'refused'}` };
     }
@@ -151,19 +160,23 @@ export class Nip46Home {
   }
 
   // --- the wake path ---------------------------------------------------------------------------
+  /** A watch_set that didn't reach its server; sent again on the next wake. */
+  watchPending = false;
   /** Ask `server` (a seated server's member key) to watch this home's grants; or re-send the set. */
   async watchSet(server = this.watching) {
     if (!server) return;
     this.watching = server;
     const grants = [...this.grants.values()].filter((g) => !g.endedAt).map((g) => ({ signer: g.signer, client: g.client, relays: g.relays }));
     const a = await this.d.bus.send(this.d.kp, server, msg('watch_set', this.d.g, this.d.epochId, 'ask', { grants }));
-    if (a?.type !== 'ack') throw new KeykinError(a?.code ?? 'watch_set_failed');
+    if (a?.type !== 'ack') { this.watchPending = true; throw new KeykinError(a?.code ?? 'watch_set_failed'); }
+    this.watchPending = false;
     this.d.persist();
   }
   /** Woken (a push, or the app opened): drain every site request the watching server kept. Returns how
    *  many it answered now (one it answered while awake is skipped, and acknowledged all the same). */
   async wake(): Promise<number> {
     if (!this.watching) return 0;
+    if (this.watchPending) await this.watchSet().catch(() => {});
     const inbox = await this.d.bus.send(this.d.kp, this.watching, msg('inbox_get', this.d.g, this.d.epochId, 'ask'));
     const done: string[] = []; let n = 0;
     for (const it of inbox?.items ?? []) {
@@ -176,7 +189,10 @@ export class Nip46Home {
     return n;
   }
 
-  dump() { return { grants: [...this.grants.values()], watching: this.watching }; }
-  load(x: any) { this.grants = new Map((x?.grants ?? []).map((g: Grant) => [g.signer, g])); this.watching = x?.watching ?? null; }
+  /** Every backup key the account has had: the signpost names come from them. */
+  #backupKeys() { const m = this.d.m!; return [...new Set([m.backupKey, ...m.accepted.filter((p) => p.type === 'paper').map((p) => (p.c.change as any).paper.key)].filter(Boolean) as string[])]; }
+
+  dump() { return { grants: [...this.grants.values()], watching: this.watching, seen: [...this.#seen] }; }
+  load(x: any) { this.grants = new Map((x?.grants ?? []).map((g: Grant) => [g.signer, g])); this.watching = x?.watching ?? null; this.#seen = new Map(x?.seen ?? []); }
 }
 export { pubOf };
