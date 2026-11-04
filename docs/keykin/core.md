@@ -712,28 +712,24 @@ be read as one Core makes, and no Core flow can be made to produce one.
 
 - **Form.** `sig = BIP-340(member key, SHA-256(utf8(domain) ‖ 0x00 ‖ message))`, by the device's own
   member key, never the account key. `domain` is at most 128 bytes and matches
-  `[a-z0-9][a-z0-9.-]*(/[a-z0-9.-]+)*/[0-9]+` (lowercase segments ending in a version, as
-  `nostr-vault/ksig/1`); the `0x00` ends it. `message` is the app's bytes, at most 64 KB. A member key
+  `[a-z0-9][a-z0-9.-]*(/[a-z0-9.-]+)*/(0|[1-9][0-9]*)` (lowercase segments ending in a version, as
+  `nostr-vault/ksig/1`); the `0x00` ends it. `message` is the app's bytes, at most 65,536. A member key
   belongs to one account (§4.6), so `g` is not in the digest. The device hashes the message itself; it
   never signs a digest an app hands it (§5.4). The vectors are `vectors/membersig.json`.
 - **Reserved, and how Core signs.** A domain that starts with `keykin` or `cosign` belongs to Core, its
   modules and Cosign 0.12, and a device refuses it for an app. Every member-key signature in Core and its
-  modules is a Nostr event id (a seal, §9.1, whose preimage starts with `[`) or `SHA-256` over a
-  `keykin-…/1` tag followed by fixed fields, with no `0x00` after the tag: `detached(type, body)` (§6.2),
+  modules is a Nostr event id (a seal, §9.1, whose preimage starts with `[`) or `SHA-256` over a `keykin-…/1` tag followed by fixed fields: `detached(type, body)` (§6.2),
   `keykin-self/1` (§6.4), Doors' `keykin-grant/1` and `keykin-grant-set/1`, and the three challenge
   signatures (`keykin-retire/1`, §4.6; `keykin-seated-ask/1` and `keykin-forward-ask/1`, §6.7.5). The
-  other items "signed by a member key" are `detached` with these types: `paper-reissue` (§6.7.6),
-  `policy-snapshot` (Device policy) and `label` (Account admin's device names). A member key never signs
-  raw bytes a server, site or app chose. So an app preimage, with `0x00` right after a domain outside
-  `keykin…` and `cosign…`, never equals a Core one, and two apps' preimages differ wherever their domains
-  do.
+  other items "signed by a member key" are `detached` with these types, hyphens and all, over the item as sent without its signature: `paper-reissue` (§6.7.6), `policy-snapshot` (Device policy) and `label` (Account admin's device names). A member key never signs
+  raw bytes a server, site or app chose. The reserved prefixes are the guarantee: every Core preimage starts with `keykin` or `[`, which no app domain may, and the `0x00` that ends a domain keeps two apps' preimages apart.
 - **Who may ask.** A domain is granted to an app, not claimed by it. The app maker's signed **app list**
   (published like the server list, §6.7.7, versioned on its own) names each domain and the app identities
   that may use it. A device signs only for a listed app on its own machine, under the device API, and
   checks the identity the way the OS can prove it: an Android signing-certificate digest, an Apple team id
   from the caller's audit token, a browser's own extension id. A person may also grant an app a domain by
   hand, with one question naming the app and the domain ("Let Notes sign for `notes.example/sig/1`?"),
-  but **never a domain the app list names**: those go only to the apps it names. Where the OS can't prove
+  but **never a domain the app list names**: those go only to the apps it names, and the device checks the current list on every call, so a hand grant ends once the list names its domain. Where the OS can't prove
   the caller (native messaging and local sockets on Linux or Windows), the grant comes with a per-grant
   secret the app keeps in its own storage and presents on every call. Never through a door (NIP-07,
   NIP-46, NIP-55): a site can't ask. Signing itself needs no prompt, and the device logs each use.
@@ -742,8 +738,7 @@ be read as one Core makes, and no Core flow can be made to produce one.
 - **What a verifier needs.** The device API also gives an app:
   - `members.devices()`: `{self, asOf, keys}`, the current **device** member keys from this device's view
     (the epoch record and changes in force), this device's own key, the `state` it is at (§5.1's hash of
-    the sorted redeal ids), and for each key `added_by` and `flagged` (§6.7.6 F5's "added by a device you
-    removed");
+    the sorted redeal ids), and for each key `added_by` and `flagged` (§6.7.6 F5's "added by a device you removed"; a flagged key is current, but an app SHOULD treat it as removed for an allowlist until the person keeps it);
   - `members.removed(since)`: a durable log, kept for the account's life, of `{key, why, change, state}`
     for every key that leaves the device set here, `why` being `remove`, `self` or `void` (§3.2's
     conflicting adds), and `state` `null` until that change's redeal has applied, then the post-redeal
@@ -2216,12 +2211,11 @@ in §10, and §6.7.9 adds a quiet Backup line with a button to move it by hand (
 
 ## Changes in draft 14.19
 
-For the encrypted-sync spec, in the form the reference implementation built (deaab29): §5.9, member-key
+For the encrypted-sync spec, in the signing form the reference implementation built (deaab29; its grant model is not built yet): §5.9, member-key
 signatures for apps, `SHA-256(utf8(domain) ‖ 0x00 ‖ message)` by the device's own member key, with every
 `keykin…` and `cosign…` domain reserved. Domains are granted by the app maker's app list with OS-checked
 identities; a by-hand grant never covers a listed domain; a per-grant secret is used where the OS can't
 check. Never through a door; device keys only. The device API gets `members.devices()` (with F5 flags) and
 a durable `members.removed` log that covers every way a key leaves. Every member-key signature in Core and
 its modules is now tagged, including the three challenge signatures (`keykin-retire/1`,
-`keykin-seated-ask/1`, `keykin-forward-ask/1`). Two red-team rounds (2 high, then 1 high; no critical)
-are folded in.
+`keykin-seated-ask/1`, `keykin-forward-ask/1`). Three red-team rounds (2 high, 1 high, then clean; no critical) are folded in.
