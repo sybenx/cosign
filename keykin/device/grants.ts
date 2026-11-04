@@ -195,7 +195,7 @@ export class Evidence {
   }
   allKinds(h: string): number[] { return [...(this.kinds.get(h) ?? [])].map((x) => Number(x.slice(0, x.indexOf(':')))); }
   /** The oldest records go first, when a month must fit its parts. */
-  trim(n: number) { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) for (const k of [...m.keys()].slice(0, n)) m.delete(k); this.ledger.trim(n); this.#recount(); }
+  trim(n: number, now?: number) { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) for (const k of [...m.keys()].slice(0, n)) m.delete(k); this.ledger.trim(n, now); this.#recount(); }
   size() { return this.kinds.size + this.owners.size + this.ledger.size(); }
   #recount() { this.#count.clear(); for (const os of this.owners.values()) for (const o of os) this.#count.set(o, (this.#count.get(o) ?? 0) + 1); }
   #cap() { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) while (m.size > 20_000) m.delete(m.keys().next().value!); }

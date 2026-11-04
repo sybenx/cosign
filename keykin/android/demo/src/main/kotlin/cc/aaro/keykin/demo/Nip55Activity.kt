@@ -21,7 +21,10 @@ class Nip55Activity : Activity() {
         val line = TextView(this).apply { text = r.describe(); textSize = 18f }
         col.addView(line)
         // The scope this needs, worked out here in the signer process, so the words say what is really asked.
-        Thread { val d = Memberships.signer(Memberships.slotFor(r.current)!!).device; val sc = d?.let { Nip55.scopeNeeded(it, r) }; runOnUiThread { line.text = r.describe(sc) } }.start()
+        // An event Device policy would put on a Confirm card says why (the tap here is that Confirm).
+        Thread { val d = Memberships.signer(Memberships.slotFor(r.current)!!).device; val sc = d?.let { Nip55.scopeNeeded(it, r) }
+            val why = if (d != null && r.type == "sign_event") r.caller?.let { Memberships.grantFor(it, r.current) }?.let { Nip55.verdict(d, r.payload, "${d.pub}:${it.id}") }?.takeIf { it.level != "silent" }?.reason else null
+            runOnUiThread { line.text = r.describe(sc, why) } }.start()
         val always = CheckBox(this).apply { text = "Always allow this" }
         col.addView(always)
         var answered = false

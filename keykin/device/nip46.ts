@@ -186,21 +186,22 @@ export class Nip46Home {
           for (const n of needs) if (!this.#has(g, n)) return ask(n);
           // Device policy §4: while a hold for this list is pending, this site's changes to it wait (review 12 H3).
           const lk = listKey(ev);
-          if (lk && [...this.held.values()].some((x) => x.wait && x.signer === g.signer && listKey(x.event) === lk)) return { error: 'try-later: a held change to this list is waiting' };
+          // Any site's, not only the one whose change is held (review 18 L9).
+          if (lk && [...this.held.values()].some((x) => x.wait && listKey(x.event) === lk)) return { error: 'try-later: a held change to this list is waiting' };
           // Device policy §2: judged first. A Confirm waits for the person's answer on this home, a single deletion
           // 10 seconds for an Undo; Held goes to the person at once.
           const owner = `${this.d.kp.pub}:${g.entry}`;
           const event = siteEvent({ ...ev, created_at: ev?.created_at ?? now }, this.d.g);
-          const gate = await this.d.guard.gate(event, owner, (g.entry ? this.d.grants.own.get(g.entry)?.scopes : undefined) ?? []);
-          if ('error' in gate) return { error: gate.error };
-          let held = gate.ok === 'held';
-          // Signed for this grant: the evidence records who got each ciphertext signed (review 17 M1).
-          if (!held) try { return { result: JSON.stringify(await this.d.sign(event, { owner })) }; }
-          catch (err) {
+          // A site's deletions and list changes are judged and signed one at a time (review 18 M1).
+          try {
+            // Signed for this grant: the evidence records who got each ciphertext signed (review 17 M1).
+            const r = await this.d.guard.serve(event, owner, (g.entry ? this.d.grants.own.get(g.entry)?.scopes : undefined) ?? [], () => this.d.sign(event, { owner }));
+            if ('signed' in r) return { result: JSON.stringify(r.signed) };
+            if ('error' in r) return { error: r.error };
+          } catch (err) {
             if ((err as KeykinError).code !== 'needs_approval') throw err;
             // A server's demand the device's own check doesn't explain: Held only when two servers demand it (§2).
             if (((err as any).demands ?? 0) < 2) return { error: 'try-later: a server asked for an approval; try again later' };
-            held = true;
           }
           {
             // Held (Doors §3.3, Device policy §4, review 11 L4): kept on this home for the person, who

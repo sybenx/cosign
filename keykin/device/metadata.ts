@@ -8,8 +8,9 @@
 // than it has seen, and only parts the index names; only a current device's snapshots count.
 //
 // Each month also carries Device policy §1's records (device/history.ts's Ledger): grant per event, deletions,
-// removal logs, pre-site and last-approved versions. Not yet: entries' retention by whether their event is
-// current (months are kept 13 months instead).
+// removal logs, pre-site and last-approved versions. A device fetches every device's records, for at most 3 seconds,
+// before a judgement when its copy is older than 30 seconds (`refreshRecords`). Not yet: entries' retention by
+// whether their event is current (months are kept 13 months instead).
 
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hmac } from '@noble/hashes/hmac.js';
@@ -125,7 +126,12 @@ export class MetaStore {
     for (const month of [...this.dirty].filter((m) => this.own.has(m))) {
       // A month that won't fit its parts sheds its oldest records, never the whole sync (review 17 H2).
       let text = jcs(toData(this.own.get(month)!));
-      while (Math.ceil(text.length / PART_PLAIN) > MAX_PARTS) { this.own.get(month)!.trim(Math.ceil(this.own.get(month)!.size() / 10)); text = jcs(toData(this.own.get(month)!)); this.#merged = null; }
+      // Removal logs and recent deletions go only when nothing else is left to shed (review 18 H1).
+      while (Math.ceil(text.length / PART_PLAIN) > MAX_PARTS) {
+        const e = this.own.get(month)!, size = e.size(), n = Math.ceil(size / 10);
+        e.trim(n, this.h.now); if (e.size() === size) e.ledger.trimLogs(n);
+        text = jcs(toData(e)); this.#merged = null;
+      }
       const chunks: string[] = []; for (let k = 0; k < text.length; k += PART_PLAIN) chunks.push(text.slice(k, k + PART_PLAIN));
       if (!chunks.length) chunks.push('');
       const prev = sent.get(month) ?? [];

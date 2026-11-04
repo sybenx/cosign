@@ -11,7 +11,7 @@ export const TRANSPORT_FAILED = Symbol('transport_failed');
 export const unreachable = () => ({ type: 'error', code: 'unreachable', [TRANSPORT_FAILED]: true });
 export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any, o?: { timeoutMs?: number; pow?: number }): Promise<any>; kill?(pub: string): void; rekey?(oldPub: string, node: Node): void; pushes?: { push(p: PushOut): unknown }; events?: Events }
 /** A relay filter, as much of NIP-01's as Core's doors need. */
-export interface Filter { ids?: string[]; kinds?: number[]; authors?: string[]; '#p'?: string[]; '#d'?: string[]; since?: number }
+export interface Filter { ids?: string[]; limit?: number; kinds?: number[]; authors?: string[]; '#p'?: string[]; '#d'?: string[]; since?: number }
 export const matches = (f: Filter, e: { id?: string; kind: number; pubkey: string; tags: string[][]; created_at: number }) =>
   (!f.ids || f.ids.includes(e.id ?? '')) && (!f.kinds || f.kinds.includes(e.kind)) && (!f.authors || f.authors.includes(e.pubkey)) && (f.since === undefined || e.created_at >= f.since)
   && (!f['#p'] || e.tags.some((t) => t[0] === 'p' && f['#p']!.includes(t[1])))

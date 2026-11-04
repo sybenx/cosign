@@ -149,6 +149,8 @@ object Grants {
 class Evidence {
     val kinds = LinkedHashMap<String, MutableSet<String>>()
     val owners = LinkedHashMap<String, MutableSet<String>>()
+    /** Device policy §1's records (grant per event, deletions, removal logs, references), synced with these. */
+    var ledger = Ledger()
     private val count = HashMap<String, Int>()
     companion object {
         const val PER_OWNER = 2000
@@ -166,18 +168,19 @@ class Evidence {
         return (kinds[h] ?: emptySet<String>()).mapNotNull { x -> val i = x.indexOf(':'); if (i > 0 && x.substring(i + 1) in os) x.substring(0, i).toIntOrNull() else null }
     }
     @Synchronized fun allKinds(h: String): List<Int> = (kinds[h] ?: emptySet<String>()).mapNotNull { it.substringBefore(':').toIntOrNull() }
-    @Synchronized fun trim(n: Int) { for (m in listOf<MutableMap<String, *>>(kinds, owners)) m.keys.take(n).toList().forEach { m.remove(it) }; recount() }
-    @Synchronized fun size() = kinds.size + owners.size
+    @Synchronized fun trim(n: Int, now: Long? = null) { for (m in listOf<MutableMap<String, *>>(kinds, owners)) m.keys.take(n).toList().forEach { m.remove(it) }; if (now != null) ledger.trim(n, now) else ledger.trim(n); recount() }
+    @Synchronized fun size() = kinds.size + owners.size + ledger.size()
     private fun recount() { count.clear(); for (os in owners.values) for (o in os) count[o] = (count[o] ?: 0) + 1 }
     private fun cap() { for (m in listOf<MutableMap<String, *>>(kinds, owners)) while (m.size > 20_000) m.remove(m.keys.first()) }
-    @Synchronized fun dump(): JSONObject = JSONObject().put("kinds", JSONArray(kinds.map { (h, k) -> JSONArray(listOf(h, JSONArray(k.toList()))) })).put("owners", JSONArray(owners.map { (h, o) -> JSONArray(listOf(h, JSONArray(o.toList()))) }))
+    @Synchronized fun dump(): JSONObject = JSONObject().put("kinds", JSONArray(kinds.map { (h, k) -> JSONArray(listOf(h, JSONArray(k.toList()))) })).put("owners", JSONArray(owners.map { (h, o) -> JSONArray(listOf(h, JSONArray(o.toList()))) })).put("ledger", ledger.data())
     @Synchronized fun load(x: JSONObject?) {
-        kinds.clear(); owners.clear(); if (x == null) { recount(); return }
+        kinds.clear(); owners.clear(); ledger = Ledger(); if (x == null) { recount(); return }
+        ledger.take(x.optJSONObject("ledger")) { true }
         x.optJSONArray("kinds")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> kinds[p.getString(0)] = p.getJSONArray(1).let { k -> (0 until k.length()).map { j -> k.get(j).let { y -> if (y is Number) "${y.toInt()}:member" else y.toString() } }.toMutableSet() } } }
         x.optJSONArray("owners")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> owners[p.getString(0)] = p.getJSONArray(1).let { k -> (0 until k.length()).map { k.getString(it) }.toMutableSet() } } }
         recount()
     }
-    @Synchronized fun clear() { kinds.clear(); owners.clear(); count.clear() }
+    @Synchronized fun clear() { kinds.clear(); owners.clear(); count.clear(); ledger.clear() }
 }
 /** One device's grants (Doors §1–§2), as TS `GrantStore`. */
 class GrantStore(private val d: Device) {

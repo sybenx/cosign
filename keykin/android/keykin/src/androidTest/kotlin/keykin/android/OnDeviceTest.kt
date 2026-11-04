@@ -126,4 +126,23 @@ class OnDeviceTest {
         val seed = v.getJSONArray("wallet_seed").let { a -> (0 until a.length()).map { a.getString(it) } }
         try { keykin.Backup.readBackupWords(seed); fail() } catch (e: KeykinException) { assertEquals("wallet_seed", e.code) }
     }
+
+    @Test fun judgesEventsAsTs() {
+        val v = asset("policy.json"); val g = v.getString("g"); val now = v.getLong("now"); val ck = unhex(v.getString("ck"))
+        fun strs(a: JSONArray) = (0 until a.length()).map { a.getString(it) }
+        val wrong = ArrayList<String>(); val cases = v.getJSONArray("cases")
+        for (i in 0 until cases.length()) {
+            val c = cases.getJSONObject(i)
+            val h = keykin.History { g }
+            c.getJSONArray("history").let { a -> for (k in 0 until a.length()) h.take(Event.of(a.getJSONObject(k))) }
+            val led = keykin.Ledger(); led.take(c.getJSONObject("ledger")) { true }
+            val lookup = c.getJSONArray("lookup").let { a -> (0 until a.length()).map { Event.of(a.getJSONObject(it)) } }
+            val e = c.getJSONObject("event"); val ta = e.getJSONArray("tags")
+            val ev = keykin.Unsigned(e.getString("pubkey"), e.getLong("created_at"), e.getInt("kind"), (0 until ta.length()).map { strs(ta.getJSONArray(it)) }, e.getString("content"))
+            val got = keykin.Policy.judge(ev, keykin.Policy.Ctx(g, now, c.getString("owner"), strs(c.getJSONArray("scopes")), h, led,
+                { x -> try { keykin.Nip44.decrypt(x, ck) } catch (_: Exception) { null } }, { _, _ -> lookup }))
+            if (got.level != c.getString("level") || got.row != c.getString("row")) wrong += "${c.getString("name")}: ${got.level}/${got.row}"
+        }
+        assertEquals(emptyList<String>(), wrong)
+    }
 }

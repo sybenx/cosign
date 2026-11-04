@@ -5,7 +5,7 @@ import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { create } from '../sim/account.ts';
 import { History, Ledger } from '../device/history.ts';
-import { judge, itemsOf, normValue, type JudgeCtx } from '../device/policy.ts';
+import { judge, itemsOf, itemKey, normValue, type JudgeCtx } from '../device/policy.ts';
 import { Evidence } from '../device/grants.ts';
 import { newKey, type NostrEvent } from '../src/event.ts';
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
@@ -40,7 +40,7 @@ test('§1 history: only the account\'s events whose signature verifies; the newe
 test('§2 items: name and first value, relay URLs normalised, public and private apart; d/title are not items', async () => {
   assert.equal(normValue('wss://Relay.Example.com/'), 'wss://relay.example.com');
   const e = ev(10000, [['p', 'aa', 'wss://hint'], ['title', 'x'], ['r', 'WSS://R.example/']], priv([['p', 'bb']]));
-  assert.deepEqual([...(await itemsOf(e, decrypt))!].sort(), ['priv p bb', 'pub p aa', 'pub r wss://r.example']);
+  assert.deepEqual([...(await itemsOf(e, decrypt))!].sort(), [itemKey('priv', 'p', 'bb'), itemKey('pub', 'p', 'aa'), itemKey('pub', 'r', 'wss://r.example')].sort());
   // A kind with no private items is judged by its public tags alone; content that doesn't decrypt has none.
   assert.equal((await itemsOf(ev(3, [['p', 'aa']], '{"wss://x":{}}'), decrypt))!.size, 1);
   assert.equal((await itemsOf(ev(10000, [], 'junk'), decrypt))!.size, 0);
@@ -62,7 +62,7 @@ test('§2 removals add up within a week: many small cuts by one site, never the 
   let cur = 100;
   for (let k = 0; k < 2; k++) {
     const nv = ev(3, follows(cur - 4, 100 - cur + 4), '', NOW - 86400 + k);
-    c.ledger.log('removed', SITE, '3', follows(4, 100 - cur).map((x) => `pub p ${x[1]}`), NOW - 86400);
+    c.ledger.log('removed', SITE, '3', follows(4, 100 - cur).map((x) => itemKey('pub', 'p', x[1])), NOW - 86400);
     c.history.take(nv); cur -= 4;
   }
   assert.equal((await judge(next(3, follows(cur - 4, 100 - cur + 4)), c)).level, 'confirm', '12 net removals this week');
@@ -73,7 +73,7 @@ test('§2 removals add up within a week: many small cuts by one site, never the 
 test('§2 the pre-site version is the reference: a reconnect resets nothing, and no-op edits can\'t push it out', async () => {
   const c = ctx(); const pre = ev(10000, follows(50), '', NOW - 86400 * 3); c.history.take(pre);
   c.ledger.setPresite(SITE, '10000', pre.id); c.history.pin(pre);
-  c.ledger.log('removed', SITE, '10000', follows(9).map((x) => `pub p ${x[1]}`), NOW - 86400 * 2);
+  c.ledger.log('removed', SITE, '10000', follows(9).map((x) => itemKey('pub', 'p', x[1])), NOW - 86400 * 2);
   for (let k = 0; k < 30; k++) c.history.take(ev(10000, follows(41, 9), '', NOW - 86400 * 2 + k));   // 30 no-op edits
   assert.equal(c.history.versions.get('10000')!.some((x) => x.id === pre.id), false, 'pushed out of the 25, but pinned');
   assert.equal((await judge(next(10000, follows(40, 10)), c)).level, 'confirm', '10 net removals against the pre-site version');
@@ -184,12 +184,12 @@ test('§2 media deletes: Confirm naming files and servers; wide tokens declined;
 
 test('§1 the records sync: one device\'s removals, grants and deletions count on another', async () => {
   const e = new Evidence();
-  e.ledger.sign('aa'.repeat(32), 'dev1:g'); e.ledger.log('removed', 'dev1:g', '3', ['pub p x'], NOW);
+  e.ledger.sign('aa'.repeat(32), 'dev1:g'); e.ledger.log('removed', 'dev1:g', '3', [itemKey('pub', 'p', 'x')], NOW);
   e.ledger.del({ at: NOW, owner: 'dev1:g', n: 2, single: false, wallet: false, approved: false });
   e.ledger.setPresite('dev1:g', '3', 'bb'.repeat(32)); e.ledger.approve('dev1:g', '3', 'cc'.repeat(32), NOW);
   const back = new Evidence(); back.load(e.dump());
   assert.equal(back.ledger.signed.get('aa'.repeat(32)), 'dev1:g');
-  assert.ok(back.ledger.removals('dev1:g', '3').has('pub p x'));
+  assert.ok(back.ledger.removals('dev1:g', '3').has(itemKey('pub', 'p', 'x')));
   assert.equal(back.ledger.burst(NOW + 1), 2);
   assert.equal(back.ledger.presiteOf('dev1:g', '3'), 'bb'.repeat(32));
   // Only the maker's owners count (review 17 L5).
@@ -246,8 +246,8 @@ test('through NIP-46: a site deleting its own post waits for the Undo; Undo stop
   bus.advance(1);
   const p = sign({ kind: 5, tags: [['e', post2.id]] });
   await new Promise((r) => setTimeout(r, 30));
-  const [key] = A.guard.pendingUndos(); assert.ok(key);
-  assert.ok(A.guard.undoPending(key));
+  const [w] = A.guard.pendingUndos(); assert.ok(w);
+  assert.ok(A.guard.undoPending(w.id));
   assert.match((await p).error, /^declined: undone/);
   // A post this site didn't make: Confirm.
   const memberPost = await A.sign({ kind: 1, content: 'mine' });

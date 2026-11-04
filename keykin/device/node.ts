@@ -16,7 +16,11 @@ import { Nip46Home, listKey } from './nip46.ts';
 import { GrantStore, KIND_GRANTS, Evidence } from './grants.ts';
 import { MetaStore, KIND_META } from './metadata.ts';
 import { History, addrOf } from './history.ts';
-import { Guard, judge, itemsOf, undoDate, UNDO_AHEAD_S, type Verdict } from './policy.ts';
+import { Guard, judge, itemsOf, tagKey, undoDate, UNDO_AHEAD_S, type Verdict } from './policy.ts';
+import { verifyEvent } from '../src/event.ts';
+const unrefTimer = (t: ReturnType<typeof setTimeout>) => { (t as any).unref?.(); return t; };
+/** One Undo waits per list: a newer one of the same list replaces it. */
+const sameUndo = (a: any, b: any) => a.addr === b.addr;
 import { destructive, isReplaceable, type Ev } from '../src/destructive.ts';
 import { DataKeys } from './datakey.ts';
 import { memberSign } from './membersig.ts';
@@ -234,7 +238,7 @@ export class DeviceNode implements Node {
         if (!keykinD) this.meta.event(signed.kind, signed.content, extra.owner ?? 'member');
         if (keykinD) this.#protect(signed.id);
         // Device policy §1: the history takes it, and the records say which grant got it signed and what it did.
-        else if (this.baseDk) await this.guard.signed(signed, extra.owner ?? 'member', { approved: !!(extra.approval || extra.hold) });
+        else if (this.baseDk) try { await this.guard.signed(signed, extra.owner ?? 'member', { approved: !!(extra.approval || extra.hold) }); } catch { /* never loses the signed event */ }
         return signed;
       }
     }
@@ -806,24 +810,39 @@ export class DeviceNode implements Node {
     ledger: () => dev.meta.evidence().ledger, record: (f) => dev.meta.record(f),
     decrypt: (c) => dev.decryptSelf(c),
     lookup: (ids, addrs) => dev.lookupEvents(ids, addrs),
-    refresh: async (addr) => { for (const e of await dev.lookupEvents([], [addr])) dev.history.take(e); },
+    refresh: async (addr) => { const r = await dev.queryAddr(addr); for (const e of r.events) dev.history.take(e); return r; },
+    refreshRecords: async () => {
+      if (!dev.bus.events || !dev.baseDk || dev.now - dev.#recordsAt < 30) return;
+      await Promise.race([dev.meta.fetch().then(() => { dev.#recordsAt = dev.now; }), new Promise((ok) => unrefTimer(setTimeout(ok, 3000)))]);
+    },
     persist: () => dev.persist(),
   }))(this);
-  /** Private list content with the self conversation key (§2 "Items"): the plaintext, null if it doesn't decrypt,
-   *  undefined if the key can't be had. */
+  #recordsAt = 0;
+  /** The newest version at an address from the account's relays, for at most 3 seconds, and how many relays answered. */
+  async queryAddr(addr: string): Promise<{ events: NostrEvent[]; answered: number; asked: number }> {
+    const ev = this.bus.events; if (!ev) return { events: [], answered: 0, asked: 0 };
+    const [k, ...d] = addr.split(':');
+    const q = ev.query({ kinds: [Number(k)], authors: [this.g], ...(d.length ? { '#d': [d.join(':')] } : {}), limit: 1 });
+    const r = await Promise.race([q, new Promise<null>((ok) => unrefTimer(setTimeout(() => ok(null), 3000)))]);
+    return r ? { events: r.events.filter((e: any) => e?.pubkey === this.g && verifyEvent(e)), answered: r.answered, asked: r.asked } : { events: [], answered: 0, asked: 1 };
+  }
+  /** Private list content with the self conversation key (§2 "Items"), NIP-44 or a legacy NIP-04 `?iv=` payload
+   *  (review 18 M7): the plaintext, null if it doesn't decrypt, undefined if the key can't be had. */
   async decryptSelf(content: string): Promise<string | null | undefined> {
     let x: Uint8Array; try { x = await this.ecdhX(this.g); } catch { return undefined; }
+    if (content.includes('?iv=')) try { const [ct, iv] = content.split('?iv='); return utf8Strict(cbc(x, base64.decode(iv)).decrypt(base64.decode(ct))); } catch { return null; }
     try { return nip44Open(content, extract(sha256, x, utf8ToBytes('nip44-v2'))); } catch { return null; }
   }
-  /** The account's events from its relays, by id or address, for at most 3 seconds; only its own and verified. */
+  /** Events from the account's relays, for at most 3 seconds, verified: by id from any author (so another key's
+   *  deletion targets are known as such, review 18 L5), and the account's own by address, the newest of each. */
   async lookupEvents(ids: string[], addrs: string[]): Promise<NostrEvent[]> {
     const ev = this.bus.events; if (!ev) return [];
     const qs: Promise<{ events: any[] }>[] = [];
-    if (ids.length) qs.push(ev.query({ ids, authors: [this.g] }));
-    for (const a of addrs) { const [k, ...d] = a.split(':'); qs.push(ev.query({ kinds: [Number(k)], authors: [this.g], ...(d.length ? { '#d': [d.join(':')] } : {}) })); }
+    if (ids.length) qs.push(ev.query({ ids, limit: ids.length }));
+    for (const a of addrs) qs.push(this.queryAddr(a));
     const all = Promise.all(qs).then((rs) => rs.flatMap((r) => r.events));
-    const got = await Promise.race([all, new Promise<any[]>((ok) => setTimeout(() => ok([]), 3000))]);
-    return got.filter((e) => e?.pubkey === this.g && this.history.take(e));
+    const got = await Promise.race([all, new Promise<any[]>((ok) => unrefTimer(setTimeout(() => ok([]), 3000)))]);
+    return got.filter((e) => e && verifyEvent(e) && (e.pubkey !== this.g || this.history.take(e, true)));
   }
   /** Judge a site's event (§2): what the person would see, without asking. */
   judge(e: Unsigned, owner: string, scopes: string[]): Promise<Verdict> { return this.guard.judge(e, owner, scopes as any); }
@@ -831,7 +850,7 @@ export class DeviceNode implements Node {
   // §3 Undo: an earlier version signed again as a new event, judged against the current one like any change, and
   // dated after the newest version and any deletion naming it. Kept as the changes it makes until it is signed, and
   // re-applied then to the current version, keeping the person's newer edits.
-  undoOutbox: { addr: string; add: string[][]; remove: string[]; addPriv: string[][]; removePriv: string[]; at: number; content?: string; confirmed?: boolean }[] = [];
+  undoOutbox: { addr: string; add: string[][]; remove: string[]; addPriv: string[][]; removePriv: string[]; at: number; content?: string; confirmed?: boolean; needs?: string }[] = [];
   /** Undo a list or the profile to an earlier version from history (§3). `confirmed` is the person's tap on the
    *  Confirm card this returns when the Undo removes items; Held needs the lock (or a hold) as any change does. */
   async undoTo(versionId: string, o: { confirmed?: boolean; approval?: Approval } = {}): Promise<{ needs: 'confirm' | 'held'; reason: string } | NostrEvent> {
@@ -840,7 +859,7 @@ export class DeviceNode implements Node {
     if (!target || !addr) throw new KeykinError('unknown_version', 'not a version this device kept');
     const cur = this.history.current(addr);
     const pub = (e: { tags: string[][] } | null) => (e?.tags ?? []).filter((t) => t.length >= 2);
-    const key = (t: string[]) => `${t[0]} ${t[1]}`;
+    const key = tagKey;
     const privOf = async (e: NostrEvent | null) => { if (!e || !e.content || target.kind === 0) return []; const p = await this.decryptSelf(e.content); try { const x = p ? strictJson(p) : []; return Array.isArray(x) ? x.filter((t: any) => Array.isArray(t)) : []; } catch { return []; } };
     const [tp, cp] = [await privOf(target), await privOf(cur)];
     const curKeys = new Set(pub(cur).map(key)), tKeys = new Set(pub(target).map(key));
@@ -849,10 +868,18 @@ export class DeviceNode implements Node {
       : { addr, add: pub(target).filter((t) => !curKeys.has(key(t))), remove: [...curKeys].filter((k) => !tKeys.has(k)), addPriv: tp.filter((t: string[]) => !curPriv.has(key(t))), removePriv: [...curPriv].filter((k) => !tPriv.has(k)), at: this.now };
     return this.#applyUndo(change, o);
   }
+  /** Applies an Undo; on anything short of signing, it stays in the outbox (review 18 M8). */
   async #applyUndo(ch: any, o: { confirmed?: boolean; approval?: Approval; hold?: string } = {}): Promise<{ needs: 'confirm' | 'held'; reason: string } | NostrEvent> {
+    try {
+      const r = await this.#tryUndo(ch, o);
+      if ('needs' in r) this.#keepUndo({ ...ch, needs: r.needs });
+      return r;
+    } catch (e) { if (!o.approval && !o.hold) this.#keepUndo({ ...ch, confirmed: o.confirmed }); throw e; }
+  }
+  async #tryUndo(ch: any, o: { confirmed?: boolean; approval?: Approval; hold?: string } = {}): Promise<{ needs: 'confirm' | 'held'; reason: string } | NostrEvent> {
     const cur = this.history.current(ch.addr);
     const kind = Number(ch.addr.split(':')[0]);
-    const key = (t: string[]) => `${t[0]} ${t[1]}`;
+    const key = tagKey;
     let tags: string[][], content: string;
     if (kind === 0) { tags = cur?.tags ?? []; content = ch.content; }
     else {
@@ -874,7 +901,7 @@ export class DeviceNode implements Node {
     }
     const created_at = undoDate(this.history, ch.addr, this.now, cur ? [cur.id] : []);
     // Past 9 minutes ahead it waits, kept in the outbox.
-    if (created_at - this.now > UNDO_AHEAD_S) { this.#keepUndo({ ...ch, confirmed: o.confirmed }); refuse('try_later', 'a newer version is dated ahead; the Undo waits'); }
+    if (created_at - this.now > UNDO_AHEAD_S) refuse('try_later', 'a newer version is dated ahead; the Undo waits');
     const ev = { kind, created_at, tags, content, pubkey: this.g };
     // Judged like any change: additions are silent, removals Confirm, core §5.8 Held.
     if (destructive(ev as Ev, this.meta.evidence().ledger.burst(this.now)) && !o.approval && !o.hold) return { needs: 'held', reason: 'This Undo empties the list' };
@@ -883,20 +910,20 @@ export class DeviceNode implements Node {
       const gone = before && after ? [...before].filter((x) => !after.has(x)).length : 1;
       if (gone && !o.confirmed && !o.approval) return { needs: 'confirm', reason: `Remove ${gone} items again?` };
     }
-    try {
-      const signed = await this.sign(ev, { approval: o.approval, hold: o.hold, owner: 'member' });
-      this.undoOutbox = this.undoOutbox.filter((x) => x !== ch);
-      await this.bus.events?.publishEvent(signed, this.rec?.relays);
-      this.persist();
-      return signed;
-    } catch (e) { if (!o.approval && !o.hold) this.#keepUndo({ ...ch, confirmed: o.confirmed }); throw e; }
+    const signed = await this.sign(ev, { approval: o.approval, hold: o.hold, owner: 'member' });
+    this.undoOutbox = this.undoOutbox.filter((x) => !sameUndo(x, ch));
+    await this.bus.events?.publishEvent(signed, this.rec?.relays);
+    this.persist();
+    return signed;
   }
-  #keepUndo(ch: any) { if (!this.undoOutbox.includes(ch)) this.undoOutbox.push(ch); this.persist(); }
+  /** One outbox entry per change: a kept Undo replaces its earlier copy. */
+  #keepUndo(ch: any) { this.undoOutbox = [...this.undoOutbox.filter((x) => !sameUndo(x, ch)), ch]; this.persist(); }
   /** Undos waiting in the outbox, re-applied to the current versions now (after a restart, or once a date passed). */
   async flushUndos() {
     for (const ch of [...this.undoOutbox]) {
-      this.undoOutbox = this.undoOutbox.filter((x) => x !== ch);
-      try { const r = await this.#applyUndo(ch, { confirmed: ch.confirmed }); if ('needs' in r) this.notices.push({ kind: 'undo_needs_you', member: this.kp.pub }); } catch { /* kept again */ }
+      // One that needs the person waits for them (undoTo again, with their answer); the rest are tried again.
+      if (ch.needs) continue;
+      try { const r = await this.#applyUndo(ch, { confirmed: ch.confirmed }); if ('needs' in r && !this.notices.some((n) => n.kind === 'undo_needs_you')) this.notices.push({ kind: 'undo_needs_you', member: this.kp.pub }); } catch { /* kept */ }
     }
   }
   /** "Post again" (§3): a deleted post can't come back, so a new event with the same content and tags from history. */
@@ -916,13 +943,14 @@ export class DeviceNode implements Node {
       if (kind === 0) continue;
       const cur = this.history.current(addr); if (!cur) continue;
       const items = (await itemsOf(cur, (c) => this.decryptSelf(c))) ?? new Set<string>();
-      const toTag = (it: string) => { const [, name, ...v] = it.split(' '); return [name, v.join(' ')]; };
-      const back = [...led.removals(owner, addr).keys()].filter((it) => !items.has(it));
-      const out = [...led.additions(owner, addr).keys()].filter((it) => items.has(it));
+      const parse = (it: string): [string, string, string] | null => { try { const x = JSON.parse(it); return Array.isArray(x) && x.length === 3 && x.every((y) => typeof y === 'string') ? x as [string, string, string] : null; } catch { return null; } };
+      const back = [...led.removals(owner, addr).keys()].filter((it) => !items.has(it)).map(parse).filter(Boolean) as [string, string, string][];
+      const out = [...led.additions(owner, addr).keys()].filter((it) => items.has(it)).map(parse).filter(Boolean) as [string, string, string][];
       if (!back.length && !out.length) continue;
+      // Item keys are [where, name, normalised value]; tags are matched by the same key (review 18 L8).
       const ch = { addr, at: this.now,
-        add: back.filter((x) => x.startsWith('pub ')).map(toTag), remove: out.filter((x) => x.startsWith('pub ')).map((x) => x.slice(4)),
-        addPriv: back.filter((x) => x.startsWith('priv ')).map(toTag), removePriv: out.filter((x) => x.startsWith('priv ')).map((x) => x.slice(5)) };
+        add: back.filter((x) => x[0] === 'pub').map((x) => [x[1], x[2]]), remove: out.filter((x) => x[0] === 'pub').map((x) => tagKey([x[1], x[2]])),
+        addPriv: back.filter((x) => x[0] === 'priv').map((x) => [x[1], x[2]]), removePriv: out.filter((x) => x[0] === 'priv').map((x) => tagKey([x[1], x[2]])) };
       lists.push(await this.#applyUndo(ch, o));
     }
     this.guard.declinedBy(owner, 'undo');

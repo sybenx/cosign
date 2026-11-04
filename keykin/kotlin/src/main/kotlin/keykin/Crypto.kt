@@ -13,7 +13,10 @@ import java.security.spec.ECPoint
 import java.security.spec.ECPublicKeySpec
 import java.util.Base64
 
-class KeykinException(val code: String, msg: String? = null) : Exception(if (msg == null) code else "$code: $msg")
+class KeykinException(val code: String, msg: String? = null) : Exception(if (msg == null) code else "$code: $msg") {
+    /** For a signing that failed: how many servers demanded an approval (Device policy §2). */
+    var demands = 0
+}
 fun refuse(code: String, msg: String? = null): Nothing = throw KeykinException(code, msg)
 
 /** NIP-01's serialization with §9.5's strings: what the profile refuses is refused, never escaped. */

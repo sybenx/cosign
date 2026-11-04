@@ -246,7 +246,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         wiped = true; state = ShareState(emptySet(), state.C, emptyMap())
         baseDk = ""; dkSeeds.clear(); releaseSeeds.clear(); pending.clear(); kept.clear(); paperVerified.clear(); dkHistory.clear()
         notices.clear(); onSiteRequest = null; carried = JSONObject(); pushKeys.clear(); inviter = null
-        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear(); grants.clear(); meta.clear(); synchronized(xCache) { xCache.clear() }
+        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear(); grants.clear(); meta.clear(); history.clear(); guard.clear(); synchronized(undoOutbox) { undoOutbox.clear() }; synchronized(xCache) { xCache.clear() }
         for (cb in gone) try { cb() } catch (_: Exception) {}
         save()
     }
@@ -350,6 +350,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         members.load(x.optJSONObject("members"))
         grants.load(x.optJSONObject("grants"))
         meta.load(x.optJSONObject("meta"))
+        history.load(x.optJSONObject("history")); guard.load(x.optJSONObject("guard"))
+        x.optJSONArray("undoOutbox")?.let { a -> synchronized(undoOutbox) { undoOutbox.clear(); for (k in 0 until a.length()) a.optJSONObject(k)?.let { undoOutbox += it } } }
         x.optJSONArray("protectedIds")?.let { a -> for (k in 0 until a.length()) protectedIds += a.getString(k) }
         afterState()
     }
@@ -375,6 +377,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("reissued", ja(reissued.map { (k, h) -> ja(listOf(k, h)) })).put("reissueEphs", ja(reissueEphs.map { (k, e) -> ja(listOf(k, e)) }))
             .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted())).put("grants", grants.dump())
             .put("meta", meta.dump()).put("protectedIds", ja(synchronized(protectedIds) { protectedIds.toList() }))
+            .put("history", history.dump()).put("guard", guard.dump()).put("undoOutbox", ja(synchronized(undoOutbox) { undoOutbox.toList() }))
         if (!x.has("name")) x.put("name", "kotlin")
         return x.toString()
     }
@@ -418,15 +421,12 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             for (e in evs) if ((e.tag("d") ?: "").startsWith("keykin-")) protect(e.id)
             // Device policy §1: the indexes first by d (a site's own 30078 events can't crowd them out, M6), then
             // the parts they name; this device's own at most every 10 minutes.
-            val cur = view.devices.filter { it !in view.removed }
-            val ix = net.query(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))).put("#d", JSONArray(cur.map { MetaStore.indexD(baseDk, it) })))
-            meta.take(ix)
-            val named = meta.namedParts(ix)
-            meta.take(ix + if (named.isEmpty()) emptyList() else net.query(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))).put("#d", JSONArray(named))))
+            refreshRecords()
             if (meta.dirty.isNotEmpty() && net.now - meta.lastAt >= 600) try { meta.publish(net) } catch (_: Exception) {}
             save()
         } catch (_: Exception) {}
         lastFetchAt = net.now
+        if (synchronized(undoOutbox) { undoOutbox.isNotEmpty() }) flushUndos()
         for (e in nipQueue) try { onSiteRequest?.invoke(e) } catch (_: Exception) {}
     }
     /** Publish this device's grants (after a change to them: a new grant, a widen, an end). */
@@ -819,18 +819,164 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
 
     /** Sign an event with the first server that gives a partial. */
     fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList(), createdAt: Long = net.now, owner: String = "member"): JSONObject {
-        var last = "no_server"
+        var last = "no_server"; var demands = 0
         val st = state; if (wiped) refuse("wiped"); val c = RoundContext(g, epochId, st.hash, st.C)
         for (s in servers()) {
             val r = OneCall(c, st.shares, Signer(s.key, s.shares), Unsigned(g, createdAt, kind, tags, content))
             val a = net.send(sk, s.key, r.request)
-            if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; continue }
+            // Device policy §2: how many servers demanded an approval (two, or the device's own check, make it Held).
+            if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; if (last == "needs_approval") demands++; continue }
             // A faulty or hostile server's bad partial counts as silence: try the next one (review 12 L1).
             try { return r.finish(a).also { ev ->
                 // Not the account's own keykin- events (grants, metadata): they'd feed back into the snapshot (review 17 M3).
                 val keykinD = kind == Grants.KIND && (tags.firstOrNull { it.size >= 2 && it[0] == "d" }?.get(1) ?: "").startsWith("keykin-")
-                if (keykinD) protect(ev.getString("id")) else meta.event(kind, content, owner) } } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
+                if (keykinD) protect(ev.getString("id")) else meta.event(kind, content, owner)
+                // Device policy §1: the history takes it, and the records say which grant got it signed and what it did.
+                if (!keykinD && baseDk.isNotEmpty()) try { guard.signed(Event.of(ev), owner) } catch (_: Exception) {}
+            } } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
         }
-        refuse(last)
+        throw KeykinException(last).also { it.demands = demands }
+    }
+
+    // --- Device policy (Policy.kt) ---------------------------------------------------------------
+    val now: Long get() = net.now
+    /** Every current device's metadata (§1): the indexes first by d (a site's own 30078 events can't crowd them out,
+     *  review 17 M6), then the parts they name. */
+    fun refreshRecords() {
+        if (baseDk.isEmpty()) return
+        val cur = view.devices.filter { it !in view.removed }
+        val ix = net.query(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))).put("#d", JSONArray(cur.map { MetaStore.indexD(baseDk, it) })), 3000)
+        meta.take(ix)
+        val named = meta.namedParts(ix)
+        meta.take(ix + if (named.isEmpty()) emptyList() else net.query(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))).put("#d", JSONArray(named)), 3000))
+    }
+    /** The newest version at an address from the account's relays (at most 3 seconds), and how many relays answered. */
+    fun queryAddr(a: String): Triple<List<Event>, Int, Int> {
+        val k = a.substringBefore(':').toIntOrNull() ?: return Triple(emptyList(), 0, 1)
+        val f = JSONObject().put("kinds", JSONArray(listOf(k))).put("authors", JSONArray(listOf(g))).put("limit", 1); if (':' in a) f.put("#d", JSONArray(listOf(a.substringAfter(':'))))
+        val (evs, answered, asked) = net.queryCounted(f, 3000)
+        return Triple(evs.filter { it.pubkey == g && verifyEvent(it) }, answered, asked)
+    }
+    /** §1: the account's events this device signed or fetched, verified, kept on this device only. */
+    val history = History { g }
+    /** §2–§4, §6: verdicts on sites' events, the cards, the Undo wait and auto-declines. */
+    val guard by lazy { Guard(this) }
+    /** Private list content with the self conversation key: the plaintext, null if it doesn't decrypt, Policy.NO_KEY
+     *  if the key can't be had. */
+    fun decryptSelf(content: String): String? {
+        val x = try { ecdhX(g) } catch (_: Exception) { return Policy.NO_KEY }
+        // A legacy NIP-04 `?iv=` payload too (review 18 M7).
+        if ("?iv=" in content) return try { nip04With(x, content) } catch (_: Exception) { null }
+        return try { Nip44.decrypt(content, hmac(utf8("nip44-v2"), x)) } catch (_: Exception) { null }
+    }
+    private fun nip04With(key: ByteArray, text: String): String {
+        val d64 = java.util.Base64.getDecoder(); val parts = text.split("?iv="); if (parts.size != 2) refuse("malformed", "nip04 payload")
+        val c = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
+        c.init(javax.crypto.Cipher.DECRYPT_MODE, javax.crypto.spec.SecretKeySpec(key, "AES"), javax.crypto.spec.IvParameterSpec(d64.decode(parts[1])))
+        return Json.utf8Strict(c.doFinal(d64.decode(parts[0])))
+    }
+    /** Events from the account's relays (at most 3 seconds each), verified: by id from any author (another key's
+     *  deletion targets known as such, review 18 L5), and the account's own by address. */
+    fun lookupEvents(ids: List<String>, addrs: List<String>): List<Event> {
+        val out = ArrayList<Event>()
+        if (ids.isNotEmpty()) out += net.query(JSONObject().put("ids", JSONArray(ids)).put("limit", ids.size), 3000)
+        for (a in addrs) out += queryAddr(a).first
+        return out.filter { verifyEvent(it) && (it.pubkey != g || history.take(it, true)) }
+    }
+    /** Judge a site's event (§2): what the person would see, without asking. */
+    fun judge(e: Unsigned, owner: String, scopes: List<String>): Verdict = guard.judge(e, owner, scopes)
+
+    // §3 Undo, as TS: an earlier version signed again as a new event, judged against the current version, dated after
+    // the newest version and any deletion naming it, and kept as the changes it makes until it is signed.
+    val undoOutbox = ArrayList<JSONObject>()
+    private fun key2(t: List<String>) = Policy.tagKey(t)
+    private fun privOf(e: Event?): List<List<String>> {
+        if (e == null || e.content.isEmpty() || e.kind == 0) return emptyList()
+        val p = decryptSelf(e.content)?.takeIf { it != Policy.NO_KEY } ?: return emptyList()
+        return try { (Json.parse(p) as? JSONArray)?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? JSONArray)?.let { t -> (0 until t.length()).mapNotNull { j -> t.opt(j) as? String } } }.filter { it.size >= 2 } } ?: emptyList() } catch (_: Exception) { emptyList() }
+    }
+    private fun ja2(l: List<List<String>>) = JSONArray(l.map { JSONArray(it) })
+    private fun lists(a: JSONArray?) = (0 until (a?.length() ?: 0)).map { i -> a!!.getJSONArray(i).let { t -> (0 until t.length()).map { t.getString(it) } } }
+    private fun strs(a: JSONArray?) = (0 until (a?.length() ?: 0)).map { a!!.getString(it) }
+    /** Undo a list or the profile to an earlier version (§3): the signed event, or what it needs ("confirm", "held"). */
+    fun undoTo(versionId: String, confirmed: Boolean = false): Any {
+        val target = history.get(versionId) ?: refuse("unknown_version", "not a version this device kept")
+        val addr = (if (Rules.replaceable(target.kind)) Kinds.addrOf(target.kind, target.tags) else null) ?: refuse("unknown_version", "not a version this device kept")
+        val cur = history.current(addr)
+        val pub = { e: Event? -> (e?.tags ?: emptyList()).filter { it.size >= 2 } }
+        val ch = JSONObject().put("addr", addr).put("at", now)
+        if (target.kind == 0) ch.put("content", target.content).put("add", JSONArray()).put("remove", JSONArray()).put("addPriv", JSONArray()).put("removePriv", JSONArray())
+        else {
+            val tp = privOf(target); val cp = privOf(cur)
+            val curKeys = pub(cur).map(::key2).toSet(); val tKeys = pub(target).map(::key2).toSet()
+            val curPriv = cp.map(::key2).toSet(); val tPriv = tp.map(::key2).toSet()
+            ch.put("add", ja2(pub(target).filter { key2(it) !in curKeys })).put("remove", JSONArray(curKeys.filter { it !in tKeys }))
+                .put("addPriv", ja2(tp.filter { key2(it) !in curPriv })).put("removePriv", JSONArray(curPriv.filter { it !in tPriv }))
+        }
+        return applyUndo(ch, confirmed)
+    }
+    /** Applies an Undo; on anything short of signing it stays in the outbox, one per list (review 18 M8). */
+    private fun applyUndo(ch: JSONObject, confirmed: Boolean): Any {
+        val r = try { tryUndo(ch, confirmed) } catch (e: Exception) { keepUndo(JSONObject(ch.toString()).put("confirmed", confirmed)); throw e }
+        if (r is String) keepUndo(JSONObject(ch.toString()).put("needs", r))
+        return r
+    }
+    private fun tryUndo(ch: JSONObject, confirmed: Boolean): Any {
+        val addr = ch.getString("addr"); val cur = history.current(addr); val kind = addr.substringBefore(':').toInt()
+        var tags: List<List<String>>; var content: String
+        if (kind == 0) { tags = cur?.tags ?: emptyList(); content = ch.getString("content") }
+        else {
+            val rm = strs(ch.optJSONArray("remove")).toSet()
+            val t = (cur?.tags ?: (if (':' in addr) listOf(listOf("d", addr.substringAfter(':'))) else emptyList())).filter { it.size < 2 || key2(it) !in rm }.toMutableList()
+            val have = t.filter { it.size >= 2 }.map(::key2).toMutableSet()
+            for (x in lists(ch.optJSONArray("add"))) if (x.size >= 2 && have.add(key2(x))) t += x
+            tags = t; content = cur?.content ?: ""
+            val addP = lists(ch.optJSONArray("addPriv")); val rmP = strs(ch.optJSONArray("removePriv")).toSet()
+            if (addP.isNotEmpty() || rmP.isNotEmpty()) {
+                if (content.isNotEmpty() && decryptSelf(content) == Policy.NO_KEY) refuse("try_later", "the self key can't be had")
+                val priv = privOf(cur).filter { key2(it) !in rmP }.toMutableList(); val hp = priv.map(::key2).toMutableSet()
+                for (x in addP) if (x.size >= 2 && hp.add(key2(x))) priv += x
+                content = nip44(g, ja2(priv).toString(), true)
+            }
+        }
+        val at = Policy.undoDate(history, addr, now, listOfNotNull(cur?.id))
+        if (at - now > Policy.UNDO_AHEAD_S) refuse("try_later", "a newer version is dated ahead; the Undo waits")
+        if (Rules.destructive(kind, content, tags, meta.evidence().ledger.burst(now))) return "held"
+        if (cur != null && kind != 0) {
+            val before = Policy.itemsOf(cur.kind, cur.tags, cur.content, ::decryptSelf); val after = Policy.itemsOf(kind, tags, content, ::decryptSelf)
+            val gone = if (before != null && after != null) before.count { it !in after } else 1
+            if (gone > 0 && !confirmed) return "confirm"
+        }
+        return sign(kind, content, tags, at, "member").also { e -> synchronized(undoOutbox) { undoOutbox.removeIf { it.optString("addr") == addr } }; try { net.publishEvent(e) } catch (_: Exception) {}; save() }
+    }
+    /** One Undo waits per list: a newer one of the same list replaces it. */
+    private fun keepUndo(ch: JSONObject) { synchronized(undoOutbox) { undoOutbox.removeIf { it.optString("addr") == ch.optString("addr") }; undoOutbox += ch }; save() }
+    /** Undos waiting in the outbox, re-applied to the current versions now; one that needs the person waits for them. */
+    fun flushUndos() { for (ch in synchronized(undoOutbox) { undoOutbox.toList() }) if (!ch.has("needs")) try { applyUndo(ch, ch.optBoolean("confirmed")) } catch (_: Exception) {} }
+    /** "Post again" (§3): a new event with the same content and tags from history. */
+    fun postAgain(id: String): JSONObject {
+        val e = history.get(id)?.takeIf { !Rules.replaceable(it.kind) } ?: refuse("unknown_event", "not a post this device kept")
+        return sign(e.kind, e.content, e.tags, now, "member").also { try { net.publishEvent(it) } catch (_: Exception) {} }
+    }
+    /** "Undo everything *site* did" (§3): its removals re-added and additions removed on top of the current lists;
+     *  the site's own regular events offered for deletion. Counts as a decline (§6). */
+    fun undoSite(owner: String, confirmed: Boolean = false): Pair<List<Any>, List<String>> {
+        val led = meta.evidence().ledger
+        val out = ArrayList<Any>()
+        for (addr in led.listsOf(owner)) {
+            if (addr.substringBefore(':') == "0") continue
+            val cur = history.current(addr) ?: continue
+            val items = Policy.itemsOf(cur.kind, cur.tags, cur.content, ::decryptSelf) ?: emptySet()
+            // Item keys are [where, name, normalised value]; tags are matched by the same key (review 18 L8).
+            fun parse(it: String): List<String>? = try { (Json.parse(it) as? JSONArray)?.let { a -> (0 until a.length()).map { j -> a.get(j) as String } }?.takeIf { it.size == 3 } } catch (_: Exception) { null }
+            val back = led.removals(owner, addr).keys.filter { it !in items }.mapNotNull(::parse); val gone = led.additions(owner, addr).keys.filter { it in items }.mapNotNull(::parse)
+            if (back.isEmpty() && gone.isEmpty()) continue
+            val ch = JSONObject().put("addr", addr).put("at", now)
+                .put("add", ja2(back.filter { it[0] == "pub" }.map { listOf(it[1], it[2]) })).put("remove", JSONArray(gone.filter { it[0] == "pub" }.map { Policy.tagKey(listOf(it[1], it[2])) }))
+                .put("addPriv", ja2(back.filter { it[0] == "priv" }.map { listOf(it[1], it[2]) })).put("removePriv", JSONArray(gone.filter { it[0] == "priv" }.map { Policy.tagKey(listOf(it[1], it[2])) }))
+            out += applyUndo(ch, confirmed)
+        }
+        guard.declined(owner, "undo")
+        return out to led.signed.filter { (id, w) -> w == owner && id in history.events }.keys.toList()
     }
 }

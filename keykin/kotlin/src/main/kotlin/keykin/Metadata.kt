@@ -3,7 +3,8 @@
 // device per month in signed, numbered parts (part 0 listing every part's number and hash) and an index of live
 // months, all account-signed kind 30078 under unlinkable keykin-meta d's, encrypted under the data key bound to
 // g, d and the state. A reader takes the index first, never a lower number, only parts the index names, and only
-// a current device's; decrypts to self are judged on every current device's records.
+// a current device's; decrypts to self are judged on every current device's records. Each month also carries
+// Device policy §1's records (Policy.kt's Ledger).
 package keykin
 
 import org.json.JSONArray
@@ -31,7 +32,7 @@ class MetaStore(private val d: Device) {
         fun partDigest(g: String, d: String, body: JSONObject) = sha(utf8("keykin-meta/1"), unhex(g), utf8(d), utf8(Jcs.of(body)))
         fun indexDigest(g: String, d: String, body: JSONObject) = sha(utf8("keykin-meta-index/1"), unhex(g), utf8(d), utf8(Jcs.of(body)))
         private val HASH = Regex("^[0-9a-f]{64}$")
-        private fun toData(e: Evidence): JSONObject = JSONObject()
+        private fun toData(e: Evidence): JSONObject = e.ledger.data()
             .put("encrypt", JSONArray(e.owners.flatMap { (h, os) -> os.map { o -> JSONArray(listOf(h, o)) } }))
             .put("events", JSONArray(e.kinds.flatMap { (h, ks) -> ks.map { x -> JSONArray(listOf(h, x.substringBefore(':').toInt(), x.substringAfter(':'))) } }))
         /** A maker's records: only its member app or its own grants as owners and signers (L5); a malformed entry
@@ -43,6 +44,7 @@ class MetaStore(private val d: Device) {
                 if (h != null && HASH.matches(h) && mine(o)) into.owners.getOrPut(h) { LinkedHashSet() } += o as String } }
             x.optJSONArray("events")?.let { a -> for (i in 0 until a.length()) (a.opt(i) as? JSONArray)?.let { p -> val h = p.opt(0) as? String; val k = int(p.opt(1)); val sg = p.opt(2)
                 if (h != null && HASH.matches(h) && k != null && k in 0..65535 && mine(sg)) into.kinds.getOrPut(h) { LinkedHashSet() } += "$k:$sg" } }
+            into.ledger.take(x, ::mine)
             return into
         }
     }
@@ -65,6 +67,8 @@ class MetaStore(private val d: Device) {
     @Synchronized private fun bucket(): Evidence { val m = monthOf(now); dirty += m; gen[m] = (gen[m] ?: 0) + 1; merged = null; return own.getOrPut(m) { Evidence() } }
     @Synchronized fun encrypted(payload: String, owner: String) = bucket().encrypted(payload, owner)
     @Synchronized fun event(kind: Int, content: String, signer: String = "member") { if (Evidence.hashOf(content) != null) bucket().event(kind, content, signer) }
+    /** Add to this month's policy records (Device policy §1); the merged view is rebuilt after. */
+    @Synchronized fun record(f: (Ledger) -> Unit) { f(bucket().ledger); merged = null }
     /** Every current device's records together: what a decrypt is judged on. */
     @Synchronized fun evidence(): Evidence {
         val cur = current(); val key = cur.sorted().joinToString(",")
@@ -106,7 +110,12 @@ class MetaStore(private val d: Device) {
         for (month in dirty.filter { own.containsKey(it) }) {
             // A month that won't fit sheds its oldest records, never the whole sync (review 17 H2).
             var text = Jcs.of(toData(own[month]!!))
-            while ((text.length + PART_PLAIN - 1) / PART_PLAIN > MAX_PARTS) { own[month]!!.trim(maxOf(1, own[month]!!.size() / 10)); text = Jcs.of(toData(own[month]!!)); merged = null }
+            // Removal logs and recent deletions go only when nothing else is left to shed (review 18 H1).
+            while ((text.length + PART_PLAIN - 1) / PART_PLAIN > MAX_PARTS) {
+                val e = own[month]!!; val size = e.size(); val n = maxOf(1, (size + 9) / 10)
+                e.trim(n, now); if (e.size() == size) e.ledger.trimLogs(n)
+                text = Jcs.of(toData(e)); merged = null
+            }
             val chunks = if (text.isEmpty()) listOf("") else text.chunked(PART_PLAIN)
             val prev = newSent[month] ?: emptyList()
             val parts = chunks.mapIndexed { k, c ->

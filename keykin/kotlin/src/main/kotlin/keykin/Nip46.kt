@@ -131,13 +131,23 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                     for (n in needs) if (!has(g, n)) return ask(n)
                     val content = x.optString("content")
                     val at = if (x.has("created_at")) Json.long(x.get("created_at")) else net.now
-                    // Signed for this grant: the evidence records who got each ciphertext signed (review 17 M1).
-                    try { ok(d.sign(kind, content, tags, at, "${d.pub}:${g.entry}").toString()) }
-                    catch (e: KeykinException) {
+                    // Device policy §2: judged first. A Confirm waits for the person's answer on this home, a single
+                    // deletion 10 seconds for an Undo; Held goes to the person at once.
+                    val owner = "${d.pub}:${g.entry}"
+                    val event = Unsigned(d.g, at, kind, tags, content)
+                    // A site's deletions and list changes are judged and signed one at a time (review 18 M1). Signed
+                    // for this grant: the evidence records who got each ciphertext signed (review 17 M1).
+                    try {
+                        val (gate, signed) = d.guard.serve(event, owner, g.entry?.let { d.grants.own[it] }?.let { d.grants.scopesOf(it).toList() } ?: emptyList()) { d.sign(kind, content, tags, at, owner) }
+                        gate.error?.let { return err(it) }
+                        if (signed != null) return ok(signed.toString())
+                    } catch (e: KeykinException) {
                         if (e.code != "needs_approval") throw e
-                        val h = Held(hex(rand(8)), g.signer, Unsigned(d.g, at, kind, tags, content), net.now); held[h.id] = h
-                        err("held: approve on your phone")
+                        // A server's demand the device's own check doesn't explain: Held only when two servers demand it.
+                        if (e.demands < 2) return err("try-later: a server asked for an approval; try again later")
                     }
+                    val h = Held(hex(rand(8)), g.signer, event, net.now); held[h.id] = h
+                    err("held: approve on your phone")
                 }
                 // Encrypting to the account's own key is `post`, to anyone else `dms`; decrypting with others is `dms`,
                 // to the account itself released only under the scope its plaintext needs (Doors §1).

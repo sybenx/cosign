@@ -5,8 +5,9 @@
 // the deletions each grant made (for the daily budget and the burst), what each grant removed from and added to
 // each list (the removal logs), the pre-site and last-approved version of each list per grant.
 //
-// Not yet: retention by whether an event is current (records live as long as their month, 13 months); a grant's
-// pre-site version kept 90 days after its end (it lives as long as the history does).
+// Not yet: retention by whether an event is current (records live as long as their month, 13 months, so a grant
+// older than that gets a new pre-site version: its current one); a grant's pre-site version kept 90 days after its
+// end (it lives as long as the history does).
 
 import { verifyEvent, type NostrEvent } from '../src/event.ts';
 import { isReplaceable } from '../src/destructive.ts';
@@ -24,7 +25,8 @@ export function addrOfA(a: string, g: string): string | null {
   const i = a.indexOf(':'), j = a.indexOf(':', i + 1);
   if (i < 0 || j < 0) return null;
   const k = Number(a.slice(0, i));
-  if (!Number.isSafeInteger(k) || String(k) !== a.slice(0, i) || a.slice(i + 1, j).toLowerCase() !== g) return null;
+  // Only a replaceable or addressable kind has an address (review 18 L4: `1:<g>:` names no event).
+  if (!Number.isSafeInteger(k) || String(k) !== a.slice(0, i) || a.slice(i + 1, j).toLowerCase() !== g || !isReplaceable(k)) return null;
   return k >= 30000 && k < 40000 ? `${k}:${a.slice(j + 1)}` : `${k}`;
 }
 
@@ -39,7 +41,12 @@ export const WALLET = new Set([17375, 37375, 7375, 7376, 7374, 10019]);
 export const judged = (k: number) => k === PROFILE || RELAY_LISTS.has(k) || FOLLOW_MUTE.has(k) || OTHER_LISTS.has(k) || WALLET.has(k);
 export const isList = (k: number) => RELAY_LISTS.has(k) || FOLLOW_MUTE.has(k) || OTHER_LISTS.has(k);
 
-const VERSIONS = 25, OTHER_VERSIONS = 2, MAX_ADDRS = 1000, MAX_EVENTS = 3000;
+const VERSIONS = 25, SET_VERSIONS = 5, OTHER_VERSIONS = 2, MAX_ADDRS = 1000, MAX_EVENTS = 3000, MAX_DELETED = 5000;
+/** The history's size in bytes, at most (review 18 M9): past it, the oldest non-current, unpinned versions go. */
+const MAX_BYTES = 4_000_000;
+const sizeOf = (e: NostrEvent) => e.content.length + JSON.stringify(e.tags).length + 200;
+/** The profile, relay, follow and mute lists keep 25 versions; other lists and sets 5. */
+const keepOf = (k: number) => (k === PROFILE || RELAY_LISTS.has(k) || FOLLOW_MUTE.has(k) ? VERSIONS : judged(k) ? SET_VERSIONS : OTHER_VERSIONS);
 
 /** The device's own history of the account's events. */
 export class History {
@@ -60,22 +67,31 @@ export class History {
     if (!e || e.pubkey !== this.g() || (!checked && !verifyEvent(e))) return false;
     if (e.kind === 5) for (const t of e.tags) if ((t[0] === 'e' || t[0] === 'a') && typeof t[1] === 'string') {
       const key = t[0] === 'e' ? t[1].toLowerCase() : addrOfA(t[1], this.g()); if (key) this.deletedAt.set(key, Math.max(this.deletedAt.get(key) ?? 0, e.created_at));
+      while (this.deletedAt.size > MAX_DELETED) this.deletedAt.delete(this.deletedAt.keys().next().value!);
     }
     const a = isReplaceable(e.kind) ? addrOf(e) : null;
     if (!a) {
       if (this.events.has(e.id)) return true;
-      this.events.set(e.id, e);
-      while (this.events.size > MAX_EVENTS) this.events.delete(this.events.keys().next().value!);
+      this.events.set(e.id, e); this.#bytes += sizeOf(e);
+      while (this.events.size > MAX_EVENTS) { const k = this.events.keys().next().value!; this.#bytes -= sizeOf(this.events.get(k)!); this.events.delete(k); }
+      this.#fit();
       return true;
     }
     const vs = this.versions.get(a) ?? [];
     if (vs.some((v) => v.id === e.id)) return true;
-    vs.push(e); vs.sort((x, y) => x.created_at - y.created_at || (x.id < y.id ? -1 : 1));
-    const keep = judged(e.kind) ? VERSIONS : OTHER_VERSIONS;
-    while (vs.length > keep) vs.shift();
+    vs.push(e); vs.sort((x, y) => x.created_at - y.created_at || (x.id < y.id ? -1 : 1)); this.#bytes += sizeOf(e);
+    const keep = keepOf(e.kind);
+    while (vs.length > keep) this.#bytes -= sizeOf(vs.shift()!);
     this.versions.delete(a); this.versions.set(a, vs);
-    while (this.versions.size > MAX_ADDRS) this.versions.delete(this.versions.keys().next().value!);
+    while (this.versions.size > MAX_ADDRS) { const k = this.versions.keys().next().value!; for (const x of this.versions.get(k)!) this.#bytes -= sizeOf(x); this.versions.delete(k); }
+    this.#fit();
     return true;
+  }
+  #bytes = 0;
+  /** Over the byte cap: the oldest regular events, then the oldest non-current versions, go first. */
+  #fit() {
+    while (this.#bytes > MAX_BYTES && this.events.size) { const k = this.events.keys().next().value!; this.#bytes -= sizeOf(this.events.get(k)!); this.events.delete(k); }
+    for (const vs of this.versions.values()) { if (this.#bytes <= MAX_BYTES) break; while (vs.length > 1 && this.#bytes > MAX_BYTES) this.#bytes -= sizeOf(vs.shift()!); }
   }
   /** The newest version the device knows at an address (relays break ties on the lowest id). */
   current(addr: string): NostrEvent | null {
@@ -98,6 +114,7 @@ export class History {
     return [...vs].reverse().find((v) => v.created_at <= t) ?? vs[0];
   }
   get(id: string): NostrEvent | null {
+    if (typeof id !== 'string') return null;
     const lc = id.toLowerCase();
     return this.events.get(lc) ?? this.pinned.get(lc) ?? [...this.versions.values()].flat().find((v) => v.id === lc) ?? null;
   }
@@ -107,17 +124,20 @@ export class History {
     if (!x) return;
     this.versions = new Map(x.versions ?? []); this.events = new Map((x.events ?? []).map((e: NostrEvent) => [e.id, e]));
     this.pinned = new Map((x.pinned ?? []).map((e: NostrEvent) => [e.id, e])); this.deletedAt = new Map(x.deletedAt ?? []);
+    this.#bytes = [...this.events.values(), ...[...this.versions.values()].flat()].reduce((n, e) => n + sizeOf(e), 0);
   }
-  clear() { this.versions.clear(); this.events.clear(); this.pinned.clear(); this.deletedAt.clear(); }
+  clear() { this.versions.clear(); this.events.clear(); this.pinned.clear(); this.deletedAt.clear(); this.#bytes = 0; }
 }
 
 /** A deletion a grant (or the member app) got signed: when, how many targets as the core counts them, and flags. */
 export interface Del { at: number; owner: string; n: number; single: boolean; wallet: boolean; approved: boolean }
 const lk2 = (owner: string, list: string) => `${owner}\u0000${list}`;
-const PER_OWNER = 2000, DEL_KEEP_S = 2 * 86400;
+const PER_OWNER = 2000, DEL_KEEP_S = 2 * 86400, MAX_DELS = 5000;
 
 /** Device policy §1's records, synced in the metadata snapshots alongside Doors §1's evidence. */
 export class Ledger {
+  /** Log entries per owner and month, across all its lists (review 18 H1): past it a site's removals each ask. */
+  static readonly LOG_PER_OWNER = 2000;
   /** Which grant `${by}:${id}`, or `member`, each event was signed for. */
   signed = new Map<string, string>();
   dels: Del[] = [];
@@ -129,12 +149,15 @@ export class Ledger {
   approved = new Map<string, [string, number]>();
 
   sign(id: string, owner: string) { if (!this.signed.has(id) && this.#count(owner) < PER_OWNER) this.signed.set(id, owner); }
-  del(d: Del) { this.dels.push(d); }
+  del(d: Del) { this.dels.push(d); if (this.dels.length > MAX_DELS) this.prune(d.at); if (this.dels.length > MAX_DELS) this.dels.shift(); }
   log(which: 'removed' | 'added', owner: string, list: string, items: Iterable<string>, at: number) {
     const m = this[which], k = lk2(owner, list), s = m.get(k) ?? new Map<string, number>();
-    for (const it of items) if (s.size < PER_OWNER) s.set(it, at);
+    let n = this.logCount(which, owner);
+    for (const it of items) { if (s.has(it)) { s.set(it, at); continue; } if (n >= Ledger.LOG_PER_OWNER) break; s.set(it, at); n++; }
     if (s.size) m.set(k, s);
   }
+  /** How many entries an owner has in a log, across its lists. */
+  logCount(which: 'removed' | 'added', owner: string) { let n = 0; for (const [k, s] of this[which]) if (k.slice(0, k.indexOf('\u0000')) === owner) n += s.size; return n; }
   removals(owner: string, list: string) { return this.removed.get(lk2(owner, list)) ?? new Map<string, number>(); }
   additions(owner: string, list: string) { return this.added.get(lk2(owner, list)) ?? new Map<string, number>(); }
   presiteOf(owner: string, list: string) { return this.presite.get(lk2(owner, list)) ?? null; }
@@ -152,11 +175,23 @@ export class Ledger {
   #count(owner: string) { let n = 0; for (const o of this.signed.values()) if (o === owner) n++; return n; }
   prune(now: number) { this.dels = this.dels.filter((d) => now - d.at < DEL_KEEP_S); }
   size() { return this.signed.size + this.dels.length + [...this.removed.values(), ...this.added.values()].reduce((a, m) => a + m.size, 0) + this.presite.size + this.approved.size; }
-  /** The oldest records first, when a month must fit its parts. */
-  trim(n: number) {
-    for (const k of [...this.signed.keys()].slice(0, n)) this.signed.delete(k);
+  /** When a month must fit its parts: never what makes judging stricter (removal logs, the last 2 days' deletions,
+   *  pre-site and approved versions, review 18 H1); expired deletions first, then additions, then the oldest
+   *  attributions (which only make a site's own deletions ask). Returns how many went. */
+  trim(n: number, now = Math.max(0, ...this.dels.map((d) => d.at))): number {
+    const before = this.size();
+    this.prune(now);
+    let left = n - (before - this.size());
+    for (const [k, s] of this.added) { if (left <= 0) break; for (const it of [...s.keys()].slice(0, left)) { s.delete(it); left--; } if (!s.size) this.added.delete(k); }
+    for (const k of [...this.signed.keys()].slice(0, Math.max(0, left))) { this.signed.delete(k); left--; }
+    return before - this.size();
+  }
+  /** The last resort for a month that still won't fit: the oldest log entries and deletions. */
+  trimLogs(n: number) {
     this.dels = this.dels.slice(Math.min(n, this.dels.length));
-    for (const m of [this.removed, this.added]) for (const [k, s] of m) { for (const it of [...s.keys()].slice(0, n)) s.delete(it); if (!s.size) m.delete(k); }
+    for (const [k, s] of this.removed) { for (const it of [...s.keys()].slice(0, n)) s.delete(it); if (!s.size) this.removed.delete(k); }
+    for (const k of [...this.presite.keys()].slice(0, n)) this.presite.delete(k);
+    for (const k of [...this.approved.keys()].slice(0, n)) this.approved.delete(k);
   }
   /** As published: arrays of plain values, in a fixed order. */
   data() {
