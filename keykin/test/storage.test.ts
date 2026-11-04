@@ -88,3 +88,36 @@ test('FileStore: atomic replace, and a damaged file is refused on restore, never
   assert.throws(() => ServerNode.restore(acc.bus, JSON.stringify(x)));
   rmSync(dir, { recursive: true });
 });
+
+test('a device restarted from storage: same key, lock and shares; it signs, approves with its lock, adds a device', async () => {
+  const { restartDevice } = await import('../sim/account.ts');
+  const acc = await create();
+  const { s, dir } = store();
+  const A = restartDevice(acc, acc.A, s);
+  assert.equal(acc.A, A);
+  assert.ok(verifyEvent(await A.sign({ content: 'after a device restart' })));
+  const B = await invite(acc, A, (l) => A.approveLock(l));
+  const B2 = restartDevice(acc, B, s);
+  assert.ok(verifyEvent(await B2.sign({ content: 'B restarted' })));
+  assert.equal(B2.m!.devices.size, 2);
+  rmSync(dir, { recursive: true });
+});
+
+test('a device restore is checked as a handover: shares against the commitments, the key a current member with exactly those indices', async () => {
+  const { DeviceNode } = await import('../sim/nodes.ts');
+  const acc = await create();
+  const good = JSON.parse(acc.A.snapshot());
+  const bad1 = structuredClone(good); bad1.state.shares[0][1] = '01'.padStart(64, '0');
+  assert.throws(() => DeviceNode.restore(acc.bus, JSON.stringify(bad1)), 'a share that is not on the commitments');
+  const bad2 = structuredClone(good); bad2.state.shares = bad2.state.shares.slice(1);
+  assert.throws(() => DeviceNode.restore(acc.bus, JSON.stringify(bad2)), /not_member/, 'fewer indices than the member holds');
+  const bad3 = structuredClone(good); bad3.kp = bytesToHexKey();
+  assert.throws(() => DeviceNode.restore(acc.bus, JSON.stringify(bad3)), /not_member/, 'a key that is not a member');
+  assert.throws(() => DeviceNode.restore(acc.bus, '{"v":2}'), /malformed/);
+  // The watches and the push keys come back too.
+  await acc.A.registerPush();
+  const d = DeviceNode.restore(acc.bus, acc.A.snapshot());
+  assert.equal(d.pushKeys.size, acc.A.pushKeys.size);
+  assert.equal(d.lock!.pub.pub, acc.A.lock!.pub.pub);
+});
+const bytesToHexKey = () => [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');

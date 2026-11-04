@@ -28,7 +28,7 @@ import { F1Watch, SignWatch, signNotice, signAnswer } from '../src/f1.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
 import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
-import type { SoftLock } from '../src/lock.ts';
+import { softLock, type SoftLock } from '../src/lock.ts';
 import type { Transport, Node } from './bus.ts';
 
 const rid = () => bytesToHex(randomBytes(16));
@@ -847,6 +847,57 @@ export class DeviceNode implements Node {
     const out: any[] = [];
     for (const s of this.servers()) out.push(await this.bus.send(this.kp, s.key, req));
     return out;
+  }
+
+  // --- Durable state (core §4.4's handover list): what a device keeps across a restart -----------
+  /** Everything a `welcome` carries (member key and shares, state, record and changes, release seeds,
+   *  material, base data key and data-key seeds, a kept backup secret), plus what this device holds
+   *  between rounds: paper deltas kept for 30 days, deliveries waiting for their redeal, its push keys,
+   *  notices and both watches. Never nonces, a round, a join, a repair or a heir setup in flight (§5.2). */
+  snapshot(): string {
+    const st = this.state;
+    return JSON.stringify({ v: 1, name: this.name, role: this.role, kp: bytesToHex(this.kp.sk), lock: this.lock && { rp: this.lock.rpId, sk: bytesToHex(this.lock.sk) },
+      recEv: this.recEv, changes: this.changes, refused: this.refusedChanges, wiped: this.wiped,
+      state: st && { ids: [...st.ids], shares: [...st.shares].map(([i, s]) => [i, scalarHex(s)]) },
+      seeds: [...this.seeds], items: this.items, base: this.base, baseDk: this.baseDk, dkSeeds: this.dkSeeds,
+      keptSecret: this.keptSecret && bytesToHex(this.keptSecret.sk),
+      kept: [...this.kept].map(([k, x]) => [k, { ...x, d: x.d.map(scalarHex) }]), paperVerified: [...this.paperVerified],
+      pendingDeltas: [...this.pendingDeltas], notices: this.notices,
+      pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump() });
+  }
+  /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
+   *  by §3.4, every share against the commitments, and the member key a current device holding exactly
+   *  those indices. A wiped device restores as wiped. */
+  static restore(bus: Transport, json: string): DeviceNode {
+    const x = strictJson(json);
+    if (x.v !== 1) refuse('malformed', 'storage version');
+    const d = new DeviceNode(bus, x.name, x.lock ? softLock(x.lock.rp, hexToBytes(x.lock.sk)) : null);
+    d.kp = { sk: hexToBytes(x.kp), pub: pubOf(hexToBytes(x.kp)) }; d.role = x.role;
+    x.seeds.forEach(([k, v]: [string, string]) => d.seeds.set(k, v));
+    d.items = x.items; d.base = x.base; d.baseDk = x.baseDk; d.dkSeeds = x.dkSeeds;
+    d.keptSecret = x.keptSecret ? { sk: hexToBytes(x.keptSecret), pub: pubOf(hexToBytes(x.keptSecret)) } : null;
+    d.kept = new Map(x.kept.map(([k, v]: [string, any]) => [k, { ...v, d: v.d.map(scalarFrom) }]));
+    d.paperVerified = new Map(x.paperVerified); d.pendingDeltas = new Map(x.pendingDeltas); d.notices = x.notices;
+    d.pushKeys = new Map(x.pushKeys.map(([u, k]: [string, any]) => [u, { ...k, sk: hexToBytes(k.sk), auth: hexToBytes(k.auth) }]));
+    d.signWatch.load(x.signWatch);
+    if (x.recEv && x.state) {
+      const rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey });
+      const m = computeMembership(rec, x.changes);
+      const C = commitmentAt(commitmentFrom(rec.commitment), [...m.redeals.values()].filter((r) => x.state.ids.includes(r.r.id)).map((r) => r.r));
+      const shares = new Map<number, bigint>(x.state.shares.map(([i, s]: [number, string]) => [i, scalarFrom(s)]));
+      if (!x.wiped) {
+        const me = m.members.get(d.kp.pub);
+        const want = [...(me?.shares ?? [])].sort((a, b) => a - b).join(',');
+        if (!me || me.kind !== d.role || m.removed.has(d.kp.pub) || [...shares.keys()].sort((a, b) => a - b).join(',') !== want) refuse('not_member', 'the stored key is not a current member holding exactly these indices');
+        checkOwnShares(rec.g, shares, C, false);
+      }
+      d.recEv = x.recEv; d.rec = rec; d.changes = [...x.changes]; d.refusedChanges = x.refused; d.state = { ids: new Set(x.state.ids), C, shares };
+      d.recompute();
+      d.wiped = x.wiped;
+      if (x.f1) d.f1().load(x.f1);
+    }
+    return d;
   }
 
   /** Core §6.7.9's quiet Backup line: which servers haven't helped sign this week. */

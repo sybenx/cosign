@@ -96,6 +96,9 @@ export class F1Watch {
   /** What the device shows on Backup for this seat: a closing date, if the latest answer has one. */
   closing(host: string) { return this.#s.get(host)?.kept?.at ?? null; }
 
+  dump() { return [...this.#s].map(([h, w]) => [h, { ...w, asking: null }]); }
+  load(x: [string, Watch][]) { this.#s = new Map(x); }
+
   /** Why `host` counts as dead at `now`, or null. */
   dead(host: string, now: number): 'quiet' | 'shutdown' | 'denied' | null {
     const w = this.#s.get(host);
@@ -145,6 +148,8 @@ export class SignWatch {
     // It goes away once the server gives a valid partial on two days.
     if (days.size >= 2) this.#misses.delete(host);
   }
+  dump() { return { misses: [...this.#misses].map(([h, m]) => [h, [...m]]), helped: [...this.#helped].map(([h, d]) => [h, [...d]]), hidden: [...this.#hidden] }; }
+  load(x: any) { this.#misses = new Map(x.misses.map(([h, m]: any) => [h, new Map(m)])); this.#helped = new Map(x.helped.map(([h, d]: any) => [h, new Set(d)])); this.#hidden = new Map(x.hidden); }
   /** The person hides the line for a week. */
   hide(host: string, now: number) { this.#hidden.set(host, now + HELP_WINDOW_S); }
   /** Whether Backup shows the line for `host` now. */

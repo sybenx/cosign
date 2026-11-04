@@ -294,3 +294,14 @@ export function restartServer(acc: Account, i: number, store: { save(k: string, 
   acc.servers[i] = n;
   return n;
 }
+
+/** Restart a device from what it wrote to storage: a new process with the same member key, lock and
+ *  shares, checked as a handover is (core §4.4); every round, join or repair in flight is lost. */
+export function restartDevice(acc: Account, dev: DeviceNode, store: { save(k: string, t: string): void; load(k: string): string | null }): DeviceNode {
+  const key = `device-${dev.kp.pub.slice(0, 16)}`;
+  store.save(key, dev.snapshot());
+  const d = DeviceNode.restore(acc.bus, store.load(key)!);
+  (acc.bus as Bus).nodes.set(d.kp.pub, d);
+  if (acc.A === dev) acc.A = d;
+  return d;
+}
