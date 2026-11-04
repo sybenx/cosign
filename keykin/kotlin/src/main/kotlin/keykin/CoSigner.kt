@@ -25,30 +25,80 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
         if (msg.optString("g") != g) return err(id, "wrong_group")
         if (msg.optString("epoch") != epoch) return err(id, "wrong_epoch")
         val type = msg.opt("type") as? String ?: return err(id, "unsupported")
-        if (type !in setOf("sign", "ecdh", "hold")) return err(id, "unsupported")
+        if (type !in setOf("sign", "commit", "ecdh", "hold")) return err(id, "unsupported")
         Rules.lifetime(type, msg.optString("cls"), now() - sentAt)?.let { return err(id, it) }
         val hash = hex(sha(utf8(Jcs.of(msg))))
         replay["$from:$id"]?.let { (h, a) -> return if (h == hash && a != null) a else err(id, "id_reused") }
         replay["$from:$id"] = hash to null
-        val answer = try { when (type) { "sign" -> sign(from, msg); "ecdh" -> ecdh(from, msg); else -> hold(from, msg) } } catch (e: KeykinException) { err(id, e.code) }
+        val answer = try { when (type) { "sign" -> sign(from, msg); "commit" -> commit(from, msg); "ecdh" -> ecdh(from, msg); else -> hold(from, msg) } } catch (e: KeykinException) { err(id, e.code) }
         replay["$from:$id"] = hash to answer
         return answer
     }
 
     private fun sender(from: String): Member { if (from in view.removed) refuse("removed"); return members[from] ?: refuse("not_member") }
 
+    private fun stale(msg: JSONObject) = if (msg.optString("state") != state) JSONObject().put("v", 1).put("type", "stale").put("re", msg.getString("id")).put("ids", JSONArray()) else null
+    /** §5.7 item 2: every index of every participant, once, the sender and this co-signer among them,
+     *  worth at least 4; a one-call round has exactly two participants. Returns the signers as sent. */
+    private fun participants(msg: JSONObject, from: String, twoCall: Boolean): List<Long> {
+        val arr = msg.optJSONArray("signers") ?: refuse("bad_signers")
+        val sent = (0 until arr.length()).map { if (Json.isInt(arr.get(it))) Json.long(arr.get(it)) else refuse("bad_signers") }
+        val owners = sent.map { i -> members.values.firstOrNull { i in it.shares } ?: refuse("bad_signers") }.distinctBy { it.key }
+        if (owners.none { it.key == from } || owners.none { it.key == meKey }) refuse("bad_signers")
+        if (!twoCall && owners.size != 2) refuse("bad_signers")
+        if (owners.flatMap { it.shares }.sorted() != sent.sorted() || sent.size < 4) refuse("bad_signers")
+        if (owners.any { it.key in view.removed }) refuse("removed")
+        return sent
+    }
+    private fun commits(cs: JSONArray?, want: List<Long>): List<Frost.Committed> {
+        if (cs == null) refuse("bad_commitments")
+        val out = (0 until cs.length()).map { val c = cs.get(it) as? JSONObject ?: refuse("bad_commitments")
+            Frost.Committed(if (Json.isInt(c.opt("i"))) Json.long(c.opt("i")) else refuse("bad_commitments"), "", c.optString("D"), c.optString("E")) }
+        if (out.map { it.i }.sorted() != want.sorted()) refuse("bad_commitments")
+        out.forEach { point(it.d); point(it.e) }
+        return out
+    }
+    /** Two-call (§5.1) nonces: in memory only, for 120 s, used once (§5.2). Never in a snapshot. */
+    private class Kept(val mine: Frost.Committed, val at: Long, var used: Boolean, val signers: List<Long>)
+    private val twoCall = HashMap<String, Kept>()
+
+    private fun commit(from: String, msg: JSONObject): JSONObject {
+        val s = sender(from)
+        stale(msg)?.let { return it }
+        val signers = participants(msg, from, true)
+        if (s.kind != "device" && s.kind != "helper") refuse("not_coordinator")
+        // This port signs single events; a list's `count` is the TS reference's.
+        if (msg.has("count") && !(Json.isInt(msg.opt("count")) && Json.long(msg.opt("count")) == 1L)) refuse("unsupported")
+        if (msg.has("event")) wire(msg)
+        twoCall.entries.removeIf { now() - it.value.at > 120 }
+        val mine = Frost.commit(C, index, share, Frost.hedge(share, sha(utf8(Jcs.of(msg)), u32(0))))
+        twoCall["$from:${msg.getString("id")}"] = Kept(mine, now(), false, signers)
+        return JSONObject().put("v", 1).put("type", "commitments").put("re", msg.getString("id"))
+            .put("commitments", JSONArray().put(JSONObject().put("i", index).put("D", mine.d).put("E", mine.e)))
+    }
+
     private fun sign(from: String, msg: JSONObject): JSONObject {
         val s = sender(from)
-        if (msg.optString("state") != state) return JSONObject().put("v", 1).put("type", "stale").put("re", msg.getString("id")).put("ids", JSONArray())
-        // §5.7 item 2: exactly the two participants' indices.
-        val signers = (0 until msg.getJSONArray("signers").length()).map { msg.getJSONArray("signers").getLong(it) }.sorted()
-        val owners = signers.map { i -> members.values.firstOrNull { i in it.shares } ?: refuse("bad_signers") }.map { it.key }.toSet()
-        if (from !in owners || meKey !in owners || owners.size != 2) refuse("bad_signers")
-        if (signers != (s.shares + index).sorted()) refuse("bad_signers")
+        stale(msg)?.let { return it }
+        val twoCall = msg.has("after")
+        val signers = participants(msg, from, twoCall)
         if (s.kind != "device" && s.kind != "helper") refuse("not_coordinator")
-        val cs = msg.getJSONArray("commitments")
-        if ((0 until cs.length()).map { cs.getJSONObject(it).getLong("i") }.sorted() != s.shares.sorted()) refuse("bad_commitments")
-        (0 until cs.length()).forEach { point(cs.getJSONObject(it).getString("D")); point(cs.getJSONObject(it).getString("E")) }
+        val kept: Kept?
+        val all: List<Frost.Committed>
+        if (!twoCall) {
+            kept = null
+            all = commits(msg.optJSONArray("commitments"), s.shares)
+        } else {
+            val k = this.twoCall["$from:${msg.opt("after")}"]
+            if (k == null || now() - k.at > 120) refuse("unknown_after")
+            if (k.used) refuse("after_used")
+            k.used = true
+            if (k.signers != signers) refuse("bad_signers")
+            all = commits(msg.optJSONArray("commitments"), signers)
+            val x = all.firstOrNull { it.i == index }
+            if (x == null || x.d != k.mine.d || x.e != k.mine.e) refuse("bad_commitments")
+            kept = k
+        }
         // §5.7 items 4, 5, 7.
         val e = wire(msg)
         val kind = e.kind; val createdAt = e.createdAt; val tags = e.tags; val ev = msg.getJSONObject("event")
@@ -63,10 +113,9 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
             if (l.getString("member") != from) refuse("needs_approval")
             checkAssertion(g, lock.getString("pub"), lock.getString("rp"), Codes.whatSign(evId), l.getJSONObject("assertion"))?.let { refuse(it) }
         }
-        // Fresh nonces for this request, used once (§5.2).
-        val theirs = (0 until cs.length()).map { val c = cs.getJSONObject(it); Frost.Committed(c.getLong("i"), "", c.getString("D"), c.getString("E")) }
-        val mine = Frost.commit(C, index, share, Frost.hedge(share, sha(utf8(Jcs.of(msg)), u32(0))))
-        val z = Frost.sign(C, mine, share, evId, theirs + mine)
+        // Fresh nonces for a one-call request, or the ones kept for `after`; either way used once (§5.2).
+        val mine = kept?.mine ?: Frost.commit(C, index, share, Frost.hedge(share, sha(utf8(Jcs.of(msg)), u32(0))))
+        val z = Frost.sign(C, mine, share, evId, if (kept != null) all else all + mine)
         return JSONObject().put("v", 1).put("type", "partial").put("re", msg.getString("id"))
             .put("commitments", JSONArray().put(JSONObject().put("i", index).put("D", mine.d).put("E", mine.e))).put("z", JSONArray().put(JSONObject().put("i", index).put("z", z)))
     }
