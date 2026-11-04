@@ -2,7 +2,7 @@
 // Each node keeps what Core says it keeps; the drivers (`sign`, `submit`, `invite`, …) are what an
 // app would run. Nothing here is a second implementation of a rule: every check is in src/.
 
-import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes, b64u } from '../src/bytes.ts';
+import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes, b64u, strictJson } from '../src/bytes.ts';
 import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH, what } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
@@ -92,6 +92,52 @@ export class ServerNode implements Node {
     const ans = this.deletedAnswer();
     for (const p of peers) await this.bus.send(this.kp, p.key, { type: 'deleted', request: proof.request, changes: proof.changes, host: this.host.pub, host_sig: ans.host_sig });
     return ans;
+  }
+
+  // --- Durable state (core §2): everything a server must keep, and nothing it must not ----------
+  /** What this server writes to storage: its seat keys, enrol secret and reply (§2 item 9); share, state,
+   *  record and changes (1, 2); seeds and material (3); the co-signer's waits, answered ids, counters,
+   *  stops, challenges and heir records (4, 6, 8); push addresses and inbox (5); inert uploads; a
+   *  tombstone (10). Never nonces (§5.2), never a DKG in flight: a restart abandons both. */
+  snapshot(): string {
+    const hex = (b: Uint8Array | null) => (b ? bytesToHex(b) : null);
+    const co = this.co;
+    return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), enrolSecret: hex(this.enrolSecret), enrollR: this.enrollR, vapidSk: hex(this.vapidSk),
+      recEv: this.recEv, tombstone: this.tombstone, retired: this.retired, provisional: this.provisional, welcomedAt: this.welcomedAt, passive: this.passive, lastActive: this.lastActive,
+      co: co && { changes: co.changes, ids: [...co.state.ids], shares: [...co.state.shares].map(([i, s]) => [i, scalarHex(s)]), co: co.snapshot() },
+      seeds: [...this.seeds], items: this.items, base: this.base, uploads: [...this.uploads].map(([k, u]) => [k, { ...u, held: [...u.held] }]),
+      answeredRepair: [...this.answeredRepair], quiet: [...this.quiet], forwarding: this.forwarding && { events: this.forwarding.events, allowed: [...this.forwarding.allowed] },
+      inbox: this.inbox.dump(), push: this.pushReg.dump() });
+  }
+  /** A server restarted from storage: the same keys and seat, its co-signer rebuilt from the record,
+   *  changes and state, checked as a welcome is (§3.4), and every round that was in flight gone. */
+  static restore(bus: Transport, json: string): ServerNode {
+    const x = strictJson(json);
+    if (x.v !== 1) refuse('malformed', 'storage version');
+    const n = new ServerNode(bus, x.name);
+    const key = (h: string) => ({ sk: hexToBytes(h), pub: pubOf(hexToBytes(h)) });
+    n.kp = key(x.kp); n.host = key(x.host); n.enrolSecret = hexToBytes(x.enrolSecret); n.enrollR = x.enrollR; n.vapidSk = x.vapidSk ? hexToBytes(x.vapidSk) : null;
+    n.tombstone = x.tombstone; n.retired = x.retired; n.provisional = x.provisional; n.welcomedAt = x.welcomedAt; n.passive = x.passive; n.lastActive = x.lastActive;
+    x.seeds.forEach(([k, v]: [string, string]) => n.seeds.set(k, v));
+    n.items = x.items; n.base = x.base;
+    n.uploads = new Map(x.uploads.map(([k, u]: [string, any]) => [k, { ...u, held: new Set(u.held) }]));
+    n.answeredRepair = new Set(x.answeredRepair); n.quiet = new Map(x.quiet);
+    n.forwarding = x.forwarding && { events: x.forwarding.events, allowed: new Set(x.forwarding.allowed) };
+    n.inbox.load(x.inbox); n.pushReg.load(x.push);
+    if (x.recEv) {
+      n.rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey }); n.recEv = x.recEv;
+    }
+    if (x.co) {
+      const m = computeMembership(n.rec!, x.co.changes);
+      const C = commitmentAt(commitmentFrom(n.rec!.commitment), [...m.redeals.values()].filter((r) => x.co.ids.includes(r.r.id)).map((r) => r.r));
+      const shares = new Map<number, bigint>(x.co.shares.map(([i, s]: [number, string]) => [i, scalarFrom(s)]));
+      if (shares.size) checkOwnShares(n.rec!.g, shares, C, false);
+      n.co = new CoSigner({ me: n.kp, host: n.host, kind: 'server', now: () => n.now, record: n.rec!, changes: [...x.co.changes],
+        state: { ids: new Set(x.co.ids), C, shares }, upkeep: (p, mm) => n.upkeep(p, mm),
+        uploads: { get: (id) => n.uploads.get(id), liveSeatHolders: (view) => [...view.values()].filter((v) => v.kind === 'server' && !n.quietSince(v.key) && n.bus.alive(v.key)).length } });
+      n.co.restore(x.co.co);
+    }
+    return n;
   }
 
   /** Account admin §1.1: creation by DKG. A throwaway DKG key (signed by the host key, destroyed when

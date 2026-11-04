@@ -242,14 +242,19 @@ export class CoSigner {
     return true;
   }
 
-  /** What a server keeps across a restart (§2, §5.6): answered ids, waits, cancels, challenges.
-   *  Never nonces: a restart loses every round in flight (§5.2). Shares are the host's to store. */
+  /** What a server keeps across a restart (§2, §5.6): answered ids, waits, cancels, challenges, §5.8's
+   *  counter, helper stops, heir records with this server's piece. Never nonces, kept or two-call: a
+   *  restart loses every round in flight (§5.2). Shares are the host's to store. */
   snapshot() {
     return JSON.stringify({ replay: this.replay.dump(), holds: [...this.holds.values()], recoveries: [...this.recoveries.values()],
-      cancels: this.cancels, challenges: [...this.challenges], signposts: [...this.signpostIds], stops: [...this.stops], cleared: [...this.clearedStops] });
+      cancels: this.cancels, challenges: [...this.challenges], signposts: [...this.signpostIds], stops: [...this.stops], cleared: [...this.clearedStops],
+      burst: this.burst.dump(), used: [...this.usedChallenges], answered: [...this.answeredRepair],
+      heirs: [...this.heirs].map(([k, h]) => [k, { ...h, piece: scalarHex(h.piece) }]) });
   }
   restore(json: string) {
     const x = JSON.parse(json);
+    this.burst.load(x.burst ?? []); this.usedChallenges = new Map(x.used ?? []); this.answeredRepair = new Set(x.answered ?? []);
+    this.heirs = new Map((x.heirs ?? []).map(([k, h]: [string, any]) => [k, { ...h, piece: BigInt('0x' + h.piece) }]));
     this.replay.load(x.replay);
     this.holds = new Map(x.holds.map((h: Hold) => [h.wait, h]));
     this.recoveries = new Map(x.recoveries.map((r: Recovery) => [r.wait, r]));

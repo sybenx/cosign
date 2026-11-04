@@ -67,6 +67,8 @@ export class Inbox {
   /** A removed member: drop its deliveries, keeping only its removal notice (kept 7 days). */
   dropFor(key: string, removalNotice?: InboxItem['iid']) { this.items = this.items.filter((x) => x.to !== key || x.iid === removalNotice); }
   endWait(iid: string) { this.items = this.items.filter((x) => x.iid !== iid); }
+  dump() { return { items: this.items, n: this.#n }; }
+  load(x: { items: InboxItem[]; n: number }) { this.items = [...x.items]; this.#n = x.n; }
 }
 
 /** One push address (§8.1): its wake class, the gateway URL and the browser-style keys RFC 8291 encrypts to. */
@@ -104,4 +106,6 @@ export class PushRegistry {
   for(member: string, cls: PushAddress['cls']) { return this.get(member)?.find((a) => a.cls === cls) ?? null; }
   /** Drop an address that answered 404/410. */
   dead(member: string, url: string) { const a = this.#by.get(member); if (a) a.addrs = a.addrs.filter((x) => x.url !== url); }
+  dump() { return [...this.#by]; }
+  load(x: [string, { at: number; addrs: PushAddress[] }][]) { this.#by = new Map(x); }
 }

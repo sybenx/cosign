@@ -53,6 +53,8 @@ export class BurstCounter {
   private log: { at: number; n: number }[] = [];
   recent(now: number) { this.log = this.log.filter((x) => now - x.at < BURST_WINDOW_S); return this.log.reduce((a, x) => a + x.n, 0); }
   add(now: number, n: number) { if (n > 0) this.log.push({ at: now, n }); }
+  dump() { return [...this.log]; }
+  load(x: { at: number; n: number }[]) { this.log = [...x]; }
 }
 
 /** §5.8 and §9.5 "Kind 0": the content as a JSON object, or null if it isn't one or breaks one of the

@@ -282,3 +282,15 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net } = {}): Pr
   shares.clear();
   return { bus, A, servers, paper, g, epochId };
 }
+
+/** Restart server `i` from what it wrote to storage (core §2): a new process with the same keys and
+ *  seat, nothing else carried over; every round in flight is lost (§5.2). */
+export function restartServer(acc: Account, i: number, store: { save(k: string, t: string): void; load(k: string): string | null }): ServerNode {
+  const old = acc.servers[i];
+  const key = `server-${old.kp.pub.slice(0, 16)}`;
+  store.save(key, old.snapshot());
+  const n = ServerNode.restore(acc.bus, store.load(key)!);
+  (acc.bus as Bus).nodes.set(n.kp.pub, n);
+  acc.servers[i] = n;
+  return n;
+}
