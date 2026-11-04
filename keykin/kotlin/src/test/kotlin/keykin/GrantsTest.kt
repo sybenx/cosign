@@ -53,7 +53,7 @@ class GrantsTest {
         assertEquals("lists", Grants.scopeForEvent(3)); assertEquals("wallet", Grants.scopeForEvent(17375)); assertEquals("sign-in", Grants.scopeForEvent(22242)); assertEquals("post", Grants.scopeForEvent(1))
         val g = "ab".repeat(32)
         assertEquals("dms", Grants.scopeForDecrypt(g, "cd".repeat(32), null))
-        assertEquals("lists", Grants.scopeForDecrypt(g, g, """[["p","x"]]"""))
+        assertEquals("private-data", Grants.scopeForDecrypt(g, g, """[["p","x"]]"""), "list-shaped but unmatched (review 16 M2)")
         assertEquals("wallet", Grants.scopeForDecrypt(g, g, """[["privkey","x"]]"""))
         assertEquals("private-data", Grants.scopeForDecrypt(g, g, "a note"))
     }
@@ -76,5 +76,21 @@ class GrantsTest {
         // Signed out elsewhere (here: ended in the store): the site is revoked.
         d.grants.end(d.pub, e.getString("id"))
         assertTrue(call("get_public_key").getString("error").startsWith("revoked:"))
+    }
+
+    @Test fun decryptScopesAsTsDecides() {
+        val x = JSONObject(File(System.getProperty("keykin.decryptscopes")).readText())
+        val ev = Evidence().also { it.load(x.getJSONObject("evidence")) }
+        val cases = x.getJSONArray("cases")
+        for (k in 0 until cases.length()) cases.getJSONObject(k).let { c ->
+            assertEquals(c.getString("scope"), Grants.scopeForDecrypt(x.getString("g"), x.getString("g"), c.getString("plaintext"), c.getString("payload"), ev, c.getString("owner")), "case $k")
+        }
+    }
+    @Test fun tokensAsTsJudges() {
+        assertEquals(null, Grants.scopesForEvent(27235, listOf(listOf("u", "https://a.example/x"), listOf("method", "DELETE"))))
+        assertEquals(listOf("sign-in", "host:b.example"), Grants.scopesForEvent(27235, listOf(listOf("u", "https://b.example/x"), listOf("method", "GET")), "a.example"))
+        assertEquals(listOf("sign-in"), Grants.scopesForEvent(24242, listOf(listOf("t", "upload"), listOf("x", "ab".repeat(32)))))
+        assertEquals(null, Grants.scopesForEvent(24242, listOf(listOf("t", "delete"))))
+        assertEquals(listOf("post"), Grants.scopesForEvent(30023)); assertEquals(listOf("lists"), Grants.scopesForEvent(39089))
     }
 }

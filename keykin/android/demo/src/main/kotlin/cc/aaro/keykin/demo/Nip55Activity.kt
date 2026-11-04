@@ -18,7 +18,10 @@ class Nip55Activity : Activity() {
         val r = Nip55.parse(intent, callingPackage) ?: return Nip55.deny(this)
         if (Memberships.slotFor(r.current) == null) return Nip55.deny(this, r)
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 96, 48, 48) }
-        col.addView(TextView(this).apply { text = r.describe(); textSize = 18f })
+        val line = TextView(this).apply { text = r.describe(); textSize = 18f }
+        col.addView(line)
+        // The scope this needs, worked out here in the signer process, so the words say what is really asked.
+        Thread { val d = Memberships.signer(Memberships.slotFor(r.current)!!).device; val sc = d?.let { Nip55.scopeNeeded(it, r) }; runOnUiThread { line.text = r.describe(sc) } }.start()
         val always = CheckBox(this).apply { text = "Always allow this" }
         col.addView(always)
         var answered = false

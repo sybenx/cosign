@@ -39,14 +39,28 @@ object Nip55 {
     fun kindOf(payload: String): Int? = try { (Json.obj(payload).opt("kind") as? Number)?.toInt() } catch (_: Exception) { null }
 
     class Request(val type: String, val payload: String, val peer: String, val id: String?, val caller: String?, val current: String?) {
-        /** A sentence for the screen: which app wants what. */
-        fun describe(): String = (caller ?: "An app") + when (type) {
+        /** A sentence for the screen: which app wants what, in the words of the scope it needs (review 16 M10). */
+        fun describe(scope: String? = null): String = (caller ?: "An app") + when (type) {
             "get_public_key" -> " wants to connect to your account"
             "sign_event" -> " wants to sign: " + (try { Json.obj(payload).let { "kind ${it.opt("kind")}, " + (it.opt("content") as? String ?: "").take(80) } } catch (_: Exception) { "an event" })
-            "nip44_encrypt", "nip04_encrypt" -> " wants to send a message as you"
-            "nip44_decrypt", "nip04_decrypt" -> " wants to read your messages"
+            "nip44_encrypt", "nip04_encrypt" -> if (scope == "post") " wants to save private data to your account" else " wants to send a message as you"
+            "nip44_decrypt", "nip04_decrypt" -> when (scope) {
+                "lists" -> " wants to read your private lists"
+                "wallet" -> " wants to use your ecash wallet"
+                "private-data" -> " wants to read your private notes and app data"
+                else -> " wants to read your messages"
+            }
             else -> " asks for $type"
         }
+    }
+    /** The scope this request needs, worked out in the signer process before the screen (a to-self decrypt is
+     *  decrypted here first, and judged on its evidence), so the screen says what is really asked. */
+    fun scopeNeeded(d: Device, r: Request): String? = when (r.type) {
+        "nip44_decrypt", "nip04_decrypt" -> try {
+            val plain = if (r.type.startsWith("nip44")) d.nip44(r.peer, r.payload, false) else d.nip04(r.peer, r.payload, false)
+            Grants.scopeForDecrypt(d.g, r.peer.lowercase(), plain, if (r.type.startsWith("nip44")) r.payload else null, d.evidence, null)
+        } catch (_: Exception) { null }
+        else -> scopeOf(d, r, null)
     }
     /** The request in a `nostrsigner:` intent, or null. `caller` is the calling package (Activity.callingPackage).
      *  The payload is the URI's text as sent, never decoded or cut at a `#` (review 15 M2). */

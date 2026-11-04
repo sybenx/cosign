@@ -1,0 +1,163 @@
+{
+ "note": "scopeForDecrypt(g, g, plaintext, {payload, evidence, owner}) as the TS reference decides it",
+ "g": "abababababababababababababababababababababababababababababababab",
+ "evidence": {
+  "kinds": [
+   [
+    "ab0cb3ed4e5cdb3d8d4c25d6676452717f963f8112800eaf687513115a4ba04c",
+    [
+     10000
+    ]
+   ],
+   [
+    "6a442002efa4427c99ecee6214f9bc545763265fe5047debc552a7344e0e4ca5",
+    [
+     17375
+    ]
+   ],
+   [
+    "96ace6d863b4c01af4f180c1c450620e8f7d2f51b7dbef8e289462b9445ba0e4",
+    [
+     30078,
+     10000
+    ]
+   ],
+   [
+    "839b646da322cf6436ea1c907c25af67f9bb44a037a6399ed6251b72459d39b9",
+    [
+     10000
+    ]
+   ],
+   [
+    "50fba192671079a2c592a9a674e6205a42ab76643b4e2f7196856d302c90726f",
+    [
+     10003
+    ]
+   ],
+   [
+    "8099f437e14a955469b50759d959c3fb9f386e1afff9219f68c5e66deec33668",
+    [
+     14
+    ]
+   ]
+  ],
+  "owners": [
+   [
+    "ab0cb3ed4e5cdb3d8d4c25d6676452717f963f8112800eaf687513115a4ba04c",
+    [
+     "member"
+    ]
+   ],
+   [
+    "6a442002efa4427c99ecee6214f9bc545763265fe5047debc552a7344e0e4ca5",
+    [
+     "member"
+    ]
+   ],
+   [
+    "96ace6d863b4c01af4f180c1c450620e8f7d2f51b7dbef8e289462b9445ba0e4",
+    [
+     "member"
+    ]
+   ],
+   [
+    "839b646da322cf6436ea1c907c25af67f9bb44a037a6399ed6251b72459d39b9",
+    [
+     "by:B"
+    ]
+   ],
+   [
+    "8099f437e14a955469b50759d959c3fb9f386e1afff9219f68c5e66deec33668",
+    [
+     "by:A"
+    ]
+   ]
+  ]
+ },
+ "cases": [
+  {
+   "payload": "AgiWL3qBc5gyx+3RGqXkg4f5r6fyIqljFvSBWb8/az9v/Hfv7NNzeW6xaE2aYFUk+xUE+xWO09MykMpxhnKdEdtsMB2JTlaD046M3P7oxMNGrS4sRewqWtLrLWx6HtRrHgZh",
+   "plaintext": "[[\"p\",\"x\"],[\"t\",\"y\"]]",
+   "owner": "by:A",
+   "scope": "lists"
+  },
+  {
+   "payload": "AgiWL3qBc5gyx+3RGqXkg4f5r6fyIqljFvSBWb8/az9v/Hfv7NNzeW6xaE2aYFUk+xUE+xWO09MykMpxhnKdEdtsMB2JTlaD046M3P7oxMNGrS4sRewqWtLrLWx6HtRrHgZh",
+   "plaintext": "[[\"privkey\",\"k\"]]",
+   "owner": "by:A",
+   "scope": "wallet"
+  },
+  {
+   "payload": "Ais1WBk4jEYHXlazJMW1U2fYJ+w5iMp/ZTsFV36avgKs5iLLuSAcyRYRF039rUIP0UJuDWAImGm5hyz8kwnEF9SyXd708ac8kCtRrvRJTTo0g8CHX/lyKxYyi/mZcbBGiGwT",
+   "plaintext": "[[\"p\",\"x\"],[\"t\",\"y\"]]",
+   "owner": "by:A",
+   "scope": "wallet"
+  },
+  {
+   "payload": "AkVUEpmC49NxUIlSD69V4Gd22k53zp40JSfMk5HdxtfR92wRvgxhBxs0JmhiDi0Ae1MqYsh3p3kWPtFe+3WObOiy7dO4OVlC+zcgaUonR+u/l7l60NsCpdQYx4tC6fkt1mhF",
+   "plaintext": "[[\"p\",\"x\"],[\"t\",\"y\"]]",
+   "owner": "by:A",
+   "scope": "private-data"
+  },
+  {
+   "payload": "AuqunP+jL8Z5Li/pGsgSbKQ+RwhbwyTAh28/IFpAswFCDOt6xADmmTkR2QxNrFBX7QdkjE6WuY9nDAFZgLtbarSt6Gqfekf5ukV0jYtufkKMSlOZkfgKbIWuuXYeAyY3InFo",
+   "plaintext": "[[\"p\",\"x\"],[\"t\",\"y\"]]",
+   "owner": "by:A",
+   "scope": "private-data"
+  },
+  {
+   "payload": "AuqunP+jL8Z5Li/pGsgSbKQ+RwhbwyTAh28/IFpAswFCDOt6xADmmTkR2QxNrFBX7QdkjE6WuY9nDAFZgLtbarSt6Gqfekf5ukV0jYtufkKMSlOZkfgKbIWuuXYeAyY3InFo",
+   "plaintext": "[[\"p\",\"x\"],[\"t\",\"y\"]]",
+   "owner": "by:B",
+   "scope": "lists"
+  },
+  {
+   "payload": "AvhKI8jLduQImVW9ClLlWKOif1ssKXTJkLKEdlzuWWzeGVG2R9pfpJ9Wi/rU5saB6lysmTq38u/gZsaAFqur6EdEOuUI7RGKsLTgLf28SdPSJJ2UiRnhtpEbGpq5+YPwbOo2",
+   "plaintext": "[[\"p\",\"x\"],[\"t\",\"y\"]]",
+   "owner": "by:A",
+   "scope": "lists"
+  },
+  {
+   "payload": "AvhKI8jLduQImVW9ClLlWKOif1ssKXTJkLKEdlzuWWzeGVG2R9pfpJ9Wi/rU5saB6lysmTq38u/gZsaAFqur6EdEOuUI7RGKsLTgLf28SdPSJJ2UiRnhtpEbGpq5+YPwbOo2",
+   "plaintext": "a private note",
+   "owner": "by:A",
+   "scope": "private-data"
+  },
+  {
+   "payload": "ApJon/WTHy7AH703ixbltEp4VeaOZMXG1312OMfRpUD/MdIlH7KY73eZAVlufBBdQFFfIM7SDclVjwd3k1sp32dCsNVLj+IOxUncnVtY0jFBY6gfX+IK25+SzXDE00BJD2Ik",
+   "plaintext": "a private note",
+   "owner": "by:A",
+   "scope": "dms"
+  },
+  {
+   "payload": "AuI2yI6sarpUH8EsW4XmoxXOTof8pKWfGuk0eeMTfoggy+8kmN9l2Kz3ms0S2YBphr7nan9R6Rc+dl0LJoL0XRPIo/dHxPsRRDHKRdzSv5iRt4nW5UcBV/Qd0JYJNIF/wLSK",
+   "plaintext": "[[\"p\",\"x\"],[\"t\",\"y\"]]",
+   "owner": "by:A",
+   "scope": "private-data"
+  },
+  {
+   "payload": "AuI2yI6sarpUH8EsW4XmoxXOTof8pKWfGuk0eeMTfoggy+8kmN9l2Kz3ms0S2YBphr7nan9R6Rc+dl0LJoL0XRPIo/dHxPsRRDHKRdzSv5iRt4nW5UcBV/Qd0JYJNIF/wLSK",
+   "plaintext": "{\"mint\":\"https://m\",\"proofs\":[]}",
+   "owner": "by:A",
+   "scope": "wallet"
+  },
+  {
+   "payload": "AuI2yI6sarpUH8EsW4XmoxXOTof8pKWfGuk0eeMTfoggy+8kmN9l2Kz3ms0S2YBphr7nan9R6Rc+dl0LJoL0XRPIo/dHxPsRRDHKRdzSv5iRt4nW5UcBV/Qd0JYJNIF/wLSK",
+   "plaintext": "{\"kind\":14,\"pubkey\":\"abababababababababababababababababababababababababababababababab\",\"content\":\"hi\",\"tags\":[],\"created_at\":1}",
+   "owner": "by:A",
+   "scope": "dms"
+  },
+  {
+   "payload": "AuI2yI6sarpUH8EsW4XmoxXOTof8pKWfGuk0eeMTfoggy+8kmN9l2Kz3ms0S2YBphr7nan9R6Rc+dl0LJoL0XRPIo/dHxPsRRDHKRdzSv5iRt4nW5UcBV/Qd0JYJNIF/wLSK",
+   "plaintext": "a private note",
+   "owner": "by:A",
+   "scope": "private-data"
+  },
+  {
+   "payload": "AgiWL3qBc5gyx+3RGqXkg4f5r6fyIqljFvSBWb8/az9v/Hfv7NNzeW6xaE2aYFUk+xUE+xWO09MykMpxhnKdEdtsMB2JTlaD046M3P7oxMNGrS4sRewqWtLrLWx6HtRrHgZh ",
+   "plaintext": "[[\"p\",\"x\"],[\"t\",\"y\"]]",
+   "owner": "by:A",
+   "scope": "malformed"
+  }
+ ]
+}

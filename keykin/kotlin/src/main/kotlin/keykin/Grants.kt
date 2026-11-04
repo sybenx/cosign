@@ -24,7 +24,7 @@ object Grants {
     }
     fun entryOk(g: String, e: JSONObject): Boolean = try { schnorrVerify(e.getString("by_sig"), entryDigest(g, e), e.getString("by")) } catch (_: Exception) { false }
     fun expired(e: JSONObject, now: Long, lastUsed: Long?): Boolean = when (val x = e.opt("expiry")) {
-        "unused-90d" -> now - (lastUsed ?: e.optLong("made")) > 90 * 86400
+        "unused-90d" -> now - maxOf(lastUsed ?: 0, e.optLong("last_used"), e.optLong("made")) > 90 * 86400
         is Number -> now > x.toLong()
         else -> false
     }
@@ -55,7 +55,8 @@ object Grants {
         val mine = events.filter { e -> e.kind == KIND && e.pubkey == g && e.tag("d").let { it == d || it?.startsWith("$d:") == true } && verifyEvent(e) }
         for (at in mine.map { it.createdAt }.distinct().sortedDescending()) try {
             val same = mine.filter { it.createdAt == at }
-            val n = same[0].tag("parts")?.toInt() ?: 1
+            val n = same[0].tag("parts")?.toIntOrNull() ?: 1
+            if (n < 1 || n > 64) continue
             val parts = if (n == 1) listOf(same.firstOrNull { it.tag("d") == d }) else (1..n).map { k -> same.firstOrNull { it.tag("d") == "$d:$k" } }
             if (parts.any { it == null }) continue
             val text = parts.joinToString("") { p ->
@@ -66,34 +67,100 @@ object Grants {
             val x = Json.obj(text)
             val set = JSONObject().put("entries", x.optJSONArray("entries") ?: JSONArray()).put("tombstones", x.optJSONArray("tombstones") ?: JSONArray())
                 .put("ended", x.optJSONArray("ended") ?: JSONArray()).put("union", x.optJSONArray("union") ?: JSONArray())
-            if (!schnorrVerify(x.optString("maker_sig"), setDigest(g, d, at, set), maker)) continue
+            if (!schnorrVerify(x.optString("maker_sig"), setDigest(g, d, at, set), maker) || !shapeOk(set)) continue
             return Read(at, set)
         } catch (_: Exception) { /* a part we can't open, or a forgery: the next older one */ }
         return null
     }
 
-    // --- which scope a request needs (§1) --------------------------------------------------------
-    private val WALLET = setOf(17375, 37375, 7375, 7376, 7374, 10019)
-    private val SIGN_IN = setOf(22242, 27235, 24242)
-    private fun isList(k: Int) = k == 0 || k == 3 || k == 10002 || k == 10050 || k in 10000 until 10102 || k in 30000..30030
-    fun scopeForEvent(kind: Int) = when { kind in SIGN_IN -> "sign-in"; kind in WALLET -> "wallet"; isList(kind) -> "lists"; else -> "post" }
+    // --- which scope a request needs (§1), as TS ------------------------------------------------------
+    val WALLET_KINDS = setOf(17375, 37375, 7375, 7376, 7374, 10019)
+    /** Device policy §2's list and set kinds, exactly; the profile and relay lists count as lists here. */
+    val LIST_KINDS = setOf(0, 3, 10000, 10002, 10050, 10001, 10003, 10004, 10005, 10006, 10007, 10009, 10012, 10013, 10015, 10020, 10030, 10063, 10101, 10102,
+        30000, 30002, 30003, 30004, 30005, 30006, 30007, 30008, 30015, 30030, 39089)
+    private fun tagOf(tags: List<List<String>>, n: String) = tags.firstOrNull { it.isNotEmpty() && it[0] == n }?.getOrNull(1)
+    private fun hostOf(u: String?) = try { u?.let { java.net.URI(it).host?.lowercase()?.let { h -> if (java.net.URI(u).port >= 0) "$h:${java.net.URI(u).port}" else h } } } catch (_: Exception) { null }
+    /** As TS `scopesForEvent`: every scope signing the event needs, or null for "declined" (a deletion by token,
+     *  a token for no host). Another host than `ownHost` needs `host:<host>`, asked once per host (review 16 H1). */
+    fun scopesForEvent(kind: Int, tags: List<List<String>> = emptyList(), ownHost: String? = null): List<String>? {
+        if (kind == 22242) return listOf("sign-in")
+        if (kind == 27235) {
+            val method = (tagOf(tags, "method") ?: "").uppercase(); val host = hostOf(tagOf(tags, "u"))
+            if (method == "DELETE" || host == null) return null
+            val base = if (method == "PUT" || method == "PATCH") listOf("sign-in", "post") else listOf("sign-in")
+            return if (host == ownHost) base else base + "host:$host"
+        }
+        if (kind == 24242) {
+            val t = tagOf(tags, "t") ?: ""
+            if (t == "delete") return null
+            if (t in setOf("upload", "media", "get") && tags.count { it.isNotEmpty() && it[0] == "x" } == 1) return listOf("sign-in")
+            val host = hostOf(tagOf(tags, "server")) ?: "any"
+            return if (host == ownHost) listOf("sign-in") else listOf("sign-in", "host:$host")
+        }
+        return listOf(if (kind in WALLET_KINDS) "wallet" else if (kind in LIST_KINDS) "lists" else "post")
+    }
+    fun scopeForEvent(kind: Int) = if (kind in WALLET_KINDS) "wallet" else if (kind in LIST_KINDS) "lists" else if (kind == 22242) "sign-in" else "post"
     private val LIST_TAGS = setOf("p", "e", "a", "t", "r", "word", "emoji", "group", "relay")
     private val WALLET_FIELDS = setOf("privkey", "mint", "proofs", "direction", "amount", "unit", "balance")
-    /** As TS `scopeForDecrypt`: `dms` with someone else's key; a decrypt-to-self judged from its plaintext. */
-    fun scopeForDecrypt(g: String, peer: String, plaintext: String?): String {
+    /** Parsed strictly (§9.5), as TS's JSON.parse reads valid JSON; null for anything else (review 16 L4). */
+    private fun strict(text: String): Any? = try { Json.parse(text) } catch (_: Exception) { null }
+    fun listPlaintextOk(plain: String): Boolean = (strict(plain) as? JSONArray)?.let { a -> (0 until a.length()).all { i ->
+        (a.opt(i) as? JSONArray)?.let { t -> t.length() >= 1 && (0 until t.length()).all { t.opt(it) is String } && t.getString(0) in LIST_TAGS } == true } } ?: false
+    fun looksWallet(plain: String): Boolean = when (val x = strict(plain)) {
+        is JSONObject -> x.has("proofs") || x.has("mint") || x.has("privkey")
+        is JSONArray -> (0 until x.length()).any { (x.opt(it) as? JSONArray)?.opt(0) in WALLET_FIELDS }
+        else -> false
+    }
+    private val RANK = mapOf("private-data" to 3, "wallet" to 2, "lists" to 1, "dms" to 0)
+    /** As TS `scopeForDecrypt` (Doors §1, "Which scope a decrypt needs"); "malformed" for a non-canonical payload. */
+    fun scopeForDecrypt(g: String, peer: String, plaintext: String?, payload: String? = null, evidence: Evidence? = null, owner: String? = null): String {
         if (peer.lowercase() != g) return "dms"
         if (plaintext == null) return "private-data"
-        try {
-            val v = org.json.JSONTokener(plaintext).nextValue()
-            if (v is JSONObject && v.optString("pubkey") == g && v.optInt("kind", -1) in setOf(14, 15, 7, 5)) return "dms"
-            if (v is JSONArray && (0 until v.length()).all { (v.opt(it) as? JSONArray)?.opt(0) is String }) {
-                val names = (0 until v.length()).map { v.getJSONArray(it).getString(0) }
-                if (names.any { it in WALLET_FIELDS }) return "wallet"
-                if (names.all { it in LIST_TAGS }) return "lists"
-            }
-        } catch (_: Exception) {}
-        return "private-data"
+        val h = payload?.let { Evidence.hashOf(it) }
+        if (payload != null && h == null) return "malformed"
+        val kinds = h?.let { evidence?.kinds?.get(it) }?.toList() ?: emptyList()
+        val owners = h?.let { evidence?.owners?.get(it) }
+        fun ofKind(k: Int) = if (k in WALLET_KINDS) "wallet" else if (k in LIST_KINDS) "lists" else if (k == 4 || k == 14) "dms" else "private-data"
+        var need: String? = null
+        if (kinds.isNotEmpty()) {
+            val vouched = owners != null && ("member" in owners || (owner != null && owner in owners))
+            val classes = kinds.map(::ofKind)
+            if (vouched) need = classes.maxByOrNull { RANK[it]!! }
+            else if (owners.isNullOrEmpty() && classes.all { it == "lists" }) need = "lists"
+        }
+        if (need == "lists" && !listPlaintextOk(plaintext)) need = if (looksWallet(plaintext)) "wallet" else "private-data"
+        if (need != null) return if (need == "private-data" && looksWallet(plaintext)) "wallet" else need
+        (strict(plaintext) as? JSONObject)?.let { x -> if (x.opt("pubkey") == g && (x.opt("kind") as? Number)?.toInt() in setOf(14, 15, 7, 5)) return "dms" }
+        return if (looksWallet(plaintext)) "wallet" else "private-data"
     }
+    private val HEX16 = Regex("^[0-9a-f]{32}$"); private val HEX32 = Regex("^[0-9a-f]{64}$")
+    /** A signed set still has to be a set (review 16 L2). */
+    fun shapeOk(set: JSONObject): Boolean = try {
+        fun arr(n: String) = set.getJSONArray(n).let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+        arr("entries").all { e -> HEX16.matches(e.optString("id")) && e.opt("v") is Number && HEX32.matches(e.optString("by")) && e.optJSONArray("scopes") != null && e.opt("site") is String } &&
+            arr("tombstones").all { HEX32.matches(it.optString("by")) && HEX16.matches(it.optString("id")) && it.opt("at") is Number } &&
+            arr("ended").all { HEX16.matches(it.optString("id")) && it.opt("until") is Number } &&
+            arr("union").all { HEX32.matches(it.optString("by")) && HEX16.matches(it.optString("id")) && it.opt("until") is Number }
+    } catch (_: Exception) { false }
+}
+
+/** What this device knows of the account's own ciphertexts (Device policy §1, its own part), as TS `Evidence`. */
+class Evidence {
+    val kinds = LinkedHashMap<String, MutableSet<Int>>()
+    val owners = LinkedHashMap<String, MutableSet<String>>()
+    companion object {
+        fun hashOf(payload: String): String? = try { val b = java.util.Base64.getDecoder().decode(payload); if (java.util.Base64.getEncoder().encodeToString(b) == payload) hex(sha(b)) else null } catch (_: Exception) { null }
+    }
+    @Synchronized fun encrypted(payload: String, owner: String) { hashOf(payload)?.let { owners.getOrPut(it) { LinkedHashSet() } += owner; cap() } }
+    @Synchronized fun event(kind: Int, content: String) { hashOf(content)?.let { kinds.getOrPut(it) { LinkedHashSet() } += kind; cap() } }
+    private fun cap() { for (m in listOf<MutableMap<String, *>>(kinds, owners)) while (m.size > 20_000) m.remove(m.keys.first()) }
+    @Synchronized fun dump(): JSONObject = JSONObject().put("kinds", JSONArray(kinds.map { (h, k) -> JSONArray(listOf(h, JSONArray(k.toList()))) })).put("owners", JSONArray(owners.map { (h, o) -> JSONArray(listOf(h, JSONArray(o.toList()))) }))
+    @Synchronized fun load(x: JSONObject?) {
+        kinds.clear(); owners.clear(); if (x == null) return
+        x.optJSONArray("kinds")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> kinds[p.getString(0)] = p.getJSONArray(1).let { k -> (0 until k.length()).map { k.getInt(it) }.toMutableSet() } } }
+        x.optJSONArray("owners")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> owners[p.getString(0)] = p.getJSONArray(1).let { k -> (0 until k.length()).map { k.getString(it) }.toMutableSet() } } }
+    }
+    @Synchronized fun clear() { kinds.clear(); owners.clear() }
 }
 
 /** One device's grants (Doors §1–§2), as TS `GrantStore`. */
@@ -130,7 +197,17 @@ class GrantStore(private val d: Device) {
             union["$by:$id"] = JSONObject().put("by", by).put("id", id).put("until", until)
         } else if (tombstones.none { it.getString("by") == by && it.getString("id") == id }) tombstones += JSONObject().put("by", by).put("id", id).put("at", now)
     }
-    @Synchronized fun used(id: String) { lastUsed[id] = now }
+    /** A use of an own grant: recorded, and once a day put in the entry (re-signed) for other devices' expiry (M4). */
+    @Synchronized fun used(id: String) {
+        lastUsed[id] = now
+        val e = own[id] ?: return
+        val day = now / 86400 * 86400
+        if (e.optLong("last_used") < day) own[id] = Grants.signEntry(d.g, d.sk, JSONObject(e.toString()).put("last_used", day).also { it.remove("by") })
+    }
+    /** When a fetch last heard from more than half of the relays asked (§2: a publish follows a good fetch). */
+    @Volatile var goodFetchAt = 0L
+    private val publishing = Any()
+    private fun unite(u: JSONObject) { val k = "${u.getString("by")}:${u.getString("id")}"; val p = union[k]; if (p == null || u.getLong("until") > p.getLong("until")) union[k] = u }
     /** Every live grant on the account, for listing: newest per (by, id), never ended, never a non-device's. */
     @Synchronized fun all(): List<JSONObject> {
         val cur = current(); val out = LinkedHashMap<String, JSONObject>()
@@ -153,29 +230,33 @@ class GrantStore(private val d: Device) {
         val cur = current(); val t = now
         ended.removeAll { it.getLong("until") <= t }
         union.entries.removeAll { it.value.getLong("until") <= t || it.value.getString("by") !in cur }
-        tombstones.removeAll { t - it.getLong("at") >= 30 * 86400 }
+        // Kept 30 days, and longer while the maker still lists the entry (review 16 M8).
+        tombstones.removeAll { tb -> t - tb.getLong("at") >= 30 * 86400 && others.values.none { r -> r.set.getJSONArray("entries").let { a -> (0 until a.length()).any { a.getJSONObject(it).let { e -> e.optString("by") == tb.getString("by") && e.optString("id") == tb.getString("id") } } } } }
         return JSONObject().put("entries", JSONArray(own.values.filter { !Grants.expired(it, t, lastUsed[it.getString("id")]) }.sortedBy { it.getString("id") }))
             .put("tombstones", JSONArray(tombstones.toList())).put("ended", JSONArray(ended.toList())).put("union", JSONArray(union.values.sortedBy { "${it.getString("by")}:${it.getString("id")}" }))
     }
     /** Publish this device's grant event, signed by the account, under the current data key. */
-    fun publish(net: RelayNet): List<JSONObject> {
+    fun publish(net: RelayNet): List<JSONObject> = synchronized(publishing) {
+        // Never over a copy this device hasn't read: a restored copy takes over its own newest event first.
+        if (goodFetchAt == 0L) refuse("try_later", "a grant fetch must reach most relays before a publish")
         val at = maxOf(now, lastPublish + 1)
         val (state, key) = d.dataKey()
         val evs = Grants.events(d.g, d.sk, d.baseDataKey(), state, key, synchronized(this) { set() }, at)
         val signed = evs.map { u -> d.sign(u.kind, u.content, u.tags, u.createdAt) }
         synchronized(this) { lastPublish = at }
         for (e in signed) net.publishEvent(e)
-        return signed
+        signed
     }
     /** Read every current device's newest grant event (as TS `fetch`). */
-    @Synchronized fun take(events: List<Event>) {
+    @Synchronized fun take(events: List<Event>, answered: Int = 1, asked: Int = 1) {
+        if (asked > 0 && answered * 2 > asked) goodFetchAt = now
         val cur = current()
         for (m in cur) {
             val r = Grants.read(d.g, m, d.baseDataKey(), { s -> d.dataKeyFor(s) }, events) ?: continue
             if (m == d.pub) { adoptOwn(r); continue }
             val p = others[m]; if (p == null || r.at > p.at) others[m] = r
-            r.set.getJSONArray("ended").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { x -> union["$m:${x.getString("id")}"] = JSONObject().put("by", m).put("id", x.getString("id")).put("until", x.getLong("until")) } }
-            r.set.getJSONArray("union").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { u -> if (u.getString("by") in cur) union["${u.getString("by")}:${u.getString("id")}"] = u } }
+            r.set.getJSONArray("ended").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { x -> unite(JSONObject().put("by", m).put("id", x.getString("id")).put("until", x.getLong("until"))) } }
+            r.set.getJSONArray("union").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { u -> if (u.getString("by") in cur) unite(u) } }
             r.set.getJSONArray("tombstones").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { t -> if (t.getString("by") == d.pub && own.containsKey(t.getString("id"))) end(d.pub, t.getString("id")) } }
         }
         for (u in union.values.toList()) if (u.getString("by") == d.pub && own.containsKey(u.getString("id"))) end(d.pub, u.getString("id"))
@@ -192,6 +273,7 @@ class GrantStore(private val d: Device) {
     }
     @Synchronized fun dump(): JSONObject = JSONObject().put("own", JSONArray(own.values.toList())).put("tombstones", JSONArray(tombstones.toList())).put("ended", JSONArray(ended.toList()))
         .put("union", JSONArray(union.values.toList())).put("lastUsed", JSONArray(lastUsed.map { (k, v) -> JSONArray(listOf(k, v)) })).put("lastPublish", lastPublish)
+        .put("others", JSONArray(others.map { (m, r) -> JSONArray(listOf(m, r.at, r.set)) }))
     @Synchronized fun load(x: JSONObject?) {
         if (x == null) return
         own.clear(); x.optJSONArray("own")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { own[it.getString("id")] = it } }
@@ -200,6 +282,7 @@ class GrantStore(private val d: Device) {
         union.clear(); x.optJSONArray("union")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { union["${it.getString("by")}:${it.getString("id")}"] = it } }
         lastUsed.clear(); x.optJSONArray("lastUsed")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> lastUsed[p.getString(0)] = p.getLong(1) } }
         lastPublish = x.optLong("lastPublish")
+        others.clear(); x.optJSONArray("others")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> others[p.getString(0)] = Grants.Read(p.getLong(1), p.getJSONObject(2)) } }
     }
     @Synchronized fun clear() { own.clear(); tombstones.clear(); ended.clear(); union.clear(); others.clear(); lastUsed.clear() }
 }

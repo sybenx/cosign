@@ -14,10 +14,11 @@ import keykin.Grants
 class Nip55Provider : ContentProvider() {
     private val signed = HashMap<String, ArrayDeque<Long>>()
     override fun onCreate(): Boolean { Memberships.init(context!!); return true }
-    @Synchronized private fun budget(app: String): Boolean {
-        val now = System.currentTimeMillis() / 1000; val q = signed.getOrPut(app) { ArrayDeque() }
+    /** At most `max` an hour per grant and kind of call (signing 60; encrypting and decrypting 300: review 16 M9). */
+    @Synchronized private fun budget(key: String, max: Int = 60): Boolean {
+        val now = System.currentTimeMillis() / 1000; val q = signed.getOrPut(key) { ArrayDeque() }
         while (q.isNotEmpty() && now - q.first() > 3600) q.removeFirst()
-        if (q.size >= 60) return false
+        if (q.size >= max) return false
         q.addLast(now); return true
     }
 
@@ -41,13 +42,19 @@ class Nip55Provider : ContentProvider() {
                     Nip55.sign(d, payload).let { d.grants.used(grant.id); row("result" to it.getString("sig"), "signature" to it.getString("sig"), "event" to it.toString()) }
                 }
                 "NIP44_ENCRYPT", "NIP04_ENCRYPT" -> {
-                    if ((if (peer.lowercase() == d.g) "post" else "dms") !in grant.scopes) return null
-                    row("result" to if (type.startsWith("NIP44")) d.nip44(peer, payload, true) else d.nip04(peer, payload, true))
+                    if ((if (peer.lowercase() == d.g) "post" else "dms") !in grant.scopes || !budget("crypt:${grant.id}", 300)) return null
+                    // An encryption to self is this grant's: evidence for its later decrypts (Doors §1).
+                    row("result" to if (type.startsWith("NIP44")) d.nip44(peer, payload, true, "${d.pub}:${grant.id}") else d.nip04(peer, payload, true))
                 }
                 "NIP44_DECRYPT", "NIP04_DECRYPT" -> {
-                    // With someone else's key, dms; to the account itself, released only under the scope its plaintext needs.
+                    val toSelf = peer.lowercase() == d.g
+                    // Refused before any round when the grant can't hold the answer at all (review 16 M9).
+                    if (if (toSelf) grant.scopes.none { it in setOf("lists", "wallet", "private-data", "dms") } else "dms" !in grant.scopes) return null
+                    if (!budget("crypt:${grant.id}", 300)) return null
                     val plain = if (type.startsWith("NIP44")) d.nip44(peer, payload, false) else d.nip04(peer, payload, false)
-                    if (Grants.scopeForDecrypt(d.g, peer, plain) !in grant.scopes) return null
+                    // With someone else's key, dms; to the account itself, the scope its evidence and plaintext need.
+                    val need = Grants.scopeForDecrypt(d.g, peer.lowercase(), plain, if (type.startsWith("NIP44")) payload else null, d.evidence, "${d.pub}:${grant.id}")
+                    if (need !in grant.scopes) return null
                     row("result" to plain)
                 }
                 else -> null

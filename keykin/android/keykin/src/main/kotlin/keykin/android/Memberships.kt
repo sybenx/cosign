@@ -80,13 +80,14 @@ object Memberships {
         val want = (scopes + "sign-in").toSet()
         val e = d.grants.forSite(site, "nip55", conn)?.let { old -> if (d.grants.scopesOf(old).containsAll(want)) old else d.grants.widen(old.getString("id"), want.toList()) }
             ?: d.grants.make(site, says, "nip55", conn, want.toList())
-        Thread { try { d.publishGrants() } catch (_: Exception) {} }.start()
+        // Stored before it is published: a signer process dying in between never loses it (review 16 M6).
+        d.publishGrantsSoon()
         return Grant(slot, e.getString("id"), d.grants.scopesOf(e))
     }
     @Synchronized fun revoke(slot: String, pkg: String) {
         val (site, conn) = appSite(pkg) ?: return
         val d = signer(slot).device ?: return
-        d.grants.forSite(site, "nip55", conn)?.let { d.grants.end(d.pub, it.getString("id")); Thread { try { d.publishGrants() } catch (_: Exception) {} }.start() }
+        d.grants.forSite(site, "nip55", conn)?.let { d.grants.end(d.pub, it.getString("id")); d.publishGrantsSoon() }
     }
     /** The slot whose account is `current` (NIP-55's current_user), or the first. */
     @Synchronized fun slotFor(current: String?): String? = slots().firstOrNull { current.isNullOrBlank() || signer(it).device?.g == current }

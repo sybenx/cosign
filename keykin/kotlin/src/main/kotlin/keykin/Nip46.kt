@@ -21,15 +21,17 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     /** Scopes sites asked for that the person hasn't answered, by signer (Doors §1: asked the first time). */
     val asks = LinkedHashMap<String, MutableSet<String>>()
     @Synchronized fun allowScope(signer: String, scope: String) {
-        val g = grants[signer] ?: refuse("unknown_grant"); d.grants.widen(g.entry ?: refuse("unknown_grant"), listOf(scope)); asks[signer]?.remove(scope)
+        val g = grants[signer] ?: refuse("unknown_grant"); d.grants.widen(g.entry ?: refuse("unknown_grant"), listOf(scope)); asks[signer]?.remove(scope); d.publishGrantsSoon()
     }
     private fun bind(g: Grant, client: String) {
         g.client = client
         g.entry = d.grants.make(client, g.site, "nip46", client, g.offered, g.relays, g.signer).getString("id")
+        d.publishGrantsSoon()
     }
     private fun has(g: Grant, scope: String): Boolean {
         val e = g.entry?.let { d.grants.own[it] }
-        if (e != null && scope in d.grants.scopesOf(e)) { d.grants.used(e.getString("id")); return true }
+        // An expired grant grants nothing (review 16 M4).
+        if (e != null && scope in d.grants.scopesOf(e) && !Grants.expired(e, net.now, null)) { d.grants.used(e.getString("id")); return true }
         asks.getOrPut(g.signer) { LinkedHashSet() } += scope
         return false
     }
@@ -102,6 +104,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
             return if (from == g.client) ok("ack") else err("not-connected: this link belongs to another client; mint a new one")
         }
         if (from != g.client) return err("not-connected: connect first")
+        // Doors §2: never on old news. A home that hasn't caught up within 30 seconds does first.
+        if (method != "ping" && net.now - d.lastFetchAt > 30) try { d.fetch() } catch (_: Exception) {}
         // A grant ended on another device (a tombstone, a removal) ends here too.
         if (g.entry != null && d.grants.own[g.entry!!] == null) { end(g); return err("revoked: this site was disconnected") }
         return try {
@@ -118,7 +122,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                     val kind = Json.long(x.opt("kind")).toInt()
                     val tags = x.optJSONArray("tags")?.let { t -> (0 until t.length()).map { k -> t.getJSONArray(k).let { a -> (0 until a.length()).map { a.getString(it) } } } } ?: emptyList()
                     siteGuard(kind, tags)
-                    val need = Grants.scopeForEvent(kind); if (!has(g, need)) return ask(need)
+                    val needs = Grants.scopesForEvent(kind, tags, null) ?: return err("declined: a deletion by token, or a token for no host, is never a site's to get signed")
+                    for (n in needs) if (!has(g, n)) return ask(n)
                     val content = x.optString("content")
                     val at = if (x.has("created_at")) Json.long(x.get("created_at")) else net.now
                     try { ok(d.sign(kind, content, tags, at).toString()) }
@@ -132,14 +137,24 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                 // to the account itself released only under the scope its plaintext needs (Doors §1).
                 "nip44_encrypt", "nip04_encrypt" -> {
                     val need = if (params[0].lowercase() == d.g) "post" else "dms"; if (!has(g, need)) return ask(need)
-                    ok(if (method == "nip44_encrypt") d.nip44(params[0], params[1], true) else d.nip04(params[0], params[1], true))
+                    // An encryption to self is recorded for this grant: evidence for its later decrypts.
+                    ok(if (method == "nip44_encrypt") d.nip44(params[0], params[1], true, "${d.pub}:${g.entry}") else d.nip04(params[0], params[1], true))
                 }
                 "nip44_decrypt", "nip04_decrypt" -> {
                     if (!Regex("^[0-9a-fA-F]{64}$").matches(params[0])) refuse("declined", "a peer key is 32 bytes of hex")
-                    if (params[0].lowercase() != d.g && !has(g, "dms")) return ask("dms")
-                    val plain = if (method == "nip44_decrypt") d.nip44(params[0].lowercase(), params[1], false) else d.nip04(params[0].lowercase(), params[1], false)
-                    val need = Grants.scopeForDecrypt(d.g, params[0].lowercase(), plain)
-                    if (need != "dms" && !has(g, need)) return ask(need)
+                    val peer = params[0].lowercase()
+                    if (peer != d.g) {
+                        if (!has(g, "dms")) return ask("dms")
+                        return ok(if (method == "nip44_decrypt") d.nip44(peer, params[1], false) else d.nip04(peer, params[1], false))
+                    }
+                    // To self: a grant with no to-self scope is refused before any round; then the scope the bytes'
+                    // evidence and plaintext need, checked whatever it is (review 16 M1, M9), one message for every class.
+                    val e = g.entry?.let { d.grants.own[it] }
+                    if (e == null || d.grants.scopesOf(e).none { it in setOf("lists", "wallet", "private-data", "dms") }) { has(g, "private-data"); return err("permission: needs your OK on your phone") }
+                    val plain = if (method == "nip44_decrypt") d.nip44(peer, params[1], false) else d.nip04(peer, params[1], false)
+                    val need = Grants.scopeForDecrypt(d.g, peer, plain, if (method == "nip44_decrypt") params[1] else null, d.evidence, "${d.pub}:${g.entry}")
+                    if (need == "malformed") return err("declined: not a canonical payload")
+                    if (!has(g, need)) return err("permission: needs your OK on your phone")
                     ok(plain)
                 }
                 else -> err("unsupported: $method")
@@ -154,7 +169,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     }
     private fun siteGuard(kind: Int, tags: List<List<String>>) = Doors.siteGuard(d, kind, tags)
     /** End a grant here: its key answers `revoked:` from now on, and its entry ends in the grant store. */
-    private fun end(g: Grant) { g.endedAt = net.now; g.entry?.let { d.grants.end(d.pub, it) }; asks.remove(g.signer); held.entries.removeIf { it.value.signer == g.signer } }
+    private fun end(g: Grant) { g.endedAt = net.now; g.entry?.let { d.grants.end(d.pub, it); d.publishGrantsSoon() }; asks.remove(g.signer); held.entries.removeIf { it.value.signer == g.signer } }
 
     private fun reply(g: Grant, to: String, body: JSONObject, nip04: Boolean) {
         val text = body.toString()

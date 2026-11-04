@@ -147,6 +147,22 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     val members = Members()
     /** The account's grants (Doors §1–§2): this device's, signed by it, and every device's, for listing. */
     val grants = GrantStore(this)
+    /** Doors §1's evidence for decrypts to the account itself, and the ids of the account's grant events. */
+    val evidence = Evidence()
+    val protectedIds: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet())
+    /** When this device last caught up with the servers (Doors §2: no site is answered on older news). */
+    @Volatile var lastFetchAt = 0L
+    private val grantPublisher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "keykin-grants").also { it.isDaemon = true } }
+    @Volatile private var grantPublishPending = false
+    /** Publish this device's grants soon (a bind, a widen, an end), at most once a second; stored first (M6). */
+    fun publishGrantsSoon() {
+        save()
+        if (grantPublishPending) return
+        grantPublishPending = true
+        grantPublisher.schedule({ grantPublishPending = false; try { publishGrants() } catch (_: Exception) {} }, 1, java.util.concurrent.TimeUnit.SECONDS)
+    }
+    /** Store this device's state now (after a change the app made: a grant, a sign-out). */
+    fun saveNow() = save()
     /** The base data key, for the grant event's `d` (Doors §2): never leaves the device. */
     internal fun baseDataKey(): String = baseDk
     /** A site's NIP-46 request a watching server kept for us (Doors §3.3): the home takes it. */
@@ -225,7 +241,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         wiped = true; state = ShareState(emptySet(), state.C, emptyMap())
         baseDk = ""; dkSeeds.clear(); releaseSeeds.clear(); pending.clear(); kept.clear(); paperVerified.clear(); dkHistory.clear()
         notices.clear(); onSiteRequest = null; carried = JSONObject(); pushKeys.clear(); inviter = null
-        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear(); grants.clear()
+        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear(); grants.clear(); evidence.clear(); synchronized(xCache) { xCache.clear() }
         for (cb in gone) try { cb() } catch (_: Exception) {}
         save()
     }
@@ -328,6 +344,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         x.optJSONArray("forceReissue")?.let { a -> for (k in 0 until a.length()) forceReissue += a.getString(k) }
         members.load(x.optJSONObject("members"))
         grants.load(x.optJSONObject("grants"))
+        evidence.load(x.optJSONObject("evidence"))
+        x.optJSONArray("protectedIds")?.let { a -> for (k in 0 until a.length()) protectedIds += a.getString(k) }
         afterState()
     }
     private fun afterState() {
@@ -351,6 +369,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("pushKeys", ja(pushKeys.map { (u, k) -> ja(listOf(u, k)) }))
             .put("reissued", ja(reissued.map { (k, h) -> ja(listOf(k, h)) })).put("reissueEphs", ja(reissueEphs.map { (k, e) -> ja(listOf(k, e)) }))
             .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted())).put("grants", grants.dump())
+            .put("evidence", evidence.dump()).put("protectedIds", ja(synchronized(protectedIds) { protectedIds.toList() }))
         if (!x.has("name")) x.put("name", "kotlin")
         return x.toString()
     }
@@ -358,6 +377,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
 
     /** Catch up (§3.2, §8.2): the union of every server's change set, then every server's inbox. */
     fun fetch() {
+        val nipQueue = ArrayList<JSONObject>()
         for (s in servers()) {
             val a = net.send(sk, s.key, msg("changes_get", "ask"))
             if (a.optString("type") == "changes") a.optJSONArray("changes")?.let { c -> takeChanges((0 until minOf(c.length(), CHANGES_PER_MESSAGE)).mapNotNull { c.optJSONObject(it)?.let(Event::of) }) }
@@ -373,7 +393,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
                 try {
                     val w = it.getJSONObject("wrap"); val o = env.unwrap(sk, w)
                     // A site's request a watching server kept goes to the NIP-46 home (review 11 M1).
-                    if (o.body.optString("type") == "nip46" && o.from == s.key) o.body.optJSONObject("event")?.let { e -> onSiteRequest?.invoke(e) }
+                    // Kept for after the grants' fetch, so a site signed out elsewhere is refused (review 16 M5).
+                    if (o.body.optString("type") == "nip46" && o.from == s.key) o.body.optJSONObject("event")?.let { e -> nipQueue += e }
                     // A delivery with no room yet stays at the server (review 13 M1).
                     else if (takeDelivery(w) == "full") continue
                 } catch (_: Exception) { /* one bad item never wedges the rest */ }
@@ -386,10 +407,19 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         checkReissues()
         reissueMissing()
         // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
-        if (baseDk.isNotEmpty()) try { grants.take(net.query(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))))); save() } catch (_: Exception) {}
+        if (baseDk.isNotEmpty()) try {
+            val (evs, answered, asked) = net.queryCounted(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))))
+            grants.take(evs, answered, asked); for (e in evs) protectedIds += e.id; save()
+        } catch (_: Exception) {}
+        lastFetchAt = net.now
+        for (e in nipQueue) try { onSiteRequest?.invoke(e) } catch (_: Exception) {}
     }
     /** Publish this device's grants (after a change to them: a new grant, a widen, an end). */
-    fun publishGrants(): List<JSONObject> = grants.publish(net).also { save() }
+    fun publishGrants(): List<JSONObject> {
+        // A restored copy reads its own newest event before it may publish (Doors §2, the gate).
+        if (grants.goodFetchAt == 0L) fetch()
+        return grants.publish(net).also { save() }
+    }
 
     /** This device's lock (§6.1), if it has one: what approves its lists. */
     @Volatile var lock: Lock? = null
@@ -734,6 +764,12 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
     /** The x coordinate of `x·P` for a peer's x-only key (core §5.5), from one server's checked answer. */
     fun ecdhX(peer: String): ByteArray {
+        // A shared x is kept in memory only, at most 10 minutes (Doors §1), never stored.
+        synchronized(xCache) { xCache[peer]?.let { (x, at) -> if (net.now - at <= 600 && !wiped) return x } }
+        return ecdhRound(peer).also { x -> synchronized(xCache) { xCache[peer] = x to net.now; while (xCache.size > 1000) xCache.remove(xCache.keys.first()) } }
+    }
+    private val xCache = LinkedHashMap<String, Pair<ByteArray, Long>>()
+    private fun ecdhRound(peer: String): ByteArray {
         var last = "no_server"
         // One state for the whole round: its hash, commitment and shares together (review 13 L3).
         val st = state; if (wiped) refuse("wiped"); val c = RoundContext(g, epochId, st.hash, st.C)
@@ -744,10 +780,12 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         }
         refuse(last)
     }
-    /** NIP-44 v2 as the account, with `peer`. */
-    fun nip44(peer: String, text: String, encrypt: Boolean): String {
+    /** NIP-44 v2 as the account, with `peer`. An encryption to the account's own key is recorded (Device policy §1,
+     *  Doors §1's evidence): for `owner`, a grant `by:id`, or else the member app. */
+    fun nip44(peer: String, text: String, encrypt: Boolean, owner: String? = null): String {
         val ck = hmac(utf8("nip44-v2"), ecdhX(peer))
-        return if (encrypt) Nip44.encrypt(text, ck) else Nip44.decrypt(text, ck)
+        if (!encrypt) return Nip44.decrypt(text, ck)
+        return Nip44.encrypt(text, ck).also { if (peer.lowercase() == g) evidence.encrypted(it, owner ?: "member") }
     }
     /** NIP-04 as the account, with `peer`: AES-256-CBC under the shared x. */
     fun nip04(peer: String, text: String, encrypt: Boolean): String {
@@ -773,7 +811,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val a = net.send(sk, s.key, r.request)
             if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; continue }
             // A faulty or hostile server's bad partial counts as silence: try the next one (review 12 L1).
-            try { return r.finish(a) } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
+            try { return r.finish(a).also { ev -> evidence.event(kind, content); if (kind == Grants.KIND) protectedIds += ev.getString("id") } } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
         }
         refuse(last)
     }
