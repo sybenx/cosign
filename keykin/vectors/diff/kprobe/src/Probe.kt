@@ -38,6 +38,7 @@ fun main(args: Array<String>) {
             "nip44_dec" -> { val o = i as JSONObject; res { Nip44.decrypt(o.getString("payload"), unhex(o.getString("ck"))) } }
             "bip340_sign" -> { val o = i as JSONObject; res { Secp.Reference.schnorrSign(unhex(o.getString("msg")), unhex(o.getString("sk")), unhex(o.getString("aux"))) } }
             "unwrap" -> { val o = i as JSONObject; res { val x = Envelope().unwrap(unhex(o.getString("sk")), Json.obj(o.getJSONObject("wrap").toString())); JSONObject().put("from", x.from).put("body", Jcs.of(x.body)).put("sentAt", x.sentAt) } }
+            "parts" -> { val seq = i as JSONArray; res { val r = Parts.Reassembler(); var last: Any = "pending"; for (k in 0 until seq.length()) { val x = r.take("aa".repeat(32), Json.obj(seq.getJSONObject(k).toString()), 1_800_000_000); last = if (x == null) "pending" else Jcs.of(x) }; last } }
             "slip39" -> { val o = i as JSONObject; val ms = o.getJSONArray("mnemonics"); val l = (0 until ms.length()).map { ms.getString(it) }; res { hex(if (o.optBoolean("backup")) Slip39.recoverBackup(l) else Slip39.combine(l, o.getString("passphrase"))) } }
             else -> "unknown area"
         }

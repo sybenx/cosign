@@ -413,4 +413,22 @@ M('one server seat with host ""', seatEvs('server:4', F.servers[0].kp.pub, srvEn
   }
 }
 
+// Parts (core §9.1): the same sequence of parts through both reassemblers.
+{
+  const { split, Reassembler } = await import(`${K}/src/transport.ts`);
+  const R = (name: string, seq: any[]) => P('parts', name, seq, res(() => { const r = new Reassembler(); let last: any = 'pending'; for (const b of seq) { const x = r.take('aa'.repeat(32), b, 1_800_000_000); last = x === null ? 'pending' : jcs(x); } return last; }));
+  const big = { v: 1, type: 'welcome', cls: 'member', blob: 'x'.repeat(60_000), note: 'é😀' };
+  const ps = split(big);
+  R('three parts in order', ps);
+  R('three parts reversed', [...ps].reverse());
+  R('a part twice', [ps[0], ps[0], ps[1], ps[2]]);
+  R('one part missing', [ps[0], ps[2]]);
+  R('k equals m', [{ ...ps[0], k: 3 }]);
+  R('m changes', [ps[0], { ...ps[1], m: 4 }]);
+  R('bad base64', [{ ...ps[0], data: ps[0].data.slice(0, -1) }]);
+  R('a part too large', [{ ...ps[0], data: Buffer.alloc(24_001).toString('base64') }]);
+  R('five open from one sender', [0, 1, 2, 3, 4].map((k) => ({ ...ps[0], of: `of${k}` })));
+  R('not a part', [{ v: 1, type: 'ping' }]);
+}
+
 console.log(JSON.stringify(out, null, 1));

@@ -146,3 +146,51 @@ class Envelope(private val secp: Secp = Secp.Reference, private val rnd: SecureR
         return Opened(seal.pubkey, Json.obj(rumor.content), rumor.createdAt)
     }
 }
+
+/** Messages over 24,000 bytes travel as `part` rumors (core §9.1), as the TS reference splits and
+ *  reassembles them, with the same caps (review 10 H3). */
+object Parts {
+    const val PART_BYTES = 24_000; const val MAX_MESSAGE = 512 * 1024
+    const val TTL_S = 600L; const val PER_SENDER = 4; const val OPEN = 256
+    private val LIFETIME = mapOf("sign" to 60L, "ask" to 120L, "member" to 7 * 86400L)
+    fun split(body: JSONObject): List<JSONObject> {
+        val bytes = utf8(Jcs.of(body))
+        if (bytes.size > MAX_MESSAGE) refuse("too_large")
+        if (bytes.size <= PART_BYTES) return listOf(body)
+        val of = hex(ByteArray(16).also { SecureRandom().nextBytes(it) }); val m = (bytes.size + PART_BYTES - 1) / PART_BYTES
+        return (0 until m).map { k -> JSONObject().put("v", 1).put("type", "part").put("of", of).put("k", k).put("m", m).put("cls", body.opt("cls") ?: JSONObject.NULL)
+            .put("data", java.util.Base64.getEncoder().encodeToString(bytes.copyOfRange(k * PART_BYTES, minOf(bytes.size, (k + 1) * PART_BYTES)))) }
+    }
+    class Reassembler {
+        private class Open(val first: Long, val cls: String, val got: Array<ByteArray?>) { var size = 0 }
+        private val open = LinkedHashMap<String, Open>()
+        /** The whole message once every part is here, null while parts are missing, the body itself if it isn't a part. */
+        fun take(from: String, body: JSONObject, at: Long): JSONObject? {
+            prune(at)
+            if (body.optString("type") != "part") return body
+            val k = body.opt("k"); val m = body.opt("m")
+            if (!Json.isInt(k) || !Json.isInt(m)) refuse("bad_part")
+            val kk = Json.long(k); val mm = Json.long(m)
+            if (kk < 0 || kk >= mm || mm > (MAX_MESSAGE + PART_BYTES - 1) / PART_BYTES + 1) refuse("bad_part")
+            val key = "$from:${body.opt("of")}"
+            val cls = body.optString("cls").takeIf { it in LIFETIME } ?: "sign"
+            var p = open[key]
+            if (p == null) {
+                if (open.size >= OPEN) refuse("too_many_parts")
+                if (open.keys.count { it.startsWith("$from:") } >= PER_SENDER) refuse("too_many_parts")
+                p = Open(at, cls, arrayOfNulls(mm.toInt()))
+            }
+            if (p.got.size.toLong() != mm) refuse("bad_part")
+            val data = b64std(body.opt("data") as? String ?: refuse("malformed", "part data"))
+            if (data.size > PART_BYTES) refuse("bad_part")
+            if (p.got[kk.toInt()] == null) { p.got[kk.toInt()] = data; p.size += data.size }
+            if (p.size > MAX_MESSAGE) { open.remove(key); refuse("too_large") }
+            open[key] = p
+            if (p.got.any { it == null }) return null
+            open.remove(key)
+            return Json.obj(Json.utf8Strict(p.got.fold(ByteArray(0)) { a, b -> a + b!! }))
+        }
+        fun prune(at: Long) { open.entries.removeIf { at - it.value.first > minOf(LIFETIME[it.value.cls]!! + 30, TTL_S) } }
+        val pending: Int get() = open.size
+    }
+}
