@@ -56,9 +56,10 @@ test('H2: no site decrypts what the account encrypted to itself', async () => {
   const acc = await create();
   const { c, signer } = await connected(acc);
   const mine = await acc.A.nip44(acc.g, 'wallet privkey', true);
-  assert.match((await c.call(signer, 'nip44_decrypt', [acc.g, mine])).error, /^declined:/);
-  assert.match((await c.call(signer, 'nip04_decrypt', [acc.g, await acc.A.nip04(acc.g, 'x', true)])).error, /^declined:/);
-  assert.match((await c.call(signer, 'nip44_decrypt', [acc.g.toUpperCase(), mine])).error, /^declined:/);
+  // Doors §1: the account's own data needs the scope its plaintext calls for, asked on the home, never silent.
+  assert.match((await c.call(signer, 'nip44_decrypt', [acc.g, mine])).error, /^permission: private-data/);
+  assert.match((await c.call(signer, 'nip04_decrypt', [acc.g, await acc.A.nip04(acc.g, 'x', true)])).error, /^permission: private-data/);
+  assert.match((await c.call(signer, 'nip44_decrypt', [acc.g.toUpperCase(), mine])).error, /^permission: private-data/);
 });
 
 test('M1: a catch-up hands a waiting site request to the home', async () => {

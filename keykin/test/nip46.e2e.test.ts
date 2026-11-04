@@ -38,13 +38,13 @@ test('nak and BunkerSigner sign and encrypt as the account through the device\'s
   assert.equal(ev.content, 'hello from nak');
   assert.ok(verifyEvent(ev));
   const peer = newKey();
-  const n2 = await run(['encrypt', '--sec', acc.A.nip46.mintBunker([url], 'nak'), '-p', peer.pub, 'a note for the peer']);
+  const n2 = await run(['encrypt', '--sec', acc.A.nip46.mintBunker([url], 'nak', ['sign-in', 'post', 'dms']), '-p', peer.pub, 'a note for the peer']);
   assert.equal(nip44.v2.decrypt(n2.out.trim(), nip44.v2.utils.getConversationKey(peer.sk, acc.g)), 'a note for the peer', n2.err);
 
   // nostr-tools' BunkerSigner: connect, get_public_key, sign_event, nip44.
   const pool = new SimplePool();
   try {
-    const bp = await parseBunkerInput(acc.A.nip46.mintBunker([url], 'web'));
+    const bp = await parseBunkerInput(acc.A.nip46.mintBunker([url], 'web', ['sign-in', 'post', 'dms']));
     const s = BunkerSigner.fromBunker(newKey().sk, bp!, { pool });
     await s.connect();
     assert.equal(await s.getPublicKey(), acc.g);

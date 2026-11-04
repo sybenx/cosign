@@ -103,3 +103,32 @@ test('which scope a request needs (§1)', () => {
   assert.equal(scopeForDecrypt(g, g, JSON.stringify({ kind: 14, pubkey: g, content: 'hi' })), 'dms');
   assert.equal(scopeForDecrypt(g, g, 'a private note'), 'private-data');
 });
+
+test('a NIP-46 site gets only its scopes: others are asked once on the home; an end elsewhere revokes it', async () => {
+  const { acc, A, B } = await two();
+  const nip44 = await import('nostr-tools/nip44');
+  const { finalizeEvent } = await import('nostr-tools/pure');
+  const { bytesToHex, randomBytes } = await import('../src/bytes.ts');
+  const key = newKey(), bus = acc.bus;
+  const call = async (signer: string, method: string, params: string[] = []) => {
+    const id = bytesToHex(randomBytes(8)), ck = nip44.v2.utils.getConversationKey(key.sk, signer);
+    const reply = new Promise<any>((res) => { const w = bus.events.watch({ kinds: [24133], authors: [signer], '#p': [key.pub] }, (r: any) => { const x = JSON.parse(nip44.v2.decrypt(r.content, ck)); if (x.id === id) { w.close(); res(x); } }); });
+    await bus.events.publishEvent(finalizeEvent({ kind: 24133, created_at: bus.now, tags: [['p', signer]], content: nip44.v2.encrypt(JSON.stringify({ id, method, params }), ck) }, key.sk));
+    return reply;
+  };
+  const u = new URL(A.nip46.mintBunker(['ws://relay.test'], 'coracle')); const signer = u.hostname;
+  assert.equal((await call(signer, 'connect', [signer, u.searchParams.get('secret')!])).result, 'ack');
+  assert.ok((await call(signer, 'sign_event', [JSON.stringify({ kind: 1, content: 'gm', tags: [], created_at: bus.now })])).result, 'post');
+  assert.match((await call(signer, 'sign_event', [JSON.stringify({ kind: 3, content: '', tags: [], created_at: bus.now })])).error, /^permission: lists/, 'lists asked');
+  assert.match((await call(signer, 'nip44_encrypt', [newKey().pub, 'x'])).error, /^permission: dms/, 'messages asked');
+  assert.deepEqual([...A.nip46.asks.get(signer)!].sort(), ['dms', 'lists']);
+  A.nip46.allowScope(signer, 'lists');
+  // Allowed once: no longer asked (a follow-list change still goes through Device policy: held for the lock).
+  assert.doesNotMatch(String((await call(signer, 'sign_event', [JSON.stringify({ kind: 3, content: '', tags: [], created_at: bus.now + 1 })])).error ?? 'signed'), /^permission:/);
+  // The grant is in the store, synced: B signs it out, A's site is revoked.
+  await A.grants.publish(); await B.grants.fetch();
+  const e = B.grants.all().find((x) => x.door === 'nip46')!;
+  assert.deepEqual(e.scopes, ['lists', 'post', 'sign-in']);
+  B.grants.end(e.by, e.id); await B.grants.publish(); await A.grants.fetch();
+  assert.match((await call(signer, 'get_public_key')).error, /^revoked:/);
+});

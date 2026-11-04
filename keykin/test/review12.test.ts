@@ -21,7 +21,7 @@ function client(bus: Bus, key = newKey()) {
   };
 }
 async function site(acc: any) {
-  const u = new URL(acc.A.nip46.mintBunker(['ws://relay.test'])); const c = client(acc.bus); const signer = u.hostname;
+  const u = new URL(acc.A.nip46.mintBunker(['ws://relay.test'], '', ['sign-in', 'post', 'lists'])); const c = client(acc.bus); const signer = u.hostname;
   await c.call(signer, 'connect', [signer, u.searchParams.get('secret')!]);
   return { c, signer };
 }

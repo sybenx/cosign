@@ -32,7 +32,8 @@ const bunker = (link: string) => { const u = new URL(link); return { signer: u.h
 test('a bunker link: connect binds the first client; every method; another client and an old link are refused', async () => {
   const acc = await create();
   const bus = acc.bus as Bus;
-  const link = acc.A.nip46.mintBunker(['ws://relay.test'], 'nak');
+  // The person allowed messages when minting this link (Doors §1: otherwise asked the first time).
+  const link = acc.A.nip46.mintBunker(['ws://relay.test'], 'nak', ['sign-in', 'post', 'dms']);
   const { signer, secret } = bunker(link);
   const c = client(bus);
   assert.equal((await c.call(signer, 'connect', [signer, secret])).result, 'ack');
