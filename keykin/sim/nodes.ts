@@ -13,7 +13,7 @@ import { enrollReply } from '../src/serverprofile.ts';
 import { makeHeir, pieceAckDigest } from '../src/backup.ts';
 import { backupPieces } from '../src/slip39.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
-import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
+import { checkDelivery, checkItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';

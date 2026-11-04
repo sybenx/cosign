@@ -349,7 +349,7 @@ test('§6.7.6 re-issue: a redeal applied during an F7 reaches the new paper by a
   assert.equal(acc.A.kept.size, 0, 'the kept paper values are destroyed');
   // A forged re-issue (clear values off the commitments) is refused.
   const { reissueItem } = await import('../src/redeal.ts');
-  const bad = reissueItem(acc.g, missed, K.pub, acc.A.seeds.get(missed.id)!, { b: [5, 6], d: [1n, 2n], dk: '00'.repeat(32) }, B.kp);
+  const { item: bad } = reissueItem(acc.g, missed, K.pub, acc.A.seeds.get(missed.id)!, { b: [5, 6], d: [1n, 2n], dk: '00'.repeat(32) }, B.kp);
   assert.equal((await acc.bus.send(B.kp, acc.servers[0].kp.pub, msg('paper_reissue', acc.g, acc.epochId, 'member', { item: bad }))).code, 'bad_clear');
   // Recovery with K sums the base, the re-issued item and the F7 redeal's own item.
   acc.bus.kill(acc.A.kp.pub); acc.bus.kill(B.kp.pub);

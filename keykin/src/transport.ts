@@ -16,7 +16,7 @@ export const PART_BYTES = 24_000;
 export const MAX_MESSAGE = 512 * 1024;
 
 /** Message types that carry a share, a key, an epoch record or a change. */
-export const SECRET_TYPES = new Set(['welcome', 'repair_sigma', 'repair_delta', 'delta', 'paper_ck', 'dk_seed', 'release_seed', 'paper_item',
+export const SECRET_TYPES = new Set(['welcome', 'repair_sigma', 'repair_delta', 'delta', 'paper_eph', 'reissue_eph', 'dk_seed', 'release_seed', 'paper_item',
   'release', 'change', 'changes', 'upload', 'seeds', 'paper_reissue', 'take_out', 'released', 'handover', 'forward', 'seated']);
 
 const now = () => Math.floor(Date.now() / 1000);

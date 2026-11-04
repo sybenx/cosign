@@ -1746,9 +1746,9 @@
   },
   {
    "area": "lifetime",
-   "name": "paper_ck/member",
+   "name": "paper_eph/member",
    "input": {
-    "type": "paper_ck",
+    "type": "paper_eph",
     "cls": "member",
     "age": 10
    },
@@ -1756,9 +1756,9 @@
   },
   {
    "area": "lifetime",
-   "name": "paper_ck/ask",
+   "name": "paper_eph/ask",
    "input": {
-    "type": "paper_ck",
+    "type": "paper_eph",
     "cls": "ask",
     "age": 10
    },

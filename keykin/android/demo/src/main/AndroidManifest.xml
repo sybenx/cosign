@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Local stack only: the emulator reaches the host's relays at 10.0.2.2 over plain ws://. -->
+    <application android:label="Keykin demo" android:usesCleartextTraffic="true" android:allowBackup="false">
+        <activity android:name=".Main" android:exported="true" android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

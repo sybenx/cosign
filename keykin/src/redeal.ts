@@ -30,16 +30,19 @@ export function unwrapUnder(seed: string, hex: string): Uint8Array {
 export interface Item { kind: 'base' | 'paper' | 'reissue'; redeal: string | null; to: string; eph: string; box: string; clear?: string[]; by?: string; sig?: string }
 export const itemHash = (it: Item) => shaHex(jcs({ ...it, sig: undefined }));
 
-export function sealItem(kind: Item['kind'], redeal: string | null, K: string, releaseSeed: string, body: unknown): { item: Item; ck: string } {
+/** Returns the item and its ephemeral secret (`eph`), which devices get as `paper_eph` / `reissue_eph`
+ *  (core 14.20) to derive the conversation key themselves, exactly as K will from its side. */
+export function sealItem(kind: Item['kind'], redeal: string | null, K: string, releaseSeed: string, body: unknown): { item: Item; eph: string } {
   const eph = newKey();
   const ck = nip44.v2.utils.getConversationKey(eph.sk, K);
   const inner = nip44.v2.encrypt(JSON.stringify(body), ck);
-  return { item: { kind, redeal, to: K, eph: eph.pub, box: wrapUnder(releaseSeed, utf8ToBytes(inner)) }, ck: bytesToHex(ck) };
+  return { item: { kind, redeal, to: K, eph: eph.pub, box: wrapUnder(releaseSeed, utf8ToBytes(inner)) }, eph: bytesToHex(eph.sk) };
 }
-/** Open an item: by the backup key holder (`backupSk`) or by a device holding the item's conversation key. */
-export function openItem(it: Item, releaseSeed: string, key: { backupSk?: Uint8Array; ck?: string }): any {
+/** Open an item: by the backup key holder (`backupSk`), or by a device from the item's ephemeral secret
+ *  (`ephSk`), deriving the same conversation key towards the item's `to` (core 14.20). */
+export function openItem(it: Item, releaseSeed: string, key: { backupSk?: Uint8Array; ephSk?: string }): any {
   const inner = utf8Strict(unwrapUnder(releaseSeed, it.box));
-  const ck = key.ck ? hexToBytes(key.ck) : nip44.v2.utils.getConversationKey(key.backupSk!, it.eph);
+  const ck = key.ephSk ? nip44.v2.utils.getConversationKey(hexToBytes(key.ephSk), it.to) : nip44.v2.utils.getConversationKey(key.backupSk!, it.eph);
   return strictJson(nip44Open(inner, ck));
 }
 
@@ -49,7 +52,7 @@ export interface Dealt {
   redeal: Redeal;
   deltas: Map<string, Map<number, bigint>>;   // member key → its indices → δ(i)
   paperValues: { b: number[]; values: bigint[] };
-  releaseSeed: string; dkSeed: string; paperCk: string; paperItem: Item;
+  releaseSeed: string; dkSeed: string; paperEph: string; paperItem: Item;
   destroy(): void;
 }
 
@@ -64,12 +67,12 @@ export function deal(g: string, dealer: KeyPair, base: string[], members: Map<st
   const paperValues = { b: backupSeat, values: backupSeat.map(f) };
   const releaseSeed = bytesToHex(randomBytes(32)), dkSeed = bytesToHex(randomBytes(32));
   const id = bytesToHex(randomBytes(16));
-  const { item, ck } = sealItem('paper', id, paperTo, releaseSeed, { redeal: id, d: paperValues.values.map(scalarHex), b: backupSeat, dk_seed: dkSeed });
+  const { item, eph } = sealItem('paper', id, paperTo, releaseSeed, { redeal: id, d: paperValues.values.map(scalarHex), b: backupSeat, dk_seed: dkSeed });
   const r: Redeal = { id, dealer: dealer.pub, D: D.map(compHex), paper_to: paperTo, paper_item: itemHash(item),
     dk: shaHex(hexToBytes(dkSeed)), rs: shaHex(hexToBytes(releaseSeed)), base: [...base].sort(), abandons: [...abandons].sort() };
   r.sig = schnorrSign(redealDigest(g, r), dealer.sk);
-  const out: Dealt = { redeal: r, deltas, paperValues, releaseSeed, dkSeed, paperCk: ck, paperItem: item,
-    destroy() { d = []; out.deltas.clear(); out.paperValues.values = []; } };
+  const out: Dealt = { redeal: r, deltas, paperValues, releaseSeed, dkSeed, paperEph: eph, paperItem: item,
+    destroy() { d = []; out.deltas.clear(); out.paperValues.values = []; out.paperEph = ''; } };
   return out;
 }
 
@@ -121,22 +124,38 @@ export function checkDelivery(r: Redeal, from: string, body: { release?: string;
   if (from !== r.dealer) refuse('not_dealer', 'a delta comes only from its redeal\'s dealer');
   // A device's delivery carries the data-key seed: without it the device could never read new data (review 12 L3).
   if (toDevice && body.dk === undefined) refuse('missing_seed', 'a device\'s delivery carries the data-key seed');
+  // And the release seed: without it the device could neither re-issue nor read the item (review 14 M2).
+  if (toDevice && body.release === undefined) refuse('missing_seed', 'a device\'s delivery carries the release seed');
   if (body.release !== undefined && shaHex(hexToBytes(body.release)) !== r.rs) refuse('bad_seed', 'release seed');
   if (body.dk !== undefined && shaHex(hexToBytes(body.dk)) !== r.dk) refuse('bad_seed', 'data-key seed');
 }
 
-/** §6.7.1 step 0: a device opens the redeal's paper item with its conversation key and checks that it
- *  is the pinned item, carries δ(b) for the backup seat matching the redeal's commitments, and the
- *  pinned data-key seed. True sets the "paper item verified" bit for the current backup key. */
-export function verifyPaperItem(r: Redeal, item: Item, releaseSeed: string, ck: string, backupSeat: number[]): boolean {
+/** `paper_eph` / `reissue_eph` as a device gets it (core 14.20): bound to its redeal and item. */
+export interface ItemEph { redeal: string; item: string; eph: string; K?: string }
+/** A device's own paper values for a redeal (§6.7.1 step 3): `δ(b)` for the backup seat, and the seed. */
+export interface PaperValues { b: number[]; d: bigint[]; dk: string }
+
+/** Core 14.20 §6.7.1 step 0 (and §6.7.6 for a re-issued item): open `item` with a conversation key derived
+ *  from its ephemeral secret, never one taken from the sender, and compare it with this device's own values.
+ *  'missing': the eph isn't bound to this redeal and item (or isn't the item's key), so it proves nothing;
+ *  'bad': a bound eph that doesn't open the item, or opens it to other contents (proof against the sealer);
+ *  'ok': the item is what K needs. `own` null: only the clear checks (a device that kept no values). */
+export function checkItem(r: Redeal, item: Item | undefined, releaseSeed: string, pe: ItemEph | undefined, own: PaperValues | null, backupSeat: number[], pinned?: string): 'ok' | 'missing' | 'bad' {
+  if (!item || !pe || typeof pe !== 'object' || pe.redeal !== r.id || item.redeal !== r.id || pe.item !== itemHash(item) || typeof pe.eph !== 'string') return 'missing';
+  // The dealer's item is the one the group-signed redeal pins (its hash, to `paper_to`).
+  if (pinned !== undefined && (pinned !== pe.item || item.to !== r.paper_to)) return 'missing';
+  try { if (pubOf(hexToBytes(pe.eph)) !== item.eph) return 'missing'; } catch { return 'missing'; }
+  let v: any;
+  try { v = openItem(item, releaseSeed, { ephSk: pe.eph }); } catch { return 'bad'; }
   try {
-    if (itemHash(item) !== r.paper_item || item.to !== r.paper_to) return false;
-    const v = openItem(item, releaseSeed, { ck });
     const D = r.D.map((h) => pointFrom(h));
-    if (JSON.stringify(v.b) !== JSON.stringify(backupSeat)) return false;
-    if (!backupSeat.every((b, k) => mul(scalarFrom(v.d[k])).equals(deriveDelta(D, BigInt(b))))) return false;
-    return shaHex(hexToBytes(v.dk_seed)) === r.dk;
-  } catch { return false; }
+    if (v.redeal !== r.id || JSON.stringify(v.b) !== JSON.stringify(backupSeat) || !Array.isArray(v.d) || v.d.length !== backupSeat.length) return 'bad';
+    const ds = v.d.map((x: string) => scalarFrom(x));
+    if (!backupSeat.every((b, k) => mul(ds[k]).equals(deriveDelta(D, BigInt(b))))) return 'bad';
+    if (typeof v.dk_seed !== 'string' || shaHex(hexToBytes(v.dk_seed)) !== r.dk) return 'bad';
+    if (own && (JSON.stringify(own.b) !== JSON.stringify(backupSeat) || own.d.some((x, k) => x !== ds[k]) || own.dk !== v.dk_seed)) return 'bad';
+    return 'ok';
+  } catch { return 'bad'; }
 }
 
 /** §6.7.6 re-issue: a device seals the paper values it kept for a redeal to the current backup key K, as
@@ -144,10 +163,10 @@ export function verifyPaperItem(r: Redeal, item: Item, releaseSeed: string, ck: 
  *  by its member key. K learns only what devices already know. */
 /** Core 14.19 §5.9: a member key signs the item as `detached("paper-reissue", item without its sig)`. */
 const reissueDigest = (g: string, it: Item) => detachedDigest('paper-reissue', g, { ...it, sig: undefined });
-export function reissueItem(g: string, r: Redeal, K: string, releaseSeed: string, values: { b: number[]; d: bigint[]; dk: string }, by: KeyPair): Item {
-  const { item } = sealItem('reissue', r.id, K, releaseSeed, { redeal: r.id, d: values.d.map(scalarHex), b: values.b, dk_seed: values.dk });
+export function reissueItem(g: string, r: Redeal, K: string, releaseSeed: string, values: { b: number[]; d: bigint[]; dk: string }, by: KeyPair): { item: Item; eph: string } {
+  const { item, eph } = sealItem('reissue', r.id, K, releaseSeed, { redeal: r.id, d: values.d.map(scalarHex), b: values.b, dk_seed: values.dk });
   const full: Item = { ...item, clear: values.d.map((x) => compHex(mul(x))), by: by.pub };
-  return { ...full, sig: schnorrSign(reissueDigest(g, full), by.sk) };
+  return { item: { ...full, sig: schnorrSign(reissueDigest(g, full), by.sk) }, eph };
 }
 /** What a server (and any device) checks before keeping a re-issued item: for the current K, from a
  *  current device that signed it, and clear values on the redeal's commitments. */

@@ -380,13 +380,19 @@ test('review 4 A2/A3: inbox deliveries only from members; deltas only from their
   assert.equal(code(() => checkDelivery(d.redeal, A.kp.pub, { dk: bytesToHex(randomBytes(32)) })), 'bad_seed');
 });
 
-test('review 4 A4: a paper item is verified with its conversation key; a spoiled one is caught', async () => {
-  const { verifyPaperItem, sealItem } = await import('../src/redeal.ts');
+test('review 4 A4, core 14.20: a paper item is checked from its own eph secret; a spoiled one is caught', async () => {
+  const { checkItem, sealItem, itemHash } = await import('../src/redeal.ts');
   const F = fixture(); const A = F.devices[0];
   const d = dealRedeal(F.g, A.kp, [], new Map([[A.kp.pub, [1, 2, 3]]]), F.backup.kp.pub, [5, 6]);
-  assert.equal(verifyPaperItem(d.redeal, d.paperItem, d.releaseSeed, d.paperCk, [5, 6]), true);
+  const pe = { redeal: d.redeal.id, item: itemHash(d.paperItem), eph: d.paperEph };
+  const own = { b: [5, 6], d: d.paperValues.values, dk: d.dkSeed };
+  assert.equal(checkItem(d.redeal, d.paperItem, d.releaseSeed, pe, own, [5, 6], d.redeal.paper_item), 'ok');
   const bad = sealItem('paper', d.redeal.id, F.backup.kp.pub, d.releaseSeed, { redeal: d.redeal.id, d: ['00'.repeat(31) + '01', '00'.repeat(31) + '02'], b: [5, 6], dk_seed: d.dkSeed });
-  assert.equal(verifyPaperItem({ ...d.redeal, paper_item: (await import('../src/redeal.ts')).itemHash(bad.item) }, bad.item, d.releaseSeed, bad.ck, [5, 6]), false);
+  const r2 = { ...d.redeal, paper_item: itemHash(bad.item) };
+  assert.equal(checkItem(r2, bad.item, d.releaseSeed, { redeal: d.redeal.id, item: itemHash(bad.item), eph: bad.eph }, own, [5, 6], r2.paper_item), 'bad');
+  // An eph for another item, or another redeal, proves nothing: missing, never blame.
+  assert.equal(checkItem(d.redeal, d.paperItem, d.releaseSeed, { ...pe, eph: bad.eph }, own, [5, 6], d.redeal.paper_item), 'missing');
+  assert.equal(checkItem(d.redeal, d.paperItem, d.releaseSeed, { ...pe, redeal: '00'.repeat(16) }, own, [5, 6], d.redeal.paper_item), 'missing');
 });
 
 test('review 4 A7: a device the list removes never deals its redeal', () => {

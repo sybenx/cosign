@@ -32,7 +32,7 @@ export function postListView(m: Membership, list: Change[]): Map<string, MemberE
 /** The backup key current after the list (`paper_to`). */
 export const postListBackup = (m: Membership, list: Change[]) => (list.find((c) => 'paper' in c) as any)?.paper.key ?? m.backupKey;
 
-export interface Upload { list: Change[]; approval: Approval; redealId: string; items: { type: string; to: string; wrap: unknown; release?: boolean }[]; at: number; paperItem?: Item; held: Set<string>; heirRecord?: unknown }
+export interface Upload { list: Change[]; approval: Approval; redealId: string; items: { type: string; to: string; wrap: unknown; release?: boolean; paper_eph?: boolean; dk_seed?: boolean }[]; at: number; paperItem?: Item; held: Set<string>; heirRecord?: unknown }
 
 /** `upload {list, approval, items}` (§6.7.3): refused without the approval list and its valid
  *  approval, from anyone but the list's dealer (a current device), for a redeal already co-signed,
@@ -57,6 +57,9 @@ export function redealMissing(m: Membership, list: Change[], r: Redeal, u: Uploa
   if (!u.paperItem || itemHash(u.paperItem) !== r.paper_item) missing.push('paper_item');
   // The release seed travels inside each device's and seat server's sealed delivery (`release`).
   if (!u.items.some((it) => it.type === 'release_seed' || it.release)) missing.push('release_seed');
+  // Core 14.20: a sealed `paper_eph` and a `dk_seed` for every post-list device, by declared type and recipient
+  // (the co-signer can't see inside them; a dealer that lies here is caught at the device).
+  for (const x of view.values()) if (x.kind === 'device' && !u.items.some((it) => it.type === 'delta' && it.to === x.key && it.paper_eph === true && it.dk_seed === true)) { missing.push('paper_eph'); break; }
   if (r.paper_to !== postListBackup(m, list)) refuse('bad_paper_to');
   const need = Math.min(2, liveSeatHolders);
   if (u.held.size < need) missing.push('upload_held');

@@ -207,7 +207,7 @@ D('kind 10002 "r" without a URL', 10002, '', [['r']]);
 }
 
 // ---------------- lifetimes ----------------
-for (const t of ['delta', 'paper_ck', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack', 'pair_request', 'cancel', 'unknown_x'])
+for (const t of ['delta', 'paper_eph', 'reissue_eph', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack', 'pair_request', 'cancel', 'unknown_x'])
   for (const c of ['member', 'ask']) P('lifetime', `${t}/${c}`, { type: t, cls: c, age: 10 }, checkLifetime(t, c, 1000, 1010));
 P('lifetime', 'proto/ask', { type: '__proto__', cls: 'ask', age: 10 }, checkLifetime('__proto__', 'ask', 1000, 1010));
 

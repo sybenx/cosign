@@ -13,7 +13,7 @@ import { enrollReply } from '../src/serverprofile.ts';
 import { makeHeir, pieceAckDigest } from '../src/backup.ts';
 import { backupPieces } from '../src/slip39.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
-import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
+import { checkDelivery, checkItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
@@ -455,6 +455,10 @@ export class ServerNode implements Node {
     for (const mem of this.m.members.values()) if (mem.kind === 'device' && !this.m.removed.has(mem.key)) await this.bus.send(this.kp, mem.key, n);
   }
   /** §8.2: one Web Push to `member`'s address for `cls`, RFC 8291-encrypted, signed with this seat's VAPID key. */
+  /** The re-issued item this server keeps from `by` for a redeal and backup key (§6.7.6): the first one. */
+  heldReissue(by: string, redeal: string, K: string): Item | undefined {
+    return this.items.find((x) => x.kind === 'reissue' && x.redeal === redeal && x.by === by && x.to === K);
+  }
   pushTo(member: string, cls: 'sign' | 'ask' | 'notice', id: string, wrap?: unknown, o: { wait?: boolean } = {}) {
     // A removed member's addresses are dropped (core §8.1, review 9 L2).
     if (this.co && this.m.removed.has(member)) { this.pushReg.unregister(member); return false; }
@@ -525,14 +529,28 @@ export class ServerNode implements Node {
         if (!m.devices.has(from)) refuse('not_device');
         if (!this.co.takeSignpost(body.event)) refuse('not_a_signpost');
         return { type: 'ack' };
-      case 'paper_reissue': {
+      case 'paper_reissue':
+      case 'reissue_relay': {
+        // §6.7.6 (core 14.20): from the re-issuing device itself, or passed on by a seated peer.
+        const peer = body.type === 'reissue_relay';
         const r = m.redeals.get(body.item?.redeal)?.r;
-        if (!r || !m.devices.has(from) || body.item.by !== from) refuse('not_device');
+        if (peer ? m.members.get(from)?.kind !== 'server' || m.removed.has(from) : !m.devices.has(from) || body.item?.by !== from) refuse(peer ? 'not_peer' : 'not_device');
+        if (!r) refuse('unknown_redeal');
         const e = checkReissue(m.g, r!, body.item, m.backupKey!, (k) => m.devices.has(k), m.record.seats.backup);
         if (e) refuse(e);
-        // Every distinct valid one, at most one per device and redeal.
-        if (!this.items.some((x) => x.kind === "reissue" && x.redeal === r!.id && x.by === from)) this.items.push(body.item);
-        return { type: 'ack' };
+        // The first valid one per device, redeal and K, never replaced, kept after that device is removed.
+        const held = this.heldReissue(body.item.by, r!.id, body.item.to);
+        if (!held) {
+          this.items.push(body.item);
+          for (const s of [...m.seats.values()].map((x) => x.holder).filter((x): x is NonNullable<typeof x> => !!x && x.kind === 'server').filter((x) => x.key !== this.kp.pub && x.key !== from))
+            void Promise.resolve(this.bus.send(this.kp, s.key, msg('reissue_relay', m.g, m.epochId, 'member', { item: body.item }))).catch(() => {});
+        }
+        return { type: 'reissue_held', item: itemHash(held ?? body.item) };
+      }
+      case 'reissue_get': {
+        if (!m.members.has(from) || m.removed.has(from)) refuse('not_member');
+        const held = typeof body.by === 'string' && typeof body.redeal === 'string' && typeof body.K === 'string' ? this.heldReissue(body.by, body.redeal, body.K) : undefined;
+        return { type: 'reissue', item: held ?? null };
       }
       case 'stop_relay': {
         // A peer passes on a stop (core §5.7); the stopping device must be current in this view.
