@@ -24,7 +24,7 @@ import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList } from '../src/approval.ts';
 import { deletedDigest, verifyDeleted } from '../src/requests.ts';
-import { F1Watch } from '../src/f1.ts';
+import { F1Watch, signNotice, signAnswer } from '../src/f1.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
 import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
@@ -107,7 +107,7 @@ export class ServerNode implements Node {
       co: co && { changes: co.changes, ids: [...co.state.ids], shares: [...co.state.shares].map(([i, s]) => [i, scalarHex(s)]), co: co.snapshot() },
       seeds: [...this.seeds], items: this.items, base: this.base, uploads: [...this.uploads].map(([k, u]) => [k, { ...u, held: [...u.held] }]),
       answeredRepair: [...this.answeredRepair], quiet: [...this.quiet], forwarding: this.forwarding && { events: this.forwarding.events, allowed: [...this.forwarding.allowed] },
-      inbox: this.inbox.dump(), push: this.pushReg.dump() });
+      inbox: this.inbox.dump(), push: this.pushReg.dump(), notice: this.notice });
   }
   /** A server restarted from storage: the same keys and seat, its co-signer rebuilt from the record,
    *  changes and state, checked as a welcome is (§3.4), and every round that was in flight gone. */
@@ -123,7 +123,7 @@ export class ServerNode implements Node {
     n.uploads = new Map(x.uploads.map(([k, u]: [string, any]) => [k, { ...u, held: new Set(u.held) }]));
     n.answeredRepair = new Set(x.answeredRepair); n.quiet = new Map(x.quiet);
     n.forwarding = x.forwarding && { events: x.forwarding.events, allowed: new Set(x.forwarding.allowed) };
-    n.inbox.load(x.inbox); n.pushReg.load(x.push);
+    n.inbox.load(x.inbox); n.pushReg.load(x.push); n.notice = x.notice ?? null;
     if (x.recEv) {
       n.rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey }); n.recEv = x.recEv;
     }
@@ -336,6 +336,14 @@ export class ServerNode implements Node {
   passive = false;
   lastActive = 0;
   pushReg = new PushRegistry();
+  /** Server profile §5: this seat's latest shutdown notice for the account (`null` cancels). */
+  notice: { shutdown: number | null; seq: number } | null = null;
+  async announceShutdown(at: number | null) {
+    const seq = Math.max(this.now, (this.notice?.seq ?? 0) + 1);
+    this.notice = { shutdown: at, seq };
+    const n = signNotice(this.rec!.g, this.host, { ...this.notice, member: this.kp.pub });
+    for (const mem of this.m.members.values()) if (mem.kind === 'device' && !this.m.removed.has(mem.key)) await this.bus.send(this.kp, mem.key, n);
+  }
   /** §8.2: one Web Push to `member`'s address for `cls`, RFC 8291-encrypted, signed with this seat's VAPID key. */
   pushTo(member: string, cls: 'sign' | 'ask' | 'notice', id: string, wrap?: unknown) {
     const addr = this.pushReg.for(member, cls);
@@ -461,6 +469,11 @@ export class ServerNode implements Node {
           if (this.passive && !confirmed) return { type: 'error', code: 'passive' };
           this.passive = false;
           await this.fetchCancels();
+        }
+        // Server profile §4.1: the live answer, only to a verified current member.
+        if (body.type === 'notice_get') {
+          if (!this.m.members.has(from) || this.m.removed.has(from)) refuse('not_member');
+          return signAnswer(this.rec!.g, this.host, { shutdown: this.notice?.shutdown ?? null, seq: this.notice?.seq ?? 0, member: this.kp.pub }, body.id);
         }
         // §8.1: push addresses, per member, newest by the rumor's created_at; never copied to peers.
         if (body.type === 'push_register' || body.type === 'push_unregister') {
@@ -864,6 +877,15 @@ export class DeviceNode implements Node {
   /** Ask every seated server for the account's state and return the F1 card's seats. A `deleted` that
    *  verifies destroys this device's copy (Account admin §3) and returns null; one that doesn't, like
    *  "unknown account", counts as a denial. */
+  /** Server profile §4.1: ask a seat's server for its current notice; only the live answer counts. */
+  async askNotice(host: string) {
+    const s = this.servers().find((x) => x.host === host);
+    if (!s) return;
+    const req = msg('notice_get', this.g, this.epochId, 'ask', {});
+    this.f1().asked(host, req.id, this.now);
+    const a = await this.bus.send(this.kp, s.key, req);
+    if (a?.type === 'notice') this.f1().answer(a, s.key, this.now);
+  }
   async checkServers(): Promise<{ seat: string; host: string; why: string }[] | null> {
     const w = this.f1();
     const seats = [...this.m!.seats.entries()].filter(([k, x]) => k.startsWith('server:') && x.holder).map(([seat, x]) => ({ seat, host: x.holder!.host!, key: x.holder!.key }));
@@ -876,6 +898,7 @@ export class DeviceNode implements Node {
         w.saw(s.host, 'denied', this.now);
       } else if (a?.code === 'unknown_account') w.saw(s.host, 'denied', this.now);
       else w.saw(s.host, 'silent', this.now);
+      if (a?.type === 'state') await this.askNotice(s.host);    // once a day in the catch-up round
     }
     return w.card(seats, this.now);
   }
@@ -905,7 +928,7 @@ export class DeviceNode implements Node {
   async handle(from: string, body: any, sentAt: number): Promise<any> {
     try {
       switch (body.type) {
-        case 'notice': if ('shutdown' in body) this.f1().notice(body, from); return { type: 'ack' };
+        case 'notice': if ('shutdown' in body && body.re === undefined && this.f1().pushed(body, this.now)) await this.askNotice(body.host); return { type: 'ack' };
         case 'join_hello': return this.inviter!.onHello(from, body, this.now).msg;
         case 'join_nonce': this.joiner!.onNonce(from, body); return { type: 'ack' };
         case 'welcome_offer': return this.joiner!.onOffer(from, body, this.now).msg;

@@ -250,6 +250,10 @@ test('§5.7 item 5 and §6.7.5: account machinery and signposts are guarded', as
   assert.equal(sign(note(F, { kind: 24302, content: '{}' })).code, 'not_a_change');
   const d = signpostD(F.backup.kp.pub);
   assert.equal(sign(note(F, { kind: 5, tags: [['a', `30078:${F.g}:${d}`]] })).code, 'machinery');
+  // 14.18: any `a` value holding both g and a signpost d, whatever its kind part or splitting.
+  for (const v of [`030078:${F.g}:${d}`, `30078 :${F.g}:${d}`, `30078:${F.g.toUpperCase()}:${d.toUpperCase()}`, `30078:${F.g}:${d}:extra`, `1:${d}:${F.g}`, `${F.g}${d}`])
+    assert.equal(sign(note(F, { kind: 5, tags: [['a', v]] })).code, 'machinery', v);
+  assert.equal(sign(note(F, { kind: 5, tags: [['a', `30078:${F.g}:other`]] })).type, 'partial', 'g alone is not the signpost');
   assert.equal(sign(note(F, { kind: 30078, tags: [['d', d], ['n', '7'], ['h', '00']] })).code, 'signpost_n');
   assert.equal(sign(note(F, { kind: 30078, tags: [['d', d], ['n', '0'], ['h', '00']] })).code, 'signpost_h');
 });

@@ -459,8 +459,10 @@ export class CoSigner {
     // Account machinery (item 5).
     if (ev.kind === KIND_EPOCH) refuse('machinery', 'an epoch record is made only at creation');
     const signpostDs = new Set(this.m.backupKeys.map(signpostD));
-    // §6.7.5: by `e` id, or by `a` = `30078:g:d`, hex compared ignoring case.
-    if (ev.kind === 5 && ev.tags.some((t) => typeof t[1] === 'string' && ((t[0] === 'e' && this.signpostIds.has(t[1].toLowerCase())) || (t[0] === 'a' && [...signpostDs].some((d) => t[1].toLowerCase() === `${KIND_SIGNPOST}:${this.g}:${d}`)))))
+    // §6.7.5 (14.18): by `e` id, or by an `a` value that contains both g and a signpost d anywhere,
+    // whatever its kind part or splitting (relays read `a` loosely); hex compared ignoring case.
+    if (ev.kind === 5 && ev.tags.some((t) => typeof t[1] === 'string' && ((t[0] === 'e' && this.signpostIds.has(t[1].toLowerCase()))
+      || (t[0] === 'a' && t[1].toLowerCase().includes(this.g) && [...signpostDs].some((d) => t[1].toLowerCase().includes(d))))))
       refuse('machinery', 'a signpost delete is always refused');
     if (ev.kind === KIND_SIGNPOST && signpostDs.has(tag(ev, 'd') ?? '')) { this.checkSignpost(from, ev); return { evId, lockApproved: false, signpost: true }; }
     if (ev.kind === KIND_CHANGE) { this.checkListToSign(from, [ev], mode, now, msg); return { evId, lockApproved: false }; }

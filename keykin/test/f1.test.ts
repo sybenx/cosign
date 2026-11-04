@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { create, invite, replaceServer } from '../sim/account.ts';
 import { verifyEvent, schnorrSign } from '../src/event.ts';
 import { msg } from '../sim/nodes.ts';
-import { signShutdown, F1Watch } from '../src/f1.ts';
+import { signNotice, signAnswer, signRefusal, checkRefusal, F1Watch } from '../src/f1.ts';
 import { deletedDigest } from '../src/requests.ts';
 import { newKey } from '../src/event.ts';
 
@@ -59,23 +59,53 @@ test('F1: quiet for 7 days; a peer down for less is not dead', async () => {
   assert.deepEqual((await acc.A.checkServers())!.map((c) => [c.seat, c.why]), [[seatOf(acc, 0), 'quiet']]);
 });
 
-test('Server profile §5: a host-signed shutdown notice counts as dead; a later seq cancels; others are ignored', async () => {
+test('Server profile §4.1 (draft 8): only the live answer to notice_get counts; a pushed notice only prompts it', async () => {
   const acc = await create();
   const S = acc.servers[1];
   await acc.A.checkServers();
-  const send = (n: any) => acc.bus.send(S.kp, acc.A.kp.pub, n);
-  await send({ ...signShutdown(acc.g, S.host, acc.bus.now + 30 * 86400, 1), host_sig: '00'.repeat(64) });
-  assert.deepEqual(await acc.A.checkServers(), [], 'a bad signature is ignored');
-  await send({ ...signShutdown(acc.g, newKey(), acc.bus.now + 30 * 86400, 1), host: S.host.pub });
-  assert.deepEqual(await acc.A.checkServers(), [], 'another key\'s signature is ignored');
-  await send(signShutdown(acc.g, S.host, acc.bus.now + 30 * 86400, 1));
+  // A server closing in 40 days: shown on Backup, no card yet; within 30 days, the card.
+  await S.announceShutdown(acc.bus.now + 40 * 86400);
+  assert.deepEqual(await acc.A.checkServers(), []);
+  assert.equal(acc.A.f1().closing(S.host.pub), acc.bus.now + 40 * 86400, 'the date is known from the answer');
+  acc.bus.advance(11 * 86400);
   assert.deepEqual((await acc.A.checkServers())!.map((c) => [c.host, c.why]), [[S.host.pub, 'shutdown']]);
-  await send(signShutdown(acc.g, S.host, null, 2));
-  assert.deepEqual(await acc.A.checkServers(), [], 'cancelled by a higher seq');
-  await send(signShutdown(acc.g, S.host, acc.bus.now + 30 * 86400, 2));
-  assert.deepEqual(await acc.A.checkServers(), [], 'the same seq again is ignored');
-  await send(signShutdown(acc.g, S.host, acc.bus.now + 40 * 86400, 3));
-  assert.equal((await acc.A.checkServers())!.length, 1);
+  // Cancelled: the next answer removes the card.
+  await S.announceShutdown(null);
+  assert.deepEqual(await acc.A.checkServers(), []);
+});
+
+test('Server profile §4.1: a pushed notice alone never counts; answers only for the request asked, sealed by the seat', async () => {
+  const acc = await create();
+  const S = acc.servers[1], other = acc.servers[2];
+  await acc.A.checkServers();
+  const w = acc.A.f1();
+  const n = signNotice(acc.g, S.host, { shutdown: acc.bus.now, seq: acc.bus.now + 5, member: S.kp.pub });
+  // Pushed: a reason to ask, at most once an hour; never a card by itself.
+  assert.equal(w.pushed(n, acc.bus.now + 3601), true);
+  assert.equal(w.pushed({ ...n, host_sig: '00'.repeat(64) }, acc.bus.now + 3601), false);
+  assert.equal(w.pushed({ ...n, member: other.kp.pub }, acc.bus.now + 3601), false, 'signed for another seat');
+  assert.equal(w.dead(S.host.pub, acc.bus.now), null);
+  // An answer: only to the outstanding request, only sealed by that seat, only with the answer signature.
+  w.asked(S.host.pub, 'aa'.repeat(16), acc.bus.now);
+  const ans = signAnswer(acc.g, S.host, { shutdown: acc.bus.now, seq: acc.bus.now + 5, member: S.kp.pub }, 'aa'.repeat(16));
+  assert.equal(w.answer({ ...n, re: 'aa'.repeat(16) }, S.kp.pub, acc.bus.now), false, 'an old notice sealed as an answer');
+  assert.equal(w.answer(signAnswer(acc.g, S.host, { shutdown: acc.bus.now, seq: 9, member: S.kp.pub }, 'bb'.repeat(16)), S.kp.pub, acc.bus.now), false, 'another request');
+  assert.equal(w.answer(ans, other.kp.pub, acc.bus.now), false, 'sealed by another seat');
+  assert.equal(w.answer(ans, S.kp.pub, acc.bus.now + 151), false, 'after the request\'s lifetime');
+  assert.equal(w.answer(ans, S.kp.pub, acc.bus.now), true);
+  assert.equal(w.dead(S.host.pub, acc.bus.now), 'shutdown');
+  assert.equal(w.answer(signAnswer(acc.g, S.host, { shutdown: null, seq: 3, member: S.kp.pub }, 'aa'.repeat(16)), S.kp.pub, acc.bus.now), false, 'a lower seq for the same request');
+  // A non-member can't ask.
+  assert.equal((await acc.bus.send(newKey(), S.kp.pub, msg('notice_get', acc.g, acc.epochId, 'ask'))).code, 'not_member');
+});
+
+test('Server profile §4.1: host-signed refusals of enroll are checked, and only for the enroll asked', () => {
+  const g = newKey().pub, host = newKey();
+  const r = signRefusal(g, host, 'cc'.repeat(16), 'refused: closing');
+  assert.ok(checkRefusal(g, r, host.pub, 'cc'.repeat(16)));
+  assert.ok(!checkRefusal(g, r, host.pub, 'dd'.repeat(16)), 'another enroll');
+  assert.ok(!checkRefusal(g, r, newKey().pub, 'cc'.repeat(16)), 'another host');
+  assert.ok(!checkRefusal(g, { ...r, code: 'refused: expired' }, host.pub, 'cc'.repeat(16)), 'no such code');
 });
 
 test('F1Watch: a denial counts only while a peer serves; every server denying is not one server dead', () => {
@@ -98,21 +128,11 @@ test('F1Watch: a denial counts only while a peer serves; every server denying is
   assert.equal(v.dead('a', 86430), null, 'serving again clears it');
 });
 
-test('review 8: being seated is not serving (M3); a notice counts only from its own seat (M4)', async () => {
+test('review 8 M3: being seated is not serving', async () => {
   const g = newKey().pub;
   const w = new F1Watch(g);
   w.seat('a', 'ka', 0); w.saw('a', 'denied', 0);
   w.seat('d', 'kd', 86405);
   assert.equal(w.dead('a', 86410), null, 'a silent newcomer is no peer serving');
-  // A notice replayed by anyone but the seat itself is ignored.
-  const acc = await create();
-  const S = acc.servers[1], other = acc.servers[2];
-  await acc.A.checkServers();
-  const n = signShutdown(acc.g, S.host, acc.bus.now + 30 * 86400, 1);
-  await acc.bus.send(other.kp, acc.A.kp.pub, n);
-  assert.deepEqual(await acc.A.checkServers(), [], 'relayed by another server: ignored');
-  await acc.bus.send(acc.A.kp, acc.A.kp.pub, n);
-  assert.deepEqual(await acc.A.checkServers(), [], 'replayed by a member: ignored');
-  await acc.bus.send(S.kp, acc.A.kp.pub, n);
-  assert.equal((await acc.A.checkServers())!.length, 1);
+  // Review 8 M4 (a replayed notice) is now draft 8's rule: only a live answer counts (tests above).
 });
