@@ -1,6 +1,6 @@
 # Differential probes (TypeScript ↔ Kotlin)
 
-300 hostile and edge inputs (event ids, JCS, BIP-340, WebAuthn, lifetimes, the destructive rule,
+327 hostile and edge inputs (event ids, JCS, BIP-340, WebAuthn, lifetimes, the destructive rule,
 records, changes and approvals), run through both implementations. From independent review 6.
 
 ```bash
