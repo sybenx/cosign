@@ -63,6 +63,17 @@ class SoftLock(val rpId: String, private val sk: ByteArray) : Lock {
 object Approve {
     /** §6.1: what a lock signs for a list: `"change" ‖ H(placeholder list) ‖ epoch ‖ u64 expiry`. */
     fun changeWhat(list: JSONArray, epochId: String, expiry: Long): ByteArray = utf8("change") + unhex(Approvals.hash(list)) + unhex(epochId) + u64(expiry)
+    /** §6.2 `pair`: what both devices sign, `detached("pair", {what, r})`. */
+    fun pairDigest(g: String, epochId: String, list: JSONArray, expiry: Long, r: String): ByteArray =
+        Approvals.detached("pair", g, JSONObject().put("what", hex(changeWhat(list, epochId, expiry))).put("r", r))
+    /** §6.2 `paper`: this device's `sig` over what, and the backup key's over the list hash and the server's challenge. */
+    fun paper(g: String, epochId: String, list: JSONArray, expiry: Long, deviceSk: ByteArray, paperSk: ByteArray, challenge: String, server: String): JSONObject {
+        val rnd = { ByteArray(32).also { java.security.SecureRandom().nextBytes(it) } }
+        val sig = Keykin.secp.schnorrSign(Approvals.detached("paper", g, JSONObject().put("what", hex(changeWhat(list, epochId, expiry)))), deviceSk, rnd())
+        val bsig = Keykin.secp.schnorrSign(Approvals.detached("paper", g, JSONObject().put("list", Approvals.hash(list)).put("challenge", challenge)), paperSk, rnd())
+        return JSONObject().put("expiry", expiry).put("paper", JSONObject().put("member", Keykin.secp.pub(deviceSk)).put("sig", sig).put("backup", Keykin.secp.pub(paperSk))
+            .put("challenge", challenge).put("server", server).put("backup_sig", bsig))
+    }
     fun lock(g: String, epochId: String, list: JSONArray, expiry: Long, member: String, lock: Lock): JSONObject =
         JSONObject().put("expiry", expiry).put("lock", JSONObject().put("member", member).put("assertion", lock.assert(g, changeWhat(list, epochId, expiry))))
 }

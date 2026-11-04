@@ -61,6 +61,15 @@ fun main(args: Array<String>) {
                         }
                         http.stop(0); last
                     }
+                    // Pair (§6.2): ask device `with` to approve removing `key` with this one; print the code, wait for the
+                    // person to type it there, then deal and submit the list with the pair approval.
+                    "pair_remove" -> {
+                        val list = JSONArray().put(JSONObject().put("remove", c.getString("key"))).put(JSONObject().put("redeal", JSONObject().put("dealer", d.pub)))
+                        val (code, approval) = d.pairStart(list, c.getString("with"))
+                        println(JSONObject().put("code", code).toString()); System.out.flush()
+                        val a = approval.get(c.optLong("seconds", 120), java.util.concurrent.TimeUnit.SECONDS) ?: refuse("refused")
+                        JSONObject().put("events", JSONArray(d.submit(list, a).map { it.getString("id") })).put("state", d.ctx.state)
+                    }
                     "members" -> d.members.devices().let { (self, asOf, keys) -> JSONObject().put("self", self).put("asOf", asOf)
                         .put("keys", JSONArray(keys.map { JSONObject().put("key", it.key).put("added_by", it.addedBy ?: JSONObject.NULL).put("flagged", it.flagged) }))
                         .put("removed", JSONArray(d.members.removed(0).map { it.json() })) }

@@ -5,7 +5,7 @@
 // recovery role and a recovery contact's are here too.
 
 import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes, b64u, strictJson, utf8Strict } from '../src/bytes.ts';
-import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH, what } from '../src/codes.ts';
+import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH, what, pairCode } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
@@ -34,7 +34,7 @@ import { encryptPush, decryptPush, vapidHeader, checkVapid } from '../src/webpus
 import { p256 } from '@noble/curves/nist.js';
 import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
-import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList } from '../src/approval.ts';
+import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList, pairDigest, approvalHash, allowedApprovals } from '../src/approval.ts';
 import { deletedDigest, verifyDeleted } from '../src/requests.ts';
 import { F1Watch, SignWatch, signNotice, signAnswer } from '../src/f1.ts';
 import { commitmentFrom, scalarHex, scalarFrom, liftX, type Commitment } from '../src/curve.ts';
@@ -74,6 +74,65 @@ export class DeviceNode implements Node {
     const host = [...this.m!.members.values()].find((x) => x.key === s.key)!.host!;
     return approvePaper(this.g, this.epochId, approvalListOf(list), this.now + 3600, this.kp, this.keptSecret!, ch.challenge, host);
   }
+  /** A `paper` approval from the paper itself (its secret, read from its 24 words or QR), with a challenge the
+   *  server bound to the backup key (§6.2). */
+  async approveWithPaper(list: Change[], paper: KeyPair): Promise<Approval> {
+    if (paper.pub !== this.m!.backupKey) refuse('not_current_backup', 'this is not the current paper');
+    const s = this.servers().find((x) => this.bus.alive(x.key)); if (!s) refuse('no_server');
+    const ch = await this.bus.send(paper, s!.key, msg('challenge', this.g, this.epochId, 'ask'));
+    if (ch?.type !== 'challenge' || typeof ch.challenge !== 'string') refuse(ch?.code ?? 'no_challenge');
+    return approvePaper(this.g, this.epochId, approvalListOf(list), this.now + 3600, this.kp, paper, ch.challenge, s!.host!);
+  }
+
+  // --- pair (core §6.2): two devices, and the code the person types on the second ----------------
+  /** Pair requests this device was asked to approve, by id: shown with the list; approved by typing the code. */
+  pairAsks = new Map<string, { id: string; from: string; list: Change[]; expiry: number; r: string; sig: string; at: number }>();
+  #pairWaits = new Map<string, { list: Change[]; expiry: number; r: string; sig: string; to: string; done: (a: Approval | null) => void }>();
+  /** Ask device `to` to approve `list` with this one: returns the code to show and the approval, once the person
+   *  typed the code on `to` (or null, if it refused or the request expired). */
+  pairStart(list: Change[], to: string): { code: string; approval: Promise<Approval | null> } {
+    const m = this.m!;
+    if (!m.devices.has(to) || m.removed.has(to) || to === this.kp.pub) refuse('not_device', 'a pair is two current devices');
+    const l = approvalListOf(list), expiry = this.now + 600, r = bytesToHex(randomBytes(16)), id = bytesToHex(randomBytes(16));
+    const sig = schnorrSign(pairDigest(this.g, this.epochId, l, expiry, r), this.kp.sk);
+    const code = pairCode(this.g, approvalHash(l), r);
+    const approval = new Promise<Approval | null>((done) => this.#pairWaits.set(id, { list: l, expiry, r, sig, to, done }));
+    const body = { type: 'pair_request', id, list: l, expiry, r, sig };
+    // Live at once if the other device is awake, and in every server's inbox for when it next fetches.
+    void (async () => {
+      const w = wrap(this.kp.sk, to, body);
+      if (this.bus.alive(to)) await this.bus.send(this.kp, to, { type: 'delta_push', wrap: w });
+      for (const s of this.servers()) await this.bus.send(this.kp, s.key, msg('deliver', this.g, this.epochId, 'member', { to, wrap: w }));
+    })().catch(() => {});
+    return { code, approval };
+  }
+  /** On the second device: the person typed `code` for pair request `id`. Signs only if it matches. */
+  async pairApprove(id: string, code: string): Promise<boolean> {
+    const p = this.pairAsks.get(id); if (!p) refuse('unknown_pair');
+    if (this.now > p!.expiry) { this.pairAsks.delete(id); refuse('expired'); }
+    if (pairCode(this.g, approvalHash(p!.list), p!.r) !== code) return false;
+    const codeSig = schnorrSign(pairDigest(this.g, this.epochId, p!.list, p!.expiry, p!.r), this.kp.sk);
+    this.pairAsks.delete(id);
+    await this.bus.send(this.kp, p!.from, { type: 'pair_sign', id, code_sig: codeSig });
+    return true;
+  }
+  pairDecline(id: string) { this.pairAsks.delete(id); }
+  #takePairRequest(from: string, b: any) {
+    const m = this.m!;
+    if (!m.devices.has(from) || m.removed.has(from) || from === this.kp.pub) return;
+    if (typeof b.id !== 'string' || !Array.isArray(b.list) || typeof b.r !== 'string' || typeof b.expiry !== 'number' || this.now > b.expiry || b.expiry - this.now > 3600) return;
+    // Only a list a pair may approve, signed by the asking device over exactly what this one would sign.
+    try { if (!allowedApprovals(b.list).includes('pair') || !schnorrVerify(b.sig, pairDigest(this.g, this.epochId, b.list, b.expiry, b.r), from)) return; } catch { return; }
+    if (this.pairAsks.size >= 16 && !this.pairAsks.has(b.id)) return;
+    this.pairAsks.set(b.id, { id: b.id, from, list: b.list, expiry: b.expiry, r: b.r, sig: b.sig, at: this.now });
+  }
+  #takePairSign(from: string, b: any) {
+    const w = this.#pairWaits.get(b?.id); if (!w || from !== w.to) return;
+    try { if (!schnorrVerify(b.code_sig, pairDigest(this.g, this.epochId, w.list, w.expiry, w.r), from)) return; } catch { return; }
+    this.#pairWaits.delete(b.id);
+    w.done({ expiry: w.expiry, pair: [{ member: this.kp.pub, sig: w.sig, r: w.r }, { member: from, code_sig: b.code_sig }] } as Approval);
+  }
+
   /** Tell every device the kept copies may go (`kept_done`), naming the change that registered a lock. */
   async keptDone(changeId: string) {
     for (const d of [...this.m!.members.values()].filter((x) => x.kind === 'device' && x.key !== this.kp.pub)) await this.bus.send(this.kp, d.key, { type: 'kept_done', change: changeId });
@@ -220,6 +279,7 @@ export class DeviceNode implements Node {
   /** A sealed delivery: 'kept', 'junk' (never applied, safe to ack), or 'full' (no room yet: leave it at the server). */
   takeDelivery(w: NostrEvent): 'kept' | 'junk' | 'full' {
     const o = unwrap(this.kp.sk, w);
+    if (o.body.type === 'pair_request') { this.#takePairRequest(o.from, o.body); return 'kept'; }
     if (o.body.type === 'reissue_eph') {
       // §6.7.6 (core 14.20): from a current device, bound to its redeal, K and item; checked in checkReissues.
       const b = o.body, m = this.m!;
@@ -770,6 +830,7 @@ export class DeviceNode implements Node {
         case 'repair_finish': return this.co!.repairFinish(from, body);
         case 'change': this.takeChanges(body.events); return { type: 'ack' };
         case 'delta_push': this.takeDelivery(body.wrap); this.applyAll(); return { type: 'ack' };
+        case 'pair_sign': this.#takePairSign(from, body); return { type: 'ack' };
         case 'kept_done': {
           // Only from a current device, and only once the named change registered a lock (§4.3 step 4).
           if (!this.m!.devices.has(from)) return { type: 'error', code: 'not_device' };

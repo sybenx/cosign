@@ -76,6 +76,8 @@ export const approvalHash = (list: Change[]) => listHash(placeholderList(list));
 export const changeWhat = (g: string, epochId: string, list: Change[], expiry: number) => what.change(approvalHash(list), epochId, expiry);
 
 const pairBody = (w: Uint8Array, r: string) => ({ what: bytesToHex(w), r });
+/** §6.2 `pair`: the digest both devices sign (`sig` and `code_sig`). */
+export const pairDigest = (g: string, epochId: string, list: Change[], expiry: number, r: string) => detachedDigest('pair', g, pairBody(changeWhat(g, epochId, list, expiry), r));
 
 // --- builders (devices) ----------------------------------------------------------------
 
