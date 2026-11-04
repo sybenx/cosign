@@ -13,6 +13,7 @@ import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall, ecdhRequest, ecdhFinish } from '../src/coordinator.ts';
 import { nip44Open } from '../src/nip44.ts';
 import { Nip46Home, listKey } from './nip46.ts';
+import { GrantStore, KIND_GRANTS } from './grants.ts';
 import { DataKeys } from './datakey.ts';
 import { memberSign } from './membersig.ts';
 import { Members } from './members.ts';
@@ -116,7 +117,7 @@ export class DeviceNode implements Node {
    *  watches included (review 9 H2). */
   wipe() {
     this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() };
-    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear();
+    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear();
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.reissued.clear(); this.reissueEphs.clear(); this.blamed.clear(); this.forceReissue.clear();
     this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
@@ -205,6 +206,8 @@ export class DeviceNode implements Node {
     // §6.7.6 (core 14.20): check others' re-issued items before destroying anything, then re-issue what's left.
     await this.checkReissues();
     await this.reissueMissing();
+    // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
+    if (this.bus.events && this.baseDk) try { await this.grants.fetch(); } catch { /* relays out of reach: next time */ }
   }
   pendingDeltas = new Map<string, any>();
   pendingHeir: ReturnType<typeof makeHeir> | null = null;
@@ -554,7 +557,7 @@ export class DeviceNode implements Node {
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       reissued: [...this.reissued], reissueEphs: [...this.reissueEphs], blamed: [...this.blamed], forceReissue: [...this.forceReissue],
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists] });
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists] });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
    *  by §3.4, every share against the commitments, and the member key a current device holding exactly
@@ -575,7 +578,7 @@ export class DeviceNode implements Node {
     d.reissued = new Map(x.reissued ?? []); d.reissueEphs = new Map(x.reissueEphs ?? []); d.blamed = new Set(x.blamed ?? []); d.forceReissue = new Set(x.forceReissue ?? []);
     d.pushKeys = new Map(x.pushKeys.map(([u, k]: [string, any]) => [u, { ...k, sk: hexToBytes(k.sk), auth: hexToBytes(k.auth) }]));
     d.signWatch.load(x.signWatch);
-    d.nip46.load(x.nip46);
+    d.nip46.load(x.nip46); d.grants.load(x.grants);
     d.dataKeys.load(x.dkHistory);
     d.members.load(x.members);
     d.#lists = new Map(x.lists ?? []);
@@ -652,6 +655,15 @@ export class DeviceNode implements Node {
   dataKeys = new DataKeys(this);
   /** NIP-46 sites this device is home to (Doors §3.3). */
   nip46 = new Nip46Home(this);
+  /** The account's grants (Doors §1–§2): this device's, signed by it, and every other device's, for listing. */
+  grants = ((dev: DeviceNode) => new GrantStore({
+    get g() { return dev.g; }, get kp() { return dev.kp; }, get baseDk() { return dev.baseDk; }, get now() { return dev.now; },
+    currentDevices: () => new Set([...(dev.m?.devices ?? [])].filter((k) => !dev.m!.removed.has(k))),
+    dataKey: () => dev.dataKeys.current(), keyFor: (s) => dev.dataKeys.forState(s),
+    sign: (ev) => dev.sign(ev),
+    publish: async (e) => { await dev.bus.events?.publishEvent(e); },
+    query: async () => (await dev.bus.events?.query({ kinds: [KIND_GRANTS], authors: [dev.g] })) ?? [],
+  }))(this);
 
   /** Core §6.7.9's quiet Backup line: which servers haven't helped sign this week. */
   signWatch = new SignWatch();
