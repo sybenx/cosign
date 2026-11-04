@@ -37,6 +37,28 @@ fun main(args: Array<String>) {
                         val typed = readLine()?.trim() ?: ""
                         if (d.inviter?.typed(typed) != true) JSONObject().put("error", "check_mismatch") else JSONObject().put("added", d.addInvited()).put("state", d.ctx.state)
                     }
+                    // Be the push gateway too (a test stand-in for UnifiedPush): register an address per server and
+                    // class on this port, then take pushes for `seconds`, printing each payload and the state it left.
+                    "push" -> {
+                        val got = java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>()
+                        val http = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", c.getInt("port")), 0)
+                        http.createContext("/") { ex -> got.put("http://127.0.0.1:${c.getInt("port")}${ex.requestURI.path}" to ex.requestBody.readBytes()); ex.sendResponseHeaders(201, -1); ex.close() }
+                        http.start()
+                        val n = d.registerPush { _, _ -> "http://127.0.0.1:${c.getInt("port")}/${hex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) })}" }
+                        println(JSONObject().put("registered", n).toString()); System.out.flush()
+                        val end = System.currentTimeMillis() + c.optLong("seconds", 60) * 1000
+                        var last = JSONObject().put("pushes", 0)
+                        var count = 0
+                        while (System.currentTimeMillis() < end) {
+                            val (url, body) = got.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                            val p = d.onPush(url, body) ?: continue
+                            count++
+                            if (!p.has("wrap")) d.fetch()
+                            last = JSONObject().put("pushes", count).put("cls", p.optString("cls")).put("wrap", p.has("wrap")).put("state", d.ctx.state)
+                            if (c.optString("until") == "state" && d.ids.isNotEmpty()) break
+                        }
+                        http.stop(0); last
+                    }
                     "members" -> d.members.devices().let { (self, asOf, keys) -> JSONObject().put("self", self).put("asOf", asOf)
                         .put("keys", JSONArray(keys.map { JSONObject().put("key", it.key).put("added_by", it.addedBy ?: JSONObject.NULL).put("flagged", it.flagged) }))
                         .put("removed", JSONArray(d.members.removed(0).map { it.json() })) }

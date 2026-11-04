@@ -340,7 +340,11 @@ export class ServerNode implements Node {
         if (u!.paperItem) this.items.push(u!.paperItem);
         // Release the inert upload: everyone else's items become deliveries.
         for (const it of u!.items) if (it.type === 'delta' && it.to !== this.kp.pub && m.members.has(it.to) && ['device', 'helper'].includes(m.members.get(it.to)!.kind))
-          try { this.inbox.deliver({ from: r.dealer, to: it.to, wrap: it.wrap as NostrEvent, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey }); } catch { /* full or removed */ }
+          try {
+            const iid = this.inbox.deliver({ from: r.dealer, to: it.to, wrap: it.wrap as NostrEvent, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey });
+            // §8.2: in the inbox first, and only then pushed, so a sleeping device wakes and fetches.
+            this.pushTo(it.to, 'ask', iid, it.wrap);
+          } catch { /* full or removed */ }
         again = true;
       }
     }
@@ -544,7 +548,7 @@ export class ServerNode implements Node {
       case 'cancels_get': return { type: 'cancels', cancels: this.co.cancels };
       case 'upload_status': { const u = this.uploads.get(body.redeal); return { type: 'upload_status', held: !!u && this.now - u.at < 7 * 86400 }; }
       case 'deliver':
-        this.inbox.deliver({ from, to: body.to, wrap: body.wrap, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey });
+        this.pushTo(body.to, 'ask', this.inbox.deliver({ from, to: body.to, wrap: body.wrap, kind: 'delivery', cls: 'member', at: this.now, isMember: (k) => m.members.has(k), isRemoved: (k) => m.removed.has(k), isBackup: (k) => k === m.backupKey }), body.wrap);
         return { type: 'ack' };
       case 'inbox_get': if (m.removed.has(from)) refuse('removed');
         // §8.2: with every recovery, hold or heir wait running for the account, each with its end.

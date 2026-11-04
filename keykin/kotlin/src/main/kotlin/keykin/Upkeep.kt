@@ -100,6 +100,16 @@ object Upkeep {
         }
     } catch (_: Exception) { false }
 
+    /** §6.7.6 re-issue: the paper values this device kept for a redeal, sealed to the current backup key K
+     *  under that redeal's release seed, with `δ(b)·G` in the clear, signed by this device's member key as
+     *  `detached("paper-reissue", item without its sig)` (core 14.19 §5.9). K learns only what devices know. */
+    fun reissueItem(g: String, r: JSONObject, K: String, kept: JSONObject, sk: ByteArray): JSONObject {
+        val d = kept.getJSONArray("d").let { a -> (0 until a.length()).map { scalar(a.get(it)) } }
+        val body = JSONObject().put("redeal", r.getString("id")).put("d", JSONArray(d.map(::scalarHex))).put("b", kept.getJSONArray("b")).put("dk_seed", kept.getString("dk"))
+        val (item, _) = Deal.sealItem("reissue", r.getString("id"), K, kept.getString("release"), body)
+        item.put("clear", JSONArray(d.map { comp(mul(it)!!) })).put("by", Secp.Reference.pub(sk))
+        return item.put("sig", Secp.Reference.schnorrSign(Approvals.detached("paper-reissue", g, Json.obj(Jcs.of(item))), sk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }))
+    }
     private val HEX32 = Regex("^[0-9a-f]{64}$")
     /** A scalar as §9.5 writes it: 64 lowercase hex, below N (TS `scalarFrom`). */
     fun scalar(h: Any?): BigInteger {

@@ -57,3 +57,17 @@ test('M3: a dealer\'s malformed deltas drop the delivery and never wedge later a
   B.takeDelivery(mine); B.applyAll();
   assert.deepEqual([...B.state!.ids], [...acc.A.state!.ids]);
 });
+
+test('§8.2: a delivery left in an inbox is pushed to the sleeping device', async () => {
+  const acc = await create();
+  const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
+  assert.equal(await B.registerPush(), 3);
+  acc.bus.kill(B.kp.pub);
+  const before = (acc.bus as any).pushes.length;
+  const r: Change[] = [{ redeal: { dealer: acc.A.kp.pub } }];
+  await acc.A.submit(r, acc.A.approveLock(r));
+  acc.bus.revive(B.kp.pub);
+  const got = B.readPushes().slice(0);
+  assert.ok((acc.bus as any).pushes.length > before, 'the servers pushed');
+  assert.ok(got.some((p: any) => p.cls === 'ask'), 'an ask push from a seated server');
+});

@@ -44,6 +44,34 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     val notices = java.util.concurrent.CopyOnWriteArrayList<JSONObject>()
     /** Every state this device has held, oldest first (core §4.5: older keys read older data). */
     private val dkHistory = ArrayList<List<String>>()
+    /** §6.7.6: for every applied redeal whose paper item this device couldn't verify, re-issue the paper values
+     *  it kept to the current backup key, at every server; then destroy them. Values for redeals the current
+     *  paper already covers (its change's state, or the redeal that came with it) just go. */
+    fun reissueMissing(): Int {
+        val v = view; val K = v.backup ?: return 0
+        val pc = v.papers.firstOrNull { it.key == K }
+        var n = 0
+        for (id in state.ids.sorted()) {
+            val (k, r) = synchronized(this) { kept[id] to v.redeals[id]?.r }
+            val covered = pc != null && (id in pc.state || v.redeals.values.any { it.listHash == pc.listHash && it.r.getString("id") == id })
+            if (covered || paperVerified["$K:$id"] == true) { synchronized(this) { kept.remove(id) }; continue }
+            if (k == null || r == null) continue
+            val item = Upkeep.reissueItem(g, r, K, k, sk)
+            var took = 0
+            for (s in servers()) if (net.send(sk, s.key, msg("paper_reissue", "member").put("item", item)).optString("type") == "ack") took++
+            if (took == 0) continue
+            synchronized(this) { paperVerified["$K:$id"] = true; kept.remove(id) }
+            n++
+        }
+        save()
+        return n
+    }
+    /** For tests: a re-issue item for a redeal whose values this device keeps, without sending it. */
+    internal fun reissueItemFor(id: String): JSONObject? = synchronized(this) { kept[id] }?.let { k -> Upkeep.reissueItem(g, view.redeals[id]!!.r, view.backup!!, k, sk) }
+
+    /** §8.1: one push address per server and wake class, each with its own RFC 8291 keys, so addresses can't
+     *  be linked across servers or accounts. By address URL: the secret, the auth secret, the class. */
+    private val pushKeys = HashMap<String, JSONObject>()
     val members = Members()
     /** A site's NIP-46 request a watching server kept for us (Doors §3.3): the home takes it. */
     @Volatile var onSiteRequest: ((JSONObject) -> Unit)? = null
@@ -106,7 +134,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         if (wiped) return
         wiped = true; state = ShareState(emptySet(), state.C, emptyMap())
         baseDk = ""; dkSeeds.clear(); releaseSeeds.clear(); pending.clear(); kept.clear(); paperVerified.clear(); dkHistory.clear()
-        notices.clear(); onSiteRequest = null; carried = JSONObject()
+        notices.clear(); onSiteRequest = null; carried = JSONObject(); pushKeys.clear()
         for (cb in gone) try { cb() } catch (_: Exception) {}
         save()
     }
@@ -187,6 +215,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         x.optJSONArray("notices")?.let { a -> for (k in 0 until a.length()) a.optJSONObject(k)?.let { notices += it } }
         x.optJSONArray("refused")?.let { a -> refused = (0 until minOf(a.length(), REFUSED_MAX)).mapNotNull { a.optJSONObject(it)?.let(Event::of) } }
         x.optJSONArray("dkHistory")?.let { a -> dkHistory.clear(); for (k in 0 until a.length()) dkHistory += strsOf(a.getJSONArray(k)) }
+        x.optJSONArray("pushKeys")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> pushKeys[p.getString(0)] = p.getJSONObject(1) } }
         members.load(x.optJSONObject("members"))
         afterState()
     }
@@ -208,6 +237,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("kept", ja(kept.map { (k, v) -> ja(listOf(k, v)) })).put("paperVerified", ja(paperVerified.map { (k, v) -> ja(listOf(k, v)) }))
             .put("pendingDeltas", ja(pending.flatMap { (id, m) -> m.map { (from, b) -> ja(listOf("$id:$from", b)) } })).put("notices", ja(notices.toList()))
             .put("dkHistory", ja(dkHistory.map { ja(it) })).put("members", members.dump())
+            .put("pushKeys", ja(pushKeys.map { (u, k) -> ja(listOf(u, k)) }))
         if (!x.has("name")) x.put("name", "kotlin")
         return x.toString()
     }
@@ -239,6 +269,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             net.send(sk, s.key, msg("inbox_ack", "ask").put("iids", iids))
         }
         applyAll()
+        if (notices.any { it.optString("kind") == "bad_paper_item" }) reissueMissing()
     }
 
     /** This device's lock (§6.1), if it has one: what approves its lists. */
@@ -301,6 +332,32 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             dealt?.let { d -> synchronized(this) { pending[d.redeal.getString("id")]?.remove(pub) } }
         }
     }
+    /** Register an address with every server for each wake class; `endpoint(server, cls)` gives the URL
+     *  (on Android, a UnifiedPush endpoint per instance). Returns how many servers took them. */
+    fun registerPush(endpoint: (String, String) -> String): Int {
+        var n = 0
+        for (s in servers()) {
+            val addrs = JSONArray()
+            for (cls in listOf("sign", "ask", "notice")) {
+                val (ksk, kpub) = Push.newKey(); val auth = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+                val url = endpoint(s.key, cls)
+                synchronized(this) { pushKeys[url] = JSONObject().put("sk", hex(ksk)).put("auth", hex(auth)).put("vapid", s.raw.optString("vapid")).put("cls", cls) }
+                addrs.put(JSONObject().put("cls", cls).put("url", url).put("p256dh", b64u(kpub)).put("auth", b64u(auth)))
+            }
+            if (net.send(sk, s.key, msg("push_register", "member").put("addresses", addrs)).optString("type") == "ack") n++
+        }
+        save()
+        return n
+    }
+    /** A push that reached `url`: decrypted, checked as from a seated server; a delivery it carries is taken
+     *  at once. Returns the payload (`cls`, `id`), or null for anything not ours. The app then fetches. */
+    fun onPush(url: String, body: ByteArray): JSONObject? {
+        val k = synchronized(this) { pushKeys[url] } ?: return null
+        val p = try { Push.read(Push.decrypt(body, unhex(k.getString("sk")), unhex(k.getString("auth"))), servers().mapNotNull { it.host }.toSet()) } catch (_: KeykinException) { return null }
+        p.optJSONObject("wrap")?.let { takeDelivery(it); applyAll() }
+        return p
+    }
+
     /** Inviting (§4.1–§4.2): the code to show, then `addInvited` once the person typed the new device's digits. */
     @Volatile var inviter: Inviter? = null
     fun invite(relays: List<String>): String = Inviter(g, pub, net.now).also { inviter = it }.invite(relays)

@@ -2,7 +2,8 @@
 // receives (a plain redeal, then a remove with its redeal), each as the change events and the sealed
 // delivery that reached it, and what the device holds after each: its state, shares, data key and
 // members log. Also a delivery from a stranger, which a device ignores, and the dealer's key (test material
-// only), so a port can seal deliveries the dealer got wrong.
+// only), so a port can seal deliveries the dealer got wrong, and the paper's key, so it can check what it
+// re-issues to the paper opens there.
 // Run: node vectors/gen-upkeep.ts > vectors/upkeep.json
 import { create, invite } from '../sim/account.ts';
 import { wrap, unwrap } from '../src/transport.ts';
@@ -43,5 +44,5 @@ const stranger = wrap(newKey().sk, B.kp.pub, real);
 
 console.log(JSON.stringify({
   note: 'Apply each step in order: add its changes, open each delivery with the device key, apply every redeal a delivery from its dealer covers. `after` is what the TS reference holds then.',
-  device: B.kp.pub, dealer_sk: bytesToHex(A.kp.sk), before, steps: [s1, s2], stranger_delivery: stranger,
+  device: B.kp.pub, dealer_sk: bytesToHex(A.kp.sk), paper_sk: bytesToHex(acc.paper.sk), before, steps: [s1, s2], stranger_delivery: stranger,
 }, null, 1));
