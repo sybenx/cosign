@@ -28,6 +28,15 @@ object Frost {
     fun verifyShare(c: List<Pt?>, msg: String, all: List<Committed>, i: Long, z: String) = FrostNative.call("verifyPartial", cj(c), msg, commits(all), idHex(i), z) == "true"
     fun aggregate(c: List<Pt?>, msg: String, all: List<Committed>, zs: List<Pair<Long, String>>) =
         FrostNative.call("aggregate", cj(c), msg, commits(all), JSONArray(zs.map { JSONArray(listOf(idHex(it.first), it.second)) }).toString())
+    /** Repair step 1 (§4.2 step 3, §6.7.4) for one of a helper's indices: a delta to each helper index. */
+    fun repairDeltas(c: List<Pt?>, helpers: List<Long>, i: Long, share: BigInteger, participant: Long): Map<Long, String> {
+        val out = JSONArray(FrostNative.call("repairStep1", cj(c), JSONArray(helpers.map(::idHex)).toString(), idHex(i), scalarHex(share), idHex(participant)))
+        val back = helpers.associateBy(::idHex)
+        return (0 until out.length()).associate { out.getJSONArray(it).let { p -> (back[p.getString(0)] ?: refuse("repair_failed")) to p.getString(1) } }
+    }
+    /** Step 2: one sigma from every delta addressed to a helper's indices. (One argument goes through the
+     *  vararg form: `call(name, String)` alone is the JNI entry, which takes its string as the argument list.) */
+    fun repairSigma(deltas: List<String>): String = FrostNative.call("repairStep2", *arrayOf<Any>(JSONArray(deltas).toString()))
     /** A participant's share from the helpers' sigmas (core §4.2 step 5); the Rust side checks it against `C`. */
     fun repairShare(c: List<Pt?>, sigmas: List<String>, participant: Long): BigInteger = try {
         BigInteger(FrostNative.call("repairStep3", cj(c), JSONArray(sigmas).toString(), idHex(participant)), 16)

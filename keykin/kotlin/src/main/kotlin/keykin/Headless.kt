@@ -31,6 +31,12 @@ fun main(args: Array<String>) {
                         val signed = d.submit(list, d.approveLock(list))
                         JSONObject().put("events", JSONArray(signed.map { it.getString("id") })).put("state", d.ctx.state)
                     }
+                    // Invite (§4.1): print the code, read the new device's 6 digits from stdin, add and welcome it.
+                    "invite" -> {
+                        println(JSONObject().put("invite", d.invite(args[1].split(","))).toString()); System.out.flush()
+                        val typed = readLine()?.trim() ?: ""
+                        if (d.inviter?.typed(typed) != true) JSONObject().put("error", "check_mismatch") else JSONObject().put("added", d.addInvited()).put("state", d.ctx.state)
+                    }
                     "members" -> d.members.devices().let { (self, asOf, keys) -> JSONObject().put("self", self).put("asOf", asOf)
                         .put("keys", JSONArray(keys.map { JSONObject().put("key", it.key).put("added_by", it.addedBy ?: JSONObject.NULL).put("flagged", it.flagged) }))
                         .put("removed", JSONArray(d.members.removed(0).map { it.json() })) }
@@ -42,7 +48,7 @@ fun main(args: Array<String>) {
                     "nip04" -> JSONObject().put("result", d.nip04(c.getString("peer"), c.getString("text"), c.optBoolean("encrypt", true)))
                     else -> JSONObject().put("error", "unknown command")
                 }
-            } catch (e: KeykinException) { JSONObject().put("error", e.code).put("detail", e.message) }
+            } catch (e: KeykinException) { JSONObject().put("error", e.code).put("detail", e.message) } catch (e: Exception) { JSONObject().put("error", "internal").put("detail", e.toString()) }
             println(out.toString()); System.out.flush()
         }
     } catch (e: KeykinException) { println("""{"error":"${e.code}"}""") } finally { net.close() }

@@ -5,6 +5,8 @@ plugins {
 
 // A headless Kotlin device for cross-language tests (test/kotlin.e2e.test.ts).
 application { mainClass.set("keykin.HeadlessKt") }
+// The headless device reads a typed join check from stdin (test/kotlin.invite.e2e.test.ts).
+tasks.named<JavaExec>("run") { standardInput = System.`in` }
 
 repositories { mavenCentral() }
 

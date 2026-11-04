@@ -77,3 +77,35 @@ class Joiner(val n: String, val lock: JSONObject?, now: Long, scanned: Code?) {
         return Joined(rec, recEv, changes, view, shares, C, ids)
     }
 }
+
+/** The inviting device's side (§4.1), invite direction, as TS `Inviter`: the code, the hello checked, the
+ *  nonce, and the 6 digits the person types from the new device's screen. */
+class Inviter(val g: String, val m: String, now: Long) {
+    val s: String = hex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+    val x: Long = now + CODE_TTL_S
+    data class Accepted(val n: String, val lock: JSONObject?, val t: String)
+    @Volatile var accepted: Accepted? = null; private set
+    @Volatile var confirmed = false; private set
+    fun invite(relays: List<String>): String {
+        fun e(v: String) = java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20")
+        return "keykin:join?g=$g&m=$m&s=${b64u(unhex(s))}&x=$x" + relays.joinToString("") { "&r=${e(it)}" }
+    }
+    /** A `join_hello`, sealed by `from`: the `join_nonce` to answer, or a refusal (drop it). */
+    @Synchronized fun onHello(from: String, hello: JSONObject, now: Long): JSONObject {
+        if (accepted != null) refuse("already_accepted")
+        if (now > x) refuse("expired")
+        if (hello.optString("s") != s) refuse("bad_secret")
+        if (hello.optString("n") != from) refuse("not_sealed_by_n")
+        val lock = hello.opt("lock") as? JSONObject
+        val t = hex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+        accepted = Accepted(from, lock, t)
+        return JSONObject().put("type", "join_nonce").put("t", t)
+    }
+    /** The person typed the number shown on the new device. Only a match goes on. */
+    @Synchronized fun typed(code: String): Boolean {
+        val a = accepted ?: return false
+        val ok = java.security.MessageDigest.isEqual(utf8(Codes.joinCheck(g, m, a.n, s, a.t)), utf8(code))
+        if (ok) confirmed = true
+        return ok
+    }
+}

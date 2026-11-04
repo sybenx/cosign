@@ -68,6 +68,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     /** What other members send this device directly (§6.7.6: live devices get the list and their delivery). */
     private fun handle(from: String, body: JSONObject): JSONObject? = when (body.optString("type")) {
         "change" -> { val a = body.optJSONArray("events"); if (a != null) takeChanges((0 until minOf(a.length(), CHANGES_PER_MESSAGE)).mapNotNull { a.optJSONObject(it)?.let(Event::of) }); JSONObject().put("type", "ack") }
+        "join_hello" -> try { inviter?.onHello(from, body, net.now) } catch (_: KeykinException) { null }
         "delta_push" -> { body.optJSONObject("wrap")?.let { takeDelivery(it) }; applyAll(); JSONObject().put("type", "ack") }
         else -> null
     }
@@ -299,6 +300,76 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             // Our own delta is applied by now, or never will be: it goes with the rest of δ.
             dealt?.let { d -> synchronized(this) { pending[d.redeal.getString("id")]?.remove(pub) } }
         }
+    }
+    /** Inviting (§4.1–§4.2): the code to show, then `addInvited` once the person typed the new device's digits. */
+    @Volatile var inviter: Inviter? = null
+    fun invite(relays: List<String>): String = Inviter(g, pub, net.now).also { inviter = it }.invite(relays)
+    /** §4.2 steps 2–4 for the invited device: its add (with its lock, approved by this device's lock), a
+     *  repair of each of its indices by this device and one server, sealed to it, and the welcome. */
+    fun addInvited(): String {
+        val inv = inviter ?: refuse("no_invite")
+        val a = inv.accepted ?: refuse("no_hello")
+        if (!inv.confirmed) refuse("not_confirmed", "the person has not typed the new device's number")
+        val v = view
+        val seats = rec.getJSONObject("seats")
+        val taken = (v.members.flatMap { it.shares } + listOf("servers", "backup", "helper").flatMap { ints(seats.getJSONArray(it)) } +
+            (0 until rec.getJSONArray("members").length()).flatMap { member(rec.getJSONArray("members").getJSONObject(it)).shares }).toSet()
+        var salt = 0L
+        while (true) { val idx = Codes.deviceIndices(g, epochId, a.n, salt); if (idx.toSet().size == 3 && idx.none { it in taken }) break; salt++ }
+        val indices = Codes.deviceIndices(g, epochId, a.n, salt)
+        val list = JSONArray().put(JSONObject().put("add", JSONObject().put("key", a.n).put("kind", "device").put("lock", a.lock ?: JSONObject.NULL).put("salt", salt)))
+        submit(list, approveLock(list))
+        // The repair: this device and one live server, each index sealed to the new device (§4.2 step 3).
+        val st = state
+        var last = "no_server"
+        val sigmas = servers().firstNotNullOfOrNull { s ->
+            try { indices.flatMap { i -> repair(st, listOf(Signer(pub, st.shares.keys.sorted()), Signer(s.key, s.shares)), i, a.n, "add") } }
+            catch (e: KeykinException) { last = e.code; null }
+        } ?: refuse(last)
+        for (w in sigmas) net.publishEvent(w)
+        // §4.2 step 4: the welcome, with what a device holds of the account.
+        val w = msg("welcome", "member").put("record", recEv.json()).put("changes", JSONArray(changes.map { it.json() })).put("state", JSONArray(st.ids.sorted()))
+            .put("base_dk", baseDk).put("dk", JSONArray(dkSeeds)).put("seeds", JSONArray(releaseSeeds.map { (k, x) -> JSONArray(listOf(k, x)) }))
+        carried.opt("items")?.let { w.put("items", it) }; carried.opt("base")?.let { w.put("base", it) }
+        val ack = net.send(sk, a.n, w)
+        if (ack.optString("type") != "ack") refuse(ack.optString("code").ifEmpty { "welcome_failed" })
+        inviter = null
+        return a.n
+    }
+    /** One repair of `participant` by `helpers` (this device among them), sealed to `sealTo` (§4.2 step 3,
+     *  §6.7.4): repair_start to each helper, the deltas exchanged, repair_finish; one sigma wrap per helper. */
+    private fun repair(st: ShareState, helpers: List<Signer>, participant: Long, sealTo: String, why: String): List<JSONObject> {
+        val sh = Codes.stateHash(st.ids.toList())
+        val rid = hex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) })
+        val hj = JSONArray(helpers.map { JSONObject().put("key", it.key).put("indices", JSONArray(it.indices)) })
+        val all = helpers.flatMap { it.indices }
+        // Our own step 1: for each of our indices, the deltas to every helper index.
+        val keptMine = ArrayList<String>(); val toOthers = HashMap<String, MutableList<String>>()
+        for ((i, s) in st.shares) {
+            val byIndex = Frost.repairDeltas(st.C, all, i, s, participant)
+            for (h in helpers) for (j in h.indices) { val d = byIndex[j] ?: refuse("repair_failed"); if (h.key == pub) keptMine += d else toOthers.getOrPut(h.key) { ArrayList() } += d }
+        }
+        val start = JSONObject().put("type", "repair_start").put("participant", participant).put("helpers", hj).put("state", sh).put("rid", rid).put("why", why).put("seal_to", sealTo)
+        val outs = HashMap<String, JSONObject>()
+        for (h in helpers.filter { it.key != pub }) {
+            val a = net.send(sk, h.key, JSONObject(start.toString()))
+            if (a.optString("type") != "repair_delta") refuse(a.optString("code").ifEmpty { "repair_refused" }, a.optString("detail"))
+            outs[h.key] = a.optJSONObject("out") ?: refuse("repair_refused")
+        }
+        val wraps = ArrayList<JSONObject>()
+        for (h in helpers.filter { it.key != pub }) {
+            val mine = env.wrap(sk, h.key, JSONObject().put("type", "repair_delta").put("participant", participant).put("rid", rid).put("deltas", JSONArray(toOthers[h.key] ?: emptyList<String>())), net.now)
+            val deltas = JSONArray().put(mine)
+            for (o in helpers.filter { it.key != pub && it.key != h.key }) outs[o.key]?.optJSONObject(h.key)?.let { deltas.put(it) }
+            val a = net.send(sk, h.key, JSONObject().put("type", "repair_finish").put("participant", participant).put("rid", rid).put("seal_to", sealTo).put("deltas", deltas))
+            if (a.optString("type") != "repair_sigma") refuse(a.optString("code").ifEmpty { "repair_refused" })
+            wraps += a.getJSONObject("wrap")
+        }
+        // Our own sigma, from what we kept and what every other helper sent us.
+        val received = helpers.filter { it.key != pub }.flatMap { h -> outs[h.key]?.optJSONObject(pub)?.let { w -> env.unwrap(sk, w).body.getJSONArray("deltas").let { d -> (0 until d.length()).map { d.getString(it) } } } ?: refuse("repair_refused", "no deltas for us") }
+        val sigma = Frost.repairSigma(keptMine + received)
+        wraps += env.wrap(sk, sealTo, JSONObject().put("type", "repair_sigma").put("index", participant).put("sigma", sigma).put("state", sh), net.now)
+        return wraps
     }
     /** Co-sign events with the first server that answers: one event as a plain round, a list as one call. */
     private fun coSign(st: ShareState, evs: List<Unsigned>): List<JSONObject> {
