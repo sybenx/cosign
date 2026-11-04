@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.18 · 2026-11-03 · `draft` `optional` · not built
+Draft 14.19 · 2026-11-04 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -462,8 +462,7 @@ wire change.
   and abandons any redeal it dealt that is not yet co-signed. A copy that survives the handover (a crash between steps 2 and 3, a profile
   restored from a backup) is the same 3 shares twice, not 6 points. An app holds **one membership per
   account** and refuses a second handover for an account it already serves.
-- **Retiring an extension.** When an extension that holds a membership finds the app, it first asks
-  the app to sign a fresh challenge with the member key it claims and to re-run the share check. An app
+- **Retiring an extension.** When an extension that holds a membership finds the app, it first asks the app to sign a fresh challenge with the member key it claims (as `SHA-256("keykin-retire/1" ‖ g ‖ challenge)`) and to re-run the share check. An app
   reports only a membership that passed handover step 2 or join step 5 (§4.2). Then it compares:
   - if the app holds the **same** member key for the same `g`, the extension's copy is a leftover:
     it just deletes it locally and sends nothing;
@@ -705,6 +704,58 @@ then signs it like any event.
 This is a backstop, and it is easy to step around for lists: a follow list cut to one junk entry is not
 empty. The device is the real gate, and its policy holds far more. What that leaves open is in §10.
 
+### 5.9 Member-key signatures for apps
+
+Apps built on a Keykin account sometimes need a device to vouch for something with its own member key
+(the encrypted-sync spec's `ksig`, for one). Core allows exactly one form, so no such signature can ever
+be read as one Core makes, and no Core flow can be made to produce one.
+
+- **Form.** `sig = BIP-340(member key, SHA-256(utf8(domain) ‖ 0x00 ‖ message))`, by the device's own
+  member key, never the account key. `domain` is at most 128 bytes and matches
+  `[a-z0-9][a-z0-9.-]*(/[a-z0-9.-]+)*/[0-9]+` (lowercase segments ending in a version, as
+  `nostr-vault/ksig/1`); the `0x00` ends it. `message` is the app's bytes, at most 64 KB. A member key
+  belongs to one account (§4.6), so `g` is not in the digest. The device hashes the message itself; it
+  never signs a digest an app hands it (§5.4). The vectors are `vectors/membersig.json`.
+- **Reserved, and how Core signs.** A domain that starts with `keykin` or `cosign` belongs to Core, its
+  modules and Cosign 0.12, and a device refuses it for an app. Every member-key signature in Core and its
+  modules is a Nostr event id (a seal, §9.1, whose preimage starts with `[`) or `SHA-256` over a
+  `keykin-…/1` tag followed by fixed fields, with no `0x00` after the tag: `detached(type, body)` (§6.2),
+  `keykin-self/1` (§6.4), Doors' `keykin-grant/1` and `keykin-grant-set/1`, and the three challenge
+  signatures (`keykin-retire/1`, §4.6; `keykin-seated-ask/1` and `keykin-forward-ask/1`, §6.7.5). The
+  other items "signed by a member key" are `detached` with these types: `paper-reissue` (§6.7.6),
+  `policy-snapshot` (Device policy) and `label` (Account admin's device names). A member key never signs
+  raw bytes a server, site or app chose. So an app preimage, with `0x00` right after a domain outside
+  `keykin…` and `cosign…`, never equals a Core one, and two apps' preimages differ wherever their domains
+  do.
+- **Who may ask.** A domain is granted to an app, not claimed by it. The app maker's signed **app list**
+  (published like the server list, §6.7.7, versioned on its own) names each domain and the app identities
+  that may use it. A device signs only for a listed app on its own machine, under the device API, and
+  checks the identity the way the OS can prove it: an Android signing-certificate digest, an Apple team id
+  from the caller's audit token, a browser's own extension id. A person may also grant an app a domain by
+  hand, with one question naming the app and the domain ("Let Notes sign for `notes.example/sig/1`?"),
+  but **never a domain the app list names**: those go only to the apps it names. Where the OS can't prove
+  the caller (native messaging and local sockets on Linux or Windows), the grant comes with a per-grant
+  secret the app keeps in its own storage and presents on every call. Never through a door (NIP-07,
+  NIP-46, NIP-55): a site can't ask. Signing itself needs no prompt, and the device logs each use.
+- **Only devices.** Servers and the helper hold member keys too (Server profile derives a seat's), so
+  they never sign here and never appear below.
+- **What a verifier needs.** The device API also gives an app:
+  - `members.devices()`: `{self, asOf, keys}`, the current **device** member keys from this device's view
+    (the epoch record and changes in force), this device's own key, the `state` it is at (§5.1's hash of
+    the sorted redeal ids), and for each key `added_by` and `flagged` (§6.7.6 F5's "added by a device you
+    removed");
+  - `members.removed(since)`: a durable log, kept for the account's life, of `{key, why, change, state}`
+    for every key that leaves the device set here, `why` being `remove`, `self` or `void` (§3.2's
+    conflicting adds), and `state` `null` until that change's redeal has applied, then the post-redeal
+    hash. `members.onRemoved` is called for each new or updated entry, and also when a key is flagged.
+    An entry appears as soon as the key is out, so an app can revoke at once, and again with `state` when
+    the redeal lands. An app that was not running reads the log on its next start.
+
+  A member-key signature proves only that the key signed, not when: a removed device's key can still
+  sign. Whether a key counts is the verifier's check against `devices()` now; an app that needs to know
+  when can put the signer's `state` in `message`. On a platform where the OS can't prove the caller, a
+  local program that steals an app's grant secret signs as that app (§10).
+
 ## 6. Account changes
 
 ### 6.1 The lock
@@ -833,7 +884,7 @@ second device or the paper. A helper never approves anything.
 - **A `self` remove** exists only for the §4.6 case: an extension retiring in favour of its machine's app,
   which joined separately. It is `{"remove": <own key>, "to": <app member key>}` with the approval
   `"self": { "member": <key>, "sig": …, "app_sig": … }`: detached signatures by the leaving key and by the
-  named app's member key over `"keykin-self/1" ‖ g ‖ change hash`. A server co-signs it only while both are
+  named app's member key over `SHA-256("keykin-self/1" ‖ g ‖ change hash)`. A server co-signs it only while both are
   current devices and they are different keys. The app deals a redeal with it under the same two-key
   approval (`[remove, redeal]`), so a copied extension profile doesn't stay at the live state. In every
   other case a device leaves by an ordinary report-lost (`[remove, redeal]`, §6.2).
@@ -1099,8 +1150,7 @@ replaced. Three routes, tried in order:
 
 1. **Ask the public list.** The paper app takes the app maker's signed public server list (§6.7.7) and
    asks each listed server `seated? {H(key), challenge, sig}`, where the key is the backup key or, from a
-   device, its member key, and `sig` is that key's signature over the server's challenge (a server answers
-   only if it verifies). A server that holds a seat for an account where that key is the current backup
+   device, its member key, and `sig` is that key's signature over `SHA-256("keykin-seated-ask/1" ‖ H(key) ‖ challenge)` (a server answers only if it verifies). A server that holds a seat for an account where that key is the current backup
    key or a current device answers with a reply sealed to the key, carrying its host signature outside
    the seal, over `SHA-256("keykin-seated/1" ‖ H(key) ‖ challenge ‖ ciphertext)`, so the asker can check
    it. This needs no relays and no published event. A server that holds an heir record (Backup module)
@@ -1108,7 +1158,7 @@ replaced. Three routes, tried in order:
 2. **Follow the forwarding notes.** A retired server, after destroying everything else, keeps for the
    account only the group-signed change that retired it and the hashes of the keys allowed to ask for it
    (the backup keys, device keys, other seat servers' keys and any heir key it knew). It serves that change to a
-   request signed by one of them. That is a forwarding note with no secrets. From
+   request signed by one of them, over `SHA-256("keykin-forward-ask/1" ‖ H(key) ‖ challenge)` with the server's challenge. That is a forwarding note with no secrets. From
    the printed servers, the paper app walks the notes to today's servers.
 3. **The signpost**, for servers the person runs themself that are not on the public list. It is a kind
    30078 event signed by `g`, with `d = hex(SHA-256("keykin-beacon/1" ‖ backup key))`.
@@ -1673,6 +1723,9 @@ before `"9"` in JCS, unlike a JavaScript object's own key order).
   refusals, or refuses only recovery, helper or Upkeep rounds, brings no line at all. Signing still works
   through the other servers. While it sits in a seat, a paper recovery relies on the other two servers,
   and one more dead server ends paper-only recovery.
+- **App grants on platforms that can't name the caller.** On Linux or Windows, a local program that reads
+  an app's stored grant secret can get member-key signatures under that app's domain (§5.9), as local
+  software running as the person can already read an extension's storage.
 - **Two servers dead and every device lost before replacement** ends paper-only recovery.
 - **A lone device without a working lock** (a passcode-only phone, a new fingerprint enrolled, an
   extension, a Mac without Touch ID) needs the paper in hand to add a device, make a paper, re-lock or
@@ -2160,3 +2213,15 @@ From the reference implementation's item 48 (b): a kind 5's `a` value hits the s
 both `g` and a signpost `d`, whatever its kind part or splitting (§6.7.5). Item 48 (a), by the hub's Q10
 answer (b): a server that answers but won't co-sign is not detected automatically. It is stated as a limit
 in §10, and §6.7.9 adds a quiet Backup line with a button to move it by hand (F4).
+
+## Changes in draft 14.19
+
+For the encrypted-sync spec, in the form the reference implementation built (deaab29): §5.9, member-key
+signatures for apps, `SHA-256(utf8(domain) ‖ 0x00 ‖ message)` by the device's own member key, with every
+`keykin…` and `cosign…` domain reserved. Domains are granted by the app maker's app list with OS-checked
+identities; a by-hand grant never covers a listed domain; a per-grant secret is used where the OS can't
+check. Never through a door; device keys only. The device API gets `members.devices()` (with F5 flags) and
+a durable `members.removed` log that covers every way a key leaves. Every member-key signature in Core and
+its modules is now tagged, including the three challenge signatures (`keykin-retire/1`,
+`keykin-seated-ask/1`, `keykin-forward-ask/1`). Two red-team rounds (2 high, then 1 high; no critical)
+are folded in.

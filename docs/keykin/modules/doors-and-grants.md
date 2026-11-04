@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 19 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.15 · not built
+Draft 19 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.19 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -111,8 +111,8 @@ for listing. The wildcard is also published in the ending device's event.
   `base64(24-byte nonce ‖ ciphertext)`. Expired entries are pruned from it, and once a part's encrypted, base64-encoded content
   would pass 24 KB (under strfry's and most relays' 32–64 KB limits) it is split into `d ‖ ":1"`, `":2"`, …, each part its own encrypted chunk of the
   JCS-encoded set, all with the same `created_at` and a `["parts", n]` tag; the parts count as one
-  event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `"keykin-grant-set/1"
-  ‖ g ‖ d ‖ created_at ‖ SHA-256(JCS({entries, tombstones, ended, union}))`. The maker publishes at `created_at = max(now,
+  event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `SHA-256("keykin-grant-set/1"
+  ‖ g ‖ d ‖ created_at ‖ SHA-256(JCS({entries, tombstones, ended, union})))` (core §5.9). The maker publishes at `created_at = max(now,
   last + 1)`.
 - **The counted relays** are the account's **live recorded relays**: the epoch record's relays plus the
   current seat holders' relays, leaving out a relay that has failed **10 tries over at least 7 days, each

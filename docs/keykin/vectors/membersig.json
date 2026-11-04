@@ -1,0 +1,63 @@
+{
+ "note": "digest = SHA-256(utf8(domain) || 0x00 || message); sig = BIP-340(digest, member key), aux = 32 zero bytes. Domains: registered, versioned, lowercase, never starting keykin or cosign.",
+ "member_sk": "1111111111111111111111111111111111111111111111111111111111111101",
+ "member_key": "65666e237a1523e156fddf24b8335f658f90e21330775a679b33b65fbaa38e38",
+ "valid": [
+  {
+   "domain": "nostr-vault/ksig/1",
+   "message": "abababababababababababababababababababababababababababababababab",
+   "digest": "010e05ce7e20f6f820fac4bb43610debd9a0d10fae291c17802741e691590f59",
+   "sig": "24a685e28b56d6da1e6192517861222bc63bd165867880695b700c87c2e43a5c413ce8de60b7faab5ff1f39a113aa7f3b6d589d4580846d9ddb907dfdeda5a25"
+  },
+  {
+   "domain": "nostr-vault/ksig/1",
+   "message": "",
+   "digest": "0d797a11e5049bb65c2f5959513d4757b1174b3a0cce956935ba9160eb5746f1",
+   "sig": "967fcd23a37c6868147ab2408273d9805c73f25e2e579281367bc93df2f76d2620c2020b3bf9bdefb489b1b1cfa7cb6e28dbb400a51db3df3fd5e55665dc1ebd"
+  },
+  {
+   "domain": "nostr-vault/ksig/1",
+   "message": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "digest": "8a8ef61f34840181aa271f421c1bef29ff8dabcdaa7b845f90d3edd78e8aba1d",
+   "sig": "d80b459c89a22e696d27d718e435a6bbb57ef8a6f4fcc8c62fe74ff616a503d9801aad0f223f5eba7189416fc904b4d37776140a6e7bcbe452b5073dae923b40"
+  }
+ ],
+ "refused_domains": [
+  {
+   "domain": "keykin-pair/1",
+   "why": "keykin and cosign domains are Keykin Core's own"
+  },
+  {
+   "domain": "keykin/1",
+   "why": "keykin and cosign domains are Keykin Core's own"
+  },
+  {
+   "domain": "cosign-ticket/1",
+   "why": "keykin and cosign domains are Keykin Core's own"
+  },
+  {
+   "domain": "Nostr-vault/ksig/1",
+   "why": "a domain is lowercase segments ending in a version, like nostr-vault/ksig/1"
+  },
+  {
+   "domain": "nostr-vault/ksig",
+   "why": "a domain is lowercase segments ending in a version, like nostr-vault/ksig/1"
+  },
+  {
+   "domain": "nostr-vault/ksig/1\u0000x",
+   "why": "a domain is lowercase segments ending in a version, like nostr-vault/ksig/1"
+  },
+  {
+   "domain": "[0,\"x\"]/1",
+   "why": "a domain is lowercase segments ending in a version, like nostr-vault/ksig/1"
+  },
+  {
+   "domain": "",
+   "why": "a domain is lowercase segments ending in a version, like nostr-vault/ksig/1"
+  },
+  {
+   "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1",
+   "why": "a domain is a short string"
+  }
+ ]
+}
