@@ -23,7 +23,7 @@ object Upkeep {
     /** The record's commitment at `ids`, every id a redeal of the view; refuses an unknown one. */
     fun commitmentAt(rec: JSONObject, view: MembershipView, ids: Collection<String>): List<Pt?> {
         val C0 = (0 until rec.getJSONArray("commitment").length()).map { point(rec.getJSONArray("commitment").getString(it)) }
-        return commitmentAt(C0, ids.sorted().map { view.redeals[it]?.r ?: refuse("unknown_redeal", it) })
+        return commitmentAt(C0, ids.toSortedSet().map { view.redeals[it]?.r ?: refuse("missing_redeal", it) })
     }
 
     /** §3.4: a member's own shares on `C`, and for a device, `C` rebuilt from `g` and its three points. */
@@ -75,8 +75,9 @@ object Upkeep {
     fun checkDelivery(r: JSONObject, from: String, body: JSONObject, toDevice: Boolean) {
         if (from != r.getString("dealer")) refuse("not_dealer", "a delta comes only from its redeal's dealer")
         if (toDevice && !body.has("dk")) refuse("missing_seed", "a device's delivery carries the data-key seed")
-        if (body.has("release") && hex(sha(unhex(body.getString("release")))) != r.getString("rs")) refuse("bad_seed", "release seed")
-        if (body.has("dk") && hex(sha(unhex(body.getString("dk")))) != r.getString("dk")) refuse("bad_seed", "data-key seed")
+        fun seed(f: String) = (body.opt(f) as? String)?.takeIf { HEX32.matches(it) } ?: refuse("bad_seed", "$f: 32 bytes of hex")
+        if (body.has("release") && hex(sha(unhex(seed("release")))) != r.getString("rs")) refuse("bad_seed", "release seed")
+        if (body.has("dk") && hex(sha(unhex(seed("dk")))) != r.getString("dk")) refuse("bad_seed", "data-key seed")
     }
 
     /** §7.2: an item's hash, over the item without its `sig`. */
@@ -94,10 +95,16 @@ object Upkeep {
             val v = openItem(item, releaseSeed, ck); val D = dPoints(r)
             val b = v.getJSONArray("b").let { a -> (0 until a.length()).map { Json.long(a.get(it)) } }
             val d = v.getJSONArray("d")
-            b == backupSeat && d.length() == b.size && b.indices.all { k -> mul(BigInteger(d.getString(k), 16)) == deriveDelta(D, BigInteger.valueOf(b[k])) } &&
+            b == backupSeat && d.length() == b.size && b.indices.all { k -> mul(scalar(d.get(k))) == deriveDelta(D, BigInteger.valueOf(b[k])) } &&
                 hex(sha(unhex(v.getString("dk_seed")))) == r.getString("dk")
         }
     } catch (_: Exception) { false }
 
+    private val HEX32 = Regex("^[0-9a-f]{64}$")
+    /** A scalar as §9.5 writes it: 64 lowercase hex, below N (TS `scalarFrom`). */
+    fun scalar(h: Any?): BigInteger {
+        val s = (h as? String)?.takeIf { HEX32.matches(it) } ?: refuse("malformed", "a scalar is 64 lowercase hex")
+        return BigInteger(s, 16).also { if (it >= N) refuse("malformed", "a scalar is below N") }
+    }
     private fun strs(a: JSONArray) = (0 until a.length()).map { a.getString(it) }
 }

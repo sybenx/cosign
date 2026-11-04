@@ -184,6 +184,8 @@ data class MembershipView(val devices: List<String>, val removed: List<String>, 
 object Membership {
     private class Parsed(val ev: Event, val c: JSONObject, val change: JSONObject, val type: String, val listHash: String, val list: JSONArray)
 
+    /** Whether `ev` is a change of this account, signed by its group key (approval not yet checked). */
+    fun parses(rec: JSONObject, ev: Event): Boolean = try { parse(rec, ev); true } catch (_: Exception) { false }
     private fun parse(rec: JSONObject, ev: Event): Parsed {
         need(ev.kind == 24302, "not_a_change", "kind")
         val c = try { Json.obj(ev.content) } catch (_: Exception) { refuse("not_a_change", "content") }

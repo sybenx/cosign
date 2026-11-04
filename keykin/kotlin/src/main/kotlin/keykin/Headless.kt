@@ -13,7 +13,7 @@ fun main(args: Array<String>) {
     try {
         // The first argument is a TS device's snapshot, or `join:<invite code>` to join as a new device.
         val d = if (args[0].startsWith("join:")) Device.join(args[0].removePrefix("join:"), net, { println(JSONObject().put("check", it).toString()); System.out.flush() })
-            else Device.fromSnapshot(File(args[0]).readText(), net)
+            else Device.fromSnapshot(File(args[0]).readText(), net).also { dev -> dev.persist = { File(args[0]).writeText(it) } }
         println(JSONObject().put("device", d.pub).toString()); System.out.flush()
         val cmds = JSONArray(File(args[2]).readText())
         for (k in 0 until cmds.length()) {

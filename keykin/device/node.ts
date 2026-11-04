@@ -25,7 +25,7 @@ import { makeHeir, pieceAckDigest } from '../src/backup.ts';
 import { backupPieces } from '../src/slip39.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
 import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
-import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
+import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, UPLOAD_TTL_S, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
 import { Inbox, PushRegistry, pushPayload, readPush } from '../src/inbox.ts';
@@ -187,13 +187,15 @@ export class DeviceNode implements Node {
     for (const s of this.servers()) {
       const a = await this.bus.send(this.kp, s.key, msg('inbox_get', this.g, this.epochId, 'ask'));
       if (a?.type !== 'inbox') continue;
+      const keep = new Set<unknown>();
       for (const it of a.items) try {
         // A site's request a watching server kept goes to the NIP-46 home, not into the void (review 11 M1).
         const o = unwrap(this.kp.sk, it.wrap);
         if (o.body?.type === 'nip46' && o.from === s.key) await this.nip46.handle(o.body.event);
-        else this.takeDelivery(it.wrap);
+        // A delivery with no room yet stays at the server: acking it would delete its only other copy (review 13 M1).
+        else if (this.takeDelivery(it.wrap) === 'full') { keep.add(it.iid); }
       } catch { /* one bad item never wedges the rest */ }
-      await this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid) }));
+      await this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid).filter((x: any) => !keep.has(x)) }));
     }
     this.applyAll();
     if (this.notices.some((n) => n.kind === 'bad_paper_item')) await this.reissueMissing();
@@ -206,22 +208,31 @@ export class DeviceNode implements Node {
   /** "Paper item verified" bits, per backup key and redeal (§6.7.6, 14.12). */
   paperVerified = new Map<string, boolean>();
   lastDetail: string | undefined;
-  takeDelivery(w: NostrEvent) {
+  /** A sealed delivery: 'kept', 'junk' (never applied, safe to ack), or 'full' (no room yet: leave it at the server). */
+  takeDelivery(w: NostrEvent): 'kept' | 'junk' | 'full' {
     const o = unwrap(this.kp.sk, w);
-    if (o.body.type === 'delta') {
-      // Only the redeal's dealer's delta counts (§6.7.3). Before the redeal is known, one per sender and
-      // bounded, so a stranger's never stands in for the dealer's; the dealer's is picked once it arrives.
-      const r = this.m!.redeals.get(o.body.redeal)?.r;
-      if (r && o.from !== r.dealer) return;
-      const k = `${o.body.redeal}:${o.from}`;
-      const same = [...this.pendingDeltas.keys()].filter((x) => x.startsWith(`${o.body.redeal}:`)).length;
-      if (!this.pendingDeltas.has(k) && (same >= 8 || this.pendingDeltas.size >= 512)) return;
-      this.pendingDeltas.set(k, { ...o.body, from: o.from });
+    if (o.body.type !== 'delta' || typeof o.body.redeal !== 'string' || !/^[0-9a-f]{32}$/.test(o.body.redeal) || !Array.isArray(o.body.deltas)) return 'junk';
+    // Only the redeal's dealer's delta counts (§6.7.3). Before the redeal is known, only from a current device,
+    // one per sender per redeal and bounded, so a stranger's never stands in for the dealer's (review 13 M1).
+    const m = this.m!, r = m.redeals.get(o.body.redeal)?.r;
+    if (r ? o.from !== r.dealer : !m.devices.has(o.from) || m.removed.has(o.from)) return 'junk';
+    if (r && (this.state!.ids.has(r.id) || m.abandoned.has(r.id))) return 'junk';
+    const k = `${o.body.redeal}:${o.from}`;
+    if (!this.pendingDeltas.has(k)) {
+      const keys = [...this.pendingDeltas.keys()];
+      if (keys.filter((x) => x.startsWith(`${o.body.redeal}:`)).length >= 8 || keys.filter((x) => x.endsWith(`:${o.from}`)).length >= 16 || keys.length >= 512) return 'full';
     }
+    this.pendingDeltas.set(k, { ...o.body, from: o.from, at: this.now });
+    return 'kept';
   }
   /** Apply every redeal we hold a delta for (§6.7.1), checking our rebuilt commitment each time. */
   applyAll() {
     const m = this.m!;
+    // Deliveries for redeals applied or abandoned, or kept past an upload's life, go (review 13 M1, L5).
+    for (const [k, d] of [...this.pendingDeltas]) {
+      const id = k.split(':')[0];
+      if (this.state!.ids.has(id) || m.abandoned.has(id) || (d.at !== undefined && this.now - d.at > UPLOAD_TTL_S)) this.pendingDeltas.delete(k);
+    }
     for (let again = true; again;) {
       again = false;
       for (const { r } of m.redeals.values()) {
@@ -235,8 +246,13 @@ export class DeviceNode implements Node {
           this.paperVerified.set(`${m.backupKey}:${r.id}`, ok);
           if (!ok) this.notices.push({ kind: 'bad_paper_item', member: r.dealer });
         }
-        const deltas = new Map<number, bigint>(d.deltas.map(([i, x]: [number, string]) => [i, scalarFrom(x)]));
-        const { state, paperValues } = applyRedeal(m.g, this.state!, r, deltas, true, m.record.seats.backup, m.abandoned);
+        // A dealer's malformed deltas drop the delivery; they never wedge every later apply (review 13 M3).
+        let applied: ReturnType<typeof applyRedeal>;
+        try {
+          const deltas = new Map<number, bigint>(d.deltas.map(([i, x]: [number, string]) => [i, scalarFrom(x)]));
+          applied = applyRedeal(m.g, this.state!, r, deltas, true, m.record.seats.backup, m.abandoned);
+        } catch { drop(); this.notices.push({ kind: 'bad_delivery', member: d.from }); continue; }
+        const { state, paperValues } = applied;
         this.state = state; drop();
         // §6.7.1 step 3: keep δ(b) and the data-key seed until the current paper's item is verified, or,
         // on the device running an F7, until its paper change commits (14.12).

@@ -323,7 +323,10 @@ export const signpostServers = (m: Membership) => [...m.seats.entries()].filter(
  *  Candidates go in id order, so the result depends only on the set, never on batching or arrival. */
 export function adopt(rec: EpochContent, current: NostrEvent[], incoming: NostrEvent[], W = W_DEFAULT): { changes: NostrEvent[]; m: Membership; refused: { ev: NostrEvent; why: string }[] } {
   const have = new Set(current.map((e) => e.id));
-  const cands = [...new Map(incoming.filter((e) => !have.has(e.id)).map((e) => [e.id, e])).values()].sort((a, b) => (a.id < b.id ? -1 : 1));
+  // Only events that are changes of this account, signed by its group key: anything else would join the
+  // set for good and cost a recompute each time (review 13 H1). A list waiting on its approval still parses.
+  const parses = (e: NostrEvent) => { try { parseChange(rec, e); return true; } catch { return false; } };
+  const cands = [...new Map(incoming.filter((e) => e && !have.has(e.id) && parses(e)).map((e) => [e.id, e])).values()].sort((a, b) => (a.id < b.id ? -1 : 1));
   let changes = [...current], m = computeMembership(rec, changes, W);
   const refused: { ev: NostrEvent; why: string }[] = [];
   for (const e of cands) {

@@ -8,37 +8,51 @@ import java.math.BigInteger
 
 /** Sigmas a joining device keeps from senders other than its inviter (the servers are known only from the welcome). */
 private const val SIGMAS_MAX = 256
-/** Deliveries kept for redeals not yet known: this many redeals, this many senders each. */
-private const val PENDING_MAX = 64
+/** Deliveries kept for redeals not yet known (review 13 M1): in all, per redeal, per sender; and for how long. */
+private const val PENDING_MAX = 512
 private const val PENDING_PER_REDEAL = 8
+private const val PENDING_PER_SENDER = 16
+private const val PENDING_TTL_S = 7 * 86400L
+/** Change events taken from one message, and kept refused for later (review 13 H1). */
+private const val CHANGES_PER_MESSAGE = 1024
+private const val REFUSED_MAX = 256
 
-class Device(val sk: ByteArray, val rec: JSONObject, changes: List<Event>, ids: List<String>, shares: Map<Long, BigInteger>, private val net: RelayNet,
+class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: List<Event>, ids: List<String>, shares: Map<Long, BigInteger>, private val net: RelayNet,
              private var baseDk: String = "", dkSeeds: List<String> = emptyList()) {
     val pub: String = Secp.Reference.pub(sk)
     val g: String = rec.getString("g"); val epochId: String = rec.getJSONObject("epoch").getString("id")
     private val env = Envelope()
     /** The change set in force (§3.2), and the ones refused for now (kept: a later change may admit them). */
-    var changes: List<Event> = changes; private set
+    @Volatile var changes: List<Event> = changes; private set
     private var refused: List<Event> = emptyList()
-    var view: MembershipView = Membership.compute(rec, changes); private set
-    var state: ShareState; private set
+    @Volatile var view: MembershipView = Membership.compute(rec, changes); private set
+    @Volatile var state: ShareState; private set
     val ids: Set<String> get() = state.ids
     val shares: Map<Long, BigInteger> get() = state.shares
-    val ctx: RoundContext get() = RoundContext(g, epochId, state.hash, state.C)
-    var wiped = false; private set
+    val ctx: RoundContext get() = state.let { RoundContext(g, epochId, it.hash, it.C) }
+    @Volatile var wiped = false; private set
     private val dkSeeds = ArrayList(dkSeeds)
-    /** Release seeds by redeal id (§7.2), and the deliveries waiting for their redeal (§6.7.1). */
-    val releaseSeeds = HashMap<String, String>()
+    /** Release seeds by redeal id (and `base`, §7.2), and the deliveries waiting for their redeal (§6.7.1). */
+    private val releaseSeeds = HashMap<String, String>()
     private val pending = HashMap<String, LinkedHashMap<String, JSONObject>>()
     /** Paper values kept per redeal until the current paper's item is verified (§6.7.1 step 3). */
-    val kept = HashMap<String, JSONObject>()
-    val paperVerified = HashMap<String, Boolean>()
+    private val kept = HashMap<String, JSONObject>()
+    private val paperVerified = HashMap<String, Boolean>()
+    /** The redeals whose paper values this device keeps (until the paper item is verified, or re-issued). */
+    val keptRedeals: Set<String> get() = synchronized(this) { kept.keys.toSet() }
     val notices = java.util.concurrent.CopyOnWriteArrayList<JSONObject>()
     /** Every state this device has held, oldest first (core §4.5: older keys read older data). */
     private val dkHistory = ArrayList<List<String>>()
     val members = Members()
     /** A site's NIP-46 request a watching server kept for us (Doors §3.3): the home takes it. */
-    var onSiteRequest: ((JSONObject) -> Unit)? = null
+    @Volatile var onSiteRequest: ((JSONObject) -> Unit)? = null
+    /** Called with this device's state, as `snapshot()` writes it, after every change: the app stores it
+     *  where it is never backed up or synced (core §4.5), and loads it with `fromSnapshot` (review 13 M5). */
+    @Volatile var persist: ((String) -> Unit)? = null
+    private val gone = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    /** The snapshot this device was loaded from: what Kotlin doesn't use yet (backup material, push keys, a
+     *  lock) is written back as it was, so nothing a TS device kept is lost in a round trip. */
+    private var carried = JSONObject()
     init {
         // §4.4 step 2: a current device holding exactly these indices, every share on the commitment at
         // this state (the record's plus each applied redeal's D), which rebuilds from this device's points.
@@ -52,102 +66,156 @@ class Device(val sk: ByteArray, val rec: JSONObject, changes: List<Event>, ids: 
     }
     /** What other members send this device directly (§6.7.6: live devices get the list and their delivery). */
     private fun handle(from: String, body: JSONObject): JSONObject? = when (body.optString("type")) {
-        "change" -> { val a = body.optJSONArray("events"); if (a != null) takeChanges((0 until a.length()).map { Event.of(a.getJSONObject(it)) }); JSONObject().put("type", "ack") }
+        "change" -> { val a = body.optJSONArray("events"); if (a != null) takeChanges((0 until minOf(a.length(), CHANGES_PER_MESSAGE)).mapNotNull { a.optJSONObject(it)?.let(Event::of) }); JSONObject().put("type", "ack") }
         "delta_push" -> { body.optJSONObject("wrap")?.let { takeDelivery(it) }; applyAll(); JSONObject().put("type", "ack") }
         else -> null
     }
     private fun msg(type: String, cls: String) = JSONObject().put("v", 1).put("type", type).put("g", g).put("epoch", epochId)
         .put("id", hex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) })).put("cls", cls)
 
-    /** §3.2: adopt changes one at a time in id order, refusing any that would break an invariant. */
+    /** §3.2: adopt changes one at a time in id order, refusing any that would break an invariant. Only
+     *  changes of this account signed by its group key are candidates: anything else would join the set for
+     *  good and cost a recompute each time (review 13 H1). */
     @Synchronized fun takeChanges(evs: List<Event>) {
         if (wiped) return
         val have = changes.map { it.id }.toHashSet()
         var cur = changes; val out = ArrayList<Event>()
-        for (e in (evs + refused).filter { it.id !in have }.distinctBy { it.id }.sortedBy { it.id }) {
+        val cands = (evs.take(CHANGES_PER_MESSAGE) + refused).filter { it.id !in have }.distinctBy { it.id }.filter { Membership.parses(rec, it) }.sortedBy { it.id }
+        if (cands.isEmpty()) return
+        for (e in cands) {
             val t = Membership.compute(rec, cur + e)
             if (t.invariant) out += e else cur = cur + e
         }
-        changes = cur; refused = out
+        changes = cur; refused = out.take(REFUSED_MAX)
         recompute()
         applyAll()
+        save()
     }
     private fun recompute() {
         view = Membership.compute(rec, changes)
         if (pub in view.removed) wipe()
         afterState()
     }
-    /** A removed member destroys everything it holds (core §7.3). */
+    /** Call `cb` when this device holds no key material any more (wiped or removed): a library stops using
+     *  any key it cached, the NIP-46 home ends its grants (review 13 M6). */
+    fun onGone(cb: () -> Unit): () -> Unit { gone += cb; return { gone -= cb } }
+    /** A removed member destroys everything it holds (core §7.3), and its stored state says only that. */
     @Synchronized fun wipe() {
+        if (wiped) return
         wiped = true; state = ShareState(emptySet(), state.C, emptyMap())
         baseDk = ""; dkSeeds.clear(); releaseSeeds.clear(); pending.clear(); kept.clear(); paperVerified.clear(); dkHistory.clear()
+        notices.clear(); onSiteRequest = null; carried = JSONObject()
+        for (cb in gone) try { cb() } catch (_: Exception) {}
+        save()
     }
-    /** A sealed delivery: kept only if from the redeal's dealer (once the redeal is known). */
-    @Synchronized fun takeDelivery(w: JSONObject) {
-        if (wiped) return
-        val o = try { env.unwrap(sk, w) } catch (_: KeykinException) { return }
-        if (o.body.optString("type") != "delta") return
-        val id = o.body.optString("redeal")
-        val r = view.redeals[id]?.r
-        // Only the dealer's delta counts (§6.7.3). Before the redeal is known, one per sender, bounded, so a
-        // stranger's never stands in for the dealer's; the dealer's is picked once the redeal arrives.
-        if (r != null && o.from != r.getString("dealer")) return
-        if (r == null && pending[id] == null && pending.size >= PENDING_MAX) return
-        val at = pending.getOrPut(id) { LinkedHashMap() }
-        if (o.from in at || at.size < PENDING_PER_REDEAL) at[o.from] = o.body
+    /** A sealed delivery: "kept", "junk" (never applied: safe to ack), or "full" (no room yet: leave it at
+     *  the server, whose copy is the only other one). Only the dealer's delta counts (§6.7.3); before the
+     *  redeal is known, only from a current device, one per sender per redeal, bounded (review 13 M1). */
+    @Synchronized fun takeDelivery(w: JSONObject): String {
+        if (wiped) return "junk"
+        val o = try { env.unwrap(sk, w) } catch (_: Exception) { return "junk" }
+        val id = o.body.opt("redeal") as? String
+        if (o.body.optString("type") != "delta" || id == null || !Regex("^[0-9a-f]{32}$").matches(id) || o.body.optJSONArray("deltas") == null) return "junk"
+        val v = view; val r = v.redeals[id]?.r
+        if (if (r != null) o.from != r.getString("dealer") else o.from !in v.devices || o.from in v.removed) return "junk"
+        if (id in state.ids || id in v.abandoned) return "junk"
+        val at = pending[id]
+        if (at == null || o.from !in at) {
+            if ((at?.size ?: 0) >= PENDING_PER_REDEAL || pending.values.sumOf { it.size } >= PENDING_MAX || pending.values.count { o.from in it } >= PENDING_PER_SENDER) return "full"
+        }
+        pending.getOrPut(id) { LinkedHashMap() }[o.from] = JSONObject(o.body.toString()).put("from", o.from).put("at", net.now)
+        save()
+        return "kept"
     }
     /** Apply every redeal there is a delivery for (§6.7.1), checking the rebuilt commitment each time. */
     @Synchronized fun applyAll() {
         if (wiped) return
         val backup = ints(rec.getJSONObject("seats").getJSONArray("backup"))
-        var again = true
+        // Deliveries for redeals applied or abandoned, or kept past an upload's life, go.
+        val now = net.now
+        pending.entries.removeIf { (id, _) -> id in state.ids || id in view.abandoned }
+        for (m in pending.values) m.values.removeIf { now - it.optLong("at", now) > PENDING_TTL_S }
+        pending.values.removeIf { it.isEmpty() }
+        var again = true; var moved = false
         while (again) {
             again = false
             for ((id, info) in view.redeals) {
                 val from = info.r.getString("dealer"); val d = pending[id]?.get(from) ?: continue
                 if (Upkeep.applicable(state, info.r, view.abandoned) != null) continue
-                try { Upkeep.checkDelivery(info.r, from, d, true) } catch (_: KeykinException) { pending.remove(id); notices += JSONObject().put("kind", "bad_delivery").put("member", from); continue }
-                // §6.7.1 step 0: the paper item, opened with its conversation key; a bad one is shown.
-                val pk = "${view.backup}:$id"
-                if (d.has("paper_item") && d.has("paper_ck")) {
-                    val ok = Upkeep.verifyPaperItem(info.r, d.getJSONObject("paper_item"), d.optString("release"), d.getString("paper_ck"), backup)
-                    paperVerified[pk] = ok
-                    if (!ok) notices += JSONObject().put("kind", "bad_paper_item").put("member", info.r.getString("dealer"))
+                // Any fault in a dealer's delivery drops it: it never wedges every later apply (review 13 M2).
+                try {
+                    Upkeep.checkDelivery(info.r, from, d, true)
+                    // §6.7.1 step 0: the paper item, opened with its conversation key; a bad one is shown.
+                    val pk = "${view.backup}:$id"
+                    if (d.has("paper_item") && d.has("paper_ck")) {
+                        val item = d.opt("paper_item") as? JSONObject; val ck = d.opt("paper_ck") as? String
+                        val ok = item != null && ck != null && Upkeep.verifyPaperItem(info.r, item, d.optString("release"), ck, backup)
+                        paperVerified[pk] = ok
+                        if (!ok) notices += JSONObject().put("kind", "bad_paper_item").put("member", from)
+                    }
+                    val dl = d.getJSONArray("deltas")
+                    val deltas = (0 until dl.length()).associate { dl.getJSONArray(it).let { p -> Json.long(p.get(0)) to Upkeep.scalar(p.get(1)) } }
+                    if (deltas.size != dl.length()) refuse("bad_redeal", "an index twice")
+                    val applied = Upkeep.apply(g, state, info.r, deltas, backup, view.abandoned)
+                    state = applied.state
+                    // §6.7.1 step 3: keep δ(b) and the data-key seed until the current paper's item is verified.
+                    if (paperVerified[pk] != true) kept[id] = JSONObject().put("b", org.json.JSONArray(backup)).put("d", org.json.JSONArray(applied.paperValues.map(::scalarHex)))
+                        .put("dk", d.optString("dk")).put("release", d.optString("release"))
+                    if (d.has("release")) releaseSeeds[id] = d.getString("release")
+                    d.optString("dk").takeIf { it.isNotEmpty() && it !in dkSeeds }?.let { dkSeeds += it }
+                } catch (_: Exception) {
+                    pending.remove(id); notices += JSONObject().put("kind", "bad_delivery").put("member", from); continue
                 }
-                val deltas = try { d.getJSONArray("deltas").let { a -> (0 until a.length()).associate { a.getJSONArray(it).let { p -> Json.long(p.get(0)) to BigInteger(p.getString(1), 16) } } } }
-                    catch (_: Exception) { pending.remove(id); notices += JSONObject().put("kind", "bad_delivery").put("member", from); continue }
-                val applied = try { Upkeep.apply(g, state, info.r, deltas, backup, view.abandoned) }
-                    catch (_: KeykinException) { pending.remove(id); notices += JSONObject().put("kind", "bad_delivery").put("member", from); continue }
-                state = applied.state; pending.remove(id)
-                // §6.7.1 step 3: keep δ(b) and the data-key seed until the current paper's item is verified.
-                if (paperVerified[pk] != true) kept[id] = JSONObject().put("b", org.json.JSONArray(backup)).put("d", org.json.JSONArray(applied.paperValues.map(::scalarHex)))
-                    .put("dk", d.optString("dk")).put("release", d.optString("release"))
-                if (d.has("release")) releaseSeeds[id] = d.getString("release")
-                d.optString("dk").takeIf { it.isNotEmpty() && it !in dkSeeds }?.let { dkSeeds += it }
+                pending.remove(id)
                 afterState()
-                again = true
+                again = true; moved = true
             }
         }
+        if (moved) save()
     }
-    /** The durable parts of a TS snapshot: release seeds, deliveries waiting, data-key history, the members log. */
+    /** The durable parts of a snapshot (TS's or ours): seeds, deliveries waiting, paper values and bits,
+     *  notices, refused changes, data-key history, the members log. */
     @Synchronized private fun restore(x: JSONObject) {
-        x.optJSONArray("seeds")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> if (p.optString(0) != "base") releaseSeeds[p.getString(0)] = p.getString(1) } }
+        carried = JSONObject(x.toString())
+        x.optJSONArray("seeds")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> releaseSeeds[p.getString(0)] = p.getString(1) } }
         x.optJSONArray("pendingDeltas")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> val b = p.getJSONObject(1)
             pending.getOrPut(b.optString("redeal")) { LinkedHashMap() }[b.optString("from")] = b } }
+        x.optJSONArray("kept")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> kept[p.getString(0)] = p.getJSONObject(1) } }
+        x.optJSONArray("paperVerified")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> paperVerified[p.getString(0)] = p.getBoolean(1) } }
+        x.optJSONArray("notices")?.let { a -> for (k in 0 until a.length()) a.optJSONObject(k)?.let { notices += it } }
+        x.optJSONArray("refused")?.let { a -> refused = (0 until minOf(a.length(), REFUSED_MAX)).mapNotNull { a.optJSONObject(it)?.let(Event::of) } }
         x.optJSONArray("dkHistory")?.let { a -> dkHistory.clear(); for (k in 0 until a.length()) dkHistory += strsOf(a.getJSONArray(k)) }
         members.load(x.optJSONObject("members"))
         afterState()
     }
     private fun afterState() {
-        if (!wiped && baseDk.isNotEmpty()) { val ids = state.ids.sorted(); if (dkHistory.lastOrNull() != ids) dkHistory += ids }
+        if (wiped) return
+        if (baseDk.isNotEmpty()) { val ids = state.ids.sorted(); if (dkHistory.lastOrNull() != ids) dkHistory += ids }
         members.update(pub, view, state.ids)
     }
+    /** This device's state in the TS reference's snapshot form (device/node.ts `snapshot()`); only that
+     *  it was wiped, once it was. */
+    @Synchronized fun snapshot(): String {
+        if (wiped) return JSONObject().put("v", 1).put("wiped", true).toString()
+        val x = JSONObject(carried.toString())
+        val ja = { l: Collection<Any?> -> org.json.JSONArray(l) }
+        x.put("v", 1).put("role", "device").put("kp", hex(sk)).put("recEv", recEv.json()).put("wiped", false)
+            .put("changes", ja(changes.map { it.json() })).put("refused", ja(refused.map { it.json() }))
+            .put("state", JSONObject().put("ids", ja(state.ids.sorted())).put("shares", ja(state.shares.toSortedMap().map { (i, s) -> ja(listOf(i, scalarHex(s))) })))
+            .put("seeds", ja(releaseSeeds.map { (k, v) -> ja(listOf(k, v)) })).put("baseDk", baseDk).put("dkSeeds", ja(dkSeeds))
+            .put("kept", ja(kept.map { (k, v) -> ja(listOf(k, v)) })).put("paperVerified", ja(paperVerified.map { (k, v) -> ja(listOf(k, v)) }))
+            .put("pendingDeltas", ja(pending.flatMap { (id, m) -> m.map { (from, b) -> ja(listOf("$id:$from", b)) } })).put("notices", ja(notices.toList()))
+            .put("dkHistory", ja(dkHistory.map { ja(it) })).put("members", members.dump())
+        if (!x.has("name")) x.put("name", "kotlin")
+        return x.toString()
+    }
+    private fun save() { persist?.let { p -> try { p(snapshot()) } catch (_: Exception) {} } }
 
     /** Catch up (§3.2, §8.2): the union of every server's change set, then every server's inbox. */
     fun fetch() {
         for (s in servers()) {
             val a = net.send(sk, s.key, msg("changes_get", "ask"))
-            if (a.optString("type") == "changes") a.optJSONArray("changes")?.let { c -> takeChanges((0 until c.length()).map { Event.of(c.getJSONObject(it)) }) }
+            if (a.optString("type") == "changes") a.optJSONArray("changes")?.let { c -> takeChanges((0 until minOf(c.length(), CHANGES_PER_MESSAGE)).mapNotNull { c.optJSONObject(it)?.let(Event::of) }) }
         }
         if (wiped) return
         for (s in servers()) {
@@ -157,13 +225,14 @@ class Device(val sk: ByteArray, val rec: JSONObject, changes: List<Event>, ids: 
             val iids = org.json.JSONArray()
             for (k in 0 until items.length()) {
                 val it = items.optJSONObject(k) ?: continue
-                iids.put(it.opt("iid"))
                 try {
                     val w = it.getJSONObject("wrap"); val o = env.unwrap(sk, w)
                     // A site's request a watching server kept goes to the NIP-46 home (review 11 M1).
                     if (o.body.optString("type") == "nip46" && o.from == s.key) o.body.optJSONObject("event")?.let { e -> onSiteRequest?.invoke(e) }
-                    else takeDelivery(w)
+                    // A delivery with no room yet stays at the server (review 13 M1).
+                    else if (takeDelivery(w) == "full") continue
                 } catch (_: Exception) { /* one bad item never wedges the rest */ }
+                iids.put(it.opt("iid"))
             }
             net.send(sk, s.key, msg("inbox_ack", "ask").put("iids", iids))
         }
@@ -213,7 +282,7 @@ class Device(val sk: ByteArray, val rec: JSONObject, changes: List<Event>, ids: 
             val sh = st.getJSONArray("shares")
             val shares = (0 until sh.length()).associate { sh.getJSONArray(it).let { p -> Json.long(p.get(0)) to BigInteger(p.getString(1), 16) } }
             val seeds = x.optJSONArray("dkSeeds")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            return Device(unhex(x.getString("kp")), rec, changes, ids, shares, net, x.optString("baseDk"), seeds).also { it.restore(x) }
+            return Device(unhex(x.getString("kp")), recEv, rec, changes, ids, shares, net, x.optString("baseDk"), seeds).also { it.restore(x) }
         }
         /** Join an account by its invite code (core §4.1–§4.2): hello, nonce, the 6-digit check shown by
          *  `onCheck`, then the welcome and the sigmas, checked. */
@@ -254,17 +323,19 @@ class Device(val sk: ByteArray, val rec: JSONObject, changes: List<Event>, ids: 
             sigmas.clear()
             for (k in listOf(from) + r.view.members.filter { it.kind == "server" }.map { it.key }) net.tell(sk, k, JSONObject().put("type", "ack"))
             // The welcome carries the base data key and every data-key seed (core §4.2 step 4, §4.5).
-            val seeds = w.optJSONArray("dk")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            return Device(sk, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds)
+            val seeds = w.optJSONArray("dk")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? String)?.takeIf { s -> Regex("^[0-9a-f]{64}$").matches(s) } } } ?: emptyList()
+            return Device(sk, r.recEv, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds)
         }
     }
     /** The x coordinate of `x·P` for a peer's x-only key (core §5.5), from one server's checked answer. */
     fun ecdhX(peer: String): ByteArray {
         var last = "no_server"
+        // One state for the whole round: its hash, commitment and shares together (review 13 L3).
+        val st = state; if (wiped) refuse("wiped"); val c = RoundContext(g, epochId, st.hash, st.C)
         for (s in servers()) {
             val co = Signer(s.key, s.shares)
-            val req = Ecdh.request(ctx, shares.keys.sorted(), co, listOf("02$peer"))
-            try { return unhex(Ecdh.finish(ctx, req, shares, co, net.send(sk, s.key, req))[0].substring(2)) } catch (e: KeykinException) { last = e.code }
+            val req = Ecdh.request(c, st.shares.keys.sorted(), co, listOf("02$peer"))
+            try { return unhex(Ecdh.finish(c, req, st.shares, co, net.send(sk, s.key, req))[0].substring(2)) } catch (e: KeykinException) { last = e.code }
         }
         refuse(last)
     }
@@ -291,8 +362,9 @@ class Device(val sk: ByteArray, val rec: JSONObject, changes: List<Event>, ids: 
     /** Sign an event with the first server that gives a partial. */
     fun sign(kind: Int, content: String, tags: List<List<String>> = emptyList(), createdAt: Long = net.now): JSONObject {
         var last = "no_server"
+        val st = state; if (wiped) refuse("wiped"); val c = RoundContext(g, epochId, st.hash, st.C)
         for (s in servers()) {
-            val r = OneCall(ctx, shares, Signer(s.key, s.shares), Unsigned(g, createdAt, kind, tags, content))
+            val r = OneCall(c, st.shares, Signer(s.key, s.shares), Unsigned(g, createdAt, kind, tags, content))
             val a = net.send(sk, s.key, r.request)
             if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; continue }
             // A faulty or hostile server's bad partial counts as silence: try the next one (review 12 L1).

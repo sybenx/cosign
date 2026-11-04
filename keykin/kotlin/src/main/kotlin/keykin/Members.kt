@@ -36,7 +36,8 @@ class Members {
     @Synchronized fun devices(): Triple<String, String, List<DeviceKey>> = last ?: refuse("no_view")
     @Synchronized fun removed(since: Long = 0): List<Removed> = log.filter { it.seq > since }
     fun onRemoved(cb: (Event) -> Unit): () -> Unit { listeners += cb; return { listeners -= cb } }
-    @Synchronized fun keep(key: String) { kept += key }
+    @Synchronized fun keep(key: String) { kept += key; seen?.let { (s, v, ids) -> last = Triple(s, Codes.stateHash(ids.toList()), keys(v)) } }
+    private var seen: Triple<String, MembershipView, Set<String>>? = null
 
     private fun tell(e: Event) { if (!started) return; for (cb in listeners) try { cb(e) } catch (_: Exception) {} }
 
@@ -59,6 +60,7 @@ class Members {
                 if (e.why == "void" || redeals.any { it in ids }) { log[i] = e.copy(seq = ++seq, state = Codes.stateHash(ids.toList())); tell(Event.Entry(log[i])) }
             }
         }
+        seen = Triple(self, v, ids)
         val ks = keys(v)
         last = Triple(self, Codes.stateHash(ids.toList()), ks)
         for (k in ks.filter { it.flagged }) if (flagsTold.add(k.key)) tell(Event.Flagged(k.key))

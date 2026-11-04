@@ -48,7 +48,7 @@ class UpkeepTest {
         val first = steps.getJSONObject(0).getJSONObject("after")
         assertEquals(first.getString("data_key"), hex(d.dataKeyFor(first.getString("data_key_state"))!!))
         assertEquals(2, heard.count { it is Members.Event.Entry })
-        assertTrue(d.kept.isEmpty(), "every paper item verified, so no paper values kept")
+        assertTrue(d.keptRedeals.isEmpty(), "every paper item verified, so no paper values kept")
     }
 
     @Test fun xchachaOpensWhatTsSealed() {

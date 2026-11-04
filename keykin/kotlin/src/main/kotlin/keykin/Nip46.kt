@@ -23,6 +23,12 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     private fun rand(n: Int) = ByteArray(n).also { SecureRandom().nextBytes(it) }
     private fun key(): ByteArray = rand(32).also { it[0] = (it[0].toInt() and 0x7f).toByte() }
 
+    init {
+        // A wiped or removed device's home goes with it: no grant, held event or signer key stays (review 13 M6).
+        d.onGone { sleep(); synchronized(this) { grants.values.forEach { it.signerSk.fill(0) }; grants.clear(); held.clear() } }
+        // Sites' requests a watching server kept for this device come here (review 11 M1).
+        d.onSiteRequest = { e -> worker.execute { try { handle(e) } catch (_: Exception) {} } }
+    }
     fun mintBunker(relays: List<String>): String {
         val sk = key(); val g = Grant(secp.pub(sk), sk, null, hex(rand(16)), net.now + 600, relays)
         grants[g.signer] = g; listen()
@@ -50,6 +56,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
 
     /** One request from a site; false when there was nothing to answer. */
     fun handle(e: JSONObject): Boolean {
+        if (d.wiped) return false
         val ev = Event.of(Json.obj(e.toString()))
         if (ev.kind != 24133 || seen.containsKey(ev.id) || Math.abs(net.now - ev.createdAt) > 120 || !verifyEvent(ev)) return false
         seen[ev.id] = ev.createdAt; seen.entries.removeIf { net.now - it.value > 120 }

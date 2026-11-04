@@ -101,6 +101,7 @@ object XChaCha {
     private fun le64(n: Long) = ByteArray(8) { (n ushr (8 * it)).toByte() }
     /** Open `nonce(24) ‖ ciphertext ‖ tag(16)` under `key`; refuses a bad tag. */
     fun open(key: ByteArray, box: ByteArray): ByteArray {
+        if (key.size != 32) refuse("malformed", "a 32-byte key")
         if (box.size < 40) refuse("malformed", "a sealed box")
         val sub = hchacha(key, box.copyOfRange(0, 16))
         val n12 = ByteArray(4) + box.copyOfRange(16, 24)
