@@ -64,8 +64,12 @@ export function jcs(v: unknown, depth = 1): string {
     if (!Number.isSafeInteger(v) || Object.is(v, -0)) bad('JCS: numbers are safe integers');
     return JSON.stringify(v);
   }
-  if (Array.isArray(v)) return '[' + v.map((x) => jcs(x, depth + 1)).join(',') + ']';
+  if (Array.isArray(v)) {
+    for (let k = 0; k < v.length; k++) if (!(k in v)) bad('JCS: an array with a hole');
+    return '[' + v.map((x) => jcs(x, depth + 1)).join(',') + ']';
+  }
   if (typeof v === 'object') {
+    if (!plain(v)) bad('JCS: not a plain object');
     const o = v as Record<string, unknown>;
     const keys = Object.keys(o).filter((k) => o[k] !== undefined).sort();
     return '{' + keys.map((k) => jcs(k, depth + 1) + ':' + jcs(o[k], depth + 1)).join(',') + '}';
@@ -95,10 +99,12 @@ export const refuse = (code: string, message?: string): never => { throw new Key
 
 const MAX_DEPTH = 32;
 const NUM = /-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/y;
-const STR = /"((?:[^"\\\u0000-\u001f]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*)"/y;
 const WS = /[ \t\n\r]*/y;
 const ESC: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
 const bad = (why: string): never => { throw new KeykinError('malformed', why); };
+
+/** A plain object (a JSON object as the reader builds it): no Map, Date, typed array or inherited fields. */
+const plain = (v: object) => { const p = Object.getPrototypeOf(v); return (p === Object.prototype || p === null) && !ArrayBuffer.isView(v); };
 
 /** Why a string breaks §9.5 (a lone surrogate, a control character other than the five), or null. */
 export function stringFault(s: string): string | null {
@@ -118,13 +124,29 @@ export function parseJson(text: string, o: { numbers?: 'strict' | 'grammar' } = 
   const strict = o.numbers !== 'grammar';
   let i = 0;
   const ws = () => { WS.lastIndex = i; WS.exec(text); i = WS.lastIndex; };
+  // A loop, not a regex: a regex over a long string runs out of backtracking stack (review 8 L1).
   const str = (): string => {
-    STR.lastIndex = i;
-    const m = STR.exec(text);
-    if (!m) bad('a string');
-    i = STR.lastIndex;
-    const raw = m![1];
-    const v = raw.includes('\\') ? raw.replace(/\\(?:u([0-9a-fA-F]{4})|(.))/g, (_, h, c) => (h ? String.fromCharCode(parseInt(h, 16)) : ESC[c])) : raw;
+    let j = i + 1, out = '', from = j;
+    for (;;) {
+      if (j >= text.length) bad('a string');
+      const c = text.charCodeAt(j);
+      if (c === 0x22) break;
+      if (c < 0x20) bad('a string');
+      if (c === 0x5c) {
+        out += text.slice(from, j);
+        const e = text[j + 1];
+        if (e === 'u') {
+          const h = text.slice(j + 2, j + 6);
+          if (!/^[0-9a-fA-F]{4}$/.test(h)) bad('a string');
+          out += String.fromCharCode(parseInt(h, 16)); j += 6;
+        } else if (e !== undefined && e in ESC) { out += ESC[e]; j += 2; }
+        else bad('a string');
+        from = j; continue;
+      }
+      j++;
+    }
+    const v = out + text.slice(from, j);
+    i = j + 1;
     const f = stringFault(v);
     if (f) bad(f);
     return v;
@@ -197,8 +219,9 @@ export function checkTree(v: unknown, depth = 1): void {
   if (v === null || typeof v === 'boolean') return;
   if (typeof v === 'string') { const f = stringFault(v); if (f) bad(f); return; }
   if (typeof v === 'number') { if (!Number.isSafeInteger(v) || Object.is(v, -0)) bad('numbers are safe integers'); return; }
-  if (Array.isArray(v)) { for (const x of v) checkTree(x, depth + 1); return; }
+  if (Array.isArray(v)) { for (let k = 0; k < v.length; k++) { if (!(k in v)) bad('an array with a hole'); checkTree(v[k], depth + 1); } return; }
   if (typeof v === 'object') {
+    if (!plain(v)) bad('not a plain object');
     for (const [k, x] of Object.entries(v as object)) { if (x === undefined) continue; const f = stringFault(k); if (f) bad(`a key ${f}`); checkTree(x, depth + 1); }
     return;
   }

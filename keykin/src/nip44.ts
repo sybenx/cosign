@@ -6,7 +6,7 @@ import { chacha20 } from '@noble/ciphers/chacha.js';
 import { expand } from '@noble/hashes/hkdf.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { concatBytes, eqBytes, fromB64, utf8Strict, KeykinError, type Bytes } from './bytes.ts';
+import { concatBytes, fromB64, utf8Strict, KeykinError, type Bytes } from './bytes.ts';
 
 const calcPaddedLen = (len: number) => {
   if (len <= 32) return 32;
@@ -24,7 +24,11 @@ export function nip44Bytes(payload: string, ck: Bytes): Bytes {
   if (data.length < 99 || data[0] !== 2) no('version');
   const nonce = data.subarray(1, 33), ct = data.subarray(33, -32), mac = data.subarray(-32);
   const keys = expand(sha256, ck, nonce, 76);
-  if (!eqBytes(hmac(sha256, keys.subarray(44, 76), concatBytes(nonce, ct)), mac)) no('mac');
+  // Constant time (review 8 L3).
+  const want = hmac(sha256, keys.subarray(44, 76), concatBytes(nonce, ct));
+  let diff = 0;
+  for (let k = 0; k < 32; k++) diff |= want[k] ^ mac[k];
+  if (diff !== 0) no('mac');
   const padded = chacha20(keys.subarray(0, 32), keys.subarray(32, 44), ct);
   const len = (padded[0] << 8) | padded[1];
   if (len < 1 || padded.length !== 2 + calcPaddedLen(len)) no('padding');

@@ -798,8 +798,9 @@ export class DeviceNode implements Node {
   async deleteAccount(o: { paper?: KeyPair } = {}): Promise<number> {
     const body = msg('account_delete', this.g, this.epochId, 'member', {});
     const req = { ...body, approval: await this.approveRequest('account_delete', body, o.paper) };
+    // Only a `deleted` that proves this very request counts (review 8 L6).
     let n = 0;
-    for (const s of this.servers()) { const a = await this.bus.send(this.kp, s.key, req); if (a?.type === 'deleted') n++; }
+    for (const s of this.servers()) { const a = await this.bus.send(this.kp, s.key, req); if (verifyDeleted(this.m!, this.g, a) && a.request.id === req.id && a.host === s.host) n++; }
     if (n >= 2) this.wipe();
     return n;
   }
@@ -810,9 +811,10 @@ export class DeviceNode implements Node {
     const w = what.request(type, body.id, body);
     if (!paper) return { lock: { member: this.kp.pub, assertion: this.lock!.assert(this.g, w) } };
     const challenges: { server: string; challenge: string }[] = [];
+    // Labelled with the host of the seat asked, never with what the answer claims (review 8 M1).
     for (const s of this.servers()) {
       const ch = await this.bus.send(paper, s.key, msg('challenge', this.g, this.epochId, 'ask'));
-      if (ch?.type === 'challenge') challenges.push({ server: ch.server, challenge: ch.challenge });
+      if (ch?.type === 'challenge' && typeof ch.challenge === 'string') challenges.push({ server: s.host!, challenge: ch.challenge });
     }
     return approvePaperRequest(this.g, w, this.kp, paper, challenges);
   }
@@ -856,7 +858,7 @@ export class DeviceNode implements Node {
   /** Core §6.7.7: this device's own view of which seated servers are dead, from what each answers. */
   #f1: F1Watch | null = null;
   f1(): F1Watch {
-    if (!this.#f1) { this.#f1 = new F1Watch(this.g); for (const s of this.servers()) this.#f1.seat(s.host!, this.now); }
+    if (!this.#f1) { this.#f1 = new F1Watch(this.g); for (const s of this.servers()) this.#f1.seat(s.host!, s.key, this.now); }
     return this.#f1;
   }
   /** Ask every seated server for the account's state and return the F1 card's seats. A `deleted` that
@@ -866,7 +868,7 @@ export class DeviceNode implements Node {
     const w = this.f1();
     const seats = [...this.m!.seats.entries()].filter(([k, x]) => k.startsWith('server:') && x.holder).map(([seat, x]) => ({ seat, host: x.holder!.host!, key: x.holder!.key }));
     for (const s of seats) {
-      w.seat(s.host, this.now);
+      w.seat(s.host, s.key, this.now);
       const a = await this.bus.send(this.kp, s.key, msg('state_get', this.g, this.epochId, 'ask'));
       if (a?.type === 'state') w.saw(s.host, 'serving', this.now);
       else if (a?.type === 'deleted') {
@@ -903,7 +905,7 @@ export class DeviceNode implements Node {
   async handle(from: string, body: any, sentAt: number): Promise<any> {
     try {
       switch (body.type) {
-        case 'notice': if ('shutdown' in body) this.f1().notice(body); return { type: 'ack' };
+        case 'notice': if ('shutdown' in body) this.f1().notice(body, from); return { type: 'ack' };
         case 'join_hello': return this.inviter!.onHello(from, body, this.now).msg;
         case 'join_nonce': this.joiner!.onNonce(from, body); return { type: 'ack' };
         case 'welcome_offer': return this.joiner!.onOffer(from, body, this.now).msg;

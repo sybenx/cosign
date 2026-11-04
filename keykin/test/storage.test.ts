@@ -49,7 +49,7 @@ test('§5.2: no nonce reaches storage; a two-call round in flight is lost on res
   const { s, dir } = store();
   const S = acc.servers[0];
   const ev = { pubkey: acc.g, created_at: acc.bus.now, kind: 1, tags: [], content: 'two-call' };
-  const tc = new TwoCall(acc.A.ctx(), { key: acc.A.kp.pub, ...acc.A.me() }, [{ key: S.kp.pub, indices: S.co!.myIndices }], ev);
+  const tc = new TwoCall(acc.A.ctx(), acc.A.me() as any, [{ key: S.kp.pub, indices: S.co!.myIndices }], ev);
   tc.took(S.kp.pub, await acc.bus.send(acc.A.kp, S.kp.pub, tc.commitRequest()));
   const snap = S.snapshot();
   for (const field of ['nonces', 'twoCall', 'hiding', 'binding']) assert.ok(!snap.includes(field), field);

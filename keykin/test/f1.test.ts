@@ -81,17 +81,38 @@ test('Server profile §5: a host-signed shutdown notice counts as dead; a later 
 test('F1Watch: a denial counts only while a peer serves; every server denying is not one server dead', () => {
   const g = newKey().pub;
   const w = new F1Watch(g);
-  for (const h of ['a', 'b', 'c']) w.seat(h, 0);
+  for (const h of ['a', 'b', 'c']) w.seat(h, `k${h}`, 0);
   for (const h of ['a', 'b', 'c']) w.saw(h, 'denied', 10);
   for (const h of ['a', 'b', 'c']) w.saw(h, 'denied', 86500);
-  assert.equal(w.dead('a', 86500), null, 'nobody serves: not a denial (quiet comes after 7 days)');
-  assert.equal(w.dead('a', 7 * 86400), 'quiet');
+  assert.equal(w.dead('a', 86500), null, 'nobody serves: not a denial');
+  for (const h of ['a', 'b', 'c']) w.saw(h, 'denied', 7 * 86400);
+  assert.equal(w.dead('a', 7 * 86400 + 10), null, 'answering, even denying, is not quiet (review 8 M2)');
+  assert.equal(w.dead('a', 14 * 86400 + 20), 'quiet', 'silence is');
   const v = new F1Watch(g);
-  for (const h of ['a', 'b']) v.seat(h, 0);
+  for (const h of ['a', 'b']) v.seat(h, `k${h}`, 0);
   v.saw('a', 'denied', 10); v.saw('b', 'serving', 10);
   assert.equal(v.dead('a', 86420), null, 'the peer served only before the day passed');
   v.saw('b', 'serving', 86420);
   assert.equal(v.dead('a', 86420), 'denied');
   v.saw('a', 'serving', 86430);
   assert.equal(v.dead('a', 86430), null, 'serving again clears it');
+});
+
+test('review 8: being seated is not serving (M3); a notice counts only from its own seat (M4)', async () => {
+  const g = newKey().pub;
+  const w = new F1Watch(g);
+  w.seat('a', 'ka', 0); w.saw('a', 'denied', 0);
+  w.seat('d', 'kd', 86405);
+  assert.equal(w.dead('a', 86410), null, 'a silent newcomer is no peer serving');
+  // A notice replayed by anyone but the seat itself is ignored.
+  const acc = await create();
+  const S = acc.servers[1], other = acc.servers[2];
+  await acc.A.checkServers();
+  const n = signShutdown(acc.g, S.host, acc.bus.now + 30 * 86400, 1);
+  await acc.bus.send(other.kp, acc.A.kp.pub, n);
+  assert.deepEqual(await acc.A.checkServers(), [], 'relayed by another server: ignored');
+  await acc.bus.send(acc.A.kp, acc.A.kp.pub, n);
+  assert.deepEqual(await acc.A.checkServers(), [], 'replayed by a member: ignored');
+  await acc.bus.send(S.kp, acc.A.kp.pub, n);
+  assert.equal((await acc.A.checkServers())!.length, 1);
 });

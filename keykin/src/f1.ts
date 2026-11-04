@@ -1,8 +1,9 @@
 // When a device counts a seated server as dead and shows the F1 card (core §6.7.6 F1, §6.7.7; Server
-// profile §5): it has been quiet for 7 days; or it sent a host-signed shutdown notice (or a host-signed
-// `refused: expired`); or, for a day, it has answered `deleted` (one that doesn't verify) or "unknown
+// profile §5): it has been quiet for 7 days; or it sent a host-signed shutdown notice; or, for a day, it has answered `deleted` (one that doesn't verify) or "unknown
 // account" while its peers still serve the account. A `deleted` that verifies is not F1: the device
 // destroys the account (Account admin §3). Pure: the device feeds it what each server answered.
+// A host-signed `refused: expired` counts like a shutdown notice too (Server profile §4); it waits for
+// spec item 47 to fix its signed form. A server that answers but won't co-sign is F4's case, not this one.
 
 import { detachedDigest } from './codes.ts';
 import { schnorrVerify, schnorrSign, type KeyPair } from './event.ts';
@@ -19,46 +20,50 @@ export const shutdownDigest = (g: string, n: { shutdown: number | null; seq: num
 export const signShutdown = (g: string, host: KeyPair, shutdown: number | null, seq: number) =>
   ({ type: 'notice', shutdown, seq, host: host.pub, host_sig: schnorrSign(shutdownDigest(g, { shutdown, seq, host: host.pub }), host.sk) });
 
-interface Watch { lastServing: number; deniedSince: number | null; shutdown: { seq: number; at: number | null } | null; expiredRefusal: boolean }
+interface Watch { seatedAt: number; lastHeard: number; lastServing: number | null; deniedSince: number | null; shutdown: { seq: number; at: number | null } | null; seat: string }
 
 export class F1Watch {
   #s = new Map<string, Watch>();
   readonly g: string;
   constructor(g: string) { this.g = g; }
-  #get(host: string, now: number) { let w = this.#s.get(host); if (!w) { w = { lastServing: now, deniedSince: null, shutdown: null, expiredRefusal: false }; this.#s.set(host, w); } return w; }
 
-  /** A seated server's host, from the time it was seated (quiet is counted from then). */
-  seat(host: string, now: number) { this.#get(host, now); }
+  /** A seated server: its host and the member key of its seat. Being seated is not serving (review 8 M3). */
+  seat(host: string, seatKey: string, now: number) {
+    const w = this.#s.get(host);
+    if (w) { w.seat = seatKey; return; }
+    this.#s.set(host, { seatedAt: now, lastHeard: now, lastServing: null, deniedSince: null, shutdown: null, seat: seatKey });
+  }
   forget(host: string) { this.#s.delete(host); }
 
-  /** What `host` answered at `now`. */
+  /** What `host` answered at `now`. A denial is an answer too, so quiet counts from either (review 8 M2). */
   saw(host: string, seen: Seen, now: number) {
-    const w = this.#get(host, now);
-    if (seen === 'serving') { w.lastServing = now; w.deniedSince = null; }
-    else if (seen === 'denied') w.deniedSince ??= now;
+    const w = this.#s.get(host);
+    if (!w) return;
+    if (seen === 'serving') { w.lastServing = now; w.lastHeard = now; w.deniedSince = null; }
+    else if (seen === 'denied') { w.lastHeard = now; w.deniedSince ??= now; }
   }
 
-  /** A shutdown notice, kept only if signed by that host and newer than the last. */
-  notice(n: any): boolean {
+  /** A shutdown notice, kept only if sent by that seat's own member key (the seal's key, so nobody else
+   *  can replay an old one: review 8 M4), signed by its host and newer than the last kept. */
+  notice(n: any, from: string): boolean {
     if (typeof n?.host !== 'string' || !Number.isSafeInteger(n.seq) || !(n.shutdown === null || Number.isSafeInteger(n.shutdown))) return false;
-    if (!schnorrVerify(n.host_sig, shutdownDigest(this.g, n), n.host)) return false;
     const w = this.#s.get(n.host);
-    if (!w || (w.shutdown && w.shutdown.seq >= n.seq)) return false;
+    if (!w || w.seat !== from) return false;
+    if (!schnorrVerify(n.host_sig, shutdownDigest(this.g, n), n.host)) return false;
+    if (w.shutdown && w.shutdown.seq >= n.seq) return false;
     w.shutdown = { seq: n.seq, at: n.shutdown };
     return true;
   }
-  /** A host-signed `refused: expired` (Server profile §4) counts like a shutdown notice. */
-  expired(host: string) { const w = this.#s.get(host); if (w) w.expiredRefusal = true; }
 
   /** Why `host` counts as dead at `now`, or null. */
   dead(host: string, now: number): 'quiet' | 'shutdown' | 'denied' | null {
     const w = this.#s.get(host);
     if (!w) return null;
-    if ((w.shutdown && w.shutdown.at !== null) || w.expiredRefusal) return 'shutdown';
-    if (now - w.lastServing >= QUIET_S) return 'quiet';
+    if (w.shutdown && w.shutdown.at !== null) return 'shutdown';
+    if (now - w.lastHeard >= QUIET_S) return 'quiet';
     // A day of denial, with a peer serving the account once that day had passed.
     if (w.deniedSince !== null && now - w.deniedSince >= DENIAL_S
-      && [...this.#s].some(([h, x]) => h !== host && x.lastServing >= w.deniedSince! + DENIAL_S)) return 'denied';
+      && [...this.#s].some(([h, x]) => h !== host && x.lastServing !== null && x.lastServing >= w.deniedSince! + DENIAL_S)) return 'denied';
     return null;
   }
 

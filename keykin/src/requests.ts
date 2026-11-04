@@ -45,15 +45,15 @@ export function requestApprovers(m: Membership, g: string, type: string, msg: an
     const wh = bytesToHex(w);
     if (!schnorrVerify(p.sig, detachedDigest('paper', g, { what: wh }), p.member)) refuse('bad_signature');
     const signed = (c: any) => typeof c?.challenge === 'string' && schnorrVerify(c.backup_sig, detachedDigest('paper', g, { what: wh, challenge: c.challenge }), p.backup);
+    // Entries naming this server: another member can't block us by adding one (review 8 M1), so we
+    // take the first that is validly signed and a challenge we issued and can still use.
     const mine = o.me === undefined ? [] : p.challenges.filter((c: any) => c?.server === o.me);
-    if (mine.length > 1) refuse('malformed', 'one challenge per server');
     if (o.take) {
-      if (mine.length !== 1) refuse('stale_challenge', 'no challenge from this server');
-      if (!signed(mine[0])) refuse('bad_signature');
-      if (!o.take(mine[0].challenge, p.backup)) refuse('stale_challenge');
+      const ok = mine.filter(signed);
+      if (!ok.length) refuse(mine.length ? 'bad_signature' : 'stale_challenge', 'no challenge from this server');
+      if (!ok.some((c: any) => o.take!(c.challenge, p.backup))) refuse('stale_challenge');
     } else {
-      // Not at first hand: our own entry, if the device asked us, must check; and some current server's.
-      if (mine.length === 1 && !signed(mine[0])) refuse('bad_signature');
+      // Not at first hand: some current server's entry must check (ours, if any, was taken already).
       const hosts = new Set(servers(m).map((s) => s.host));
       if (!p.challenges.some((c: any) => hosts.has(c?.server) && signed(c))) refuse('bad_signature');
     }
@@ -70,7 +70,7 @@ export const deletedDigest = (g: string, request: unknown) => sha('keykin-delete
  *  that verifies it destroys everything"). A `deleted` that doesn't verify proves nothing. */
 export function verifyDeleted(m: Membership, g: string, ans: any): boolean {
   try {
-    if (ans?.type !== 'deleted' || ans.request?.type !== 'account_delete' || ans.request?.g !== g) return false;
+    if (ans?.type !== 'deleted' || ans.request?.type !== 'account_delete' || ans.request?.g !== g || ans.request?.epoch !== m.epochId) return false;
     if (!servers(m).some((s) => s.host === ans.host)) return false;
     if (!schnorrVerify(ans.host_sig, deletedDigest(g, ans.request), ans.host)) return false;
     requestApprovers(m, g, 'account_delete', ans.request);

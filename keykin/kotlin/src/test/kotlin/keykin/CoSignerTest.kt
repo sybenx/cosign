@@ -7,10 +7,20 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class CoSignerTest {
-    @Test fun steps() {
+    @Test fun steps() = run(emptyList())
+    /** Review 8 H1: an unsigned add for an existing device (an attacker's lock, other indices) and a change
+     *  that isn't JSON change nothing: every step still gets the same answer. */
+    @Test fun refusedChangesChangeNothing() {
         val v = JSONObject(File(System.getProperty("keykin.cosigner")).readText())
         val rec = JSONObject(Event.of(v.getJSONObject("record")).content)
-        val changes = (0 until v.getJSONArray("changes").length()).map { Event.of(v.getJSONArray("changes").getJSONObject(it)) }
+        val dev = (0 until rec.getJSONArray("members").length()).map { rec.getJSONArray("members").getJSONObject(it) }.first { it.getString("kind") == "device" }.getString("key")
+        val add = "{\"v\":1,\"change\":{\"add\":{\"key\":\"$dev\",\"kind\":\"device\",\"salt\":7,\"lock\":{\"pub\":\"04${"11".repeat(64)}\",\"rp\":\"${"22".repeat(32)}\"}}}}"
+        run(listOf(Event("", rec.getString("g"), 1, 24302, emptyList(), add, ""), Event("", rec.getString("g"), 1, 24302, emptyList(), "not json", "")))
+    }
+    private fun run(extra: List<Event>) {
+        val v = JSONObject(File(System.getProperty("keykin.cosigner")).readText())
+        val rec = JSONObject(Event.of(v.getJSONObject("record")).content)
+        val changes = (0 until v.getJSONArray("changes").length()).map { Event.of(v.getJSONArray("changes").getJSONObject(it)) } + extra
         val srv = v.getJSONObject("server")
         val S = CoSigner(rec, changes, srv.getString("key"), srv.getLong("index"), BigInteger(srv.getString("share"), 16)) { v.getLong("now") }
         val steps = v.getJSONArray("steps")

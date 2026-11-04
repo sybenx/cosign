@@ -71,3 +71,36 @@ test('Account admin §3: Destroy my key by the paper, in the same shape; a peer 
   assert.equal(ans.type, 'deleted');
   assert.ok(acc.servers[2].tombstone);
 });
+
+test('review 8 M1: a server can\'t block a peer by naming it in its challenge, nor by a duplicate entry', async () => {
+  const { acc, H, stop } = await stopped();
+  const [s0, , s2] = acc.servers;
+  // S2 answers its challenge claiming to be S0: the device labels by the seat it asked, so nothing breaks.
+  const real = s2.handle.bind(s2);
+  s2.handle = async (from: string, body: any, at: number) => { const a = await real(from, body, at); return body.type === 'challenge' ? { ...a, server: s0.host.pub } : a; };
+  for (const a of await acc.A.resumeHelper([stop], { paper: acc.paper })) assert.equal(a.kind, 'helper_resumed');
+  s2.handle = real;
+  assert.ok(verifyEvent(await H.sign({ content: 'resumed' })));
+  // An extra entry naming S0 with a challenge S0 never issued: S0 takes its own and ignores the other.
+  const b = msg('helper_resume', acc.g, acc.epochId, 'member', { ids: [stop] });
+  const c = await challenge(acc, acc.paper, s0);
+  const ap = approvePaperRequest(acc.g, what.request('helper_resume', b.id, b), acc.A.kp, acc.paper, [{ server: s0.host.pub, challenge: 'ff'.repeat(32) }, { server: s0.host.pub, challenge: c.challenge }]);
+  assert.equal((await acc.bus.send(acc.A.kp, s0.kp.pub, { ...b, approval: ap })).kind, 'helper_resumed');
+});
+
+test('review 8 L5 and L6: a deleted for another epoch proves nothing; a lying server\'s deleted is not counted', async () => {
+  const { verifyDeleted, deletedDigest } = await import('../src/requests.ts');
+  const { schnorrSign } = await import('../src/event.ts');
+  const acc = await create();
+  const S1 = acc.servers[1];
+  // S1 keeps the account and answers a host-signed deleted over a forged request of its own.
+  const forged = { ...msg('account_delete', acc.g, acc.epochId, 'member', {}), approval: { lock: { member: acc.A.kp.pub, assertion: { authData: '', clientData: '', sig: '' } } } };
+  S1.handle = async () => ({ type: 'deleted', request: forged, changes: [], host: S1.host.pub, host_sig: schnorrSign(deletedDigest(acc.g, forged), S1.host.sk) });
+  acc.bus.kill(acc.servers[2].kp.pub);
+  assert.equal(await acc.A.deleteAccount(), 1, 'only S0\'s proof counts');
+  assert.ok(!acc.A.wiped, 'one proof is not two: the device keeps its copy and goes on sending');
+  const ans = acc.servers[0].deletedAnswer();
+  assert.ok(verifyDeleted(acc.A.m!, acc.g, ans));
+  const other = { ...ans.request, epoch: 'ab'.repeat(16) };
+  assert.equal(verifyDeleted(acc.A.m!, acc.g, { ...ans, request: other, host_sig: schnorrSign(deletedDigest(acc.g, other), acc.servers[0].host.sk) }), false, 'another epoch, properly host-signed');
+});

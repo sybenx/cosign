@@ -10,14 +10,9 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
     private val g = rec.getString("g"); private val epoch = rec.getJSONObject("epoch").getString("id")
     private val C: List<Pt?> = (0 until rec.getJSONArray("commitment").length()).map { point(rec.getJSONArray("commitment").getString(it)) }
     private val view = Membership.compute(rec, changes)
-    private val members: Map<String, Member> = run {
-        val recM = (0 until rec.getJSONArray("members").length()).map { member(rec.getJSONArray("members").getJSONObject(it)) }
-        val m = HashMap<String, Member>()
-        recM.filter { it.key !in view.removed }.forEach { m[it.key] = it }
-        for (e in changes) { val c = JSONObject(e.content).getJSONObject("change"); c.optJSONObject("add")?.let { a -> val k = a.getString("key")
-            if (k in view.devices) m[k] = Member(k, "device", Codes.deviceIndices(g, epoch, k, a.getLong("salt")), a.optJSONObject("lock"), null, null, a) } }
-        m
-    }
+    // Members from the computed membership only, never from the raw change list: a refused change
+    // changes nothing here, and a change that isn't JSON can't break the constructor (review 8 H1).
+    private val members: Map<String, Member> = view.members.associateBy { it.key }
     private val state = Codes.stateHash(emptyList())
     private val replay = HashMap<String, Pair<String, JSONObject?>>()
     private val holds = HashMap<String, Long>()
