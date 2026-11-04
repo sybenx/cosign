@@ -51,6 +51,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     init {
         // A wiped or removed device's home goes with it: no grant, held event or signer key stays (review 13 M6).
         d.onGone { sleep(); synchronized(this) { grants.values.forEach { it.signerSk.fill(0) }; grants.clear(); held.clear() } }
+        // A grant ended on this device or elsewhere (a delivered end, sign out of every site): its site is revoked here.
+        d.onEnds { ids -> synchronized(this) { grants.values.filter { it.endedAt == null && it.entry in ids }.forEach { it.endedAt = net.now; asks.remove(it.signer); held.entries.removeIf { h -> h.value.signer == it.signer } } } }
         // Sites' requests a watching server kept for this device come here (review 11 M1).
         d.onSiteRequest = { e -> worker.execute { try { handle(e) } catch (_: Exception) {} } }
     }

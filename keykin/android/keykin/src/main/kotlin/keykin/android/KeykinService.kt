@@ -101,7 +101,13 @@ class KeykinService : Service() {
             JSONArray(d.grants.all().map { e -> JSONObject().also { o -> for (k in listOf("by", "id", "says", "site", "door", "connection", "scopes", "made", "last_used")) e.opt(k)?.let { o.put(k, it) } } }).toString()
         }
         override fun endGrant(slot: String, by: String, id: String) = work.execute {
-            Memberships.signer(slot).device?.let { d -> d.grants.end(by, id); d.publishGrantsSoon() }; publish(slot)
+            try { Memberships.signer(slot).device?.signOut(listOf(by to id)) } catch (e: Exception) { Log.w(TAG, "endGrant: $e") }; publish(slot)
+        }
+        override fun signOutEverywhere(slot: String) = work.execute {
+            try { Memberships.signer(slot).device?.signOutEverywhere() } catch (e: Exception) { Log.w(TAG, "signOutEverywhere: $e") }; publish(slot)
+        }
+        override fun helperSite(slot: String, site: String, relaysCsv: String): String? = onWork {
+            try { Memberships.signer(slot).device?.helperSite(site, relaysCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }) } catch (_: Exception) { null }
         }
         override fun pairAsks(slot: String): String = onWork {
             val d = Memberships.signer(slot).device ?: return@onWork "[]"

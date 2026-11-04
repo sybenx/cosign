@@ -195,9 +195,9 @@ class GrantStore(private val d: Device) {
     private fun current() = d.view.devices.filter { it !in d.view.removed }.toSet()
 
     /** A new grant, from a human act on this device only. */
-    @Synchronized fun make(site: String, says: String, door: String, connection: String, scopes: List<String>, relays: List<String>? = null, signer: String? = null): JSONObject {
+    @Synchronized fun make(site: String, says: String, door: String, connection: String, scopes: List<String>, relays: List<String>? = null, signer: String? = null, helper: Boolean = false): JSONObject {
         val e = JSONObject().put("id", hex(ByteArray(16).also { SecureRandom().nextBytes(it) })).put("v", 1).put("site", site).put("says", says).put("door", door).put("connection", connection)
-            .put("scopes", JSONArray(scopes.distinct().sorted())).put("borrowed", false).put("helper", false).put("made", now).put("expiry", "unused-90d")
+            .put("scopes", JSONArray(scopes.distinct().sorted())).put("borrowed", false).put("helper", helper).put("made", now).put("expiry", "unused-90d")
         relays?.let { e.put("relays", JSONArray(it)) }; signer?.let { e.put("signer", it) }
         val s = Grants.signEntry(d.g, d.sk, e); own[s.getString("id")] = s; return s
     }
@@ -214,7 +214,37 @@ class GrantStore(private val d: Device) {
             val until = (e?.opt("expiry") as? Number)?.toLong()?.plus(30 * 86400) ?: (now + 365 * 86400)
             if (ended.none { it.getString("id") == id }) ended += JSONObject().put("id", id).put("until", until)
             union["$by:$id"] = JSONObject().put("by", by).put("id", id).put("until", until)
-        } else if (tombstones.none { it.getString("by") == by && it.getString("id") == id }) tombstones += JSONObject().put("by", by).put("id", id).put("at", now)
+        } else if (tombstones.none { it.getString("by") == by && it.getString("id") == id }) {
+            // A helper grant's tombstone names its signer key, which the helper's report carries too.
+            val e = others[by]?.set?.getJSONArray("entries")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.optString("id") == id } }
+            tombstones += JSONObject().put("by", by).put("id", id).put("at", now).also { t -> if (e?.optBoolean("helper") == true && e.has("signer")) t.put("signer", e.getString("signer")) }
+        }
+    }
+    /** The tombstone this device holds for (by, id). */
+    @Synchronized fun tombstone(by: String, id: String): JSONObject? = tombstones.firstOrNull { it.getString("by") == by && it.getString("id") == id }
+    @Synchronized fun tombstonesWithSigner(): List<JSONObject> = tombstones.filter { it.has("signer") }
+    /** "Sign out of every site" for one home: here every own grant made before `before`; for another device a
+     *  wildcard tombstone (`id: "*"`) it applies, any of its grants not yet published included. */
+    @Synchronized fun endAll(home: String, before: Long): JSONObject? {
+        if (home == d.pub) { for ((id, e) in own.toList()) if (e.getLong("made") < before) end(home, id); return null }
+        tombstones.removeAll { it.getString("by") == home && it.getString("id") == "*" }
+        return JSONObject().put("by", home).put("id", "*").put("at", now).put("before", before).also { tombstones += it }
+    }
+    /** Ends delivered to this device (or found in another device's event): its own grants they name end now. */
+    @Synchronized fun takeEnds(ts: List<JSONObject>): List<String> {
+        val gone = ArrayList<String>()
+        for (t in ts) if (t.optString("by") == d.pub) {
+            val id = t.optString("id"); val before = (t.opt("before") as? Number)?.toLong()
+            if (id == "*" && before != null) { for ((x, e) in own.toList()) if (e.getLong("made") < before) { end(d.pub, x); gone += x } }
+            else if (own.containsKey(id)) { end(d.pub, id); gone += id }
+        }
+        return gone
+    }
+    /** Whether a tombstone or a wildcard (here or in any device's event) ends this entry. */
+    private fun ends(e: JSONObject): Boolean {
+        val by = e.optString("by"); val id = e.optString("id"); val made = e.optLong("made")
+        fun hit(t: JSONObject) = t.optString("by") == by && (t.optString("id") == id || (t.optString("id") == "*" && (t.opt("before") as? Number)?.toLong()?.let { made < it } == true))
+        return tombstones.any(::hit) || others.values.any { r -> r.set.getJSONArray("tombstones").let { a -> (0 until a.length()).any { hit(a.getJSONObject(it)) } } }
     }
     /** A use of an own grant: recorded, and once a day put in the entry (re-signed) for other devices' expiry (M4). */
     @Synchronized fun used(id: String) {
@@ -233,7 +263,7 @@ class GrantStore(private val d: Device) {
         fun consider(e: JSONObject, maker: String) {
             val by = e.optString("by"); if (by != maker || by !in cur || !Grants.entryOk(d.g, e)) return
             val k = "$by:${e.getString("id")}"
-            if (k in union || tombstones.any { it.getString("by") == by && it.getString("id") == e.getString("id") }) return
+            if (k in union || ends(e)) return
             val p = out[k]; if (p == null || e.getInt("v") > p.getInt("v")) out[k] = e
         }
         for (e in own.values) consider(e, d.pub)
@@ -262,9 +292,59 @@ class GrantStore(private val d: Device) {
         val (state, key) = d.dataKey()
         val evs = Grants.events(d.g, d.sk, d.baseDataKey(), state, key, synchronized(this) { set() }, at)
         val signed = evs.map { u -> d.sign(u.kind, u.content, u.tags, u.createdAt) }
-        synchronized(this) { lastPublish = at }
-        for (e in signed) net.publishEvent(e)
+        // Recorded before any part is sent, so a publish cut short never leaves it stuck (§2).
+        synchronized(this) { lastPublish = at; lastSent = signed; counted = false }
+        send(net, signed)
         signed
+    }
+    /** Relay health, the last event sent, the relays that took every part, and whether that counted (§2). */
+    val relays = RelayHealth()
+    @Volatile var lastSent: List<JSONObject> = emptyList(); private set
+    @Volatile var lastSet: List<String> = emptyList(); private set
+    @Volatile var lastSentAt = 0L; private set
+    @Volatile var counted = false; private set
+    private var countedKey = ""
+    private var tries = 0
+    /** Retries run here (tests run them at once). */
+    var later: (Long, () -> Unit) -> Unit = { ms, f -> retry.schedule({ try { f() } catch (_: Exception) {} }, ms, java.util.concurrent.TimeUnit.MILLISECONDS) }
+    private val retry = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "keykin-grant-retry").also { it.isDaemon = true } }
+    /** Every part to the counted relays (and every configured one, which don't count); it counts once more than half
+     *  of the writable counted relays accept every part, and is retried with back-off until then. */
+    private fun send(net: RelayNet, parts: List<JSONObject>) {
+        val recorded = d.recordedRelays()
+        for (e in parts) net.publishEvent(e)
+        if (recorded.isEmpty()) { counted = true; lastSentAt = now; return }
+        val write = relays.writable(recorded)
+        var took: Set<String>? = null
+        for (e in parts) {
+            val r = net.publishTo(e, write); relays.published(r, now)
+            val ok = r.filter { it.value == true }.keys
+            took = took?.intersect(ok) ?: ok
+        }
+        lastSet = took?.toList() ?: emptyList(); lastSentAt = now; countedKey = relays.counted(recorded).sorted().joinToString(" ")
+        if (RelayHealth.majority(lastSet, write)) { counted = true; tries = 0; return }
+        val delay = minOf(600_000L, 10_000L shl minOf(tries++, 6))
+        later(delay) { if (lastSent === parts && !counted) send(net, parts) }
+    }
+    /** At each catch-up: the last event re-sent weekly, and to a majority of the new set when the counted relays change. */
+    fun upkeep(net: RelayNet) {
+        if (lastSent.isEmpty()) return
+        val key = relays.counted(d.recordedRelays()).sorted().joinToString(" ")
+        if (now - lastSentAt >= 7 * 86400 || (countedKey.isNotEmpty() && key != countedKey)) { counted = false; send(net, lastSent) }
+    }
+    /** A fetch from the counted relays: good once more than half of them answer, and more than half of the part of the
+     *  last publish's set still counted (when three or more remain); with fewer than three counted, once one answers. */
+    fun fetch(net: RelayNet): List<Event> {
+        val recorded = d.recordedRelays()
+        val filter = JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(d.g)))
+        if (recorded.isEmpty()) { val (evs, a, n) = net.queryCounted(filter); take(evs, a, n); return evs }
+        val ask = relays.toFetch(recorded, now)
+        val (evs, answered) = net.queryEach(filter, ask)
+        relays.fetched(ask, answered, recorded, now)
+        val c = relays.counted(recorded); val still = lastSet.filter { it in c }
+        val good = if (c.size < 3) answered.isNotEmpty() else RelayHealth.majority(answered, c) && (still.size < 3 || RelayHealth.majority(answered, still))
+        take(evs, if (good) 1 else 0, 1)
+        return evs
     }
     /** Read every current device's newest grant event (as TS `fetch`). */
     @Synchronized fun take(events: List<Event>, answered: Int = 1, asked: Int = 1) {
@@ -276,7 +356,7 @@ class GrantStore(private val d: Device) {
             val p = others[m]; if (p == null || r.at > p.at) others[m] = r
             r.set.getJSONArray("ended").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { x -> unite(JSONObject().put("by", m).put("id", x.getString("id")).put("until", x.getLong("until"))) } }
             r.set.getJSONArray("union").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { u -> if (u.getString("by") in cur) unite(u) } }
-            r.set.getJSONArray("tombstones").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { t -> if (t.getString("by") == d.pub && own.containsKey(t.getString("id"))) end(d.pub, t.getString("id")) } }
+            r.set.getJSONArray("tombstones").let { a -> takeEnds((0 until a.length()).mapNotNull { a.optJSONObject(it) }) }
         }
         for (u in union.values.toList()) if (u.getString("by") == d.pub && own.containsKey(u.getString("id"))) end(d.pub, u.getString("id"))
     }
@@ -293,6 +373,7 @@ class GrantStore(private val d: Device) {
     @Synchronized fun dump(): JSONObject = JSONObject().put("own", JSONArray(own.values.toList())).put("tombstones", JSONArray(tombstones.toList())).put("ended", JSONArray(ended.toList()))
         .put("union", JSONArray(union.values.toList())).put("lastUsed", JSONArray(lastUsed.map { (k, v) -> JSONArray(listOf(k, v)) })).put("lastPublish", lastPublish)
         .put("others", JSONArray(others.map { (m, r) -> JSONArray(listOf(m, r.at, r.set)) }))
+        .put("relays", relays.dump()).put("lastSent", JSONArray(lastSent)).put("lastSet", JSONArray(lastSet)).put("lastSentAt", lastSentAt).put("counted", counted)
     @Synchronized fun load(x: JSONObject?) {
         if (x == null) return
         own.clear(); x.optJSONArray("own")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { own[it.getString("id")] = it } }
@@ -302,6 +383,10 @@ class GrantStore(private val d: Device) {
         lastUsed.clear(); x.optJSONArray("lastUsed")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> lastUsed[p.getString(0)] = p.getLong(1) } }
         lastPublish = x.optLong("lastPublish")
         others.clear(); x.optJSONArray("others")?.let { a -> for (i in 0 until a.length()) a.getJSONArray(i).let { p -> others[p.getString(0)] = Grants.Read(p.getLong(1), p.getJSONObject(2)) } }
+        relays.load(x.optJSONArray("relays"))
+        lastSent = x.optJSONArray("lastSent")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } } ?: emptyList()
+        lastSet = x.optJSONArray("lastSet")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+        lastSentAt = x.optLong("lastSentAt"); counted = x.optBoolean("counted")
     }
-    @Synchronized fun clear() { own.clear(); tombstones.clear(); ended.clear(); union.clear(); others.clear(); lastUsed.clear() }
+    @Synchronized fun clear() { own.clear(); tombstones.clear(); ended.clear(); union.clear(); others.clear(); lastUsed.clear(); relays.clear(); lastSent = emptyList(); lastSet = emptyList() }
 }

@@ -29,7 +29,8 @@ interface IKeykin {
     /** Every live grant on the account (Doors §1–§2), from every device, for listing: JSON
      *  [{by, id, says, site, door, connection, scopes, made, last_used}]. Public data only. */
     String grants(String slot);
-    /** Sign one out, anywhere: an own one ends here, another device's gets a tombstone; published. */
+    /** Sign one out, anywhere: an own one ends here, another device's gets a tombstone, published and delivered to
+     *  its home with an `ask` push (a helper grant's to the helper) (Doors §2). */
     oneway void endGrant(String slot, String by, String id);
 
     /** Pair requests this phone was asked to approve (core §6.2): JSON [{id, from, list, expiry}]. */
@@ -39,4 +40,10 @@ interface IKeykin {
     /** Remove device `key` with a pair: asks device `with` and returns the 6-digit code to show; once the person
      *  typed it there, the list is dealt and submitted, and the slot's state says how it went ("pair"). */
     String removeWithPair(String slot, String key, String with);
+
+    /** "Sign out of every site" (Doors §1): every own grant ends, and every other home, the helper included, gets a
+     *  wildcard for every grant it made before now. */
+    oneway void signOutEverywhere(String slot);
+    /** "Let the helper answer for this site" (Helper module §2): the bunker:// link the helper minted, or null. */
+    String helperSite(String slot, String site, String relaysCsv);
 }

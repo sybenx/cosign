@@ -257,6 +257,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         if (wiped) return "junk"
         val o = try { env.unwrap(sk, w) } catch (_: Exception) { return "junk" }
         if (o.body.optString("type") == "pair_request") { takePairRequest(o.from, o.body); return "kept" }
+        if (o.body.optString("type") == "grant_ends") return takeEnds(o.from, o.body)
+        if (o.body.optString("type") == "helper_report") return takeHelperReport(o.from, o.body)
         if (o.body.optString("type") == "reissue_eph") {
             // §6.7.6 (core 14.20): from a current device, bound to its redeal, K and item; checked in checkReissues.
             val b = o.body; val v = view
@@ -359,6 +361,109 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         if (wiped) return
         if (baseDk.isNotEmpty()) { val ids = state.ids.sorted(); if (dkHistory.lastOrNull() != ids) dkHistory += ids }
         members.update(pub, view, state.ids)
+        // Doors §2: the grant event is encrypted under the current state's data key, so re-encrypted after each redeal.
+        try {
+            val sent = grants.lastSent.firstOrNull()?.optJSONArray("tags")?.let { t -> (0 until t.length()).map { t.getJSONArray(it) }.firstOrNull { it.optString(0) == "state" }?.optString(1) }
+            if (baseDk.isNotEmpty() && sent != null && sent != dataKey().first) publishGrantsSoon()
+        } catch (_: Exception) {}
+    }
+
+    // --- signing out (Doors §1 "Listing and signing out", §2 "Ends made by another device"), helper grants ------
+    /** Doors §2's recorded relays: the epoch record's, and the current seat holders'. */
+    fun recordedRelays(): List<String> {
+        val out = LinkedHashSet<String>()
+        rec.optJSONArray("relays")?.let { a -> for (i in 0 until a.length()) out += a.getString(i) }
+        val v = view
+        for (m in v.members) if (m.key !in v.removed && m.key in v.seats.values) m.raw.optJSONArray("relays")?.let { a -> for (i in 0 until a.length()) (a.opt(i) as? String)?.let { out += it } }
+        return out.toList()
+    }
+    private val endListeners = java.util.concurrent.CopyOnWriteArrayList<(Set<String>) -> Unit>()
+    /** Call `cb` with the ids of this device's own grants that ended (here, or by an end delivered from elsewhere). */
+    fun onEnds(cb: (Set<String>) -> Unit) { endListeners += cb }
+    private fun ended(ids: Set<String>) { if (ids.isNotEmpty()) for (cb in endListeners) try { cb(ids) } catch (_: Exception) {} }
+    /** The account's helper member key, if it has one. */
+    fun helperKey(): String? = view.let { v -> v.members.firstOrNull { it.kind == "helper" && it.key !in v.removed }?.key }
+    /** End grants anywhere: own ones here; another device's by a tombstone and a delivery to its home with an `ask`
+     *  push, one per home per action; a helper grant's tombstone names its signer key and goes to the helper. */
+    fun signOut(list: List<Pair<String, String>>) {
+        val homes = LinkedHashMap<String, MutableList<JSONObject>>(); val mine = HashSet<String>()
+        val helper = helperKey()
+        for ((by, id) in list) {
+            if (by == pub) {
+                val e = grants.own[id]; grants.end(by, id); mine += id
+                if (e?.optBoolean("helper") == true && e.has("signer") && helper != null) homes.getOrPut(helper) { ArrayList() } += JSONObject().put("by", by).put("id", id).put("at", net.now).put("signer", e.getString("signer"))
+                continue
+            }
+            grants.end(by, id)
+            val t = grants.tombstone(by, id) ?: continue
+            homes.getOrPut(by) { ArrayList() } += t
+            if (t.has("signer") && helper != null) homes.getOrPut(helper) { ArrayList() } += t
+        }
+        ended(mine)
+        publishEnds(homes)
+    }
+    /** "Sign out of every site": every maker's newest grant event read, every own grant ended, and each other home,
+     *  the helper included, sent a wildcard for every grant it made before now. */
+    fun signOutEverywhere() {
+        try { grants.fetch(net) } catch (_: Exception) {}
+        val before = net.now + 1; val homes = LinkedHashMap<String, MutableList<JSONObject>>()
+        val mine = grants.own.keys.toSet(); grants.endAll(pub, before); ended(mine)
+        val v = view
+        for (d in v.devices) if (d != pub && d !in v.removed) grants.endAll(d, before)?.let { homes[d] = mutableListOf(it) }
+        helperKey()?.let { h -> homes[h] = mutableListOf(JSONObject().put("by", h).put("id", "*").put("at", net.now).put("before", before)) }
+        publishEnds(homes)
+    }
+    private fun publishEnds(homes: Map<String, List<JSONObject>>) {
+        save()
+        if (baseDk.isNotEmpty()) try { publishGrants() } catch (_: Exception) { publishGrantsSoon() }
+        for ((to, ts) in homes) {
+            val w = env.wrap(sk, to, JSONObject().put("type", "grant_ends").put("tombstones", JSONArray(ts)), net.now)
+            try { net.tell(sk, to, JSONObject().put("type", "delta_push").put("wrap", w)) } catch (_: Exception) {}
+            for (s in servers()) try { net.send(sk, s.key, msg("deliver", "member").put("to", to).put("wrap", w)) } catch (_: Exception) {}
+        }
+        save()
+    }
+    private fun takeEnds(from: String, b: JSONObject): String {
+        val v = view
+        if (from !in v.devices || from in v.removed) return "junk"
+        val a = b.optJSONArray("tombstones") ?: return "junk"
+        val gone = grants.takeEnds((0 until minOf(a.length(), 512)).mapNotNull { a.optJSONObject(it) })
+        if (gone.isNotEmpty()) { ended(gone.toSet()); publishGrantsSoon() }
+        return "kept"
+    }
+    /** "Let *helper* answer for this site" (Helper module §2): the helper mints the link and is the grant's home; the
+     *  grant is an entry in this device's list, marked `helper`, naming the helper's signer key. */
+    fun helperSite(site: String, relays: List<String>): String {
+        val h = helperKey() ?: refuse("no_helper", "this account has no helper")
+        val a = net.send(sk, h, JSONObject().put("type", "helper_mint").put("site", site).put("relays", JSONArray(relays)))
+        val bunker = a.optString("bunker"); val signer = a.optString("signer")
+        if (a.optString("type") != "helper_link" || !Regex("^[0-9a-f]{64}$").matches(signer)) refuse(a.optString("code").ifEmpty { "no_answer" }, "the helper did not mint a link")
+        grants.make(site, site, "nip46", "helper", listOf("sign-in", "post"), relays, signer, helper = true)
+        publishGrantsSoon()
+        return bunker
+    }
+    /** The helper's latest report (Helper module §4). */
+    @Volatile var helperReport: JSONObject? = null; private set
+    private val unnamed = HashMap<String, Long>()
+    private fun takeHelperReport(from: String, b: JSONObject): String {
+        if (from != helperKey()) return "junk"
+        val a = b.optJSONArray("grants") ?: return "junk"
+        val gs = (0 until minOf(a.length(), 1024)).mapNotNull { a.optJSONObject(it) }.filter { Regex("^[0-9a-f]{64}$").matches(it.optString("signer")) && it.has("asker") }
+        helperReport = JSONObject().put("at", net.now).put("grants", JSONArray(gs))
+        // A grant ended here that the helper still reports gets its tombstone again (the helper reads no union).
+        val bySigner = grants.tombstonesWithSigner().associateBy { it.getString("signer") }
+        val ownSigners = grants.own.values.mapNotNull { it.optString("signer").ifEmpty { null } }.toSet()
+        val again = gs.filter { it.getString("signer") in bySigner || (it.optString("asker") == pub && it.getString("signer") !in ownSigners) }
+            .map { bySigner[it.getString("signer")] ?: JSONObject().put("by", pub).put("id", "").put("at", net.now).put("signer", it.getString("signer")) }
+        if (again.isNotEmpty()) Thread { publishEnds(mapOf(from to again)) }.apply { isDaemon = true }.start()
+        // Your helper answers a site none of your devices set up: after the next report plus two hours.
+        val named = grants.all().filter { it.optBoolean("helper") }.mapNotNull { it.optString("signer").ifEmpty { null } }.toSet()
+        for (x in gs) { val sg = x.getString("signer")
+            if (sg in named) { unnamed.remove(sg); continue }
+            val first = unnamed.putIfAbsent(sg, net.now) ?: continue
+            if (net.now - first >= 7200 && notices.none { it.optString("kind") == "helper_unknown_site" }) notices += JSONObject().put("kind", "helper_unknown_site").put("member", from)
+        }
+        return "kept"
     }
     /** This device's state in the TS reference's snapshot form (device/node.ts `snapshot()`); only that
      *  it was wiped, once it was. */
@@ -416,8 +521,9 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         reissueMissing()
         // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
         if (baseDk.isNotEmpty()) try {
-            val (evs, answered, asked) = net.queryCounted(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))))
-            grants.take(evs, answered, asked)
+            // Doors §2: from the counted relays, a majority of them (and of the last publish's set) for a good fetch.
+            val evs = grants.fetch(net)
+            grants.upkeep(net)
             for (e in evs) if ((e.tag("d") ?: "").startsWith("keykin-")) protect(e.id)
             // Device policy §1: the indexes first by d (a site's own 30078 events can't crowd them out, M6), then
             // the parts they name; this device's own at most every 10 minutes.

@@ -24,7 +24,8 @@ export interface Account { bus: Bus; A: DeviceNode; servers: ServerNode[]; paper
 
 /** §11.2 import: the device deals an nsec it holds into shares, signs the epoch record with it, welcomes
  *  the servers and the paper, then forgets the nsec. */
-export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise<Account> {
+/** `relays`: the record's relays (and the servers'), real ones when the account runs over relays (Doors §2 counts them). */
+export async function create(o: { lockless?: boolean; net?: Net; relays?: string[] } = {}): Promise<Account> {
   const bus = (o.net ?? new Bus()) as Bus;
   const A = bus.add(new DeviceNode(bus, 'A', o.lockless ? null : softLock())) as DeviceNode;
   const paper = newKey();
@@ -32,7 +33,7 @@ export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise
   const d = deal(nsec, [1, 2, 3, 4, 7, 8, 5, 6]);
   const g = xOnly(d.commitment[0]);
   // Pick and enrol the servers (Account admin §1.2 step 3, Server profile §4).
-  const servers = [4, 7, 8].map((_, k) => { const s = new ServerNode(bus, `S${k + 1}`); s.enroll(g, bus.now); return bus.add(s) as ServerNode; });
+  const servers = [4, 7, 8].map((_, k) => { const s = new ServerNode(bus, `S${k + 1}`); if (o.relays) s.profile.relays = [...o.relays]; s.enroll(g, bus.now); return bus.add(s) as ServerNode; });
   const epochId = bytesToHex(randomBytes(16));
   const baseSeed = bytesToHex(randomBytes(32)), baseDk = bytesToHex(randomBytes(32));
   const base = baseItem(paper, baseSeed, new Map([[5, d.shares.get(5)!], [6, d.shares.get(6)!]]), baseDk, []);
@@ -42,7 +43,7 @@ export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise
     { key: paper.pub, kind: 'backup', shares: [5, 6] },
   ];
   const rec: EpochContent = { v: 1, g, epoch: { n: 1, id: epochId }, prev: null, t: 4, commitment: commitmentHex(d.commitment), role: 'master', origin: 'import',
-    relays: ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: itemHash(base), seats: { servers: [4, 7, 8], backup: [5, 6], helper: helperSeat(g) } };
+    relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: itemHash(base), seats: { servers: [4, 7, 8], backup: [5, 6], helper: helperSeat(g) } };
   const recEv = finalizeEvent({ kind: KIND_EPOCH, created_at: bus.now, tags: [['d', 'keykin'], ['v', '1'], ['epoch', '1']], content: JSON.stringify(rec) },
     Uint8Array.from(Buffer.from(scalarHex(d.secret), 'hex'))) as NostrEvent;
   A.adopt(recEv, [], { ids: new Set(), C: d.commitment, shares: new Map([1, 2, 3].map((i) => [i, d.shares.get(i)!])) });

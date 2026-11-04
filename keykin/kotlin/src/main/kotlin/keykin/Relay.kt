@@ -28,7 +28,7 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         private var backoff = 1000L
         fun dial() {
             if (closed) return
-            sock = try { (wire ?: Keykin.wire ?: refuse("no_wire", "set Keykin.wire")).open(url, { t -> try { onMessage(t) } catch (_: Exception) {} }, { dropped() }) } catch (e: KeykinException) { throw e } catch (_: Exception) { null }
+            sock = try { (wire ?: Keykin.wire ?: refuse("no_wire", "set Keykin.wire")).open(url, { t -> try { onMessage(t, url) } catch (_: Exception) {} }, { dropped() }) } catch (e: KeykinException) { throw e } catch (_: Exception) { null }
             if (sock == null) { dropped(); return }
             backoff = 1000L
             for (f in subs.values) sock?.send(f())
@@ -80,8 +80,11 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         val evs = synchronized(got) { got.toList() }.mapNotNull { try { Event.of(it).takeIf(::verifyEvent) } catch (_: Exception) { null } }.distinctBy { it.id }
         return Triple(evs, answered, asked)
     }
-    private fun onMessage(text: String) {
+    private fun onMessage(text: String, url: String = "") {
         val m = JSONArray(text)
+        // Doors §2's per-relay answers: an OK for a publish, an EOSE (never a CLOSED or a NOTICE) for a fetch.
+        if (m.optString(0) == "OK") { okWaits.remove("$url ${m.optString(1)}")?.complete(if (m.optBoolean(2)) true else m.optString(3)); return }
+        if (m.optString(0) == "EOSE") eachWaits["$url ${m.optString(1)}"]?.let { it.countDown() }
         if (m.optString(0) == "EOSE") { queries[m.optString(1)]?.second?.countDown(); return }
         if (m.optString(0) == "EVENT" && m.length() >= 3) queries[m.optString(1)]?.let { (got, _) -> (m.opt(2) as? JSONObject)?.let { if (got.size < 5000) got += it }; return }
         if (m.optString(0) != "EVENT" || m.length() < 3) return
@@ -126,6 +129,39 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     }
     /** Publish a raw event to every relay. */
     fun publishEvent(e: JSONObject) = publish(e)
+    private val okWaits = ConcurrentHashMap<String, CompletableFuture<Any>>()
+    private val eachWaits = ConcurrentHashMap<String, java.util.concurrent.CountDownLatch>()
+    /** The relays named, dialled when not yet (at most 32 more than configured). */
+    @Synchronized private fun connsFor(urls: List<String>): List<Conn> {
+        for (u in urls) if (conns.none { it.url == u } && conns.size < relays.size + 32 && Regex("^wss?://\\S+$").matches(u) && u.length <= 256) conns += Conn(u).also { it.dial() }
+        return conns.filter { it.url in urls }
+    }
+    /** Publish to exactly these relays: per relay `true` for an OK, or why it refused ("down" when unreachable). */
+    fun publishTo(e: JSONObject, urls: List<String>, timeoutMs: Long = 4000): Map<String, Any> {
+        val cs = connsFor(urls); val id = e.optString("id")
+        val fs = cs.associate { c -> c.url to CompletableFuture<Any>().also { okWaits["${c.url} $id"] = it } }
+        for (c in cs) try { c.send(JSONArray(listOf("EVENT", e)).toString()) } catch (_: Exception) {}
+        val until = System.currentTimeMillis() + timeoutMs
+        val out = LinkedHashMap<String, Any>()
+        for (u in urls) out[u] = fs[u]?.let { f -> try { f.get(maxOf(1, until - System.currentTimeMillis()), TimeUnit.MILLISECONDS) } catch (_: Exception) { "down" } } ?: "down"
+        for (c in cs) okWaits.remove("${c.url} $id")
+        return out
+    }
+    /** Fetch from exactly these relays: the events, and which relays answered with EOSE. */
+    fun queryEach(filter: JSONObject, urls: List<String>, timeoutMs: Long = 4000): Pair<List<Event>, List<String>> {
+        val cs = connsFor(urls).filter { it.sock != null }
+        val id = "ke-" + hex(ByteArray(6).also { java.security.SecureRandom().nextBytes(it) })
+        val got = java.util.Collections.synchronizedList(ArrayList<JSONObject>())
+        val latches = cs.associate { c -> c.url to java.util.concurrent.CountDownLatch(1).also { eachWaits["${c.url} $id"] = it } }
+        queries[id] = got to java.util.concurrent.CountDownLatch(cs.size)
+        for (c in cs) try { c.send(JSONArray(listOf("REQ", id, filter)).toString()) } catch (_: Exception) {}
+        val until = System.currentTimeMillis() + timeoutMs
+        for (l in latches.values) l.await(maxOf(1, until - System.currentTimeMillis()), TimeUnit.MILLISECONDS)
+        val answered = latches.filter { it.value.count == 0L }.keys.toList()
+        queries.remove(id); for (c in cs) { eachWaits.remove("${c.url} $id"); try { c.send(JSONArray(listOf("CLOSE", id)).toString()) } catch (_: Exception) {} }
+        val evs = synchronized(got) { got.toList() }.mapNotNull { try { Event.of(it).takeIf(::verifyEvent) } catch (_: Exception) { null } }.distinctBy { it.id }
+        return evs to answered
+    }
     /** Subscribe to raw events; returns a function that stops it. */
     fun watch(filter: JSONObject, cb: (JSONObject) -> Unit): () -> Unit {
         val id = "kw-" + hex(ByteArray(6).also { java.security.SecureRandom().nextBytes(it) })

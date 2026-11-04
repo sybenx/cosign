@@ -18,8 +18,9 @@ fun main(args: Array<String>) {
             else Device.fromSnapshot(File(args[0]).readText(), net).also { dev -> dev.persist = { File(args[0]).writeText(it) } }
         println(JSONObject().put("device", d.pub).toString()); System.out.flush()
         val cmds = JSONArray(File(args[2]).readText())
+        var lastGrant = ""
         for (k in 0 until cmds.length()) {
-            val c = cmds.getJSONObject(k)
+            val c = cmds.getJSONObject(k).let { x -> if (x.optString("id") == "__ID__") JSONObject(x.toString()).put("id", lastGrant) else x }
             val out = try {
                 when (c.getString("cmd")) {
                     "sign" -> d.sign(1, c.getString("content"))
@@ -77,6 +78,13 @@ fun main(args: Array<String>) {
                     // Be a NIP-46 home (Doors §3.3): print a bunker:// link, then answer sites for `seconds`.
                     "bunker" -> { val home = Nip46Home(d, net); println(JSONObject().put("bunker", home.mintBunker(args[1].split(","), "", c.optString("scopes", "sign-in,post").split(",").filter { it.isNotBlank() })).toString()); System.out.flush()
                         Thread.sleep(c.optLong("seconds", 30) * 1000); JSONObject().put("served", true) }
+                    // Doors §2: make a grant and publish it; wait until an end made elsewhere drops it; sign out of every site.
+                    "grant" -> { d.fetch(); val e = d.grants.make(c.getString("site"), c.getString("site"), "nip55", "pkg@1", listOf("sign-in", "post")); d.publishGrants()
+                        lastGrant = e.getString("id"); JSONObject().put("grant", lastGrant).put("counted", d.grants.counted) }
+                    "wait_ends" -> { val end = System.currentTimeMillis() + c.optLong("seconds", 60) * 1000
+                        while (System.currentTimeMillis() < end && d.grants.own.containsKey(c.getString("id"))) { Thread.sleep(1000); try { d.fetch() } catch (_: Exception) {} }
+                        JSONObject().put("ended", !d.grants.own.containsKey(c.getString("id"))) }
+                    "signout_all" -> { d.signOutEverywhere(); JSONObject().put("own", d.grants.own.size) }
                     "nip44" -> JSONObject().put("result", d.nip44(c.getString("peer"), c.getString("text"), c.optBoolean("encrypt", true)))
                     "nip04" -> JSONObject().put("result", d.nip04(c.getString("peer"), c.getString("text"), c.optBoolean("encrypt", true)))
                     else -> JSONObject().put("error", "unknown command")
