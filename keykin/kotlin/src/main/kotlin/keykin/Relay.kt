@@ -13,15 +13,22 @@ import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
+private const val ANSWER_TTL_S = 600L
+private const val SEEN_MAX = 50_000
+
 class RelayNet(private val relays: List<String>, private val env: Envelope = Envelope(), private val timeoutMs: Long = 9000, private val resendMs: Long = 1500) {
     private val socks = ArrayList<WebSocket>()
     private val waiting = ConcurrentHashMap<String, CompletableFuture<JSONObject>>()   // "to:id" → answer
     private val hosted = ConcurrentHashMap<String, ByteArray>()                         // our keys
     /** What answers requests sent to one of our keys (null: answers, or ignores, nothing). */
     private val handlers = ConcurrentHashMap<String, (String, JSONObject, Long) -> JSONObject?>()
-    private val answered = ConcurrentHashMap<String, JSONObject>()
+    // Answers kept 10 minutes for re-sends, as TS does; event ids remembered up to a bound (review 12 L2).
+    private val answered = ConcurrentHashMap<String, Pair<Long, JSONObject>>()
+    @Volatile private var pruned = 0L
     private val handlerPool = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-relay-handlers").also { it.isDaemon = true } }
-    private val seen = ConcurrentHashMap.newKeySet<String>()
+    private val seen: MutableSet<String> = java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(object : LinkedHashMap<String, Boolean>() {
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Boolean>?) = size > SEEN_MAX
+    }))
     private val parts = ConcurrentHashMap<String, Parts.Reassembler>()
 
     private inner class Listener : WebSocket.Listener {
@@ -56,7 +63,8 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         val key = "${o.from}:$id"
         // Handlers run off the listener thread too, so one that sends and waits never blocks its own answer.
         handlerPool.execute {
-            val ans = (if (id.isNotEmpty()) answered[key] else null) ?: (try { h(o.from, body, o.sentAt) } catch (_: Exception) { null } ?: return@execute).put("re", id).put("__answer", true).also { if (id.isNotEmpty()) answered[key] = it }
+            prune()
+            val ans = (if (id.isNotEmpty()) answered[key]?.second else null) ?: (try { h(o.from, body, o.sentAt) } catch (_: Exception) { null } ?: return@execute).put("re", id).put("__answer", true).also { if (id.isNotEmpty()) answered[key] = now to it }
             for (part in Parts.split(ans)) publish(env.wrap(sk, o.from, part, now))
         }
     }
@@ -86,6 +94,15 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     }
     private fun publish(w: JSONObject) { val msg = JSONArray(listOf("EVENT", w)).toString(); for (s in socks) try { s.sendText(msg, true).get(5, TimeUnit.SECONDS) } catch (_: Exception) {} }
     val now: Long get() = System.currentTimeMillis() / 1000
+    private fun prune() {
+        val t = now; if (t - pruned < 60) return
+        pruned = t; answered.entries.removeIf { t - it.value.first > ANSWER_TTL_S }
+    }
+    /** Send `body` once, waiting for no answer (a join's closing `ack`, §4.2 step 5). */
+    fun tell(sk: ByteArray, to: String, body: JSONObject) {
+        if (!body.has("id")) body.put("id", hex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }))
+        for (part in Parts.split(body)) publish(env.wrap(sk, to, part, now))
+    }
 
     /** Send `body` from `sk` to `to` and wait for its answer, re-sending until answered or timed out. */
     fun send(sk: ByteArray, to: String, body: JSONObject): JSONObject {

@@ -68,6 +68,11 @@ object Ecdh {
         val signers = req.getJSONArray("signers").let { a -> (0 until a.length()).map { Json.long(a.get(it)) } }
         val answers = answer.optJSONArray("answers") ?: refuse("bad_answer", "one answer list per point")
         if (answers.length() != points.size) refuse("bad_answer", "one answer list per point")
+        // A malformed answer is a bad answer, never a JSON error out of the decrypt (review 12 L1).
+        try { return combine(ctx, signers, points, answers, shares, co) }
+        catch (e: KeykinException) { throw e } catch (e: Exception) { refuse("bad_answer", "member ${co.key}: ${e.message}") }
+    }
+    private fun combine(ctx: RoundContext, signers: List<Long>, points: List<String>, answers: JSONArray, shares: Map<Long, BigInteger>, co: Signer): List<String> {
         return points.mapIndexed { q, Q ->
             val perQ = answers.getJSONArray(q).let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
             val got = perQ.map { Json.long(it.get("i")) }

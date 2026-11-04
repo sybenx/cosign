@@ -6,6 +6,9 @@ package keykin
 import org.json.JSONObject
 import java.math.BigInteger
 
+/** Sigmas a joining device keeps from senders other than its inviter (the servers are known only from the welcome). */
+private const val SIGMAS_MAX = 256
+
 class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, val ids: List<String>, val shares: Map<Long, BigInteger>, private val net: RelayNet,
              private val baseDk: String = "", private val dkSeeds: List<String> = emptyList()) {
     val pub: String = Secp.Reference.pub(sk)
@@ -44,21 +47,37 @@ class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, val i
             val pub = Secp.Reference.pub(sk)
             val j = Joiner(pub, null, net.now, parseCode(code))
             val welcome = java.util.concurrent.CompletableFuture<Pair<String, JSONObject>>()
-            val sigmas = java.util.Collections.synchronizedList(ArrayList<JSONObject>())
+            // Sigmas by (sender, index), one each and a bounded number: a stranger can't grow them (review 12 L2).
+            val sigmas = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
             net.host(sk, pub) { from, body, _ ->
                 when (body.optString("type")) {
-                    "repair_sigma" -> { sigmas += JSONObject(body.toString()).put("from", from); JSONObject().put("type", "ack") }
-                    "welcome" -> { welcome.complete(from to body); JSONObject().put("type", "ack") }
+                    "repair_sigma" -> {
+                        val key = "$from:${body.opt("index")}"
+                        if (from == j.m || sigmas.size < SIGMAS_MAX) sigmas.putIfAbsent(key, JSONObject(body.toString()).put("from", from))
+                        JSONObject().put("type", "ack")
+                    }
+                    // Only the inviter's welcome counts: `n` is public, and a stranger's would abort the join (review 12 K1).
+                    "welcome" -> if (from == j.m) { welcome.complete(from to body); JSONObject().put("type", "ack") } else null
                     else -> null
                 }
             }
+            val deadline = System.currentTimeMillis() + timeoutMs
             val (to, hello) = j.hello()
             val nonce = net.send(sk, to, hello)
             if (nonce.optString("type") != "join_nonce") refuse(nonce.optString("code").ifEmpty { "no_nonce" })
             j.onNonce(to, nonce)
             onCheck(j.check)
-            val (from, w) = welcome.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-            val r = j.finish(from, w, sigmas.toList())
+            val (from, w) = welcome.get(maxOf(1, deadline - System.currentTimeMillis()), java.util.concurrent.TimeUnit.MILLISECONDS)
+            // The welcome may overtake a server's sigma on the relays: wait for it, within the bound.
+            var r: Joiner.Joined
+            while (true) {
+                try { r = j.finish(from, w, sigmas.values.toList()); break }
+                catch (e: KeykinException) { if (e.code != "sigma_missing" || System.currentTimeMillis() > deadline) throw e }
+                Thread.sleep(100)
+            }
+            // §4.2 step 5: ack to the inviter and to every server, and destroy the sigmas.
+            sigmas.clear()
+            for (k in listOf(from) + r.view.members.filter { it.kind == "server" }.map { it.key }) net.tell(sk, k, JSONObject().put("type", "ack"))
             // The welcome carries the base data key and every data-key seed (core §4.2 step 4, §4.5).
             val seeds = w.optJSONArray("dk")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
             return Device(sk, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds)
@@ -115,7 +134,8 @@ class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, val i
             val r = OneCall(ctx, shares, Signer(s.key, s.shares), Unsigned(g, createdAt, kind, tags, content))
             val a = net.send(sk, s.key, r.request)
             if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; continue }
-            return r.finish(a)
+            // A faulty or hostile server's bad partial counts as silence: try the next one (review 12 L1).
+            try { return r.finish(a) } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
         }
         refuse(last)
     }

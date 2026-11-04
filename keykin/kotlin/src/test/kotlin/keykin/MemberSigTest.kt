@@ -31,5 +31,11 @@ class MemberSigTest {
             assertFailsWith<KeykinException>(d) { MemberSig.register(d) }
         }
         assertFailsWith<KeykinException> { MemberSig.digest("nostr-vault/unregistered/1", ByteArray(0)) }
+        val big = v.getJSONArray("refused_messages")
+        for (k in 0 until big.length()) {
+            val x = big.getJSONObject(k)
+            assertFailsWith<KeykinException> { MemberSig.digest(x.getString("domain"), ByteArray(x.getInt("length"))) }
+        }
+        MemberSig.digest("nostr-vault/ksig/1", ByteArray(v.getInt("accepted_message_length")))
     }
 }

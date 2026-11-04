@@ -15,7 +15,7 @@ import { Inviter } from '../src/join.ts';
 import { pickSalt } from '../src/codes.ts';
 import { takenIndices } from '../src/membership.ts';
 import { msg } from '../src/msg.ts';
-import { verifyEvent } from '../src/event.ts';
+import { verifyEvent, newKey } from '../src/event.ts';
 import type { Change } from '../src/types.ts';
 
 const root = join(import.meta.dirname, '..');
@@ -60,14 +60,18 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   const { salt, indices } = pickSalt(A.g, A.epochId, n, takenIndices(A.m!));
   const add: Change[] = [{ add: { key: n, kind: 'device', lock: null, salt } }];
   await A.submit(add, A.approveLock(add));
+  // Review 12 K1: `n` is public, so a stranger races a junk welcome; the Kotlin device ignores it.
+  const stray = net.send(newKey(), n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: [], state: [] }));
+  // The inviter's welcome overtakes the sigmas: the Kotlin device waits for them.
+  const welcomed = net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.dkSeeds }));
+  assert.equal((await welcomed).type, 'ack');
   const server0 = A.servers()[0];
   for (const i of indices)
     for (const w of await A.repairFor([{ key: A.kp.pub, indices: [...A.state!.shares.keys()] }, { key: server0.key, indices: server0.shares }], i, n, 'add'))
       await net.events.publishEvent(w);
-  const ack = await net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.dkSeeds }));
-  assert.equal(ack.type, 'ack');
 
   const joined = await next();
+  assert.notEqual((await stray).type, 'ack', 'a stranger\'s welcome gets no answer');
   assert.equal(joined.device, n, JSON.stringify(joined));
   const ev = await next();
   assert.equal(ev.error, undefined, JSON.stringify(ev));
