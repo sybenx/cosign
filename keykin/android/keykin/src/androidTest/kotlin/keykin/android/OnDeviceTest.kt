@@ -31,7 +31,7 @@ import org.junit.runner.RunWith
 class OnDeviceTest {
     private val ctx = InstrumentationRegistry.getInstrumentation().context
     private fun asset(name: String) = JSONObject(ctx.assets.open(name).bufferedReader().readText())
-    @Before fun start() { KeykinAndroid.init() }
+    @Before fun start() { KeykinAndroid.init(); Proc.testProcess = true }
 
     @Test fun memberSigVectors() {
         val v = asset("membersig.json")
