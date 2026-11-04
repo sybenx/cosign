@@ -14,6 +14,8 @@ export interface RelayNetOpts { relays: string[]; timeoutMs?: number; resendMs?:
 export class RelayNet implements Transport {
   o: Required<RelayNetOpts>;
   conns: Relay[] = [];
+  /** Where Web Push requests go (server/push.ts in the runtime). */
+  pushes?: { push(p: { url: string; authorization: string; body: Uint8Array; at: number }): unknown };
   hosted = new Map<string, { node: Node; sub: { close(): void }[]; parts: Reassembler; answered: Map<string, { at: number; answer: any | null }> }>();
   pending = new Map<string, (body: any) => void>();         // `${to}:${id}` → resolve
   seen = new Set<string>();
@@ -45,35 +47,44 @@ export class RelayNet implements Transport {
   }
 
   private async onWrap(me: string, e: NostrEvent) {
-    if (this.seen.has(e.id)) return;
+    const r = await this.take(me, e);
+    if (r) await this.publish(r.from, r.to, r.answer);
+  }
+
+  /** One wrap addressed to hosted key `me`, however it arrived: an answer to something we sent is
+   *  delivered; a request is answered once per (sender, id), a re-send getting the same answer (§5.3).
+   *  Returns the answer to send back, or null. `meta.ip` is the HTTPS source, for the limits. */
+  async take(me: string, e: NostrEvent, meta: { ip?: string } = {}): Promise<{ from: KeyPair; to: string; answer: any } | null> {
+    if (this.seen.has(e.id)) return null;
     this.seen.add(e.id);
+    if (this.seen.size > 200_000) this.seen.clear();
     const h = this.hosted.get(me);
-    if (!h) return;
+    if (!h) return null;
     let o;
-    try { o = unwrap(h.node.kp.sk, e); } catch { return; }
+    try { o = unwrap(h.node.kp.sk, e); } catch { return null; }
     let body;
-    try { body = h.parts.take(o.from, o.body, this.now); } catch { return; }
-    if (!body) return;
-    // An answer to something we sent?
+    try { body = h.parts.take(o.from, o.body, this.now); } catch { return null; }
+    if (!body) return null;
     if (body.re !== undefined && body.__answer) {
       const k = `${o.from}:${body.re}`;
       const res = this.pending.get(k);
       if (res) { this.pending.delete(k); delete body.__answer; res(body); }
-      return;
+      return null;
     }
-    // A request: answer once per (sender, id); a re-send gets the same answer (§5.3).
     const key = `${o.from}:${body.id}`;
     const prev = h.answered.get(key);
-    if (prev) { if (prev.answer) await this.publish(h.node.kp, o.from, prev.answer); return; }
+    if (prev) return prev.answer ? { from: h.node.kp, to: o.from, answer: prev.answer } : null;
     h.answered.set(key, { at: Date.now(), answer: null });
     let ans;
-    try { ans = await h.node.handle(o.from, body, o.sentAt); } catch (err) { ans = { type: 'error', code: 'internal', detail: String(err) }; }
-    if (ans === undefined || ans === null) return;
+    try { ans = await h.node.handle(o.from, body, o.sentAt, meta); } catch (err) { ans = { type: 'error', code: 'internal', detail: String(err) }; }
+    if (ans === undefined || ans === null) return null;
     const answer = { ...ans, re: body.id, __answer: true };
     h.answered.set(key, { at: Date.now(), answer });
     for (const [k, v] of h.answered) if (Date.now() - v.at > 600_000) h.answered.delete(k);
-    await this.publish(h.node.kp, o.from, answer);
+    return { from: h.node.kp, to: o.from, answer };
   }
+  /** The wraps that carry `body` from `from` to `to` (parts when it is large), for an HTTPS reply. */
+  wrapsFor(from: KeyPair, to: string, body: any): NostrEvent[] { return split(body).map((part) => wrap(from.sk, to, part)); }
 
   /** Send and wait for the answer, re-sending until answered or timed out. */
   async send(from: KeyPair, to: string, body: any, opt: { timeoutMs?: number } = {}): Promise<any> {

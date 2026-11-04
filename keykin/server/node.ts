@@ -32,6 +32,10 @@ import { softLock, type SoftLock } from '../src/lock.ts';
 import { TRANSPORT_FAILED, type Transport, type Node } from '../runtime/net.ts';
 import { msg, rid } from '../src/msg.ts';
 
+/** A server seat's member entry, from its enrol reply (Server profile §4): what a device writes. */
+export const entryFromReply = (reply: any, idx: number): MemberEntry => ({ key: reply.member_key, kind: 'server', shares: [idx], host: reply.host, operator: reply.operator,
+  own: false, https: reply.https, relays: reply.relays, vapid: reply.vapid, enroll: reply });
+
 export class ServerNode implements Node {
   kp = newKey(); host = newKey();
   co: CoSigner | null = null;
@@ -48,17 +52,21 @@ export class ServerNode implements Node {
   get m() { return this.co!.m; }
   /** Server profile §4: a rotating enrol secret, and the reply that names this seat's keys. */
   enrolSecret = randomBytes(32);
+  /** What this server's enrol replies say (Server profile §4). The simulation's defaults; the runtime
+   *  sets the month's secret id and its own endpoints. */
+  profile = { secretId: '2026-11', https: '', relays: ['wss://r.test'], operator: '' };
   enrollR: any = null;
   vapidSk: Uint8Array | null = null;
   enroll(g: string, now: number) {
-    const r = enrollReply(this.host, this.enrolSecret, '2026-11', g, bytesToHex(randomBytes(16)), { https: `https://${this.name}.test`, relays: ['wss://r.test'], operator: this.host.pub, issued: now });
+    const p = this.profile;
+    const r = enrollReply(this.host, this.enrolSecret, p.secretId, g, bytesToHex(randomBytes(16)), { https: p.https || `https://${this.name}.test`, relays: p.relays, operator: p.operator || this.host.pub, issued: now });
     this.kp = { sk: r.memberSk, pub: r.reply.member_key };
     this.enrollR = r.reply; this.vapidSk = r.vapidSk;
     return r.reply;
   }
   entry(idx: number): MemberEntry {
-    return { key: this.kp.pub, kind: 'server', shares: [idx], host: this.host.pub, operator: this.enrollR?.operator ?? 'op', own: false,
-      https: `https://${this.name}.test`, relays: ['wss://r.test'], ...(this.enrollR ? { vapid: this.enrollR.vapid, enroll: this.enrollR } : {}) };
+    return this.enrollR ? entryFromReply(this.enrollR, idx) : { key: this.kp.pub, kind: 'server', shares: [idx], host: this.host.pub, operator: 'op', own: false,
+      https: `https://${this.name}.test`, relays: ['wss://r.test'] };
   }
 
   /** A seat holder's welcome (§6.7.4): record, changes, state, release seeds, material, and the share if repaired already. */
@@ -103,9 +111,9 @@ export class ServerNode implements Node {
   snapshot(): string {
     const hex = (b: Uint8Array | null) => (b ? bytesToHex(b) : null);
     // After a delete, only the tombstone and the keys that sign and receive its `deleted` answers.
-    if (this.tombstone) return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), enrolSecret: hex(this.enrolSecret), tombstone: this.tombstone });
+    if (this.tombstone) return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), tombstone: this.tombstone });
     const co = this.co;
-    return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), enrolSecret: hex(this.enrolSecret), enrollR: this.enrollR, vapidSk: hex(this.vapidSk),
+    return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), enrolSecret: this.enrollR ? null : hex(this.enrolSecret), profile: this.profile, enrollR: this.enrollR, vapidSk: hex(this.vapidSk),
       recEv: this.recEv, tombstone: this.tombstone, retired: this.retired, provisional: this.provisional, welcomedAt: this.welcomedAt, passive: this.passive, lastActive: this.lastActive,
       co: co && { changes: co.changes, ids: [...co.state.ids], shares: [...co.state.shares].map(([i, s]) => [i, scalarHex(s)]), co: co.snapshot() },
       seeds: [...this.seeds], items: this.items, base: this.base, uploads: [...this.uploads].map(([k, u]) => [k, { ...u, held: [...u.held] }]),
@@ -119,7 +127,7 @@ export class ServerNode implements Node {
     if (x.v !== 1) refuse('malformed', 'storage version');
     const n = new ServerNode(bus, x.name);
     const key = (h: string) => ({ sk: hexToBytes(h), pub: pubOf(hexToBytes(h)) });
-    n.kp = key(x.kp); n.host = key(x.host); n.enrolSecret = hexToBytes(x.enrolSecret); n.enrollR = x.enrollR; n.vapidSk = x.vapidSk ? hexToBytes(x.vapidSk) : null;
+    n.kp = key(x.kp); n.host = key(x.host); n.enrolSecret = x.enrolSecret ? hexToBytes(x.enrolSecret) : new Uint8Array(32); if (x.profile) n.profile = x.profile; n.enrollR = x.enrollR; n.vapidSk = x.vapidSk ? hexToBytes(x.vapidSk) : null;
     n.tombstone = x.tombstone ?? null;
     if (n.tombstone) return n;
     n.retired = x.retired; n.provisional = x.provisional; n.welcomedAt = x.welcomedAt; n.passive = x.passive; n.lastActive = x.lastActive;

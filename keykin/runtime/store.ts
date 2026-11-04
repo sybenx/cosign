@@ -5,7 +5,7 @@
 // file of its own, every byte written, fsync, rename, fsync of the directory), so a crash leaves the
 // old state or the new one (review 9 L6). What goes in is the node's own snapshot; nonces never do.
 
-import { openSync, writeSync, fsyncSync, closeSync, renameSync, readFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { openSync, writeSync, fsyncSync, closeSync, renameSync, readFileSync, existsSync, mkdirSync, unlinkSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { gcm } from '@noble/ciphers/aes.js';
 import { randomBytes, utf8ToBytes, bytesToHex, hexToBytes, KeykinError, concatBytes } from '../src/bytes.ts';
@@ -65,6 +65,8 @@ export class FileStore {
     try { return new TextDecoder('utf-8', { fatal: true }).decode(gcm(k, b.slice(4, 16), utf8ToBytes(key)).decrypt(b.slice(16))); }
     catch { throw new KeykinError('malformed', 'store: unreadable record'); }
   }
+  /** Every record's key. */
+  list(): string[] { return readdirSync(this.dir).filter((f) => f.endsWith('.kks')).map((f) => f.slice(0, -4)); }
   /** Destroy a record: its key first, then the file. */
   destroy(key: string) { this.keys.destroy(key); const p = this.#path(key); if (existsSync(p)) unlinkSync(p); }
 }

@@ -29,7 +29,7 @@ import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/c
 import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import { softLock, type SoftLock } from '../src/lock.ts';
-import { TRANSPORT_FAILED, type Transport, type Node } from './bus.ts';
+import { TRANSPORT_FAILED, type Transport, type Node, type PushOut } from './bus.ts';
 
 import { msg, rid } from '../src/msg.ts';
 export { msg };
@@ -481,7 +481,7 @@ export class DeviceNode implements Node {
    *  and the host key's signature over the payload, from a seated server. */
   readPushes(): any[] {
     const hosts = new Set(this.servers().map((s) => s.host!));
-    return (this.bus.pushes ?? []).flatMap((p) => {
+    return (Array.isArray(this.bus.pushes) ? this.bus.pushes as PushOut[] : []).flatMap((p) => {
       const k = this.pushKeys.get(p.url);
       if (!k || checkVapid(p.authorization, p.url, k.vapid, this.now) !== null) return [];
       try { return [readPush(decryptPush(p.body, k.sk, k.auth), hosts)]; } catch { return []; }

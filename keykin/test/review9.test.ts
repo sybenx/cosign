@@ -25,7 +25,7 @@ test('H1: a server that took a delete keeps only the tombstone and its keys, in 
   assert.equal(S.co, null);
   assert.equal(S.pushReg.get(acc.A.kp.pub), null);
   const snap = JSON.parse(S.snapshot());
-  assert.deepEqual(Object.keys(snap).sort(), ['enrolSecret', 'host', 'kp', 'name', 'tombstone', 'v']);
+  assert.deepEqual(Object.keys(snap).sort(), ['host', 'kp', 'name', 'tombstone', 'v']);
   const back = restartServer(acc, 1, store());
   assert.ok(back.tombstone && back.co === null);
   assert.equal((await acc.bus.send(acc.A.kp, back.kp.pub, msg('state_get', acc.g, acc.epochId, 'ask'))).type, 'deleted');
