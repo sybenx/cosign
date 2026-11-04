@@ -2,7 +2,7 @@
 // Each node keeps what Core says it keeps; the drivers (`sign`, `submit`, `invite`, …) are what an
 // app would run. Nothing here is a second implementation of a rule: every check is in src/.
 
-import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes } from '../src/bytes.ts';
+import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes, b64u } from '../src/bytes.ts';
 import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH, what } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
@@ -17,7 +17,9 @@ import { checkDelivery, verifyPaperItem, reissueItem, checkReissue, deal as deal
 import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
-import { Inbox } from '../src/inbox.ts';
+import { Inbox, PushRegistry, pushPayload, readPush } from '../src/inbox.ts';
+import { encryptPush, decryptPush, vapidHeader, checkVapid } from '../src/webpush.ts';
+import { p256 } from '@noble/curves/nist.js';
 import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList } from '../src/approval.ts';
@@ -51,10 +53,11 @@ export class ServerNode implements Node {
   /** Server profile §4: a rotating enrol secret, and the reply that names this seat's keys. */
   enrolSecret = randomBytes(32);
   enrollR: any = null;
+  vapidSk: Uint8Array | null = null;
   enroll(g: string, now: number) {
     const r = enrollReply(this.host, this.enrolSecret, '2026-11', g, bytesToHex(randomBytes(16)), { https: `https://${this.name}.test`, relays: ['wss://r.test'], operator: this.host.pub, issued: now });
     this.kp = { sk: r.memberSk, pub: r.reply.member_key };
-    this.enrollR = r.reply;
+    this.enrollR = r.reply; this.vapidSk = r.vapidSk;
     return r.reply;
   }
   entry(idx: number): MemberEntry {
@@ -286,6 +289,14 @@ export class ServerNode implements Node {
   }
   passive = false;
   lastActive = 0;
+  pushReg = new PushRegistry();
+  /** §8.2: one Web Push to `member`'s address for `cls`, RFC 8291-encrypted, signed with this seat's VAPID key. */
+  pushTo(member: string, cls: 'sign' | 'ask' | 'notice', id: string, wrap?: unknown) {
+    const addr = this.pushReg.for(member, cls);
+    if (!addr || !this.vapidSk) return false;
+    this.bus.pushes?.push({ url: addr.url, authorization: vapidHeader(addr.url, this.vapidSk, this.now), body: encryptPush(pushPayload(this.host, cls, id, wrap), addr), at: this.now });
+    return true;
+  }
   private async dispatch(from: string, body: any, sentAt: number): Promise<any> {
     if (this.lastActive && this.now - this.lastActive > 7 * 86400) this.passive = true;
     this.lastActive = this.now;
@@ -405,7 +416,18 @@ export class ServerNode implements Node {
           this.passive = false;
           await this.fetchCancels();
         }
+        // §8.1: push addresses, per member, newest by the rumor's created_at; never copied to peers.
+        if (body.type === 'push_register' || body.type === 'push_unregister') {
+          const mem = this.m.members.get(from);
+          if (!mem || this.m.removed.has(from)) refuse('not_member');
+          if (mem!.kind !== 'device') refuse('helper_refused');
+          if (body.type === 'push_unregister') this.pushReg.unregister(from);
+          else this.pushReg.register(from, sentAt, body.addresses);
+          return { type: 'ack', re: body.id };
+        }
         const a = this.co.handle(from, body, sentAt);
+        // §8.2: a wait notice goes as an `ask` push to every member, with the wait id.
+        if (a?.type === 'notice' && a.kind === 'hold') for (const mem of this.m.members.keys()) this.pushTo(mem, 'ask', a.wait);
         if (a?.type === 'release') {
           // The release bundle (§6.5 step 3): seeds of this state, record, changes, material, statement.
           return { ...a, record: this.recEv, changes: this.co.changes, seeds: [...this.seeds], items: this.items, base: this.base };
@@ -756,6 +778,33 @@ export class DeviceNode implements Node {
     const out: any[] = [];
     for (const s of this.servers()) out.push(await this.bus.send(this.kp, s.key, req));
     return out;
+  }
+
+  /** §8.1: one gateway address per server and wake class, pinned to that server's VAPID key, each with
+   *  its own RFC 8291 keys, so the addresses can't be linked across servers or accounts. */
+  pushKeys = new Map<string, { sk: Uint8Array; auth: Uint8Array; vapid: string; cls: string }>();
+  async registerPush(): Promise<number> {
+    let n = 0;
+    for (const s of this.servers()) {
+      const addresses = (['sign', 'ask', 'notice'] as const).map((cls) => {
+        const sk = p256.utils.randomSecretKey(), auth = randomBytes(16), url = `https://gw.test/${bytesToHex(randomBytes(16))}`;
+        this.pushKeys.set(url, { sk, auth, vapid: s.vapid!, cls });
+        return { cls, url, p256dh: b64u(p256.getPublicKey(sk, false)), auth: b64u(auth) };
+      });
+      const a = await this.bus.send(this.kp, s.key, msg('push_register', this.g, this.epochId, 'member', { addresses }));
+      if (a?.type === 'ack') n++;
+    }
+    return n;
+  }
+  /** What reached this device's addresses: the gateway's VAPID check (§8.3), then RFC 8291 decryption
+   *  and the host key's signature over the payload, from a seated server. */
+  readPushes(): any[] {
+    const hosts = new Set(this.servers().map((s) => s.host!));
+    return (this.bus.pushes ?? []).flatMap((p) => {
+      const k = this.pushKeys.get(p.url);
+      if (!k || checkVapid(p.authorization, p.url, k.vapid, this.now) !== null) return [];
+      try { return [readPush(decryptPush(p.body, k.sk, k.auth), hosts)]; } catch { return []; }
+    });
   }
 
   /** Core §6.7.7: this device's own view of which seated servers are dead, from what each answers. */

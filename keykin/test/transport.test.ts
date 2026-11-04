@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { wrap, unwrap, split, Reassembler, KIND_WRAP_LIVE, KIND_WRAP_STORED, PART_BYTES } from '../src/transport.ts';
 import { pushPayload, readPush, Inbox, PushRegistry, PUSH_PLAIN, PER_PAIR, INBOX_ITEMS } from '../src/inbox.ts';
 import { newKey } from '../src/event.ts';
-import { bytesToHex, randomBytes } from '../src/bytes.ts';
+import { bytesToHex, randomBytes, b64u } from '../src/bytes.ts';
+import { p256 } from '@noble/curves/nist.js';
 
 const code = (f: () => unknown) => { try { f(); return 'ok'; } catch (e: any) { return e.code ?? e.message; } };
 
@@ -85,10 +86,17 @@ test('case 10: deliver, caps, p tag, removed senders', () => {
 
 test('case 10: one address per class, newest set wins, dropped on removal or 410', () => {
   const R = new PushRegistry();
-  R.register('a', 10, { sign: 'https://p/1', ask: 'https://p/2', notice: 'https://p/3' });
-  assert.equal(R.register('a', 5, { sign: 'old' }), false);
+  const key = b64u(p256.getPublicKey(p256.utils.randomSecretKey(), false)), auth = b64u(randomBytes(16));
+  const addr = (cls: string, url: string) => ({ cls, url, p256dh: key, auth });
+  R.register('a', 10, [addr('sign', 'https://p/1'), addr('ask', 'https://p/2'), addr('notice', 'https://p/3')]);
+  assert.equal(R.register('a', 5, [addr('sign', 'https://old')]), false);
   R.dead('a', 'https://p/2');
-  assert.deepEqual(R.get('a'), { sign: 'https://p/1', notice: 'https://p/3' });
+  assert.deepEqual(R.get('a')!.map((x) => [x.cls, x.url]), [['sign', 'https://p/1'], ['notice', 'https://p/3']]);
+  assert.equal(R.for('a', 'notice')!.url, 'https://p/3');
   R.unregister('a');
   assert.equal(R.get('a'), null);
+  // §8.1's shape, checked: one per class, https, a P-256 point and a 16-byte auth secret.
+  for (const bad of [[addr('sign', 'https://p/1'), addr('sign', 'https://p/2')], [addr('wake', 'https://p/1')], [addr('ask', 'http://p/1')],
+    [{ ...addr('ask', 'https://p/1'), auth: b64u(randomBytes(15)) }], [{ ...addr('ask', 'https://p/1'), p256dh: b64u(new Uint8Array(65)) }], {}, [1, 2, 3, 4]])
+    assert.throws(() => R.register('b', 1, bad), /malformed/);
 });

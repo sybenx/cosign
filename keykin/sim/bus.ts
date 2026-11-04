@@ -6,7 +6,9 @@ import type { KeyPair, NostrEvent } from '../src/event.ts';
 
 export interface Node { kp: KeyPair; handle(from: string, body: any, sentAt: number): any }
 /** What nodes send through: the in-memory Bus here, or runtime/relay.ts over real relays. */
-export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any, o?: { timeoutMs?: number }): Promise<any>; kill?(pub: string): void; rekey?(oldPub: string, node: Node): void }
+export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any, o?: { timeoutMs?: number }): Promise<any>; kill?(pub: string): void; rekey?(oldPub: string, node: Node): void; pushes?: PushOut[] }
+/** A Web Push request as a gateway receives it. */
+export interface PushOut { url: string; authorization: string; body: Uint8Array; at: number }
 
 export class Bus implements Transport {
   now: number;
@@ -17,6 +19,8 @@ export class Bus implements Transport {
   log: string[] = [];
   /** Events published to relays (only the signpost, §9.4). */
   published: NostrEvent[] = [];
+  /** Web Push requests servers sent (core §8.2), as a gateway receives them. */
+  pushes: PushOut[] = [];
   constructor(now = 1_800_000_000) { this.now = now; }
   add(n: Node) { this.nodes.set(n.kp.pub, n); return n; }
   kill(pub: string) { this.dead.add(pub); }

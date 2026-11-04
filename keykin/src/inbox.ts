@@ -1,6 +1,6 @@
 // Push payloads and the server inbox (core §8.1–§8.2). Pure.
 
-import { sha, jcsBytes, refuse, utf8ToBytes, utf8Strict, strictJson } from './bytes.ts';
+import { sha, jcsBytes, refuse, utf8ToBytes, utf8Strict, strictJson, fromB64u } from './bytes.ts';
 import { schnorrSign, schnorrVerify, tag, type KeyPair, type NostrEvent } from './event.ts';
 import { LIFETIME_S, type Cls } from './lifetimes.ts';
 
@@ -28,7 +28,6 @@ export function readPush(bytes: Uint8Array, hostKeys: Set<string>): any {
   return p;
 }
 
-export interface Addresses { sign?: string; ask?: string; notice?: string }
 export interface InboxItem { iid: string; at: number; to: string; from: string; wrap: NostrEvent; kind: 'delivery' | 'wait' | 'notice' | 'message'; cls: Cls; bytes: number }
 
 export const INBOX_ITEMS = 512, INBOX_BYTES = 4 * 1024 * 1024, PER_PAIR = 32;
@@ -70,19 +69,39 @@ export class Inbox {
   endWait(iid: string) { this.items = this.items.filter((x) => x.iid !== iid); }
 }
 
-/** Push addresses per wake class (§8.1); the newest set by the rumor's `created_at` replaces the old. */
+/** One push address (§8.1): its wake class, the gateway URL and the browser-style keys RFC 8291 encrypts to. */
+export interface PushAddress { cls: 'sign' | 'ask' | 'notice'; url: string; p256dh: string; auth: string }
+
+/** §8.1's `addresses`, checked: one per wake class, an https URL, a 65-byte P-256 point and a 16-byte auth
+ *  secret, both base64url. */
+export function parseAddresses(v: unknown): PushAddress[] {
+  if (!Array.isArray(v) || v.length > 3) refuse('malformed', 'addresses');
+  const seen = new Set<string>();
+  return (v as unknown[]).map((a: any) => {
+    if (!a || typeof a !== 'object' || !['sign', 'ask', 'notice'].includes(a.cls) || seen.has(a.cls)) refuse('malformed', 'one address per class');
+    seen.add(a.cls);
+    let url: URL;
+    try { url = new URL(a.url); } catch { return refuse('malformed', 'url'); }
+    if (url.protocol !== 'https:' || typeof a.url !== 'string') refuse('malformed', 'an https url');
+    const k = fromB64u(a.p256dh), auth = fromB64u(a.auth);
+    if (k.length !== 65 || k[0] !== 4 || auth.length !== 16) refuse('malformed', 'p256dh and auth');
+    return { cls: a.cls, url: a.url, p256dh: a.p256dh, auth: a.auth };
+  });
+}
+
+/** Push addresses per member (§8.1): the newest set by the rumor's `created_at` replaces the old;
+ *  never copied to another server. */
 export class PushRegistry {
-  #by = new Map<string, { at: number; addrs: Addresses }>();
-  register(member: string, at: number, addrs: Addresses) {
+  #by = new Map<string, { at: number; addrs: PushAddress[] }>();
+  register(member: string, at: number, addrs: unknown) {
+    const parsed = parseAddresses(addrs);
     const cur = this.#by.get(member);
     if (cur && cur.at > at) return false;
-    this.#by.set(member, { at, addrs }); return true;
+    this.#by.set(member, { at, addrs: parsed }); return true;
   }
   unregister(member: string) { this.#by.delete(member); }
   get(member: string) { return this.#by.get(member)?.addrs ?? null; }
+  for(member: string, cls: PushAddress['cls']) { return this.get(member)?.find((a) => a.cls === cls) ?? null; }
   /** Drop an address that answered 404/410. */
-  dead(member: string, url: string) {
-    const a = this.#by.get(member); if (!a) return;
-    for (const k of Object.keys(a.addrs) as (keyof Addresses)[]) if (a.addrs[k] === url) delete a.addrs[k];
-  }
+  dead(member: string, url: string) { const a = this.#by.get(member); if (a) a.addrs = a.addrs.filter((x) => x.url !== url); }
 }
