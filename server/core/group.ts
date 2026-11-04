@@ -811,33 +811,35 @@ export function openGroup(loaded: Loaded, io: Io) {
       if (participants.length < S.group.threshold) { tried.push(`${m.name}: not enough shares`); continue; }
       const res = await ask(m.pk!, { type: 'ecdh_req', id: rid(), peerX, participants }, isDevice(m) ? phoneWait(false, order.slice(i + 1)) : 6_000);
       if (!res.ok) { tried.push(`${m.name}: ${res.reason}`); continue; }
-      // Check each partial against the share point everyone can see, when the answer carries
-      // the proofs. A wrong one used to combine into a value nobody else has and surface as a
-      // MAC failure at whoever asked; now it names the member that sent it and we try the next.
-      const theirs: string[] = res.points ?? [res.point];
-      if (Array.isArray(res.parts) && res.parts.length) {
-        // Points rebuilt from the group key, not the member list's: a proof checked against a
-        // point a dishonest server chose proves only that it knows the secret behind its own
-        // point (test/share-points.ts). Null here means the list's first `threshold` points
-        // cannot be trusted either, so there is nothing to check against and we refuse.
-        const ok = Sig.sound(S.group);
-        const bad = !ok ? { idx: -1 } : (res.parts as F.EcdhPart[]).find(p => !F.ecdhVerify({
-          idx: p.idx, participants, peerX, point: p.point, proof: p.proof,
-          sharePub: Sig.sharePoints(ok).find((x: any) => x.idx === p.idx)?.sharePub ?? '',
-        }));
-        if (bad) { note(`${m.name} sent a piece of a decryption that doesn't match its share (${bad.idx})`); tried.push(`${m.name}: its piece doesn't match its share`); continue; }
-        // Every one of its shares, and no others. Each proof only speaks for its own index, so a
-        // partner that sends two of three passes verification and leaves `theirs` a point short:
-        // the combine then returns a point that is nobody's conversation key, ecdhCombine refuses
-        // only the identity, and the single symptom is a MAC failure wherever the plaintext was
-        // wanted — with no member named, because every proof passed.
-        if (!sameSet(sharesOf(m), (res.parts as F.EcdhPart[]).map(p => p.idx))) {
-          note(`${m.name} sent only some of its pieces of a decryption`);
-          tried.push(`${m.name}: it sent only some of its pieces`); continue;
-        }
-        theirs.length = 0;
-        theirs.push(...(res.parts as F.EcdhPart[]).map(p => p.point));
+      // Check each partial against the share point everyone can see. A wrong one used to combine
+      // into a value nobody else has and surface as a MAC failure at whoever asked; now it names
+      // the member that sent it and we try the next. The proofs are required: with a bare
+      // `points` the partner would decide for itself whether it is checked (every server since
+      // 0.12.7 sends `parts`, and a current device refuses `ecdh_req` outright).
+      if (!Array.isArray(res.parts) || !res.parts.length) {
+        note(`${m.name} answered a decryption without its proofs`);
+        tried.push(`${m.name}: no proofs (Cosign before 0.12.7)`); continue;
       }
+      // Points rebuilt from the group key, not the member list's: a proof checked against a
+      // point a dishonest server chose proves only that it knows the secret behind its own
+      // point (test/share-points.ts). Null here means the list's first `threshold` points
+      // cannot be trusted either, so there is nothing to check against and we refuse.
+      const ok = Sig.sound(S.group);
+      const bad = !ok ? { idx: -1 } : (res.parts as F.EcdhPart[]).find(p => !F.ecdhVerify({
+        idx: p.idx, participants, peerX, point: p.point, proof: p.proof,
+        sharePub: Sig.sharePoints(ok).find((x: any) => x.idx === p.idx)?.sharePub ?? '',
+      }));
+      if (bad) { note(`${m.name} sent a piece of a decryption that doesn't match its share (${bad.idx})`); tried.push(`${m.name}: its piece doesn't match its share`); continue; }
+      // Every one of its shares, and no others. Each proof only speaks for its own index, so a
+      // partner that sends two of three passes verification and leaves `theirs` a point short:
+      // the combine then returns a point that is nobody's conversation key, ecdhCombine refuses
+      // only the identity, and the single symptom is a MAC failure wherever the plaintext was
+      // wanted — with no member named, because every proof passed.
+      if (!sameSet(sharesOf(m), (res.parts as F.EcdhPart[]).map(p => p.idx))) {
+        note(`${m.name} sent only some of its pieces of a decryption`);
+        tried.push(`${m.name}: it sent only some of its pieces`); continue;
+      }
+      const theirs = (res.parts as F.EcdhPart[]).map(p => p.point);
       const x = F.ecdhCombine([...myShares.map(s => F.ecdhPartial({ idx: s.idx, secret: s.secret, participants, peerX })), ...theirs]);
       ecdhCache.set(peerX, { x, at: io.now() });
       return x;
