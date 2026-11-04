@@ -29,7 +29,7 @@ import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/c
 import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import { softLock, type SoftLock } from '../src/lock.ts';
-import type { Transport, Node } from './bus.ts';
+import { TRANSPORT_FAILED, type Transport, type Node } from './bus.ts';
 
 const rid = () => bytesToHex(randomBytes(16));
 export const msg = (type: string, g: string, epoch: string, cls: string, extra: object = {}) => ({ v: 1, type, g, epoch, id: rid(), cls, ...extra });
@@ -86,9 +86,14 @@ export class ServerNode implements Node {
     const g = this.rec!.g;
     this.tombstone = { h: bytesToHex(sha(hexToBytes(g))), request: proof.request, changes: proof.changes, recEv: this.recEv! };
     const peers = [...this.m.members.values()].filter((x) => x.kind === 'server' && x.key !== this.kp.pub);
-    // Destroy everything else: share, seeds, material, waits, push addresses, inbox.
+    // Destroy everything else (Account admin §3, core §2 item 10): the share and the co-signer with its
+    // waits, heir records and pieces, stops and change set; seeds, material, uploads, push addresses,
+    // notice, inbox (review 9 H1). Only the tombstone and this seat's keys remain.
     this.co!.setState({ ids: new Set(), C: this.co!.state.C, shares: new Map() });
+    this.co = null;
     this.seeds.clear(); this.items = []; this.uploads.clear(); this.base = null; this.inbox = new Inbox();
+    this.pushReg = new PushRegistry(); this.notice = null; this.quiet.clear(); this.forwarding = null; this.answeredRepair.clear();
+    this.dkg = null; this.vapidSk = null; this.enrollR = null;
     const ans = this.deletedAnswer();
     for (const p of peers) await this.bus.send(this.kp, p.key, { type: 'deleted', request: proof.request, changes: proof.changes, host: this.host.pub, host_sig: ans.host_sig });
     return ans;
@@ -101,6 +106,8 @@ export class ServerNode implements Node {
    *  tombstone (10). Never nonces (§5.2), never a DKG in flight: a restart abandons both. */
   snapshot(): string {
     const hex = (b: Uint8Array | null) => (b ? bytesToHex(b) : null);
+    // After a delete, only the tombstone and the keys that sign and receive its `deleted` answers.
+    if (this.tombstone) return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), enrolSecret: hex(this.enrolSecret), tombstone: this.tombstone });
     const co = this.co;
     return JSON.stringify({ v: 1, name: this.name, kp: hex(this.kp.sk), host: hex(this.host.sk), enrolSecret: hex(this.enrolSecret), enrollR: this.enrollR, vapidSk: hex(this.vapidSk),
       recEv: this.recEv, tombstone: this.tombstone, retired: this.retired, provisional: this.provisional, welcomedAt: this.welcomedAt, passive: this.passive, lastActive: this.lastActive,
@@ -117,7 +124,9 @@ export class ServerNode implements Node {
     const n = new ServerNode(bus, x.name);
     const key = (h: string) => ({ sk: hexToBytes(h), pub: pubOf(hexToBytes(h)) });
     n.kp = key(x.kp); n.host = key(x.host); n.enrolSecret = hexToBytes(x.enrolSecret); n.enrollR = x.enrollR; n.vapidSk = x.vapidSk ? hexToBytes(x.vapidSk) : null;
-    n.tombstone = x.tombstone; n.retired = x.retired; n.provisional = x.provisional; n.welcomedAt = x.welcomedAt; n.passive = x.passive; n.lastActive = x.lastActive;
+    n.tombstone = x.tombstone ?? null;
+    if (n.tombstone) return n;
+    n.retired = x.retired; n.provisional = x.provisional; n.welcomedAt = x.welcomedAt; n.passive = x.passive; n.lastActive = x.lastActive;
     x.seeds.forEach(([k, v]: [string, string]) => n.seeds.set(k, v));
     n.items = x.items; n.base = x.base;
     n.uploads = new Map(x.uploads.map(([k, u]: [string, any]) => [k, { ...u, held: new Set(u.held) }]));
@@ -132,6 +141,11 @@ export class ServerNode implements Node {
       const C = commitmentAt(commitmentFrom(n.rec!.commitment), [...m.redeals.values()].filter((r) => x.co.ids.includes(r.r.id)).map((r) => r.r));
       const shares = new Map<number, bigint>(x.co.shares.map(([i, s]: [number, string]) => [i, scalarFrom(s)]));
       if (shares.size) checkOwnShares(n.rec!.g, shares, C, false);
+      // The seat key a current server holding exactly these indices, as a device's restore checks (review 9 L7).
+      if (!n.retired) {
+        const me = m.members.get(n.kp.pub), want = [...(me?.shares ?? [])].sort((a, b) => a - b).join(',');
+        if (!me || me.kind !== 'server' || m.removed.has(n.kp.pub) || [...shares.keys()].sort((a, b) => a - b).join(',') !== want) refuse('not_member', 'the stored seat key is not a current server holding exactly these indices');
+      }
       n.co = new CoSigner({ me: n.kp, host: n.host, kind: 'server', now: () => n.now, record: n.rec!, changes: [...x.co.changes],
         state: { ids: new Set(x.co.ids), C, shares }, upkeep: (p, mm) => n.upkeep(p, mm),
         uploads: { get: (id) => n.uploads.get(id), liveSeatHolders: (view) => [...view.values()].filter((v) => v.kind === 'server' && !n.quietSince(v.key) && n.bus.alive(v.key)).length } });
@@ -346,10 +360,15 @@ export class ServerNode implements Node {
   }
   /** §8.2: one Web Push to `member`'s address for `cls`, RFC 8291-encrypted, signed with this seat's VAPID key. */
   pushTo(member: string, cls: 'sign' | 'ask' | 'notice', id: string, wrap?: unknown) {
+    // A removed member's addresses are dropped (core §8.1, review 9 L2).
+    if (this.co && this.m.removed.has(member)) { this.pushReg.unregister(member); return false; }
     const addr = this.pushReg.for(member, cls);
     if (!addr || !this.vapidSk) return false;
-    this.bus.pushes?.push({ url: addr.url, authorization: vapidHeader(addr.url, this.vapidSk, this.now), body: encryptPush(pushPayload(this.host, cls, id, wrap), addr), at: this.now });
-    return true;
+    // A push that fails never replaces the answer it follows (review 9 M2).
+    try {
+      this.bus.pushes?.push({ url: addr.url, authorization: vapidHeader(addr.url, this.vapidSk, this.now), body: encryptPush(pushPayload(this.host, cls, id, wrap), addr), at: this.now });
+      return true;
+    } catch { return false; }
   }
   private async dispatch(from: string, body: any, sentAt: number): Promise<any> {
     if (this.lastActive && this.now - this.lastActive > 7 * 86400) this.passive = true;
@@ -559,7 +578,17 @@ export class DeviceNode implements Node {
     this.co = new CoSigner({ me: this.kp, kind: this.role, now: () => this.now, record: this.rec!, changes: this.changes, state: this.state!, policy: (e, f) => this.policy(e, f) });
     if (this.m.removed.has(this.kp.pub)) this.wipe();
   }
-  wipe() { this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() }; this.seeds.clear(); this.items = []; this.baseDk = ''; }
+  /** A removed or wiped member destroys everything it holds (core §7.3), the backup secret, push keys and
+   *  watches included (review 9 H2). */
+  wipe() {
+    this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() };
+    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = [];
+    this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
+    this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
+  }
+  /** Account admin §3: after a delete, only the request, the first `deleted` and the servers' endpoints,
+   *  kept so the device can go on sending until each server answers. */
+  deleted: { request: any; first: any; endpoints: { key: string; host: string; https?: string }[] } | null = null;
   refusedChanges: NostrEvent[] = [];
   takeChanges(evs: NostrEvent[]) {
     const r = adopt(this.rec!, this.changes, [...evs, ...this.refusedChanges], this.m?.authority.W);
@@ -582,7 +611,8 @@ export class DeviceNode implements Node {
         const r = new OneCall(this.ctx(), this.me(), { key: s.key, indices: s.shares }, event, extra);
         const a = await this.bus.send(this.kp, s.key, r.request);
         if (a?.type === 'stale') { r.abandon(); await this.fetch(); continue; }
-        if (a === null || a === undefined) { r.abandon(); silent.push({ host: s.host!, id: r.request.id }); lastErr = 'no_answer'; break; }
+        // No answer: nothing at all, or the transport's own timeout (never an error the server sealed).
+        if (a === null || a === undefined || a[TRANSPORT_FAILED]) { r.abandon(); silent.push({ host: s.host!, id: r.request.id }); lastErr = 'no_answer'; break; }
         if (a?.type !== 'partial') { r.abandon(); lastErr = a?.code ?? 'no_answer'; this.lastDetail = a?.detail; break; }
         let signed: NostrEvent;
         try { signed = r.finish(a); } catch (e) { silent.push({ host: s.host!, id: r.request.id }); lastErr = (e as KeykinError).code ?? 'bad_partial'; break; }
@@ -820,9 +850,16 @@ export class DeviceNode implements Node {
     const body = msg('account_delete', this.g, this.epochId, 'member', {});
     const req = { ...body, approval: await this.approveRequest('account_delete', body, o.paper) };
     // Only a `deleted` that proves this very request counts (review 8 L6).
-    let n = 0;
-    for (const s of this.servers()) { const a = await this.bus.send(this.kp, s.key, req); if (verifyDeleted(this.m!, this.g, a) && a.request.id === req.id && a.host === s.host) n++; }
-    if (n >= 2) this.wipe();
+    let n = 0, first: any = null;
+    for (const s of this.servers()) {
+      const a = await this.bus.send(this.kp, s.key, req);
+      if (verifyDeleted(this.m!, this.g, a) && a.request.id === req.id && a.host === s.host) { n++; first ??= a; }
+    }
+    if (n >= 2) {
+      const endpoints = this.servers().map((s) => ({ key: s.key, host: s.host!, https: s.https }));
+      this.wipe();
+      this.deleted = { request: req, first, endpoints };
+    }
     return n;
   }
 
@@ -855,6 +892,8 @@ export class DeviceNode implements Node {
    *  between rounds: paper deltas kept for 30 days, deliveries waiting for their redeal, its push keys,
    *  notices and both watches. Never nonces, a round, a join, a repair or a heir setup in flight (§5.2). */
   snapshot(): string {
+    // Wiped: nothing of the account; after a delete, only what Account admin §3 keeps.
+    if (this.wiped) return JSON.stringify({ v: 1, name: this.name, wiped: true, deleted: this.deleted });
     const st = this.state;
     return JSON.stringify({ v: 1, name: this.name, role: this.role, kp: bytesToHex(this.kp.sk), lock: this.lock && { rp: this.lock.rpId, sk: bytesToHex(this.lock.sk) },
       recEv: this.recEv, changes: this.changes, refused: this.refusedChanges, wiped: this.wiped,
@@ -872,6 +911,7 @@ export class DeviceNode implements Node {
   static restore(bus: Transport, json: string): DeviceNode {
     const x = strictJson(json);
     if (x.v !== 1) refuse('malformed', 'storage version');
+    if (x.wiped && !x.kp) { const w = new DeviceNode(bus, x.name, null); w.wiped = true; w.deleted = x.deleted ?? null; return w; }
     const d = new DeviceNode(bus, x.name, x.lock ? softLock(x.lock.rp, hexToBytes(x.lock.sk)) : null);
     d.kp = { sk: hexToBytes(x.kp), pub: pubOf(hexToBytes(x.kp)) }; d.role = x.role;
     x.seeds.forEach(([k, v]: [string, string]) => d.seeds.set(k, v));

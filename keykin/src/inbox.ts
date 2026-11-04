@@ -1,6 +1,7 @@
 // Push payloads and the server inbox (core §8.1–§8.2). Pure.
 
 import { sha, jcsBytes, refuse, utf8ToBytes, utf8Strict, strictJson, fromB64u } from './bytes.ts';
+import { p256 } from '@noble/curves/nist.js';
 import { schnorrSign, schnorrVerify, tag, type KeyPair, type NostrEvent } from './event.ts';
 import { LIFETIME_S, type Cls } from './lifetimes.ts';
 
@@ -87,6 +88,8 @@ export function parseAddresses(v: unknown): PushAddress[] {
     if (url.protocol !== 'https:' || typeof a.url !== 'string') refuse('malformed', 'an https url');
     const k = fromB64u(a.p256dh), auth = fromB64u(a.auth);
     if (k.length !== 65 || k[0] !== 4 || auth.length !== 16) refuse('malformed', 'p256dh and auth');
+    // A point on the curve, or every later push to it would fail (review 9 M2).
+    try { p256.Point.fromBytes(k).assertValidity(); } catch { refuse('malformed', 'p256dh is not a P-256 point'); }
     return { cls: a.cls, url: a.url, p256dh: a.p256dh, auth: a.auth };
   });
 }

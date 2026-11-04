@@ -40,8 +40,9 @@ class TwoCallTest {
         val a = S.handle(devKey, sign, now)
         assertEquals("partial", a.getString("type"), a.optString("code"))
         assertTrue(Frost.verifyShare(C, evId, mine + theirs, 4, a.getJSONArray("z").getJSONObject(0).getString("z")), "the partial verifies over the round's commitments")
-        // The kept nonces are used once: a second sign after the same commit is refused.
-        assertEquals("after_used", S.handle(devKey, base("sign").put("after", commit.getString("id")).put("event", event("again").first).put("commitments", cj(mine + theirs)), now).getString("code"))
+        // The kept nonces are used once: a second sign after the same commit finds nothing (as TS).
+        assertEquals(0, a.getJSONArray("commitments").length(), "a two-call partial carries no commitments")
+        assertEquals("unknown_after", S.handle(devKey, base("sign").put("after", commit.getString("id")).put("event", event("again").first).put("commitments", cj(mine + theirs)), now).getString("code"))
     }
 
     @Test fun refusals() {

@@ -26,7 +26,7 @@ function keys(ecdh: Bytes, auth: Bytes, uaPub: Bytes, asPub: Bytes, salt: Bytes)
 export function encryptPush(plain: Bytes, to: { p256dh: string; auth: string }, o: { asSk?: Bytes; salt?: Bytes } = {}): Bytes {
   const uaPub = fromB64u(to.p256dh), auth = fromB64u(to.auth);
   if (uaPub.length !== 65 || uaPub[0] !== 4 || auth.length !== 16) no('address keys');
-  if (plain.length + 17 > RS) no('one record only');
+  if (plain.length + 17 >= RS) no('one record only');      // RFC 8291 §4: rs must exceed the record
   const asSk = o.asSk ?? p256.utils.randomSecretKey(), asPub = p256.getPublicKey(asSk, false), salt = o.salt ?? randomBytes(16);
   const ecdh = p256.getSharedSecret(asSk, uaPub, true).slice(1);
   const { cek, nonce } = keys(ecdh, auth, uaPub, asPub, salt);
@@ -42,7 +42,7 @@ export function decryptPush(body: Bytes, uaSk: Bytes, auth: Bytes): Bytes {
   const salt = body.slice(0, 16), rs = new DataView(body.buffer, body.byteOffset).getUint32(16), idlen = body[20];
   if (idlen !== 65 || rs < 18) no('header');
   const asPub = body.slice(21, 86), ct = body.slice(86);
-  if (ct.length > rs) no('one record only');
+  if (ct.length >= rs) no('one record only');
   const uaPub = p256.getPublicKey(uaSk, false);
   let ecdh: Bytes;
   try { ecdh = p256.getSharedSecret(uaSk, asPub, true).slice(1); } catch { return no('sender key'); }

@@ -6,12 +6,12 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { create, invite, restartServer } from '../sim/account.ts';
-import { FileStore } from '../runtime/store.ts';
+import { FileStore, KeyRing } from '../runtime/store.ts';
 import { verifyEvent, wireEvent } from '../src/event.ts';
 import { TwoCall, OneCall } from '../src/coordinator.ts';
 import { msg, ServerNode } from '../sim/nodes.ts';
 
-const store = () => { const dir = mkdtempSync(join(tmpdir(), 'keykin-store-')); return { s: new FileStore(dir), dir }; };
+const store = () => { const dir = mkdtempSync(join(tmpdir(), 'keykin-store-')); return { s: new FileStore(join(dir, 'data'), new KeyRing(join(dir, 'keys'))), dir }; };
 
 test('§2: every server restarted from storage; the account goes on: sign, add a device, sign again', async () => {
   const acc = await create();
@@ -80,9 +80,19 @@ test('FileStore: atomic replace, and a damaged file is refused on restore, never
   assert.throws(() => s.save('../escape', 'x'));
   const key = 'server-x';
   s.save(key, acc.servers[0].snapshot());
-  const p = join(dir, `${key}.json`);
-  writeFileSync(p, readFileSync(p, 'utf8').slice(0, 500));
-  assert.throws(() => ServerNode.restore(acc.bus, s.load(key)!), /malformed/);
+  const p = join(dir, 'data', `${key}.kks`);
+  const raw = readFileSync(p);
+  assert.ok(!raw.toString('latin1').includes(acc.servers[0].kp.pub.slice(0, 16)) && !raw.toString('latin1').includes('"shares"'), 'sealed: no plaintext on disk');
+  writeFileSync(p, raw.subarray(0, 500));
+  assert.throws(() => s.load(key), /malformed/, 'a damaged file is refused');
+  s.save(key, acc.servers[0].snapshot());
+  writeFileSync(join(dir, 'data', 'other.kks'), readFileSync(p));
+  assert.throws(() => s.load('other'), /malformed/, 'a record moved under another name');
+  // Destroying the key makes any copy of the ciphertext unreadable.
+  const copy = readFileSync(p);
+  s.destroy(key);
+  writeFileSync(p, copy);
+  assert.throws(() => s.load(key), /malformed/, 'the key is gone');
   // A share that doesn't match the commitments is refused, as in a welcome.
   const x = JSON.parse(acc.servers[0].snapshot()); x.co.shares[0][1] = '01'.padStart(64, '0');
   assert.throws(() => ServerNode.restore(acc.bus, JSON.stringify(x)));

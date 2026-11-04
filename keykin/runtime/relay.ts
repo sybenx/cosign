@@ -7,7 +7,7 @@ import { Relay } from 'nostr-tools/relay';
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
 import { wrap, unwrap, split, Reassembler, KIND_WRAP_LIVE } from '../src/transport.ts';
 import type { KeyPair, NostrEvent } from '../src/event.ts';
-import type { Node, Transport } from '../sim/bus.ts';
+import { unreachable, type Node, type Transport } from '../sim/bus.ts';
 
 export interface RelayNetOpts { relays: string[]; timeoutMs?: number; resendMs?: number; log?: (s: string) => void }
 
@@ -78,13 +78,13 @@ export class RelayNet implements Transport {
   /** Send and wait for the answer, re-sending until answered or timed out. */
   async send(from: KeyPair, to: string, body: any, opt: { timeoutMs?: number } = {}): Promise<any> {
     const limit = opt.timeoutMs ?? this.o.timeoutMs;
-    if (!this.hosted.has(from.pub)) return { type: 'error', code: 'unreachable' };
+    if (!this.hosted.has(from.pub)) return unreachable();
     const b = { ...body, id: body.id ?? bytesToHex(randomBytes(16)) };
     const k = `${to}:${b.id}`;
     const done = new Promise<any>((res) => this.pending.set(k, res));
     const start = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<any>((res) => { timer = setTimeout(() => { this.pending.delete(k); res({ type: 'error', code: 'unreachable' }); }, limit); });
+    const timeout = new Promise<any>((res) => { timer = setTimeout(() => { this.pending.delete(k); res(unreachable()); }, limit); });
     const resend = (async () => {
       while (this.pending.has(k) && Date.now() - start < limit) {
         await this.publish(from, to, b);

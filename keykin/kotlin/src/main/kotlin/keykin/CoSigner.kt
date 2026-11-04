@@ -89,6 +89,7 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
             kept = null
             all = commits(msg.optJSONArray("commitments"), s.shares)
         } else {
+            this.twoCall.entries.removeIf { now() - it.value.at > 120 }     // review 9 L3
             val k = this.twoCall["$from:${msg.opt("after")}"]
             if (k == null || now() - k.at > 120) refuse("unknown_after")
             if (k.used) refuse("after_used")
@@ -116,8 +117,10 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
         // Fresh nonces for a one-call request, or the ones kept for `after`; either way used once (§5.2).
         val mine = kept?.mine ?: Frost.commit(C, index, share, Frost.hedge(share, sha(utf8(Jcs.of(msg)), u32(0))))
         val z = Frost.sign(C, mine, share, evId, if (kept != null) all else all + mine)
+        // A used `after` is forgotten once it signed, as the TS reference does (review 9 L3, L5).
+        if (kept != null) this.twoCall.remove("$from:${msg.opt("after")}")
         return JSONObject().put("v", 1).put("type", "partial").put("re", msg.getString("id"))
-            .put("commitments", JSONArray().put(JSONObject().put("i", index).put("D", mine.d).put("E", mine.e))).put("z", JSONArray().put(JSONObject().put("i", index).put("z", z)))
+            .put("commitments", if (kept != null) JSONArray() else JSONArray().put(JSONObject().put("i", index).put("D", mine.d).put("E", mine.e))).put("z", JSONArray().put(JSONObject().put("i", index).put("z", z)))
     }
     /** §9.5: exactly the six fields, `id` included and recomputed. */
     private fun wire(msg: JSONObject): Event {

@@ -48,7 +48,7 @@ test('§3 Destroy my key: lock-approved, every server keeps only a tombstone and
   const n = await acc.A.deleteAccount();
   assert.equal(n, 3);
   assert.ok(acc.A.wiped);
-  for (const s of acc.servers) { assert.ok(s.tombstone); assert.equal(s.co!.state.shares.size, 0); assert.equal(s.seeds.size, 0); }
+  for (const s of acc.servers) { assert.ok(s.tombstone); assert.equal(s.co, null, "no co-signer, no share"); assert.equal(s.seeds.size, 0); }
   const later = await acc.bus.send(B.kp, acc.servers[1].kp.pub, msg('state_get', acc.g, acc.epochId, 'ask'));
   assert.equal(later.type, 'deleted');
   await assert.rejects(B.sign({ content: 'after the end' }));
@@ -62,7 +62,7 @@ test('§3 a peer\'s deleted, host-signed by a current seat holder, reaches a ser
   acc.bus.revive(acc.servers[2].kp.pub);
   const ans = await acc.bus.send(acc.servers[0].kp, acc.servers[2].kp.pub, { ...(acc.servers[0].deletedAnswer()) });
   assert.equal(ans.type, 'deleted');
-  assert.ok(acc.servers[2].tombstone && acc.servers[2].co!.state.shares.size === 0);
+  assert.ok(acc.servers[2].tombstone && acc.servers[2].co === null);
 });
 
 test('§1.1 step 5 / core §4.3 step 4: a lockless account keeps its backup secret, every lockless device holds it, and kept_done ends it', async () => {

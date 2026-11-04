@@ -249,12 +249,13 @@ export class CoSigner {
     return JSON.stringify({ replay: this.replay.dump(), holds: [...this.holds.values()], recoveries: [...this.recoveries.values()],
       cancels: this.cancels, challenges: [...this.challenges], signposts: [...this.signpostIds], stops: [...this.stops], cleared: [...this.clearedStops],
       burst: this.burst.dump(), used: [...this.usedChallenges], answered: [...this.answeredRepair],
-      heirs: [...this.heirs].map(([k, h]) => [k, { ...h, piece: scalarHex(h.piece) }]) });
+      heirs: [...this.heirs].map(([k, h]) => [k, { ...h, piece: scalarHex(h.piece) }]), heirWaits: [...this.heirWaits] });
   }
   restore(json: string) {
     const x = JSON.parse(json);
     this.burst.load(x.burst ?? []); this.usedChallenges = new Map(x.used ?? []); this.answeredRepair = new Set(x.answered ?? []);
     this.heirs = new Map((x.heirs ?? []).map(([k, h]: [string, any]) => [k, { ...h, piece: BigInt('0x' + h.piece) }]));
+    this.heirWaits = new Map(x.heirWaits ?? []);
     this.replay.load(x.replay);
     this.holds = new Map(x.holds.map((h: Hold) => [h.wait, h]));
     this.recoveries = new Map(x.recoveries.map((r: Recovery) => [r.wait, r]));
@@ -645,6 +646,7 @@ export class CoSigner {
     for (const it of items) this.checkWire(it?.event);
     const mine = this.myIndices;
     let kept: { nonces: Nonces[][]; mine: SignCommit[][] } | null = null;
+    for (const [k, v] of this.#twoCall) if (now - v.at > NONCE_TTL_S) this.#twoCall.delete(k);   // review 9 L3
     if (!twoCall) {
       for (const it of items) this.checkCommitments(it.commitments, this.m.members.get(from)!.shares);
       if (mode === 'recovery') refuse('two_call', 'a recovery round has more than one co-signer');

@@ -6,6 +6,10 @@ import type { KeyPair, NostrEvent } from '../src/event.ts';
 
 export interface Node { kp: KeyPair; handle(from: string, body: any, sentAt: number): any }
 /** What nodes send through: the in-memory Bus here, or runtime/relay.ts over real relays. */
+/** Marks an answer the transport made up itself (unreachable, timed out): a server can't send a symbol,
+ *  so a sealed `error` never looks like silence (review 9 M4). */
+export const TRANSPORT_FAILED = Symbol('transport_failed');
+export const unreachable = () => ({ type: 'error', code: 'unreachable', [TRANSPORT_FAILED]: true });
 export interface Transport { now: number; alive(pub: string): boolean; send(from: KeyPair, to: string, body: any, o?: { timeoutMs?: number }): Promise<any>; kill?(pub: string): void; rekey?(oldPub: string, node: Node): void; pushes?: PushOut[] }
 /** A Web Push request as a gateway receives it. */
 export interface PushOut { url: string; authorization: string; body: Uint8Array; at: number }
@@ -31,7 +35,7 @@ export class Bus implements Transport {
   advance(s: number) { this.now += s; }
   /** Seal `body` from `from` to `to`, deliver, and open the answer. */
   async send(from: KeyPair, to: string, body: any): Promise<any> {
-    if (!this.alive(to) || this.dead.has(from.pub)) return { type: 'error', code: 'unreachable' };
+    if (!this.alive(to) || this.dead.has(from.pub)) return unreachable();
     const w = wrap(from.sk, to, body, { at: this.now });
     this.wire.push(w);
     const node = this.nodes.get(to)!;

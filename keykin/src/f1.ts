@@ -51,7 +51,8 @@ export class F1Watch {
   /** A seated server: its host and the member key of its seat. Being seated is not serving (review 8 M3). */
   seat(host: string, seatKey: string, now: number) {
     const w = this.#s.get(host);
-    if (w) { w.seat = seatKey; return; }
+    // A new member key for the host is a new seat: an answer kept for the old one no longer counts (review 9 L1).
+    if (w) { if (w.seat !== seatKey) { w.seat = seatKey; w.kept = null; w.asking = null; } return; }
     this.#s.set(host, { seatedAt: now, lastHeard: now, lastServing: null, deniedSince: null, seat: seatKey, kept: null, asking: null, askedAt: null });
   }
   forget(host: string) { this.#s.delete(host); }
