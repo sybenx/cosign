@@ -18,6 +18,7 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     private val waiting = ConcurrentHashMap<String, CompletableFuture<JSONObject>>()   // "to:id" → answer
     private val hosted = ConcurrentHashMap<String, ByteArray>()                         // our keys
     private val seen = ConcurrentHashMap.newKeySet<String>()
+    private val parts = ConcurrentHashMap<String, Parts.Reassembler>()
 
     private inner class Listener : WebSocket.Listener {
         private val buf = StringBuilder()
@@ -35,8 +36,9 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         val to = e.optJSONArray("tags")?.let { t -> (0 until t.length()).map { t.getJSONArray(it) }.firstOrNull { it.optString(0) == "p" }?.optString(1) } ?: return
         val sk = hosted[to] ?: return
         val o = try { env.unwrap(sk, Json.obj(e.toString())) } catch (_: KeykinException) { return }
+        val body = try { synchronized(this) { parts.getOrPut(to) { Parts.Reassembler() }.take(o.from, o.body, now) } } catch (_: KeykinException) { return } ?: return
         // TS answers carry `re` and `__answer` (runtime/relay.ts).
-        if (o.body.has("re") && o.body.optBoolean("__answer")) waiting.remove("${o.from}:${o.body.getString("re")}")?.complete(o.body.also { it.remove("__answer") })
+        if (body.has("re") && body.optBoolean("__answer")) waiting.remove("${o.from}:${body.getString("re")}")?.complete(body.also { it.remove("__answer") })
     }
 
     fun connect(): RelayNet {
@@ -60,7 +62,7 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         waiting["$to:$id"] = f
         val start = System.currentTimeMillis()
         while (!f.isDone && System.currentTimeMillis() - start < timeoutMs) {
-            publish(env.wrap(sk, to, body, now))
+            for (part in Parts.split(body)) publish(env.wrap(sk, to, part, now))
             try { return f.get(resendMs, TimeUnit.MILLISECONDS) } catch (_: java.util.concurrent.TimeoutException) {}
         }
         waiting.remove("$to:$id")
