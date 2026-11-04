@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.RemoteCallbackList
 import android.util.Log
+import keykin.Doors
 import keykin.KeykinException
 import keykin.Nip44
 import org.json.JSONArray
@@ -54,6 +55,12 @@ class KeykinService : Service() {
     }
     private fun publish(slot: String) { val s = stateOf(slot).toString(); send { it.state(slot, s) } }
     private fun <T> onWork(f: () -> T): T = work.submit(f).get()
+    /** The kinds the app declares its own process reads of the account's to-self data (manifest meta-data
+     *  `keykin.ownKinds`), read here in the signer process, so the main process can't widen them. */
+    private val ownKinds: Set<Int>? by lazy {
+        try { packageManager.getApplicationInfo(packageName, android.content.pm.PackageManager.GET_META_DATA).metaData?.getString("keykin.ownKinds")
+            ?.split(",")?.mapNotNull { it.trim().toIntOrNull() }?.toSet() } catch (_: Exception) { null }
+    }
 
     private val binder = object : IKeykin.Stub() {
         override fun listen(client: IKeykinClient) {
@@ -84,7 +91,8 @@ class KeykinService : Service() {
                 JSONObject().put("event", Nip55.sign(d, event)).toString()
             } catch (x: KeykinException) { JSONObject().put("error", x.code).toString() } catch (x: Exception) { JSONObject().put("error", "malformed").toString() }
         }
-        override fun nip44Own(slot: String, text: String, encrypt: Boolean): String? = onWork {
+        override fun nip44Own(slot: String, kind: Int, text: String, encrypt: Boolean): String? = onWork {
+            if (!Doors.ownMay(kind, ownKinds)) return@onWork null
             try { Memberships.signer(slot).device?.let { d -> d.nip44(d.g, text, encrypt) } } catch (_: Exception) { null }
         }
         override fun fetch(slot: String) = work.execute { try { Memberships.signer(slot).device?.fetch() } catch (e: Exception) { Log.w(TAG, "fetch: $e") }; publish(slot) }

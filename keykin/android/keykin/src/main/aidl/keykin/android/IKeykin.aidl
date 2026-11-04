@@ -16,10 +16,11 @@ interface IKeykin {
     oneway void join(String slot, String code, String relays);
     /** Sign the app's own event (JSON without id, pubkey, sig): {"event": …} or {"error": code}. */
     String signOwn(String slot, String event);
-    /** NIP-44 with the account itself (to-self app data): the other side is always this account. This reads every
-     *  to-self payload the account holds (private lists, a wallet), so the app calls it only for its own data and
-     *  never on a stranger's behalf. Null on failure. */
-    String nip44Own(String slot, String text, boolean encrypt);
+    /** NIP-44 with the account itself (to-self data) for content of an event of `kind`: the other side is always
+     *  this account, and only for the kinds the app declares in its manifest (meta-data `keykin.ownKinds`, a
+     *  comma-separated list; absent: NIP-51 lists and NIP-78 app data, never NIP-60 wallet kinds). This reads every
+     *  to-self payload of those kinds, so the app calls it only for its own data. Null on failure or refusal. */
+    String nip44Own(String slot, int kind, String text, boolean encrypt);
     /** Catch up with every server (changes, inbox); the state follows. */
     oneway void fetch(String slot);
     /** The membership's end on this phone: its sealed state and key go. */
