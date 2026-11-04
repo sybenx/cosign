@@ -51,4 +51,26 @@ object LockPrompt {
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG).setNegativeButtonText("Cancel").build(),
             BiometricPrompt.CryptoObject(pending.signature))
     }
+
+    /** Approve held event `id` of membership `slot` with the lock (review 20 M4): the prompt, then the signing, then
+     *  `done` with the signed event, or null and why ("no_lock": lockless, start a hold instead). From an activity in
+     *  the signer process only. */
+    fun approveHeld(a: FragmentActivity, slot: String, id: String, title: String, subtitle: String, done: (JSONObject?, String?) -> Unit) {
+        Proc.signerOnly("LockPrompt.approveHeld")
+        val s = Memberships.signer(slot); val d = s.device ?: return done(null, "no_membership")
+        val lock = s.lock() ?: return done(null, "no_lock")
+        approveSign(a, d, lock, id, title, subtitle) { approval, why ->
+            if (approval == null) return@approveSign done(null, why)
+            Thread { try { done(d.nip46.approveHeld(id, approval), null) } catch (e: keykin.KeykinException) { done(null, e.code) } catch (_: Exception) { done(null, "failed") } }.apply { isDaemon = true }.start()
+        }
+    }
+}
+
+/** What only the person allows for a NIP-46 site, on a screen the app draws in the signer process: the messages,
+ *  private-data and wallet scopes (the main process may allow only sign-in, post and lists, KeykinService.APP_SCOPES). */
+object Nip46Asks {
+    fun allow(slot: String, signer: String, scope: String) {
+        Proc.signerOnly("Nip46Asks.allow")
+        Memberships.signer(slot).device?.nip46?.allowScope(signer, scope) ?: throw keykin.KeykinException("no_membership")
+    }
 }

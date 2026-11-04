@@ -10,7 +10,7 @@
 //
 // The host keys (`--fronts`) are what each server prints at start (`{"started", "host"}`, e.g. `docker compose logs`).
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { RelayNet } from '../runtime/relay.ts';
@@ -24,8 +24,11 @@ import { msg } from '../src/msg.ts';
 import { nip19 } from 'nostr-tools';
 import type { Change } from '../src/types.ts';
 
-/** Live hosts this tool never talks to (the user's production servers and relays). */
+/** Live hosts this tool never talks to (the user's production servers and relays), refused even if allowed. */
 const LIVE = /(^|\.)syb\.lol$|(^|\.)aaro\.cc$|racknerd/i;
+/** What it may talk to (review 20 M11): loopback, private networks, `.test`, `.local`, `.lan`, `.localhost`, and any
+ *  host named with `--allow-host` (a test host the user picked). */
+const LOCAL = /^(localhost|127(\.\d{1,3}){3}|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|\[::1\]|::1)$|\.(test|local|lan|localhost)$/i;
 function arg(name: string, need = true): string {
   const k = process.argv.indexOf(`--${name}`);
   const v = k > 0 ? process.argv[k + 1] : undefined;
@@ -34,20 +37,32 @@ function arg(name: string, need = true): string {
 }
 const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 function testOnly(urls: string[]) {
+  const allowed = new Set(list(arg('allow-host', false)).map((h) => h.toLowerCase().replace(/\.+$/, '')));
   for (const u of urls) {
-    let host = ''; try { host = new URL(u).hostname; } catch { console.error(`not a URL: ${u}`); process.exit(2); }
+    let host = ''; try { host = new URL(u).hostname.toLowerCase().replace(/\.+$/, ''); } catch { console.error(`not a URL: ${u}`); process.exit(2); }
     if (LIVE.test(host)) { console.error(`refused: ${host} is a live server; this tool is for test servers only`); process.exit(2); }
+    if (!LOCAL.test(host) && !allowed.has(host)) { console.error(`refused: ${host} is not a local or test host (name it with --allow-host if it is one)`); process.exit(2); }
   }
+}
+/** The device's state, written whole or not at all, readable only by this user (review 20 L18). */
+function save(dir: string, name: string, text: string) { const p = join(dir, name), tmp = `${p}.tmp`; writeFileSync(tmp, text, { mode: 0o600 }); renameSync(tmp, p); }
+/** One command at a time on a directory: `run` and `invite` must not write over each other. */
+function lockDir(dir: string) {
+  const p = join(dir, '.lock');
+  try { closeSync(openSync(p, 'wx')); } catch { console.error(`${dir} is in use by another command (remove ${p} if none runs)`); process.exit(2); }
+  const free = () => { try { unlinkSync(p); } catch { /* gone */ } };
+  process.on('exit', free); process.on('SIGINT', () => process.exit(130)); process.on('SIGTERM', () => process.exit(143));
 }
 const out = (x: object) => console.log(JSON.stringify(x));
 
 async function open(dir: string) {
   const conf = JSON.parse(readFileSync(join(dir, 'account.json'), 'utf8'));
   testOnly(conf.relays);
+  lockDir(dir);
   const net = new RelayNet({ relays: conf.relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
   const d = net.add(DeviceNode.restore(net as any, readFileSync(join(dir, 'device.json'), 'utf8')));
-  d.attach({ save: (_k, text) => writeFileSync(join(dir, 'device.json'), text) });
+  d.attach({ save: (_k, text) => save(dir, 'device.json', text) });
   return { conf, net, d };
 }
 
@@ -58,12 +73,16 @@ async function main() {
     const relays = list(arg('relays')), fronts = list(arg('fronts'));
     testOnly(relays);
     if (fronts.length !== 3 || fronts.some((f) => !/^[0-9a-f]{64}$/.test(f))) { console.error('--fronts: three host keys (64 hex)'); process.exit(2); }
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    lockDir(dir);
     const net = new RelayNet({ relays, timeoutMs: 9000, resendMs: 1500 });
     await net.connect();
     const acc = await createByDkg({ net: net as any, fronts, relays });
-    writeFileSync(join(dir, 'account.json'), JSON.stringify({ relays, g: acc.g, created: net.now }, null, 1));
-    acc.A.attach({ save: (_k, text) => writeFileSync(join(dir, 'device.json'), text) });
+    // The servers name their own hosts at enrolment: a live one among them stops here (the front-door keys alone
+    // can't say whose they are).
+    testOnly(acc.A.servers().map((s) => s.https).filter((u): u is string => typeof u === 'string' && /^https?:\/\//.test(u)));
+    save(dir, 'account.json', JSON.stringify({ relays, g: acc.g, created: net.now }, null, 1));
+    acc.A.attach({ save: (_k, text) => save(dir, 'device.json', text) });
     // The paper: the backup key's 24 words. A throwaway account's, but kept, so the paper drill can run on it.
     const words = backupWords(acc.paper.sk);
     writeFileSync(join(dir, 'paper.txt'), words.join(' ') + '\n', { mode: 0o600 });
@@ -84,7 +103,8 @@ async function main() {
     // Add the new device with this one's lock, repair its indices with a server, and welcome it (core §4.1–§4.4).
     const n = d.inviter.accepted!.n;
     const { salt, indices } = pickSalt(d.g, d.epochId, n, takenIndices(d.m!));
-    const add: Change[] = [{ add: { key: n, kind: 'device', lock: null, salt } }];
+    // The new device's own lock, as its hello named it (a phone with a biometric joins with one, review 20 H3).
+    const add: Change[] = [{ add: { key: n, kind: 'device', lock: d.inviter.accepted!.lock ?? null, salt } }];
     await d.submit(add, d.approveLock(add));
     const s0 = d.servers()[0];
     for (const i of indices)
@@ -92,6 +112,8 @@ async function main() {
         await net.events.publishEvent(w);
     const a = await net.send(d.kp, n, msg('welcome', d.g, d.epochId, 'member', { record: d.recEv, changes: d.changes, state: [...d.state!.ids], base_dk: d.baseDk, dk: d.dkSeeds }));
     out({ added: n, welcomed: a?.type === 'ack', state: d.dataKeys.current().state });
+    // The add is in the account either way: a device that never got its welcome is to be removed (Remove this device).
+    if (a?.type !== 'ack') console.error(`the welcome wasn't answered: ${n} is a member that never joined; remove it before inviting again`);
     net.close(); process.exit(a?.type === 'ack' ? 0 : 1);
   }
   if (cmd === 'run') {

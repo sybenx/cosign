@@ -25,9 +25,14 @@ function server(k: number, dir: string): Promise<string> {
   return new Promise((res, rej) => { let out = ''; proc.stdout!.on('data', (c) => { out += c; const l = out.split('\n').find((x) => x.includes('"started"')); if (l) res(JSON.parse(l).host); }); proc.on('exit', (c) => rej(new Error(`server exited ${c}`))); });
 }
 
-test('the dry-run CLI refuses a live host', () => {
-  const r = cli(['create', '--dir', mkdtempSync(join(tmpdir(), 'kk-cli-')), '--relays', 'wss://relay.syb.lol', '--fronts', 'aa,bb,cc']);
-  assert.notEqual(r.status, 0); assert.match(r.stderr, /refused: .* live server/);
+test('the dry-run CLI refuses a live host, and any host that isn\'t local or named as a test host', () => {
+  const dir = () => mkdtempSync(join(tmpdir(), 'kk-cli-'));
+  for (const r of ['wss://relay.syb.lol', 'wss://relay.syb.lol.', 'wss://cosign-cf.aaro.cc']) {
+    const x = cli(['create', '--dir', dir(), '--relays', r, '--fronts', 'aa,bb,cc', '--allow-host', 'relay.syb.lol']);
+    assert.notEqual(x.status, 0); assert.match(x.stderr, /refused: .* live server/, r);
+  }
+  const ip = cli(['create', '--dir', dir(), '--relays', 'wss://203.0.113.9', '--fronts', 'aa,bb,cc']);
+  assert.notEqual(ip.status, 0); assert.match(ip.stderr, /not a local or test host/);
 });
 
 test('the dry-run CLI: create by DKG, print the paper, invite a device that joins by the code, and show both', { skip: (!haveNak && 'nak not installed') || (!haveJni && 'no JNI FROST library') || (!existsSync(java) && 'no JDK 21'), timeout: 420_000 }, async () => {

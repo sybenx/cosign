@@ -502,7 +502,9 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
 
     /** Catch up (§3.2, §8.2): the union of every server's change set, then every server's inbox. */
     fun fetch() {
-        val nipQueue = ArrayList<JSONObject>()
+        // Sites' requests kept for the NIP-46 home: answered after the grants' fetch, and acked only once answered
+        // (review 20 M6): (server, iid, event).
+        val nipQueue = ArrayList<Triple<String, Any?, JSONObject>>()
         for (s in servers()) {
             val a = net.send(sk, s.key, msg("changes_get", "ask"))
             if (a.optString("type") == "changes") a.optJSONArray("changes")?.let { c -> takeChanges((0 until minOf(c.length(), CHANGES_PER_MESSAGE)).mapNotNull { c.optJSONObject(it)?.let(Event::of) }) }
@@ -519,7 +521,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
                     val w = it.getJSONObject("wrap"); val o = env.unwrap(sk, w)
                     // A site's request a watching server kept goes to the NIP-46 home (review 11 M1).
                     // Kept for after the grants' fetch, so a site signed out elsewhere is refused (review 16 M5).
-                    if (o.body.optString("type") == "nip46" && o.from == s.key) o.body.optJSONObject("event")?.let { e -> nipQueue += e }
+                    if (o.body.optString("type") == "nip46" && o.from == s.key) { o.body.optJSONObject("event")?.let { e -> nipQueue += Triple(s.key, it.opt("iid"), e) }; continue }
                     // A delivery with no room yet stays at the server (review 13 M1).
                     else if (takeDelivery(w) == "full") continue
                 } catch (_: Exception) { /* one bad item never wedges the rest */ }
@@ -551,7 +553,11 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         } catch (_: Exception) {}
         lastFetchAt = net.now
         if (synchronized(undoOutbox) { undoOutbox.isNotEmpty() }) flushUndos()
-        for (e in nipQueue) try { onSiteRequest?.invoke(e) } catch (_: Exception) {}
+        val handler = onSiteRequest
+        if (handler != null && nipQueue.isNotEmpty()) {
+            for ((_, _, e) in nipQueue) try { handler(e) } catch (_: Exception) {}
+            for ((server, iids) in nipQueue.groupBy({ it.first }, { it.second })) try { net.send(sk, server, msg("inbox_ack", "ask").put("iids", JSONArray(iids))) } catch (_: Exception) {}
+        }
     }
     /** Publish this device's grants (after a change to them: a new grant, a widen, an end). */
     fun publishGrants(): List<JSONObject> {

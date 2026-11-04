@@ -15,9 +15,12 @@ android {
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
     buildTypes { debug { isMinifyEnabled = false } }
+    // BuildConfig.DEBUG gates what only a test harness may log (a bunker link's secret): never in a release build.
+    buildFeatures { buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {
     implementation(project(":keykin"))
+    testImplementation("junit:junit:4.13.2")
 }

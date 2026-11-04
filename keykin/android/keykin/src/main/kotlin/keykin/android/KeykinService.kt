@@ -16,12 +16,21 @@ import org.json.JSONObject
 import java.util.concurrent.Executors
 
 class KeykinService : Service() {
+    companion object {
+        /** Scopes the main process may offer or allow for a NIP-46 site; the rest are the person's on a signer screen. */
+        val APP_SCOPES = setOf("sign-in", "post", "lists")
+        private const val TAG = "KeykinService"
+    }
     private val clients = RemoteCallbackList<IKeykinClient>()
     /** Every call that touches a membership runs here, in order; every message to the UI goes out from `out`. */
     private val work = Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-signer").also { it.isDaemon = true } }
     private val out = Executors.newSingleThreadExecutor()
     /** A join waits up to two minutes for the welcome: on its own thread, so other calls go on (review 15 L5). */
     private val joins = Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-join").also { it.isDaemon = true } }
+    /** Calls that sign or wait on servers and sites (Undo, holds, push wakes): their own thread, never the join's or
+     *  the membership queue's, so a binder call never waits two minutes behind a join (review 20 M10). */
+    private val slow = Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-slow").also { it.isDaemon = true } }
+    private val wakes = Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-wake").also { it.isDaemon = true } }
     /** What the UI shows while a join runs, by slot (the check digits, an error). */
     private val joining = HashMap<String, JSONObject>()
 
@@ -31,7 +40,7 @@ class KeykinService : Service() {
         Memberships.init(this)
         work.execute { for (slot in slots()) open(slot) }
     }
-    override fun onDestroy() { clients.kill(); work.shutdown(); joins.shutdown(); out.shutdown(); super.onDestroy() }
+    override fun onDestroy() { clients.kill(); work.shutdown(); joins.shutdown(); slow.shutdown(); wakes.shutdown(); out.shutdown(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder = binder
 
     private fun slots() = Memberships.slots()
@@ -53,8 +62,11 @@ class KeykinService : Service() {
                 .put("sites", JSONArray(d.nip46.asks.map { (k, sc) -> JSONObject().put("signer", k).put("scopes", JSONArray(sc.toList())) })) }
     }
     /** Cards and Undo waits change outside any call: each change goes out as the slot's state at once. */
-    private val hookedSlots = java.util.Collections.synchronizedSet(HashSet<String>())
-    private fun hooked(slot: String, d: keykin.Device) { if (hookedSlots.add(slot)) d.guard.onChange = { work.execute { publish(slot) } } }
+    // Per device, not per slot: a membership forgotten and joined again gets its hooks again (review 20 M9).
+    private fun hooked(slot: String, d: keykin.Device) {
+        if (d.guard.onChange == null) d.guard.onChange = { work.execute { publish(slot) } }
+        if (d.nip46.onChange == null) d.nip46.onChange = { work.execute { publish(slot) } }
+    }
     private fun <T> withDevice(slot: String, f: (keykin.Device) -> T): T? = Memberships.signer(slot).device?.let(f)
     private fun errorJson(e: Exception) = JSONObject().put("error", (e as? KeykinException)?.code ?: "internal").toString()
     private fun send(f: (IKeykinClient) -> Unit) = out.execute {
@@ -71,6 +83,7 @@ class KeykinService : Service() {
     }
 
     private fun csv(x: String) = x.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    private fun appScopes(x: String) = csv(x).filter { it in APP_SCOPES }.ifEmpty { listOf("sign-in", "post") }
     private val binder = object : IKeykin.Stub() {
         override fun listen(client: IKeykinClient) {
             clients.register(client)
@@ -122,34 +135,40 @@ class KeykinService : Service() {
         override fun answerCard(slot: String, id: Int, allow: Boolean) = work.execute { withDevice(slot) { it.guard.answer(id, if (allow) "allow" else "decline") }; publish(slot) }
         override fun undoPending(slot: String, id: Int) = work.execute { withDevice(slot) { it.guard.undoPending(id) }; publish(slot) }
         // These sign: off the call thread a card or a server can't block, as the join is.
-        override fun undoTo(slot: String, versionId: String, confirmed: Boolean): String = joins.submit<String> {
+        override fun undoTo(slot: String, versionId: String, confirmed: Boolean): String = slow.submit<String> {
             try { withDevice(slot) { d -> when (val r = d.undoTo(versionId, confirmed)) { is String -> JSONObject().put("needs", r).toString(); is JSONObject -> JSONObject().put("event", r).toString(); else -> JSONObject().put("error", "internal").toString() } } ?: JSONObject().put("error", "no_membership").toString() }
             catch (e: Exception) { errorJson(e) }
         }.get()
-        override fun undoSite(slot: String, owner: String, confirmed: Boolean): String = joins.submit<String> {
+        override fun undoSite(slot: String, owner: String, confirmed: Boolean): String = slow.submit<String> {
             try { withDevice(slot) { d -> val (lists, posts) = d.undoSite(owner, confirmed)
                 JSONObject().put("lists", JSONArray(lists.map { if (it is JSONObject) JSONObject().put("event", it) else JSONObject().put("needs", it.toString()) })).put("posts", JSONArray(posts)).toString() } ?: JSONObject().put("error", "no_membership").toString() }
             catch (e: Exception) { errorJson(e) }
         }.get()
-        override fun postAgain(slot: String, id: String): String = joins.submit<String> {
+        override fun postAgain(slot: String, id: String): String = slow.submit<String> {
             try { withDevice(slot) { d -> JSONObject().put("event", d.postAgain(id)).toString() } ?: JSONObject().put("error", "no_membership").toString() } catch (e: Exception) { errorJson(e) }
         }.get()
-        override fun holdHeld(slot: String, id: String): String = joins.submit<String> {
+        override fun holdHeld(slot: String, id: String): String = slow.submit<String> {
             try { withDevice(slot) { d -> JSONObject().put("wait", d.nip46.holdHeld(id)).toString() } ?: JSONObject().put("error", "no_membership").toString() } catch (e: Exception) { errorJson(e) } finally { work.execute { publish(slot) } }
         }.get()
-        override fun releaseHeld(slot: String, id: String): String = joins.submit<String> {
+        override fun releaseHeld(slot: String, id: String): String = slow.submit<String> {
             try { withDevice(slot) { d -> JSONObject().put("event", d.nip46.releaseHeld(id)).toString() } ?: JSONObject().put("error", "no_membership").toString() } catch (e: Exception) { errorJson(e) } finally { work.execute { publish(slot) } }
         }.get()
         override fun declineHeld(slot: String, id: String) = work.execute { withDevice(slot) { it.nip46.declineHeld(id) }; publish(slot) }
 
         // --- the NIP-46 home ----------------------------------------------------------------------------------
-        override fun bunker(slot: String, relaysCsv: String, scopesCsv: String): String? = onWork {
-            try { withDevice(slot) { d -> d.nip46.mintBunker(csv(relaysCsv), "", csv(scopesCsv).ifEmpty { listOf("sign-in", "post") }) } } catch (_: Exception) { null }
+        // The main process may offer and allow only what it could do itself (sign-in, posting, lists, which nip44Own's
+        // default kinds already read): messages, private data and the wallet are allowed only on a signer-process
+        // screen (Nip46Asks), so a compromised app can't grant itself the account's DMs (review 20 H2).
+        override fun bunker(slot: String, relaysCsv: String, scopesCsv: String): String? = slow.submit<String?> {
+            try { withDevice(slot) { d -> d.nip46.mintBunker(csv(relaysCsv), "", appScopes(scopesCsv)) } } catch (_: Exception) { null }
+        }.get()
+        override fun nostrconnect(slot: String, uri: String, scopesCsv: String): String? = slow.submit<String?> {
+            try { withDevice(slot) { d -> d.nip46.acceptNostrconnect(uri, appScopes(scopesCsv)).signer } } catch (_: Exception) { null }
+        }.get()
+        override fun allowScope(slot: String, signer: String, scope: String) = work.execute {
+            if (scope !in APP_SCOPES) { Log.w(TAG, "allowScope: $scope is the person's to allow on a signer-process screen"); return@execute }
+            try { withDevice(slot) { it.nip46.allowScope(signer, scope) } } catch (e: Exception) { Log.w(TAG, "allowScope: $e") }; publish(slot)
         }
-        override fun nostrconnect(slot: String, uri: String, scopesCsv: String): String? = onWork {
-            try { withDevice(slot) { d -> d.nip46.acceptNostrconnect(uri, csv(scopesCsv).ifEmpty { listOf("sign-in", "post") }).signer } } catch (_: Exception) { null }
-        }
-        override fun allowScope(slot: String, signer: String, scope: String) = work.execute { try { withDevice(slot) { it.nip46.allowScope(signer, scope) } } catch (e: Exception) { Log.w(TAG, "allowScope: $e") }; publish(slot) }
 
         // --- UnifiedPush -----------------------------------------------------------------------------------------
         override fun pushInstances(slot: String): String = onWork { JSONArray(Memberships.signer(slot).instances()).toString() }
@@ -157,7 +176,7 @@ class KeykinService : Service() {
             try { val s = Memberships.signer(slot); s.onEndpoint(instance, endpoint); s.registerPush() } catch (e: Exception) { Log.w(TAG, "pushEndpoint: $e") }
         }
         // A wake can wait on servers and sites: on its own thread, as the join is; the state follows.
-        override fun pushMessage(slot: String, instance: String, body: ByteArray) = joins.execute {
+        override fun pushMessage(slot: String, instance: String, body: ByteArray) = wakes.execute {
             try { Memberships.signer(slot).onMessage(instance, body) } catch (e: Exception) { Log.w(TAG, "pushMessage: $e") }
             work.execute { publish(slot) }
         }
@@ -189,5 +208,4 @@ class KeykinService : Service() {
             val ss = slots(); send { it.slots(ss.toTypedArray()) }
         }
     }
-    companion object { private const val TAG = "KeykinService" }
 }

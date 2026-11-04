@@ -81,7 +81,9 @@ class Main : Activity() {
                 "fetch" -> k.fetch(slot())
                 "grants" -> say(JSONObject().put("grants", org.json.JSONArray(k.grants(slot()))))
                 // The NIP-46 home on the phone: a bunker:// link for a site; the person's answer to a card or a scope ask.
-                "bunker" -> say(JSONObject().put("bunker", k.bunker(slot(), c.getString("relays"), c.getString("scopes")) ?: JSONObject.NULL))
+                // A test harness: in a debug build the link (its secret included) goes to logcat for the e2e test to read;
+                // a release build never logs it (LinkLog).
+                "bunker" -> say(JSONObject().put("bunker", k.bunker(slot(), c.getString("relays"), c.getString("scopes"))?.let(LinkLog::shown) ?: JSONObject.NULL))
                 "answer" -> { k.answerCard(slot(), c.getString("id").toInt(), c.getBoolean("allow")); say(JSONObject().put("answered", c.getString("id"))) }
                 "allow" -> { k.allowScope(slot(), c.getString("signer"), c.getString("scope")); say(JSONObject().put("allowed", c.getString("scope"))) }
                 "forget" -> { k.forget(slot()); prefs.edit().remove("slot").apply(); say(JSONObject().put("forgotten", true)) }
@@ -98,4 +100,10 @@ class Main : Activity() {
         private val toldOnce: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
         private var lastSay: ((JSONObject) -> Unit)? = null
     }
+}
+
+/** What the demo may log of a bunker link: the whole link in a debug build (the e2e test reads it), never its secret
+ *  in a release build. */
+object LinkLog {
+    fun shown(link: String, debug: Boolean = BuildConfig.DEBUG): String = if (debug) link else link.substringBefore('?') + "?(relays and secret not logged)"
 }
