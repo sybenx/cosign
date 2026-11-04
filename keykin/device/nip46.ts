@@ -6,9 +6,8 @@
 //
 // The signer key is an ordinary key used only as a mailbox; what a site asks of the account goes through
 // the device: `sign_event` through a signing round, encryption through ECDH with a co-signer (core §5.5).
-// Grants (scopes, revoke, sync between devices) are the Doors module's §1–§2 and Device policy's
-// Confirm/Held, which this doesn't build yet: a grant here allows every method, and an event that needs
-// an approval is answered `held:`.
+// Scopes are the Doors module's §1–§2; every event a site asks for is judged by Device policy §2 (device/policy.ts)
+// first: Silent, a Confirm card on this home, a single deletion's 10-second Undo, or Held (answered `held:`).
 
 import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
@@ -188,13 +187,24 @@ export class Nip46Home {
           // Device policy §4: while a hold for this list is pending, this site's changes to it wait (review 12 H3).
           const lk = listKey(ev);
           if (lk && [...this.held.values()].some((x) => x.wait && x.signer === g.signer && listKey(x.event) === lk)) return { error: 'try-later: a held change to this list is waiting' };
+          // Device policy §2: judged first. A Confirm waits for the person's answer on this home, a single deletion
+          // 10 seconds for an Undo; Held goes to the person at once.
+          const owner = `${this.d.kp.pub}:${g.entry}`;
+          const event = siteEvent({ ...ev, created_at: ev?.created_at ?? now }, this.d.g);
+          const gate = await this.d.guard.gate(event, owner, (g.entry ? this.d.grants.own.get(g.entry)?.scopes : undefined) ?? []);
+          if ('error' in gate) return { error: gate.error };
+          let held = gate.ok === 'held';
           // Signed for this grant: the evidence records who got each ciphertext signed (review 17 M1).
-          try { return { result: JSON.stringify(await this.d.sign(ev, { owner: `${this.d.kp.pub}:${g.entry}` })) }; }
+          if (!held) try { return { result: JSON.stringify(await this.d.sign(event, { owner })) }; }
           catch (err) {
+            if ((err as KeykinError).code !== 'needs_approval') throw err;
+            // A server's demand the device's own check doesn't explain: Held only when two servers demand it (§2).
+            if (((err as any).demands ?? 0) < 2) return { error: 'try-later: a server asked for an approval; try again later' };
+            held = true;
+          }
+          {
             // Held (Doors §3.3, Device policy §4, review 11 L4): kept on this home for the person, who
             // approves it with the lock or lets a hold's wait pass; the result is published, not returned.
-            if ((err as KeykinError).code !== 'needs_approval') throw err;
-            const event = siteEvent({ ...ev, created_at: ev?.created_at ?? now }, this.d.g);
             this.#expireHeld();
             // One entry per event, at most 8 per site and 64 in all (review 12 H2).
             if (![...this.held.values()].some((x) => x.event.id === event.id)) {
@@ -275,7 +285,7 @@ export class Nip46Home {
     const { id: _id, ...ev } = h.event;
     const evId = h.event.id;
     if (!this.d.lock) throw new KeykinError('needs_approval', 'this device has no lock: start a hold instead');
-    const signed = await this.d.sign(ev, { approval: { lock: { member: this.d.kp.pub, assertion: this.d.lock.assert(this.d.g, what.sign(evId)) } } as any });
+    const signed = await this.d.sign(ev, { approval: { lock: { member: this.d.kp.pub, assertion: this.d.lock.assert(this.d.g, what.sign(evId)) } } as any, owner: this.#ownerOf(h.signer) });
     await this.#publishHeld(h, signed);
     return signed;
   }
@@ -294,11 +304,13 @@ export class Nip46Home {
   async releaseHeld(id: string): Promise<NostrEvent> {
     const h = this.#heldLive(id); if (!h.wait) throw new KeykinError('unknown_held', 'no hold was started');
     const { id: _id, ...ev } = h.event;
-    const signed = await this.d.sign(ev, { hold: h.wait });
+    const signed = await this.d.sign(ev, { hold: h.wait, owner: this.#ownerOf(h.signer) });
     await this.#publishHeld(h, signed);
     return signed;
   }
-  declineHeld(id: string) { this.held.delete(id); this.d.persist(); }
+  /** The person declined a held event: it counts as a decline of that site (Device policy §6). */
+  declineHeld(id: string) { const h = this.held.get(id); if (h) this.d.guard.declinedBy(this.#ownerOf(h.signer), 'core'); this.held.delete(id); this.d.persist(); }
+  #ownerOf(signer: string) { return `${this.d.kp.pub}:${this.grants.get(signer)?.entry}`; }
   async #publishHeld(h: { id: string; signer: string }, signed: NostrEvent) {
     const g = this.grants.get(h.signer);
     await this.#events.publishEvent(signed, [...new Set([...(g?.relays ?? []), ...(this.d.rec?.relays ?? [])])]);

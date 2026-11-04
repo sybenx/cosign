@@ -15,6 +15,9 @@ import { nip44Open } from '../src/nip44.ts';
 import { Nip46Home, listKey } from './nip46.ts';
 import { GrantStore, KIND_GRANTS, Evidence } from './grants.ts';
 import { MetaStore, KIND_META } from './metadata.ts';
+import { History, addrOf } from './history.ts';
+import { Guard, judge, itemsOf, undoDate, UNDO_AHEAD_S, type Verdict } from './policy.ts';
+import { destructive, isReplaceable, type Ev } from '../src/destructive.ts';
 import { DataKeys } from './datakey.ts';
 import { memberSign } from './membersig.ts';
 import { Members } from './members.ts';
@@ -179,7 +182,7 @@ export class DeviceNode implements Node {
    *  watches included (review 9 H2). */
   wipe() {
     this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() };
-    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.meta?.clear();
+    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.meta?.clear(); this.history?.clear(); this.guard?.clear(); this.undoOutbox = [];
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.reissued.clear(); this.reissueEphs.clear(); this.blamed.clear(); this.forceReissue.clear();
     this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
@@ -204,6 +207,8 @@ export class DeviceNode implements Node {
     // A refusal that says what the event needs wins over a server that didn't answer (review 12 H4).
     const telling = new Set(['needs_approval', 'hold_not_passed', 'declined', 'dated_ahead', 'machinery', 'wrong_pubkey']);
     const note = (code: string) => { if (!telling.has(lastErr)) lastErr = code; };
+    // Device policy §2: how many servers demanded an approval (two, or the device's own check, make it Held).
+    let demands = 0;
     // Core §6.7.9: requests a server left with nothing (no answer, or a partial that doesn't verify; an
     // `error` never counts), reported once another server co-signed the same event.
     const silent: { host: string; id: string }[] = [];
@@ -215,7 +220,7 @@ export class DeviceNode implements Node {
         if (a?.type === 'stale') { r.abandon(); await this.fetch(); continue; }
         // No answer: nothing at all, or the transport's own timeout (never an error the server sealed).
         if (a === null || a === undefined || a[TRANSPORT_FAILED]) { r.abandon(); silent.push({ host: s.host!, id: r.request.id }); note('no_answer'); break; }
-        if (a?.type !== 'partial') { r.abandon(); note(a?.code ?? 'no_answer'); if (a?.code && telling.has(a.code)) lastErr = a.code; this.lastDetail = a?.detail; break; }
+        if (a?.type !== 'partial') { r.abandon(); note(a?.code ?? 'no_answer'); if (a?.code && telling.has(a.code)) lastErr = a.code; if (a?.code === 'needs_approval') demands++; this.lastDetail = a?.detail; break; }
         let signed: NostrEvent;
         try { signed = r.finish(a); } catch (e) { silent.push({ host: s.host!, id: r.request.id }); note((e as KeykinError).code ?? 'bad_partial'); break; }
         for (const x of silent) this.signWatch.unanswered(x.host, x.id, this.now, true);
@@ -228,10 +233,12 @@ export class DeviceNode implements Node {
         const keykinD = signed.kind === KIND_GRANTS && (signed.tags.find((t) => t[0] === 'd')?.[1] ?? '').startsWith('keykin-');
         if (!keykinD) this.meta.event(signed.kind, signed.content, extra.owner ?? 'member');
         if (keykinD) this.#protect(signed.id);
+        // Device policy §1: the history takes it, and the records say which grant got it signed and what it did.
+        else if (this.baseDk) await this.guard.signed(signed, extra.owner ?? 'member', { approved: !!(extra.approval || extra.hold) });
         return signed;
       }
     }
-    throw new KeykinError(lastErr, this.lastDetail);
+    throw Object.assign(new KeykinError(lastErr, this.lastDetail), { demands });
   }
 
   /** A whole list with the first live server that answers (§6.7.10). */
@@ -288,6 +295,7 @@ export class DeviceNode implements Node {
       if (this.meta.dirty.size && this.now - this.meta.lastAt >= 600) await this.meta.publish();
     } catch { /* relays out of reach: next time */ }
     this.lastFetchAt = this.now;
+    if (this.undoOutbox.length) await this.flushUndos();
     // Sites' requests kept for this home are answered only now, after the grants' ends (review 16 M5).
     for (const e of nipQueue) try { await this.nip46.handle(e); } catch { /* one never wedges the rest */ }
   }
@@ -640,7 +648,7 @@ export class DeviceNode implements Node {
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       reissued: [...this.reissued], reissueEphs: [...this.reissueEphs], blamed: [...this.blamed], forceReissue: [...this.forceReissue],
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists] });
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
    *  by §3.4, every share against the commitments, and the member key a current device holding exactly
@@ -665,6 +673,7 @@ export class DeviceNode implements Node {
     d.dataKeys.load(x.dkHistory);
     d.members.load(x.members);
     d.#lists = new Map(x.lists ?? []);
+    d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? [];
     if (x.recEv && x.state) {
       const rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey });
       const m = computeMembership(rec, x.changes);
@@ -786,7 +795,140 @@ export class DeviceNode implements Node {
 
   /** The newest version of each list this device signed (Device policy §4): kind (and d) → created_at. */
   #lists = new Map<string, number>();
-  latestList(key: string) { return this.#lists.get(key) ?? 0; }
+  latestList(key: string) { return Math.max(this.#lists.get(key) ?? 0, this.history.current(key)?.created_at ?? 0); }
+
+  // --- Device policy (device/history.ts, device/policy.ts) -----------------------------------------
+  /** §1: the account's events this device signed or fetched, verified, kept on this device only. */
+  history = new History(() => this.g);
+  /** §2–§4, §6: the judge's verdicts on sites' events, the cards, the Undo wait and auto-declines. */
+  guard = ((dev: DeviceNode) => new Guard({
+    get g() { return dev.g; }, get now() { return dev.now; }, get history() { return dev.history; },
+    ledger: () => dev.meta.evidence().ledger, record: (f) => dev.meta.record(f),
+    decrypt: (c) => dev.decryptSelf(c),
+    lookup: (ids, addrs) => dev.lookupEvents(ids, addrs),
+    refresh: async (addr) => { for (const e of await dev.lookupEvents([], [addr])) dev.history.take(e); },
+    persist: () => dev.persist(),
+  }))(this);
+  /** Private list content with the self conversation key (§2 "Items"): the plaintext, null if it doesn't decrypt,
+   *  undefined if the key can't be had. */
+  async decryptSelf(content: string): Promise<string | null | undefined> {
+    let x: Uint8Array; try { x = await this.ecdhX(this.g); } catch { return undefined; }
+    try { return nip44Open(content, extract(sha256, x, utf8ToBytes('nip44-v2'))); } catch { return null; }
+  }
+  /** The account's events from its relays, by id or address, for at most 3 seconds; only its own and verified. */
+  async lookupEvents(ids: string[], addrs: string[]): Promise<NostrEvent[]> {
+    const ev = this.bus.events; if (!ev) return [];
+    const qs: Promise<{ events: any[] }>[] = [];
+    if (ids.length) qs.push(ev.query({ ids, authors: [this.g] }));
+    for (const a of addrs) { const [k, ...d] = a.split(':'); qs.push(ev.query({ kinds: [Number(k)], authors: [this.g], ...(d.length ? { '#d': [d.join(':')] } : {}) })); }
+    const all = Promise.all(qs).then((rs) => rs.flatMap((r) => r.events));
+    const got = await Promise.race([all, new Promise<any[]>((ok) => setTimeout(() => ok([]), 3000))]);
+    return got.filter((e) => e?.pubkey === this.g && this.history.take(e));
+  }
+  /** Judge a site's event (§2): what the person would see, without asking. */
+  judge(e: Unsigned, owner: string, scopes: string[]): Promise<Verdict> { return this.guard.judge(e, owner, scopes as any); }
+
+  // §3 Undo: an earlier version signed again as a new event, judged against the current one like any change, and
+  // dated after the newest version and any deletion naming it. Kept as the changes it makes until it is signed, and
+  // re-applied then to the current version, keeping the person's newer edits.
+  undoOutbox: { addr: string; add: string[][]; remove: string[]; addPriv: string[][]; removePriv: string[]; at: number; content?: string; confirmed?: boolean }[] = [];
+  /** Undo a list or the profile to an earlier version from history (§3). `confirmed` is the person's tap on the
+   *  Confirm card this returns when the Undo removes items; Held needs the lock (or a hold) as any change does. */
+  async undoTo(versionId: string, o: { confirmed?: boolean; approval?: Approval } = {}): Promise<{ needs: 'confirm' | 'held'; reason: string } | NostrEvent> {
+    const target = this.history.get(versionId);
+    const addr = target && isReplaceable(target.kind) ? addrOf(target) : null;
+    if (!target || !addr) throw new KeykinError('unknown_version', 'not a version this device kept');
+    const cur = this.history.current(addr);
+    const pub = (e: { tags: string[][] } | null) => (e?.tags ?? []).filter((t) => t.length >= 2);
+    const key = (t: string[]) => `${t[0]} ${t[1]}`;
+    const privOf = async (e: NostrEvent | null) => { if (!e || !e.content || target.kind === 0) return []; const p = await this.decryptSelf(e.content); try { const x = p ? strictJson(p) : []; return Array.isArray(x) ? x.filter((t: any) => Array.isArray(t)) : []; } catch { return []; } };
+    const [tp, cp] = [await privOf(target), await privOf(cur)];
+    const curKeys = new Set(pub(cur).map(key)), tKeys = new Set(pub(target).map(key));
+    const curPriv = new Set(cp.map(key)), tPriv = new Set(tp.map(key));
+    const change = target.kind === 0 ? { addr, add: [], remove: [], addPriv: [], removePriv: [], at: this.now, content: target.content } as any
+      : { addr, add: pub(target).filter((t) => !curKeys.has(key(t))), remove: [...curKeys].filter((k) => !tKeys.has(k)), addPriv: tp.filter((t: string[]) => !curPriv.has(key(t))), removePriv: [...curPriv].filter((k) => !tPriv.has(k)), at: this.now };
+    return this.#applyUndo(change, o);
+  }
+  async #applyUndo(ch: any, o: { confirmed?: boolean; approval?: Approval; hold?: string } = {}): Promise<{ needs: 'confirm' | 'held'; reason: string } | NostrEvent> {
+    const cur = this.history.current(ch.addr);
+    const kind = Number(ch.addr.split(':')[0]);
+    const key = (t: string[]) => `${t[0]} ${t[1]}`;
+    let tags: string[][], content: string;
+    if (kind === 0) { tags = cur?.tags ?? []; content = ch.content; }
+    else {
+      const rm = new Set<string>(ch.remove), have = new Set<string>();
+      tags = (cur?.tags ?? (ch.addr.includes(':') ? [['d', ch.addr.slice(ch.addr.indexOf(':') + 1)]] : [])).filter((t) => !rm.has(key(t)));
+      tags.forEach((t) => have.add(key(t)));
+      for (const t of ch.add) if (!have.has(key(t))) { tags.push(t); have.add(key(t)); }
+      content = cur?.content ?? '';
+      if (ch.addPriv.length || ch.removePriv.length) {
+        const p = content ? await this.decryptSelf(content) : '[]';
+        if (p === undefined) refuse('try_later', 'the self key can\'t be had');
+        let priv: string[][] = []; try { const x = p ? strictJson(p) : []; if (Array.isArray(x)) priv = x; } catch { /* none */ }
+        const rmP = new Set<string>(ch.removePriv);
+        priv = priv.filter((t) => !rmP.has(key(t)));
+        const hp = new Set(priv.map(key));
+        for (const t of ch.addPriv) if (!hp.has(key(t))) priv.push(t);
+        content = await this.nip44(this.g, JSON.stringify(priv), true);
+      }
+    }
+    const created_at = undoDate(this.history, ch.addr, this.now, cur ? [cur.id] : []);
+    // Past 9 minutes ahead it waits, kept in the outbox.
+    if (created_at - this.now > UNDO_AHEAD_S) { this.#keepUndo({ ...ch, confirmed: o.confirmed }); refuse('try_later', 'a newer version is dated ahead; the Undo waits'); }
+    const ev = { kind, created_at, tags, content, pubkey: this.g };
+    // Judged like any change: additions are silent, removals Confirm, core §5.8 Held.
+    if (destructive(ev as Ev, this.meta.evidence().ledger.burst(this.now)) && !o.approval && !o.hold) return { needs: 'held', reason: 'This Undo empties the list' };
+    if (cur && kind !== 0) {
+      const before = await itemsOf(cur, (c) => this.decryptSelf(c)), after = await itemsOf(ev, (c) => this.decryptSelf(c));
+      const gone = before && after ? [...before].filter((x) => !after.has(x)).length : 1;
+      if (gone && !o.confirmed && !o.approval) return { needs: 'confirm', reason: `Remove ${gone} items again?` };
+    }
+    try {
+      const signed = await this.sign(ev, { approval: o.approval, hold: o.hold, owner: 'member' });
+      this.undoOutbox = this.undoOutbox.filter((x) => x !== ch);
+      await this.bus.events?.publishEvent(signed, this.rec?.relays);
+      this.persist();
+      return signed;
+    } catch (e) { if (!o.approval && !o.hold) this.#keepUndo({ ...ch, confirmed: o.confirmed }); throw e; }
+  }
+  #keepUndo(ch: any) { if (!this.undoOutbox.includes(ch)) this.undoOutbox.push(ch); this.persist(); }
+  /** Undos waiting in the outbox, re-applied to the current versions now (after a restart, or once a date passed). */
+  async flushUndos() {
+    for (const ch of [...this.undoOutbox]) {
+      this.undoOutbox = this.undoOutbox.filter((x) => x !== ch);
+      try { const r = await this.#applyUndo(ch, { confirmed: ch.confirmed }); if ('needs' in r) this.notices.push({ kind: 'undo_needs_you', member: this.kp.pub }); } catch { /* kept again */ }
+    }
+  }
+  /** "Post again" (§3): a deleted post can't come back, so a new event with the same content and tags from history. */
+  async postAgain(id: string): Promise<NostrEvent> {
+    const e = this.history.get(id); if (!e || isReplaceable(e.kind)) throw new KeykinError('unknown_event', 'not a post this device kept');
+    const signed = await this.sign({ kind: e.kind, tags: e.tags, content: e.content, created_at: this.now }, { owner: 'member' });
+    await this.bus.events?.publishEvent(signed, this.rec?.relays);
+    return signed;
+  }
+  /** "Undo everything *site* did since it connected" (§3): its removals re-added and its additions removed, on top
+   *  of the current lists; then the site's own regular events, offered for deletion. Counts as a decline (§6). */
+  async undoSite(owner: string, o: { confirmed?: boolean } = {}): Promise<{ lists: (NostrEvent | { needs: string; reason: string })[]; posts: string[] }> {
+    const led = this.meta.evidence().ledger;
+    const lists: (NostrEvent | { needs: string; reason: string })[] = [];
+    for (const addr of led.listsOf(owner)) {
+      const kind = Number(addr.split(':')[0]);
+      if (kind === 0) continue;
+      const cur = this.history.current(addr); if (!cur) continue;
+      const items = (await itemsOf(cur, (c) => this.decryptSelf(c))) ?? new Set<string>();
+      const toTag = (it: string) => { const [, name, ...v] = it.split(' '); return [name, v.join(' ')]; };
+      const back = [...led.removals(owner, addr).keys()].filter((it) => !items.has(it));
+      const out = [...led.additions(owner, addr).keys()].filter((it) => items.has(it));
+      if (!back.length && !out.length) continue;
+      const ch = { addr, at: this.now,
+        add: back.filter((x) => x.startsWith('pub ')).map(toTag), remove: out.filter((x) => x.startsWith('pub ')).map((x) => x.slice(4)),
+        addPriv: back.filter((x) => x.startsWith('priv ')).map(toTag), removePriv: out.filter((x) => x.startsWith('priv ')).map((x) => x.slice(5)) };
+      lists.push(await this.#applyUndo(ch, o));
+    }
+    this.guard.declinedBy(owner, 'undo');
+    const posts = [...led.signed].filter(([id, w]) => w === owner && this.history.events.has(id)).map(([id]) => id);
+    return { lists, posts };
+  }
 
   /** The data key (core §4.5), for libraries that encrypt the account's own data. */
   dataKeys = new DataKeys(this);

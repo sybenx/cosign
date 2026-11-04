@@ -7,9 +7,9 @@
 // the data key with g, d and the state as associated data. A reader takes the index first, never a lower number
 // than it has seen, and only parts the index names; only a current device's snapshots count.
 //
-// Not yet: the rest of §1's metadata (grant per event, list versions, removal logs, deletion counts), which the
-// judging of events (Device policy §2–§4) needs; the 3-second fetch before a judgement; entries' retention by
-// whether their event is current (months are kept 13 months instead).
+// Each month also carries Device policy §1's records (device/history.ts's Ledger): grant per event, deletions,
+// removal logs, pre-site and last-approved versions. Not yet: entries' retention by whether their event is
+// current (months are kept 13 months instead).
 
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hmac } from '@noble/hashes/hmac.js';
@@ -43,10 +43,12 @@ const aad = (g: string, d: string, state: string) => concatBytes(hexToBytes(g), 
 const partDigest = (g: string, d: string, body: unknown) => sha('keykin-meta/1', hexToBytes(g), utf8ToBytes(d), jcs(body));
 const indexDigest = (g: string, d: string, body: unknown) => sha('keykin-meta-index/1', hexToBytes(g), utf8ToBytes(d), jcs(body));
 
-/** What a month holds, as it is published: encrypt records and event kinds by ciphertext hash, sorted. */
-/** What a month holds, as it is published: encrypt records `[hash, owner]` and events `[hash, kind, signer]`. */
-export interface MonthData { encrypt: [string, string][]; events: [string, number, string][] }
+/** What a month holds, as it is published: encrypt records `[hash, owner]` and events `[hash, kind, signer]`, and
+ *  Device policy §1's records (device/history.ts's Ledger: `signed`, `dels`, `removed`, `added`, `presite`,
+ *  `approved`). */
+export interface MonthData { encrypt: [string, string][]; events: [string, number, string][]; [k: string]: unknown }
 const toData = (e: Evidence): MonthData => ({
+  ...e.ledger.data(),
   encrypt: [...e.owners].flatMap(([h, os]) => [...os].map((o) => [h, o] as [string, string])),
   events: [...e.kinds].flatMap(([h, ks]) => [...ks].map((x) => { const i = x.indexOf(':'); return [h, Number(x.slice(0, i)), x.slice(i + 1)] as [string, number, string]; })),
 });
@@ -59,6 +61,7 @@ const fromData = (x: MonthData, into = new Evidence(), maker?: string) => {
   for (const r of Array.isArray(x?.events) ? x.events : []) if (Array.isArray(r) && HASH.test(String(r[0])) && Number.isInteger(r[1]) && r[1] >= 0 && r[1] <= 65535 && mine(r[2])) {
     const s = into.kinds.get(r[0]) ?? new Set(); s.add(`${r[1]}:${r[2]}`); into.kinds.set(r[0], s);
   }
+  into.ledger.take(x, mine);
   return into;
 };
 
@@ -91,6 +94,8 @@ export class MetaStore {
   encrypted(payload: string, owner: string) { this.#bucket().encrypted(payload, owner); }
   /** An account event this device signed (for `signer`, a grant or the member app) or fetched. */
   event(kind: number, content: string, signer = 'member') { if (Evidence.hashOf(content)) this.#bucket().event(kind, content, signer); }
+  /** Add to this month's policy records (Device policy §1); the merged view is rebuilt after. */
+  record(f: (l: import('./history.ts').Ledger) => void) { const b = this.#bucket(); f(b.ledger); this.#merged = null; }
   /** Every current device's records together: what a decrypt is judged on. */
   evidence(): Evidence {
     const cur = this.h.currentDevices(), key = [...cur].sort().join();

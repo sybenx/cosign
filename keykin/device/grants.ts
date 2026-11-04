@@ -9,6 +9,7 @@
 // relays and reads whatever they hold; decrypt-to-self evidence from signed metadata (§1) — decrypts are
 // classified from their plaintext only.
 
+import { Ledger } from './history.ts';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -168,6 +169,8 @@ const RANK: Record<string, number> = { 'private-data': 3, wallet: 2, lists: 1, d
 export class Evidence {
   kinds = new Map<string, Set<string>>();
   owners = new Map<string, Set<string>>();
+  /** Device policy §1's records (grant per event, deletions, removal logs, references), synced with these. */
+  ledger = new Ledger();
   /** Records per owner: a site can't crowd out the member app's (review 17 H2). */
   static readonly PER_OWNER = 2000;
   #count = new Map<string, number>();
@@ -192,16 +195,17 @@ export class Evidence {
   }
   allKinds(h: string): number[] { return [...(this.kinds.get(h) ?? [])].map((x) => Number(x.slice(0, x.indexOf(':')))); }
   /** The oldest records go first, when a month must fit its parts. */
-  trim(n: number) { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) for (const k of [...m.keys()].slice(0, n)) m.delete(k); this.#recount(); }
-  size() { return this.kinds.size + this.owners.size; }
+  trim(n: number) { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) for (const k of [...m.keys()].slice(0, n)) m.delete(k); this.ledger.trim(n); this.#recount(); }
+  size() { return this.kinds.size + this.owners.size + this.ledger.size(); }
   #recount() { this.#count.clear(); for (const os of this.owners.values()) for (const o of os) this.#count.set(o, (this.#count.get(o) ?? 0) + 1); }
   #cap() { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) while (m.size > 20_000) m.delete(m.keys().next().value!); }
-  dump() { return { kinds: [...this.kinds].map(([h, k]) => [h, [...k]]), owners: [...this.owners].map(([h, o]) => [h, [...o]]) }; }
+  dump() { return { kinds: [...this.kinds].map(([h, k]) => [h, [...k]]), owners: [...this.owners].map(([h, o]) => [h, [...o]]), ledger: this.ledger.data() }; }
   load(x: any) {
     this.kinds = new Map((x?.kinds ?? []).map(([h, k]: [string, unknown[]]) => [h, new Set(k.map((y) => (typeof y === 'number' ? `${y}:member` : String(y))))]));
     this.owners = new Map((x?.owners ?? []).map(([h, o]: [string, string[]]) => [h, new Set(o)])); this.#recount();
+    this.ledger = new Ledger(); this.ledger.take(x?.ledger, () => true);
   }
-  clear() { this.kinds.clear(); this.owners.clear(); this.#count.clear(); }
+  clear() { this.kinds.clear(); this.owners.clear(); this.#count.clear(); this.ledger.clear(); }
 }
 /** The scope a decrypt needs (§1, "Which scope a decrypt needs"). With someone else's key, `dms`. To the account
  *  itself: the payload must be canonical base64, and is matched against the account's own events; an event counts
