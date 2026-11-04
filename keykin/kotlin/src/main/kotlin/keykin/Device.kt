@@ -3,6 +3,7 @@
 // events with any seated server over relays. Joins, changes and Upkeep follow.
 package keykin
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigInteger
 
@@ -239,6 +240,87 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         applyAll()
     }
 
+    /** This device's lock (§6.1), if it has one: what approves its lists. */
+    @Volatile var lock: Lock? = null
+    fun approveLock(list: JSONArray, expiry: Long = net.now + 3600): JSONObject = Approve.lock(g, epochId, list, expiry, pub, lock ?: refuse("no_lock", "this device has no lock"))
+
+    /** Make, co-sign and deliver a list (§6.7.6), as TS `submit`: one approval; for a redeal, this device
+     *  deals it and uploads every recipient's delivery to the seat servers; one server co-signs every event of
+     *  the list in one request (§6.7.10); the list goes to every server and the live devices; then this device
+     *  applies its own delta and destroys the rest. `list` names the redeal as `{redeal: {dealer: <this key>}}`. */
+    fun submit(list: JSONArray, approval: JSONObject): List<JSONObject> {
+        if (wiped) refuse("wiped")
+        val v = view; val st = state
+        val ph = Approvals.placeholder(list)
+        val backupSeat = ints(rec.getJSONObject("seats").getJSONArray("backup"))
+        val post = Deal.postListView(v, list)
+        var dealt: Dealt? = null
+        val full = JSONArray()
+        val wraps = HashMap<String, JSONObject>()
+        try {
+            for (k in 0 until list.length()) {
+                val c = list.getJSONObject(k)
+                if (!c.has("redeal")) { full.put(c); continue }
+                if (c.getJSONObject("redeal").optString("dealer") != pub) refuse("not_dealer", "this device deals the list's redeal")
+                val dl = Deal.deal(g, sk, st.ids, post.mapValues { it.value.shares }, Deal.postListBackup(v, list), backupSeat).also { dealt = it }
+                val id = dl.redeal.getString("id")
+                val items = JSONArray()
+                for (x in post.values) {
+                    val body = JSONObject().put("type", "delta").put("redeal", id).put("deltas", JSONArray(dl.deltas[x.key]!!.toSortedMap().map { (i, d) -> JSONArray(listOf(i, scalarHex(d))) }))
+                    if (x.kind != "helper") body.put("release", dl.releaseSeed)
+                    if (x.kind == "device") body.put("dk", dl.dkSeed).put("paper_ck", dl.paperCk).put("paper_item", dl.paperItem)
+                    // The dealer's own delivery too: the co-signer wants one for every recipient (§6.7.3).
+                    if (x.key == pub) synchronized(this) { pending.getOrPut(id) { LinkedHashMap() }[pub] = JSONObject(body.toString()).put("from", pub).put("at", net.now) }
+                    val w = env.wrap(sk, x.key, body, net.now)
+                    wraps[x.key] = w
+                    items.put(JSONObject().put("type", "delta").put("to", x.key).put("release", x.kind != "helper").put("wrap", w))
+                }
+                val up = msg("upload", "member").put("list", ph).put("approval", approval).put("redeal", id).put("items", items).put("paper_item", dl.paperItem)
+                for (s in post.values.filter { it.kind == "server" }) net.send(sk, s.key, JSONObject(up.toString()))
+                full.put(JSONObject().put("redeal", dl.redeal))
+            }
+            // Every event of the list in one request, each with its own nonces (§6.7.10, §5.2).
+            val now = net.now
+            val evs = (0 until full.length()).map { k -> Unsigned(g, now, KIND_CHANGE, listOf(listOf("v", "1"), listOf("epoch", epochId)),
+                Jcs.of(JSONObject().put("v", 1).put("g", g).put("epoch", epochId).put("change", full.get(k)).put("list", ph).put("approval", approval))) }
+            val signed = coSign(st, evs)
+            // The list as one to every server, current and incoming; live devices get it and their delivery directly.
+            val evArr = JSONArray(signed)
+            for (t in (v.members + post.values).filter { it.kind == "server" }.map { it.key }.distinct()) net.send(sk, t, JSONObject().put("type", "change").put("events", evArr))
+            for (x in post.values.filter { it.kind == "device" && it.key != pub }) {
+                net.tell(sk, x.key, JSONObject().put("type", "change").put("events", evArr))
+                wraps[x.key]?.let { net.tell(sk, x.key, JSONObject().put("type", "delta_push").put("wrap", it)) }
+            }
+            takeChanges(signed.map { Event.of(it) })
+            applyAll()
+            return signed
+        } finally {
+            dealt?.destroy()
+            // Our own delta is applied by now, or never will be: it goes with the rest of δ.
+            dealt?.let { d -> synchronized(this) { pending[d.redeal.getString("id")]?.remove(pub) } }
+        }
+    }
+    /** Co-sign events with the first server that answers: one event as a plain round, a list as one call. */
+    private fun coSign(st: ShareState, evs: List<Unsigned>): List<JSONObject> {
+        val c = RoundContext(g, epochId, st.hash, st.C)
+        var last = "no_server"; var detail: String? = null
+        for (s in servers()) {
+            val co = Signer(s.key, s.shares)
+            if (evs.size == 1) {
+                val r = OneCall(c, st.shares, co, evs[0])
+                val a = net.send(sk, s.key, r.request)
+                if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; detail = a.optString("detail"); continue }
+                try { return listOf(r.finish(a)) } catch (e: KeykinException) { last = e.code } catch (_: Exception) { last = "bad_partial" }
+            } else {
+                val r = ListCall(c, st.shares, co, evs)
+                val a = net.send(sk, s.key, r.request)
+                if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; detail = a.optString("detail"); continue }
+                try { return r.finish(a) } catch (e: KeykinException) { last = e.code }
+            }
+        }
+        refuse(last, detail?.ifEmpty { null })
+    }
+
     /** The seed of each redeal this device holds one for: a seed is known by its hash, which the redeal
      *  names (`dk`), so a stray or forged seed is never used (review 12 L4). */
     private fun seedsByRedeal(): Map<String, String> {
@@ -282,7 +364,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val sh = st.getJSONArray("shares")
             val shares = (0 until sh.length()).associate { sh.getJSONArray(it).let { p -> Json.long(p.get(0)) to BigInteger(p.getString(1), 16) } }
             val seeds = x.optJSONArray("dkSeeds")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            return Device(unhex(x.getString("kp")), recEv, rec, changes, ids, shares, net, x.optString("baseDk"), seeds).also { it.restore(x) }
+            return Device(unhex(x.getString("kp")), recEv, rec, changes, ids, shares, net, x.optString("baseDk"), seeds).also { it.restore(x); it.lock = SoftLock.fromStored(x.optJSONObject("lock")) }
         }
         /** Join an account by its invite code (core §4.1–§4.2): hello, nonce, the 6-digit check shown by
          *  `onCheck`, then the welcome and the sigmas, checked. */

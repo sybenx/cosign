@@ -23,6 +23,14 @@ fun main(args: Array<String>) {
                     "sign" -> d.sign(1, c.getString("content"))
                     // Catch up from every server (changes, then the inbox) and say where this device now is.
                     "fetch" -> { d.fetch(); JSONObject().put("state", d.ctx.state).put("ids", JSONArray(d.ids.sorted())) }
+                    // Deal a list with this device's lock (§6.7.6): a plain redeal, or a device's removal with its redeal.
+                    "redeal", "remove" -> {
+                        val list = JSONArray()
+                        if (c.getString("cmd") == "remove") list.put(JSONObject().put("remove", c.getString("key")))
+                        list.put(JSONObject().put("redeal", JSONObject().put("dealer", d.pub)))
+                        val signed = d.submit(list, d.approveLock(list))
+                        JSONObject().put("events", JSONArray(signed.map { it.getString("id") })).put("state", d.ctx.state)
+                    }
                     "members" -> d.members.devices().let { (self, asOf, keys) -> JSONObject().put("self", self).put("asOf", asOf)
                         .put("keys", JSONArray(keys.map { JSONObject().put("key", it.key).put("added_by", it.addedBy ?: JSONObject.NULL).put("flagged", it.flagged) }))
                         .put("removed", JSONArray(d.members.removed(0).map { it.json() })) }
@@ -34,7 +42,7 @@ fun main(args: Array<String>) {
                     "nip04" -> JSONObject().put("result", d.nip04(c.getString("peer"), c.getString("text"), c.optBoolean("encrypt", true)))
                     else -> JSONObject().put("error", "unknown command")
                 }
-            } catch (e: KeykinException) { JSONObject().put("error", e.code) }
+            } catch (e: KeykinException) { JSONObject().put("error", e.code).put("detail", e.message) }
             println(out.toString()); System.out.flush()
         }
     } catch (e: KeykinException) { println("""{"error":"${e.code}"}""") } finally { net.close() }

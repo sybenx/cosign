@@ -99,6 +99,14 @@ object XChaCha {
     }
     private fun pad16(n: Int) = ByteArray((16 - n % 16) % 16)
     private fun le64(n: Long) = ByteArray(8) { (n ushr (8 * it)).toByte() }
+    /** Seal `plain` under `key` with a 24-byte nonce: `nonce ‖ ciphertext ‖ tag(16)`. */
+    fun seal(key: ByteArray, nonce: ByteArray, plain: ByteArray): ByteArray {
+        if (key.size != 32 || nonce.size != 24) refuse("malformed", "a 32-byte key and a 24-byte nonce")
+        val sub = hchacha(key, nonce.copyOfRange(0, 16)); val n12 = ByteArray(4) + nonce.copyOfRange(16, 24)
+        val ct = ChaCha20.xor(sub, n12, plain, 1)
+        val tag = poly1305(ChaCha20.xor(sub, n12, ByteArray(32), 0), ct + pad16(ct.size) + le64(0) + le64(ct.size.toLong()))
+        return nonce + ct + tag
+    }
     /** Open `nonce(24) ‖ ciphertext ‖ tag(16)` under `key`; refuses a bad tag. */
     fun open(key: ByteArray, box: ByteArray): ByteArray {
         if (key.size != 32) refuse("malformed", "a 32-byte key")
