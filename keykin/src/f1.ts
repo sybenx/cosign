@@ -114,3 +114,43 @@ export class F1Watch {
     return seats.flatMap((s) => { const why = this.dead(s.host, now); return why ? [{ ...s, why }] : []; });
   }
 }
+
+// --- Core §6.7.9 (non-normative): "S3 hasn't helped sign this week" ---------------------------
+// A server that answers but won't co-sign is never dead for F1 (core §10, item 48 a): the person may move
+// it by hand (F4). The device shows one quiet line on Backup when, over 7 days, the server left at least
+// 3 `sign` requests on 2 different days unanswered for their whole lifetime (no valid partial, even late,
+// and no `error`) while another server co-signed each of them. Never a card, a dot or a trigger.
+
+export const HELP_WINDOW_S = 7 * 86400;
+const day = (t: number) => Math.floor(t / 86400);
+
+export class SignWatch {
+  #misses = new Map<string, Map<string, number>>();      // host → request id → when its lifetime ended
+  #helped = new Map<string, Set<number>>();              // host → days with a valid partial since the last miss
+  #hidden = new Map<string, number>();
+  #of<T>(m: Map<string, T>, host: string, make: () => T) { let x = m.get(host); if (!x) { x = make(); m.set(host, x); } return x; }
+
+  /** A `sign` request to `host` whose lifetime ended at `at` with nothing from it. It counts only if
+   *  another server co-signed the same request; an `error` answer is never reported here. */
+  unanswered(host: string, id: string, at: number, anotherCosigned: boolean) {
+    if (!anotherCosigned) return;
+    this.#of(this.#misses, host, () => new Map()).set(id, at);
+    this.#helped.set(host, new Set());
+  }
+  /** A valid partial from `host` for request `id` at `at`, in time or late: a late one takes back that miss. */
+  partial(host: string, id: string, at: number) {
+    this.#misses.get(host)?.delete(id);
+    const days = this.#of(this.#helped, host, () => new Set());
+    days.add(day(at));
+    // It goes away once the server gives a valid partial on two days.
+    if (days.size >= 2) this.#misses.delete(host);
+  }
+  /** The person hides the line for a week. */
+  hide(host: string, now: number) { this.#hidden.set(host, now + HELP_WINDOW_S); }
+  /** Whether Backup shows the line for `host` now. */
+  line(host: string, now: number): boolean {
+    if ((this.#hidden.get(host) ?? 0) > now) return false;
+    const recent = [...(this.#misses.get(host)?.values() ?? [])].filter((t) => now - t <= HELP_WINDOW_S);
+    return recent.length >= 3 && new Set(recent.map(day)).size >= 2;
+  }
+}

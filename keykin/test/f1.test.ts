@@ -136,3 +136,31 @@ test('review 8 M3: being seated is not serving', async () => {
   assert.equal(w.dead('a', 86410), null, 'a silent newcomer is no peer serving');
   // Review 8 M4 (a replayed notice) is now draft 8's rule: only a live answer counts (tests above).
 });
+
+test('core §6.7.9: the quiet "hasn\'t helped sign this week" line, never a trigger', async () => {
+  const { SignWatch } = await import('../src/f1.ts');
+  const D = 86400, w = new SignWatch();
+  // Three misses on one day: not yet. A fourth on another day: the line.
+  for (const k of [1, 2, 3]) w.unanswered('s3', `r${k}`, 10 * D + k, true);
+  assert.equal(w.line('s3', 10 * D + 10), false, 'one day only');
+  w.unanswered('s3', 'r4', 11 * D, true);
+  assert.equal(w.line('s3', 11 * D + 1), true);
+  // A miss nobody else co-signed never counts; a late valid partial takes its miss back.
+  const v = new SignWatch();
+  for (const k of [1, 2, 3]) v.unanswered('s', `x${k}`, k * D, false);
+  assert.equal(v.line('s', 4 * D), false, 'no other server co-signed');
+  for (const k of [1, 2, 3]) v.unanswered('s', `y${k}`, k * D, true);
+  assert.equal(v.line('s', 4 * D), true);
+  v.partial('s', 'y3', 4 * D);
+  assert.equal(v.line('s', 4 * D + 1), false, 'a late partial: two misses left');
+  // Hidden for a week; misses older than 7 days fall out; two days of partials clear it.
+  w.hide('s3', 11 * D + 2);
+  assert.equal(w.line('s3', 12 * D), false);
+  assert.equal(w.line('s3', 18 * D + 3), false, 'after the week, the misses are older than 7 days');
+  const u = new SignWatch();
+  for (const k of [1, 2, 3]) u.unanswered('s', `z${k}`, k * D, true);
+  u.partial('s', 'other1', 4 * D);
+  assert.equal(u.line('s', 4 * D + 1), true, 'one day of partials is not enough');
+  u.partial('s', 'other2', 5 * D);
+  assert.equal(u.line('s', 5 * D + 1), false, 'two days clear it');
+});
