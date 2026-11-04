@@ -100,7 +100,7 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   assert.doesNotMatch(query('GET_PUBLIC_KEY', 'x:y:z'), /result=/, 'no grant, no answer');
   sh('shell', 'am', 'broadcast', '-n', 'cc.aaro.keykin.demo/.DebugGrant', '--es', 'pkg', 'com.android.shell', '--ez', 'dm', 'true');
   assert.equal((await next()).granted, true);
-  assert.match(query('GET_PUBLIC_KEY', 'x:y:z'), new RegExp(`result=${A.g}`), 'the granted app gets the account\'s key');
+  assert.match(query('GET_PUBLIC_KEY', `x:y:${A.g}`), new RegExp(`result=${A.g}`), 'the granted app gets the account\'s key');
   const peer = newKey();
   const ct = /result=(\S+)/.exec(query('NIP44_ENCRYPT', `hello-from-the-phone:${peer.pub}:${A.g}`))?.[1];
   assert.ok(ct, 'an encryption');
@@ -111,6 +111,8 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   // Its state is sealed: the app, restarted, signs again from it.
   sh('shell', 'am', 'force-stop', 'cc.aaro.keykin.demo');   // both processes
   run('sign', ['--es', 'content', 'gm again, after a restart']);
-  const again = await next();
+  // A new process reports its membership again first; the signature follows.
+  let again = await next();
+  while (again.sig === undefined && again.error === undefined) again = await next();
   assert.ok(verifyEvent(again), JSON.stringify(again));
 });

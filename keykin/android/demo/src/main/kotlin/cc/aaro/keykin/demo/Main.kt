@@ -23,9 +23,9 @@ class Main : Activity() {
     private lateinit var input: EditText
     private val work = HandlerThread("keykin-demo").apply { start() }
     private val bg = Handler(work.looper)
-    private val client by lazy { KeykinClient(applicationContext).bind() }
+    private val client get() = shared(applicationContext)
     private val prefs by lazy { getSharedPreferences("demo", MODE_PRIVATE) }
-    private var told = HashSet<String>()
+    private val told get() = toldOnce
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -37,8 +37,9 @@ class Main : Activity() {
             col.addView(Button(this).apply { text = label; setOnClickListener { run(JSONObject().put("cmd", cmd).put("code", input.text.toString()).put("relays", RELAYS)) } })
         col.addView(out)
         setContentView(ScrollView(this).apply { addView(col) })
-        // What the signer tells: the check digits once, the join once, errors as they come.
-        client.listen(object : KeykinClient.Listener {
+        // What the signer tells: the check digits once, the join once, errors as they come. One client and one
+        // listener per process: an activity recreated between intents must not hear (and say) things twice.
+        if (!listening) { listening = true; client.listen(object : KeykinClient.Listener {
             override fun state(slot: String, state: JSONObject) {
                 if (slot != prefs.getString("slot", null)) return
                 state.optString("check").takeIf { it.isNotEmpty() && told.add("check:$it") }?.let { say(JSONObject().put("check", it)) }
@@ -46,7 +47,8 @@ class Main : Activity() {
                 state.optString("error").takeIf { it.isNotEmpty() && told.add("error:$it") }?.let { say(JSONObject().put("error", it)) }
                 if (state.optBoolean("joined")) told.add("joined:$slot")
             }
-        })
+        }) }
+        lastSay = ::sayHere
         handle(intent)
     }
     override fun onNewIntent(i: Intent) { super.onNewIntent(i); handle(i) }
@@ -55,7 +57,8 @@ class Main : Activity() {
         run(JSONObject().put("cmd", cmd).put("code", i.getStringExtra("code") ?: "").put("relays", i.getStringExtra("relays") ?: RELAYS)
             .put("content", i.getStringExtra("content") ?: "gm from the keykin-android demo"))
     }
-    private fun say(x: JSONObject) { val line = x.toString(); Log.i("KeykinDemo", line); runOnUiThread { out.append(line + "\n\n") } }
+    private fun say(x: JSONObject) { (lastSay ?: ::sayHere)(x) }
+    private fun sayHere(x: JSONObject) { val line = x.toString(); Log.i("KeykinDemo", line); runOnUiThread { out.append(line + "\n\n") } }
 
     private fun run(c: JSONObject) = bg.post {
         try {
@@ -76,5 +79,12 @@ class Main : Activity() {
         } catch (e: Exception) { say(JSONObject().put("error", "internal").put("detail", e.toString())) }
     }
     private fun slot() = prefs.getString("slot", null) ?: error("join first")
-    companion object { const val RELAYS = "ws://10.0.2.2:17311,ws://10.0.2.2:17312" }
+    companion object {
+        const val RELAYS = "ws://10.0.2.2:17311,ws://10.0.2.2:17312"
+        private var client: KeykinClient? = null
+        @Synchronized fun shared(c: android.content.Context) = client ?: KeykinClient(c).bind().also { client = it }
+        @Volatile private var listening = false
+        private val toldOnce: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+        private var lastSay: ((JSONObject) -> Unit)? = null
+    }
 }
