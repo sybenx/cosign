@@ -6,7 +6,8 @@ package keykin
 import org.json.JSONObject
 import java.math.BigInteger
 
-class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, ids: List<String>, val shares: Map<Long, BigInteger>, private val net: RelayNet) {
+class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, val ids: List<String>, val shares: Map<Long, BigInteger>, private val net: RelayNet,
+             private val baseDk: String = "", private val dkSeeds: List<String> = emptyList()) {
     val pub: String = Secp.Reference.pub(sk)
     val g: String = rec.getString("g"); val epochId: String = rec.getJSONObject("epoch").getString("id")
     val view: MembershipView = Membership.compute(rec, changes)
@@ -33,7 +34,8 @@ class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, ids: 
             val st = x.getJSONObject("state"); val ids = (0 until st.getJSONArray("ids").length()).map { st.getJSONArray("ids").getString(it) }
             val sh = st.getJSONArray("shares")
             val shares = (0 until sh.length()).associate { sh.getJSONArray(it).let { p -> Json.long(p.get(0)) to BigInteger(p.getString(1), 16) } }
-            return Device(unhex(x.getString("kp")), rec, changes, ids, shares, net)
+            val seeds = x.optJSONArray("dkSeeds")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+            return Device(unhex(x.getString("kp")), rec, changes, ids, shares, net, x.optString("baseDk"), seeds)
         }
         /** Join an account by its invite code (core §4.1–§4.2): hello, nonce, the 6-digit check shown by
          *  `onCheck`, then the welcome and the sigmas, checked. */
@@ -57,8 +59,18 @@ class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, ids: 
             onCheck(j.check)
             val (from, w) = welcome.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
             val r = j.finish(from, w, sigmas.toList())
-            return Device(sk, r.rec, r.changes, r.ids, r.shares, net)
+            // The welcome carries the base data key and every data-key seed (core §4.2 step 4, §4.5).
+            val seeds = w.optJSONArray("dk")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+            return Device(sk, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds)
         }
+    }
+    /** The data key (core §4.5), as device/datakey.ts gives it in TS: the key new data is written under,
+     *  and the state hash it names. `dk(S) = HKDF("keykin-dk/1", base ‖ seeds of S, sorted)`. Only the
+     *  epoch record's first state for now (states after a redeal come with Upkeep's port). */
+    fun dataKey(): Pair<String, ByteArray> {
+        if (!Regex("^[0-9a-f]{64}$").matches(baseDk)) refuse("no_data_key", "this device holds no data key")
+        if (ids.isNotEmpty()) refuse("unsupported", "a state after a redeal")
+        return Codes.stateHash(ids) to hkdf32(unhex(baseDk), utf8("keykin-dk/1"))
     }
     /** The seated servers, as members. */
     fun servers() = view.members.filter { it.kind == "server" }

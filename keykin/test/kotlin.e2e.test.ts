@@ -44,13 +44,15 @@ test('a Kotlin device signs through three TS server processes over relays', { sk
   const fromPeer04 = await nip04.encrypt(peer.sk, acc.g, 'nip04 from the peer');
   const cmds = join(dirname(snap), 'cmds.json');
   writeFileSync(cmds, JSON.stringify([{ cmd: 'sign', content: 'gm-from-kotlin' }, { cmd: 'nip44', peer: peer.pub, text: 'to the peer from kotlin' },
-    { cmd: 'nip44', peer: peer.pub, text: fromPeer, encrypt: false }, { cmd: 'nip04', peer: peer.pub, text: 'nip04 from kotlin' }, { cmd: 'nip04', peer: peer.pub, text: fromPeer04, encrypt: false }]));
+    { cmd: 'nip44', peer: peer.pub, text: fromPeer, encrypt: false }, { cmd: 'nip04', peer: peer.pub, text: 'nip04 from kotlin' }, { cmd: 'nip04', peer: peer.pub, text: fromPeer04, encrypt: false }, { cmd: 'datakey' }]));
   const r = spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=${snap} ${relays.join(',')} ${cmds}`], { env: { ...process.env, JAVA_HOME: java }, encoding: 'utf8', timeout: 300_000 });
   const all = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
   assert.equal(all[0]?.device, acc.A.kp.pub, 'the Kotlin device took over this member key');
   const out = all.slice(1);
-  assert.equal(out.length, 5, r.stdout + r.stderr.slice(-500));
-  const [ev, e44, d44, e04, d04] = out;
+  assert.equal(out.length, 6, r.stdout + r.stderr.slice(-500));
+  const [ev, e44, d44, e04, d04, dk] = out;
+  const ts = acc.A.dataKeys.current();
+  assert.deepEqual([dk.state, dk.key], [ts.state, Buffer.from(ts.key).toString('hex')], 'Kotlin derives the same data key (core §4.5)');
   assert.equal(ev.error, undefined, `Kotlin refused: ${JSON.stringify(ev)}`);
   assert.equal(ev.pubkey, acc.g);
   assert.equal(ev.content, 'gm-from-kotlin');

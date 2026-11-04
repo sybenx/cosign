@@ -44,7 +44,7 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   const code = A.inviter.invite(relays);
 
   const cmds = join(mkdtempSync(join(tmpdir(), 'kk-kj-')), 'cmds.json');
-  writeFileSync(cmds, JSON.stringify([{ cmd: 'sign', content: 'gm from a Kotlin device that joined' }]));
+  writeFileSync(cmds, JSON.stringify([{ cmd: 'sign', content: 'gm from a Kotlin device that joined' }, { cmd: 'datakey' }]));
   // Gradle's own start, then the Kotlin process; its stdout read line by line as it goes.
   spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'classes'], { env: { ...process.env, JAVA_HOME: java } });
   const kt = spawn(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=join:${code} ${relays.join(',')} ${cmds}`], { env: { ...process.env, JAVA_HOME: java }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -64,7 +64,7 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   for (const i of indices)
     for (const w of await A.repairFor([{ key: A.kp.pub, indices: [...A.state!.shares.keys()] }, { key: server0.key, indices: server0.shares }], i, n, 'add'))
       await net.events.publishEvent(w);
-  const ack = await net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids] }));
+  const ack = await net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.dkSeeds }));
   assert.equal(ack.type, 'ack');
 
   const joined = await next();
@@ -73,4 +73,6 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   assert.equal(ev.error, undefined, JSON.stringify(ev));
   assert.ok(verifyEvent(ev) && ev.pubkey === A.g, 'the joined Kotlin device signs as the account');
   assert.equal(A.m!.devices.size, 2);
+  const dk = await next();
+  assert.equal(dk.key, Buffer.from(A.dataKeys.current().key).toString('hex'), 'the joined Kotlin device holds the account\'s data key');
 });
