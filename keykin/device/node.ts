@@ -180,6 +180,8 @@ export class DeviceNode implements Node {
     this.co = new CoSigner({ me: this.kp, kind: this.role, now: () => this.now, record: this.rec!, changes: this.changes, state: this.state!, policy: (e, f) => this.policy(e, f) });
     if (this.m.removed.has(this.kp.pub)) this.wipe();
     this.members.update();
+    // The helper ends every grant whose asking device left (Helper module §2).
+    if (this.role === 'helper' && !this.wiped) void this.nip46.helperPrune();
     this.persist();
   }
   /** A removed or wiped member destroys everything it holds (core §7.3), the backup secret, push keys and
@@ -289,6 +291,7 @@ export class DeviceNode implements Node {
     // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
     if (this.bus.events && this.baseDk) try {
       await this.grants.fetch();
+      await this.grants.upkeep();
       for (const e of (await this.bus.events.query({ kinds: [KIND_GRANTS], authors: [this.g] })).events)
         if ((e.tags.find((t: string[]) => t[0] === 'd')?.[1] ?? '').startsWith('keykin-')) this.#protect(e.id);
     } catch { /* relays out of reach: next time */ }
@@ -315,6 +318,8 @@ export class DeviceNode implements Node {
   takeDelivery(w: NostrEvent): 'kept' | 'junk' | 'full' {
     const o = unwrap(this.kp.sk, w);
     if (o.body.type === 'pair_request') { this.#takePairRequest(o.from, o.body); return 'kept'; }
+    if (o.body.type === 'grant_ends') return this.#takeEnds(o.from, o.body);
+    if (o.body.type === 'helper_report') return this.#takeHelperReport(o.from, o.body);
     if (o.body.type === 'reissue_eph') {
       // §6.7.6 (core 14.20): from a current device, bound to its redeal, K and item; checked in checkReissues.
       const b = o.body, m = this.m!;
@@ -790,7 +795,14 @@ export class DeviceNode implements Node {
   members = new Members(this);
   /** The current device member keys (helpers, servers and the backup are not devices). */
   memberKeys(): string[] { return this.members.devices().keys.map((k) => k.key); }
-  #afterState() { this.dataKeys.note(); this.members.update(); }
+  #afterState() {
+    this.dataKeys.note(); this.members.update();
+    // Doors §2: the grant event is encrypted under the current state's data key, so re-encrypted after each redeal.
+    try {
+      const st = this.baseDk ? this.dataKeys.current().state : null, sent = this.grants.lastSent[0]?.tags.find((t) => t[0] === 'state')?.[1];
+      if (st && sent && st !== sent) this.publishGrantsSoon();
+    } catch { /* no data key yet */ }
+  }
   /** Sign `message` under a registered `domain` with this device's member key (device/membersig.ts). */
   signAsMember(domain: string, message: Uint8Array): { sig: string; key: string } {
     if (this.wiped) refuse('wiped');
@@ -970,7 +982,119 @@ export class DeviceNode implements Node {
     sign: (ev) => dev.sign(ev),
     publish: async (e) => { await dev.bus.events?.publishEvent(e); },
     query: async () => (await dev.bus.events?.query({ kinds: [KIND_GRANTS], authors: [dev.g] })) ?? { events: [], answered: 0, asked: 0 },
+    recorded: () => dev.recordedRelays(),
+    get publishTo() { return dev.bus?.events?.publishTo ? (e: NostrEvent, relays: string[]) => dev.bus.events!.publishTo!(e, relays) : undefined; },
+    get queryEach() { return dev.bus?.events?.queryEach ? (relays: string[]) => dev.bus.events!.queryEach!({ kinds: [KIND_GRANTS], authors: [dev.g] }, relays) : undefined; },
   }))(this);
+  /** Doors §2's recorded relays: the epoch record's, and the current seat holders'. */
+  recordedRelays(): string[] {
+    const m = this.m; if (!m) return [];
+    return [...new Set([...(this.rec?.relays ?? []), ...[...m.seats.values()].flatMap((s) => (s.holder as any)?.relays ?? [])])];
+  }
+
+  // --- signing out (Doors §1 "Listing and signing out", §2 "Ends made by another device") ------------------------
+  /** End grants anywhere: own ones here; another device's by a tombstone in this device's event and a delivery to
+   *  its home with an `ask` push (one per home per action, carrying all of that action's tombstones), so it drops
+   *  them at once. A helper grant's tombstone names its signer key and goes to the helper. */
+  async signOut(list: { by: string; id: string }[]) {
+    const homes = new Map<string, any[]>();
+    for (const { by, id } of list) {
+      if (by === this.kp.pub) {
+        const e = this.grants.own.get(id);
+        for (const g of this.nip46.grants.values()) if (g.entry === id) await this.nip46.end(g.signer);
+        this.grants.end(by, id);
+        if (e?.helper && e.signer && this.helperKey()) homes.set(this.helperKey()!, [...(homes.get(this.helperKey()!) ?? []), { by, id, at: this.now, signer: e.signer }]);
+        continue;
+      }
+      this.grants.end(by, id);
+      const t = this.grants.tombstones.find((x) => x.by === by && x.id === id)!;
+      const home = t.signer && this.helperKey() ? this.helperKey()! : by;
+      homes.set(home, [...(homes.get(home) ?? []), t]);
+      if (t.signer && this.helperKey()) homes.set(by, [...(homes.get(by) ?? []), t]);
+    }
+    await this.#publishEnds(homes);
+  }
+  /** "Sign out of every site": every maker's newest grant event read first, then every own grant ended, and each
+   *  other home, the helper included, sent a wildcard tombstone for every grant it made before now. */
+  async signOutEverywhere() {
+    try { await this.grants.fetch(); } catch { /* relays out of reach: the wildcards still go */ }
+    const before = this.now + 1, homes = new Map<string, any[]>();
+    for (const g of [...this.nip46.grants.values()]) if (!g.endedAt) await this.nip46.end(g.signer);
+    this.grants.endAll(this.kp.pub, before);
+    for (const d of this.m!.devices) if (d !== this.kp.pub && !this.m!.removed.has(d)) homes.set(d, [this.grants.endAll(d, before)]);
+    const h = this.helperKey(); if (h) homes.set(h, [{ by: h, id: '*', at: this.now, before }]);
+    await this.#publishEnds(homes);
+  }
+  async #publishEnds(homes: Map<string, any[]>) {
+    this.persist();
+    if (this.baseDk) try { await this.grants.publish(); } catch { this.publishGrantsSoon(); }
+    for (const [to, tombstones] of homes) {
+      const w = wrap(this.kp.sk, to, { type: 'grant_ends', tombstones });
+      if (this.bus.alive(to)) await this.bus.send(this.kp, to, { type: 'delta_push', wrap: w }).catch(() => {});
+      for (const s of this.servers()) await this.bus.send(this.kp, s.key, msg('deliver', this.g, this.epochId, 'member', { to, wrap: w })).catch(() => {});
+    }
+    this.persist();
+  }
+  /** Ends delivered to this home: its grants they name end now (a helper's by signer key, or a wildcard). */
+  #takeEnds(from: string, b: any): 'kept' | 'junk' {
+    const m = this.m!;
+    if (!m.devices.has(from) || m.removed.has(from) || !Array.isArray(b?.tombstones)) return 'junk';
+    const ts = b.tombstones.slice(0, 512).filter((t: any) => t && typeof t === 'object');
+    if (this.role === 'helper') { void this.nip46.helperEnds(from, ts); return 'kept'; }
+    const gone = new Set(this.grants.takeEnds(ts));
+    for (const g of this.nip46.grants.values()) if (g.entry && gone.has(g.entry) && !g.endedAt) void this.nip46.end(g.signer);
+    if (gone.size) this.publishGrantsSoon();
+    return 'kept';
+  }
+  /** The account's helper member key, if it has one. */
+  helperKey(): string | null { const m = this.m; if (!m) return null; for (const [k, e] of m.members) if (e.kind === 'helper' && !m.removed.has(k)) return k; return null; }
+
+  // --- helper grants (Helper module §2, §4) ----------------------------------------------------------------------
+  /** "Let *helper* answer for this site": the helper mints the bunker link and is the grant's home; the grant is an
+   *  entry in this device's list, marked `helper`, naming the helper's signer key. */
+  async helperSite(site: string, relays: string[]): Promise<string> {
+    const h = this.helperKey(); if (!h) refuse('no_helper', 'this account has no helper');
+    const a = await this.bus.send(this.kp, h!, { type: 'helper_mint', site, relays });
+    if (a?.type !== 'helper_link' || typeof a.bunker !== 'string' || !/^[0-9a-f]{64}$/.test(a.signer ?? '')) refuse(a?.code ?? 'no_answer', 'the helper did not mint a link');
+    this.grants.make({ site, says: site, door: 'nip46', connection: 'helper', scopes: ['sign-in', 'post'], relays, signer: a.signer, helper: true });
+    this.publishGrantsSoon();
+    return a.bunker;
+  }
+  /** The helper's latest report (§4), and the signer keys its grants that no device's list names were first seen. */
+  helperReport: { at: number; grants: { signer: string; asker: string; site: string; made: number; last_used?: number }[]; logouts: string[] } | null = null;
+  #unnamed = new Map<string, number>();
+  #takeHelperReport(from: string, b: any): 'kept' | 'junk' {
+    if (from !== this.helperKey() || !Array.isArray(b?.grants)) return 'junk';
+    const grants = b.grants.slice(0, 1024).filter((x: any) => x && /^[0-9a-f]{64}$/.test(x.signer ?? '') && typeof x.asker === 'string');
+    this.helperReport = { at: this.now, grants, logouts: Array.isArray(b.logouts) ? b.logouts.filter((x: any) => typeof x === 'string').slice(0, 1024) : [] };
+    // A grant ended here that the helper still reports gets its tombstone again (the helper reads no union): one
+    // this device tombstoned, or its own helper grant no longer in its list.
+    const bySigner = new Map(this.grants.tombstones.filter((t) => t.signer).map((t) => [t.signer!, t]));
+    const again = grants.filter((x: any) => bySigner.has(x.signer) || (x.asker === this.kp.pub && ![...this.grants.own.values()].some((e) => e.signer === x.signer)))
+      .map((x: any) => bySigner.get(x.signer) ?? { by: this.kp.pub, id: '', at: this.now, signer: x.signer });
+    if (again.length) void this.#publishEnds(new Map([[from, again]]));
+    // Your helper answers a site none of your devices set up (§2): after the next report plus two hours.
+    const named = new Set(this.grants.all().filter((e) => e.helper && e.signer).map((e) => e.signer!));
+    for (const x of grants) {
+      if (named.has(x.signer)) { this.#unnamed.delete(x.signer); continue; }
+      const first = this.#unnamed.get(x.signer); if (first === undefined) { this.#unnamed.set(x.signer, this.now); continue; }
+      if (this.now - first >= 7200 && !this.notices.some((n) => n.kind === 'helper_unknown_site')) this.notices.push({ kind: 'helper_unknown_site', member: from });
+    }
+    return 'kept';
+  }
+  /** On the helper: report its grants to every current device, hourly or when they changed (a delivery each). */
+  async helperReportNow(force = false) {
+    if (this.role !== 'helper') return;
+    const body = this.nip46.helperReport();
+    const key = JSON.stringify(body.grants.map((x: any) => [x.signer, x.last_used ?? 0]));
+    if (!force && key === this.#reportKey && this.now - this.#reportAt < 3600) return;
+    this.#reportKey = key; this.#reportAt = this.now;
+    for (const d of this.m!.devices) if (!this.m!.removed.has(d)) {
+      const w = wrap(this.kp.sk, d, { type: 'helper_report', ...body });
+      for (const s of this.servers()) await this.bus.send(this.kp, s.key, msg('deliver', this.g, this.epochId, 'member', { to: d, wrap: w })).catch(() => {});
+    }
+  }
+  #reportKey = ''; #reportAt = 0;
 
   /** Core §6.7.9's quiet Backup line: which servers haven't helped sign this week. */
   signWatch = new SignWatch();
@@ -1078,6 +1202,14 @@ export class DeviceNode implements Node {
         case 'change': this.takeChanges(body.events); return { type: 'ack' };
         case 'delta_push': this.takeDelivery(body.wrap); this.applyAll(); return { type: 'ack' };
         case 'pair_sign': this.#takePairSign(from, body); return { type: 'ack' };
+        case 'helper_mint': {
+          // Helper module §2: on the helper, for a current device; the helper is the grant's home.
+          if (this.role !== 'helper') return { type: 'error', code: 'not_helper' };
+          if (!this.m!.devices.has(from) || this.m!.removed.has(from)) return { type: 'error', code: 'not_device' };
+          if (!Array.isArray(body.relays) || !body.relays.length || body.relays.some((r: any) => typeof r !== 'string' || !/^wss?:\/\/\S+$/.test(r) || r.length > 256)) return { type: 'error', code: 'malformed' };
+          const bunker = this.nip46.mintBunker(body.relays.slice(0, 8), String(body.site ?? '').slice(0, 256), ['sign-in', 'post'], from);
+          return { type: 'helper_link', bunker, signer: new URL(bunker).hostname };
+        }
         case 'kept_done': {
           // Only from a current device, and only once the named change registered a lock (§4.3 step 4).
           if (!this.m!.devices.has(from)) return { type: 'error', code: 'not_device' };

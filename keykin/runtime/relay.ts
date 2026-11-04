@@ -121,6 +121,27 @@ export class RelayNet implements Transport {
       }));
       return { events: [...got.values()], answered, asked: urls.length };
     },
+    publishTo: async (e: any, relays: string[]) => {
+      const out = new Map<string, true | string>();
+      await Promise.allSettled(relays.map(async (u) => {
+        const c = this.conns.get(u) ?? await this.#relayFor(u);
+        if (!c) { out.set(u, 'down'); return; }
+        try { await c.publish(e); out.set(u, true); } catch (x) { out.set(u, String((x as Error)?.message ?? x)); }
+      }));
+      return out;
+    },
+    queryEach: async (f: Filter, relays: string[]) => {
+      const got = new Map<string, any>(), answered: string[] = [];
+      await Promise.allSettled(relays.map(async (u) => {
+        const c = this.conns.get(u) ?? await this.#relayFor(u); if (!c) return;
+        await new Promise<void>((done) => {
+          const t = setTimeout(() => { sub.close(); done(); }, 4000);
+          // An answer is an EOSE, never a CLOSED or a NOTICE (Doors §2).
+          const sub = c.subscribe([f as any], { onevent: (e) => { if (got.size < 5000) got.set(e.id, e); }, oneose: () => { answered.push(u); clearTimeout(t); sub.close(); done(); }, onclose: () => { clearTimeout(t); done(); } });
+        });
+      }));
+      return { events: [...got.values()], answered };
+    },
     watch: (f: Filter, cb: (e: any) => void, relays: string[] = []) => {
       const w = { f, cb, relays, subs: new Map<string, { close(): void }>(), seen: new Set<string>() };
       this.#watches.add(w);

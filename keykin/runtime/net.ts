@@ -23,6 +23,10 @@ export interface Events {
   /** The stored events matching `filter`, from every relay, until each says it sent them all (EOSE); and how many
    *  relays were asked and answered, so a caller can tell a failed fetch from an empty one. */
   query(filter: Filter, relays?: string[]): Promise<{ events: any[]; answered: number; asked: number }>;
+  /** Doors §2's counted relays: publish to exactly these, and say which accepted it (`true`) or why each refused. */
+  publishTo?(e: any, relays: string[]): Promise<Map<string, true | string>>;
+  /** Fetch from exactly these, and say which answered with EOSE. */
+  queryEach?(filter: Filter, relays: string[]): Promise<{ events: any[]; answered: string[] }>;
 }
 /** A Web Push request as a gateway receives it. */
 export interface PushOut { url: string; authorization: string; body: Uint8Array; at: number }

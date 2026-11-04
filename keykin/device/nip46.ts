@@ -40,6 +40,8 @@ export interface Grant {
   relays: string[]; site: string; connectedAt: number | null; endedAt: number | null;
   /** The grant store's entry once a client is bound (Doors §1: its scopes, its sync), and what the link offered. */
   entry?: string; offered?: Scope[];
+  /** On the helper (Helper module §2): the device that asked for this grant, and when it was made. */
+  asker?: string; made?: number; lastUsed?: number;
 }
 
 /** `nostrconnect://<client>?relay=…&secret=…&name=…` (NIP-46). */
@@ -73,10 +75,13 @@ export class Nip46Home {
   }
   #bind(g: Grant, client: string) {
     g.client = client; g.connectedAt = this.d.now;
+    if (this.d.role === 'helper') return;          // the entry is the asking device's (Helper module §2)
     g.entry = this.d.grants.make({ site: client, says: g.site, door: 'nip46', connection: client, relays: g.relays, signer: g.signer, scopes: g.offered ?? ['sign-in', 'post'] }).id;
     this.d.publishGrantsSoon();
   }
   #has(g: Grant, scope: Scope): boolean {
+    // On the helper: a grant is its asking device's entry; it has only sign-in and post, and never widens (§2).
+    if (this.d.role === 'helper') { if (g.asker && (scope === 'sign-in' || scope === 'post')) { g.lastUsed = this.d.now; return true; } return false; }
     const e = g.entry ? this.d.grants.own.get(g.entry) : undefined;
     // An expired grant grants nothing (review 16 M4).
     if (e && e.scopes.includes(scope) && !expired(e, this.d.now, this.d.grants.lastUsed.get(e.id))) { this.d.grants.used(e.id); return true; }
@@ -93,8 +98,8 @@ export class Nip46Home {
   }
   /** A `bunker://` link (Doors §3.3): its secret binds to the first client key that uses it, and
    *  expires after 10 minutes if unused. */
-  mintBunker(relays: string[], site = '', scopes: Scope[] = ['sign-in', 'post']): string {
-    const g = this.#grant(relays, site, { secret: bytesToHex(randomBytes(16)), linkExpires: this.d.now + LINK_S, offered: scopes });
+  mintBunker(relays: string[], site = '', scopes: Scope[] = ['sign-in', 'post'], asker?: string): string {
+    const g = this.#grant(relays, site, { secret: bytesToHex(randomBytes(16)), linkExpires: this.d.now + LINK_S, offered: scopes, ...(asker ? { asker, made: this.d.now } : {}) });
     return `bunker://${g.signer}?${relays.map((r) => `relay=${encodeURIComponent(r)}`).join('&')}&secret=${g.secret}`;
   }
   /** A scanned `nostrconnect://` code: the grant is bound to the code's client, and the `connect` reply
@@ -216,6 +221,23 @@ export class Nip46Home {
             return { error: 'held: approve on your phone' };
           }
         }
+        case 'nip44_encrypt': case 'nip04_encrypt': case 'nip44_decrypt': case 'nip04_decrypt':
+          if (this.d.role === 'helper') return { error: 'unsupported: the helper can\'t encrypt or decrypt' };
+          return await this.#crypto(g, method, params);
+        default: return { error: `unsupported: ${method}` };
+      }
+    } catch (err) {
+      const code = (err as KeykinError).code;
+      if (this.d.role === 'helper' && (code === 'helper_kind' || code === 'needs_approval' || code === 'declined')) return { error: 'declined: ask on your phone' };
+      if (code === 'needs_approval' || code === 'hold_not_passed') return { error: 'held: approve on your phone' };
+      if (code === 'declined') return { error: `declined: ${(err as Error).message.replace(/^declined: /, '') || 'not allowed for this site'}` };
+      if (code === 'unreachable' || code === 'no_server' || code === 'no_answer') return { error: 'try-later: no server answered' };
+      return { error: `declined: ${code ?? 'refused'}` };
+    }
+  }
+  async #crypto(g: Grant, method: string, params: any[]): Promise<{ result?: string; error?: string }> {
+    const ask = (scope: Scope) => ({ error: `permission: ${scope} needs your OK on your phone` });
+    switch (method) {
         case 'nip44_encrypt': case 'nip04_encrypt': {
           // Encrypting to the account's own key is `post`; to anyone else, `dms`.
           const peer = String(params[0]);
@@ -244,13 +266,6 @@ export class Nip46Home {
           return this.#has(g, need) ? { result: plain } : { error: 'permission: needs your OK on your phone' };
         }
         default: return { error: `unsupported: ${method}` };
-      }
-    } catch (err) {
-      const code = (err as KeykinError).code;
-      if (code === 'needs_approval' || code === 'hold_not_passed') return { error: 'held: approve on your phone' };
-      if (code === 'declined') return { error: `declined: ${(err as Error).message.replace(/^declined: /, '') || 'not allowed for this site'}` };
-      if (code === 'unreachable' || code === 'no_server' || code === 'no_answer') return { error: 'try-later: no server answered' };
-      return { error: `declined: ${code ?? 'refused'}` };
     }
   }
 
@@ -361,6 +376,29 @@ export class Nip46Home {
 
   /** Every backup key the account has had: the signpost names come from them. */
   #backupKeys() { const m = this.d.m!; return [...new Set([m.backupKey, ...m.accepted.filter((p) => p.type === 'paper').map((p) => (p.c.change as any).paper.key)].filter(Boolean) as string[])]; }
+
+  // --- on the helper (Helper module §2, §4) ---------------------------------------------------------------------
+  /** Ends delivered to the helper by a current device: a tombstone names a grant by its signer key (that device's
+   *  grants only), a wildcard ends every grant made before its time; each answers `revoked:` for 30 days. */
+  async helperEnds(from: string, ts: any[]) {
+    for (const t of ts) for (const g of [...this.grants.values()]) {
+      if (g.endedAt || !g.asker) continue;
+      const hit = t.id === '*' ? Number.isSafeInteger(t.before) && (g.made ?? 0) < t.before && (t.by === this.d.kp.pub) : typeof t.signer === 'string' && t.signer === g.signer && g.asker === from;
+      if (hit) await this.end(g.signer);
+    }
+    void this.d.helperReportNow(true).catch(() => {});
+  }
+  /** Every grant whose asking device is no longer a member ends. */
+  async helperPrune() {
+    const m = this.d.m; if (!m) return;
+    for (const g of [...this.grants.values()]) if (g.asker && !g.endedAt && (!m.devices.has(g.asker) || m.removed.has(g.asker))) await this.end(g.signer);
+  }
+  /** The helper's report body: its live grants (signer key, asking device, site, made, last use) and its logouts. */
+  helperReport() {
+    const live = [...this.grants.values()].filter((g) => g.asker && !g.endedAt);
+    const logouts = [...this.grants.values()].filter((g) => g.asker && g.endedAt && this.d.now - g.endedAt < 30 * 86400).map((g) => g.signer);
+    return { grants: live.map((g) => ({ signer: g.signer, asker: g.asker!, site: g.site, made: g.made ?? 0, ...(g.lastUsed ? { last_used: g.lastUsed } : {}) })), logouts };
+  }
 
   dump() { return { grants: [...this.grants.values()], watching: this.watching, seen: [...this.#seen], held: [...this.held.values()], asks: [...this.asks].map(([k, v]) => [k, [...v]]) }; }
   load(x: any) {

@@ -10,6 +10,7 @@
 // classified from their plaintext only.
 
 import { Ledger } from './history.ts';
+import { RelayHealth, majority } from './relays.ts';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -28,7 +29,10 @@ export interface GrantEntry {
 }
 export interface Ended { id: string; until: number }
 export interface UnionEnded { by: string; id: string; until: number }
-export interface Tombstone { by: string; id: string; at: number }
+/** An end of another device's grant, for its home. A wildcard (`id: "*"`, with `before`) ends every grant that home
+ *  made before then; only the home applies it, others use it for listing (§1 "Listing and signing out"). A helper
+ *  grant's names its signer key (`signer`), which the helper's own report carries too. */
+export interface Tombstone { by: string; id: string; at: number; before?: number; signer?: string }
 export interface GrantSet { entries: GrantEntry[]; tombstones: Tombstone[]; ended: Ended[]; union: UnionEnded[] }
 
 export const KIND_GRANTS = 30078;
@@ -241,7 +245,14 @@ export function scopeForDecrypt(g: string, peer: string, plaintext?: string, o: 
 export interface GrantHost { g: string; kp: KeyPair; baseDk: string; now: number; currentDevices(): Set<string>;
   dataKey(): { state: string; key: Uint8Array }; keyFor(state: string): Uint8Array | null;
   sign(ev: { kind: number; created_at: number; tags: string[][]; content: string }): Promise<NostrEvent>;
-  publish(e: NostrEvent): Promise<void>; query(): Promise<{ events: NostrEvent[]; answered: number; asked: number }> }
+  publish(e: NostrEvent): Promise<void>; query(): Promise<{ events: NostrEvent[]; answered: number; asked: number }>;
+  /** The account's recorded relays (the epoch record's and the current seat holders'), and the per-relay publish and
+   *  fetch the counted majorities need (Doors §2); without them a device falls back to `publish` and `query`. */
+  recorded?(): string[];
+  publishTo?(e: NostrEvent, relays: string[]): Promise<Map<string, true | string>>;
+  queryEach?(relays: string[]): Promise<{ events: NostrEvent[]; answered: string[] }>;
+  /** Schedule a retry (tests run them at once). */
+  later?(f: () => void, ms: number): void }
 
 export class GrantStore {
   own = new Map<string, GrantEntry>();               // id → this device's entries
@@ -276,7 +287,27 @@ export class GrantStore {
       const e = this.own.get(id); this.own.delete(id);
       if (!this.ended.some((x) => x.id === id)) this.ended.push({ id, until: until(e) });
       this.union.set(`${by}:${id}`, { by, id, until: until(e) });
-    } else if (!this.tombstones.some((t) => t.by === by && t.id === id)) this.tombstones.push({ by, id, at: this.h.now });
+    } else if (!this.tombstones.some((t) => t.by === by && t.id === id)) {
+      const e = this.others.get(by)?.set.entries.find((x) => x.id === id);
+      this.tombstones.push({ by, id, at: this.h.now, ...(e?.helper && e.signer ? { signer: e.signer } : {}) });
+    }
+  }
+  /** "Sign out of every site" for one home: here, every own grant made before `before`; for another device, a
+   *  wildcard tombstone it applies (any of its grants not yet published included). */
+  endAll(home: string, before: number): Tombstone | null {
+    if (home === this.h.kp.pub) { for (const [id, e] of [...this.own]) if (e.made < before) this.end(home, id); return null; }
+    const t: Tombstone = { by: home, id: '*', at: this.h.now, before };
+    this.tombstones = this.tombstones.filter((x) => !(x.by === home && x.id === '*')); this.tombstones.push(t);
+    return t;
+  }
+  /** Ends sent to this device as a delivery (or found in another device's event): its own grants they name end now. */
+  takeEnds(ts: Tombstone[]): string[] {
+    const me = this.h.kp.pub, gone: string[] = [];
+    for (const t of ts) if (t?.by === me) {
+      if (t.id === '*' && Number.isSafeInteger(t.before)) { for (const [id, e] of [...this.own]) if (e.made < t.before!) { this.end(me, id); gone.push(id); } }
+      else if (typeof t.id === 'string' && this.own.has(t.id)) { this.end(me, t.id); gone.push(t.id); }
+    }
+    return gone;
   }
   /** Every live grant on the account, for listing: own and others', newest per (by, id), never one ended, never
    *  one whose maker isn't a current device. */
@@ -285,13 +316,18 @@ export class GrantStore {
     const consider = (e: GrantEntry, maker: string) => {
       if (e.by !== maker || !cur.has(e.by) || !entryOk(this.h.g, e)) return;
       const k = `${e.by}:${e.id}`;
-      if (this.union.has(k) || this.tombstones.some((t) => t.by === e.by && t.id === e.id)) return;
+      if (this.union.has(k) || this.#ends(e)) return;
       const prev = out.get(k);
       if (!prev || e.v > prev.v || (e.v === prev.v && narrower(e.scopes, prev.scopes))) out.set(k, e);
     };
     for (const e of this.own.values()) consider(e, this.h.kp.pub);
     for (const [m, { set }] of this.others) if (m !== this.h.kp.pub) for (const e of set.entries) consider(e, m);
     return [...out.values()].filter((e) => !expired(e, this.h.now, this.lastUsed.get(e.id)));
+  }
+  /** Whether a tombstone, or a wildcard (here or in any device's event), ends this entry. */
+  #ends(e: GrantEntry) {
+    const hit = (t: Tombstone) => t.by === e.by && (t.id === e.id || (t.id === '*' && typeof t.before === 'number' && e.made < t.before));
+    return this.tombstones.some(hit) || [...this.others.values()].some((o) => o.set.tombstones.some(hit));
   }
   /** An own grant for this site on this connection (a grant applies only there). */
   forSite(site: string, door: GrantEntry['door'], connection?: string): GrantEntry | null {
@@ -337,17 +373,70 @@ export class GrantStore {
     const evs = grantEvents(this.h.g, this.h.kp, this.h.baseDk, this.h.dataKey(), this.set(), at);
     const signed: NostrEvent[] = [];
     for (const e of evs) signed.push(await this.h.sign(e));
-    this.lastPublish = at;
-    for (const e of signed) await this.h.publish(e);
+    // Recorded before any part is sent, so a publish cut short never leaves it stuck (§2).
+    this.lastPublish = at; this.lastSent = signed; this.counted = false;
     this.dirty = false;
+    await this.#send(signed);
     return signed;
+  }
+  /** Relay health, the last event sent, the relays that took every part of it, and whether that counted. */
+  relays = new RelayHealth();
+  lastSent: NostrEvent[] = [];
+  lastSet: string[] = [];
+  lastSentAt = 0;
+  counted = false;
+  #countedKey = '';
+  #tries = 0;
+  /** Send every part to the counted relays (and the transport's own, which don't count); it counts once more than
+   *  half of the writable counted relays accept every part, and is retried with back-off until then. */
+  async #send(parts: NostrEvent[]) {
+    const recorded = this.h.recorded?.() ?? [];
+    for (const e of parts) await this.h.publish(e).catch(() => {});
+    if (!this.h.publishTo || !recorded.length) { this.counted = true; this.lastSentAt = this.h.now; return; }
+    const write = this.relays.writable(recorded);
+    let took: Set<string> | null = null as Set<string> | null;
+    for (const e of parts) {
+      const r = await this.h.publishTo(e, write);
+      this.relays.published(r, this.h.now);
+      const ok = new Set([...r].filter(([, x]) => x === true).map(([u]) => u));
+      const prev: Set<string> | null = took;
+      took = prev ? new Set([...prev].filter((u: string) => ok.has(u))) : ok;
+    }
+    this.lastSet = [...(took ?? [])]; this.lastSentAt = this.h.now; this.#countedKey = this.relays.counted(recorded).sort().join(' ');
+    if (majority(this.lastSet, write)) { this.counted = true; this.#tries = 0; return; }
+    // Back-off: 10 s, doubling, at most 10 minutes; a newer publish supersedes it.
+    const delay = Math.min(600_000, 10_000 * 2 ** this.#tries++);
+    (this.h.later ?? ((f, ms) => { const t = setTimeout(f, ms); (t as any).unref?.(); }))(() => { if (this.lastSent === parts && !this.counted) void this.#send(parts).catch(() => {}); }, delay);
+  }
+  /** At each catch-up: re-send the last event weekly (an OK is no promise to keep it), and to a majority of the new
+   *  set when the counted relays change. A re-send needs no fetch. */
+  async upkeep() {
+    if (!this.lastSent.length) return;
+    const recorded = this.h.recorded?.() ?? [];
+    const key = this.relays.counted(recorded).sort().join(' ');
+    if (this.h.now - this.lastSentAt >= 7 * 86400 || (this.#countedKey && key !== this.#countedKey)) { this.counted = false; await this.#send(this.lastSent); }
   }
   /** Read every current device's newest grant event: others' sets for listing, their ended ids into the union,
    *  their tombstones for this device's own grants applied; and this device's own newest, if newer than its
    *  last publish (a restored copy), taken over: ended ids and tombstones always, entries made before it. */
   async fetch() {
-    const { events: evs, answered, asked } = await this.h.query();
-    if (asked > 0 && answered * 2 > asked) this.goodFetchAt = this.h.now;
+    let evs: NostrEvent[];
+    const recorded = this.h.recorded?.() ?? [];
+    if (this.h.queryEach && recorded.length) {
+      // §2: good once more than half of the counted relays answer, and more than half of the part of the last
+      // publish's set still counted (when three or more of it remain); with fewer than three counted, once every
+      // reachable one was asked and one answered.
+      const ask = this.relays.toFetch(recorded, this.h.now);
+      const r = await this.h.queryEach(ask);
+      this.relays.fetched(ask, r.answered, recorded, this.h.now);
+      const counted = this.relays.counted(recorded), still = this.lastSet.filter((u) => counted.includes(u));
+      const good = counted.length < 3 ? r.answered.length > 0 : majority(r.answered, counted) && (still.length < 3 || majority(r.answered, still));
+      if (good) this.goodFetchAt = this.h.now;
+      evs = r.events;
+    } else {
+      const r = await this.h.query(); evs = r.events;
+      if (r.asked > 0 && r.answered * 2 > r.asked) this.goodFetchAt = this.h.now;
+    }
     for (const m of this.h.currentDevices()) {
       const got = readMaker(this.h.g, m, this.h.baseDk, (s) => this.h.keyFor(s), evs);
       if (!got) continue;
@@ -356,7 +445,7 @@ export class GrantStore {
       if (!prev || got.at > prev.at) this.others.set(m, got);
       for (const x of got.set.ended) this.#unite({ by: m, id: x.id, until: x.until });
       for (const u of got.set.union) if (this.h.currentDevices().has(u.by)) this.#unite(u);
-      for (const t of got.set.tombstones) if (t.by === this.h.kp.pub && this.own.has(t.id)) this.end(t.by, t.id);
+      this.takeEnds(got.set.tombstones);
     }
     for (const u of this.union.values()) if (u.by === this.h.kp.pub && this.own.has(u.id)) this.end(u.by, u.id);
   }
@@ -372,13 +461,15 @@ export class GrantStore {
     this.lastPublish = got.at;
   }
 
-  dump() { return { own: [...this.own.values()], tombstones: this.tombstones, ended: this.ended, union: [...this.union.values()], others: [...this.others], lastUsed: [...this.lastUsed], lastPublish: this.lastPublish }; }
+  dump() { return { own: [...this.own.values()], tombstones: this.tombstones, ended: this.ended, union: [...this.union.values()], others: [...this.others], lastUsed: [...this.lastUsed], lastPublish: this.lastPublish,
+    relays: this.relays.dump(), lastSent: this.lastSent, lastSet: this.lastSet, lastSentAt: this.lastSentAt, counted: this.counted }; }
   load(x: any) {
     if (!x) return;
     this.own = new Map((x.own ?? []).map((e: GrantEntry) => [e.id, e])); this.tombstones = x.tombstones ?? []; this.ended = x.ended ?? [];
     this.union = new Map((x.union ?? []).map((u: UnionEnded) => [`${u.by}:${u.id}`, u])); this.others = new Map(x.others ?? []);
     this.lastUsed = new Map(x.lastUsed ?? []); this.lastPublish = x.lastPublish ?? 0;
+    this.relays.load(x.relays); this.lastSent = x.lastSent ?? []; this.lastSet = x.lastSet ?? []; this.lastSentAt = x.lastSentAt ?? 0; this.counted = x.counted ?? false;
   }
-  clear() { this.own.clear(); this.tombstones = []; this.ended = []; this.union.clear(); this.others.clear(); this.lastUsed.clear(); }
+  clear() { this.own.clear(); this.tombstones = []; this.ended = []; this.union.clear(); this.others.clear(); this.lastUsed.clear(); this.relays.clear(); this.lastSent = []; this.lastSet = []; }
 }
 const narrower = (a: Scope[], b: Scope[]) => a.length < b.length && a.every((s) => b.includes(s));

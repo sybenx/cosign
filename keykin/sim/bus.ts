@@ -25,7 +25,21 @@ export class Bus implements Transport {
     publishEvent: async (e: any) => { this.published.push(e); for (const w of [...this.#watches]) if (matches(w.f, e)) w.cb(e); },
     watch: (f: Filter, cb: (e: any) => void) => { const w = { f, cb }; this.#watches.add(w); return { close: () => void this.#watches.delete(w) }; },
     query: async (f: Filter) => ({ events: this.published.filter((e) => matches(f, e)), answered: 1, asked: 1 }),
+    // One shared store stands for every relay; `relayFaults` makes a named relay fail (down, refusing, or not
+    // serving reads), so tests can count majorities.
+    publishTo: async (e: any, relays: string[]) => {
+      const out = new Map<string, true | string>();
+      for (const r of relays) { const f = this.relayFaults.get(r); out.set(r, f === 'down' ? 'down' : f === 'blocked' ? 'blocked: no' : f === 'nowrite' ? 'restricted: read only' : true); }
+      if ([...out.values()].some((x) => x === true) && !this.published.some((x) => x.id === e.id)) await this.events.publishEvent(e);
+      return out;
+    },
+    queryEach: async (f: Filter, relays: string[]) => {
+      const answered = relays.filter((r) => !['down', 'noread', 'blocked'].includes(this.relayFaults.get(r) ?? ''));
+      return { events: answered.length ? this.published.filter((e) => matches(f, e)) : [], answered };
+    },
   };
+  /** Faults of named relays, for publishTo and queryEach. */
+  relayFaults = new Map<string, 'down' | 'blocked' | 'nowrite' | 'noread'>();
   constructor(now = 1_800_000_000) { this.now = now; }
   add(n: Node) { this.nodes.set(n.kp.pub, n); return n; }
   kill(pub: string) { this.dead.add(pub); }
