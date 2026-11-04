@@ -20,6 +20,8 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     sourceSets["main"].kotlin.srcDir("../../kotlin/src/main/kotlin")
+    // The TS-made vectors, for the on-device tests (Android's own org.json, libsecp256k1, the APK's FROST).
+    sourceSets["androidTest"].assets.srcDir("../../vectors")
     testOptions { unitTests.isReturnDefaultValues = true }
 }
 // The headless test device and the JDK relay socket are desktop-only.
@@ -37,3 +39,15 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
+
+// The FROST library for Android, built from ../../frost (the same crate the JVM and wasm builds use):
+// `cargo ndk` for both ABIs into jniLibs, before every build that packages native libraries.
+val frostAndroid by tasks.registering(Exec::class) {
+    workingDir = file("../../frost")
+    val ndk = File(project.findProperty("ndk.dir") as String? ?: "${android.sdkDirectory}/ndk").let { d -> if (d.resolve("source.properties").exists()) d else d.listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name } ?: d }
+    environment("ANDROID_NDK_HOME", ndk.absolutePath)
+    commandLine("cargo", "ndk", "-t", "arm64-v8a", "-t", "x86_64", "-P", "30", "-o", file("src/main/jniLibs").absolutePath, "build", "--release", "--features", "jni")
+    inputs.dir("../../frost/src"); inputs.file("../../frost/Cargo.toml")
+    outputs.dir("src/main/jniLibs")
+}
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach { dependsOn(frostAndroid) }

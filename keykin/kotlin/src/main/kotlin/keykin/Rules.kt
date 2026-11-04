@@ -59,7 +59,7 @@ object Jcs {
             is Int, is Long -> Json.num(v)
             is String -> Json.str(v)
             is JSONArray -> (0 until v.length()).joinToString(",", "[", "]") { of(v.get(it), depth + 1) }
-            is JSONObject -> v.keySet().sorted().joinToString(",", "{", "}") { Json.str(it) + ":" + of(v.get(it), depth + 1) }
+            is JSONObject -> v.keyList().sorted().joinToString(",", "{", "}") { Json.str(it) + ":" + of(v.get(it), depth + 1) }
             else -> refuse("malformed", "JCS: ${v::class.simpleName}")
         }
     }

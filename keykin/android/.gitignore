@@ -3,3 +3,4 @@ build/
 */build/
 .kotlin/
 local.properties
+keykin/src/main/jniLibs/

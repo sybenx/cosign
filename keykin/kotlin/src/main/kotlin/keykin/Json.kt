@@ -121,3 +121,7 @@ object Json {
     fun long(v: Any?): Long = intOrNull(v) ?: refuse("malformed", "not an integer")
     private fun intOrNull(v: Any?): Long? = when (v) { is Int -> v.toLong(); is Long -> v.takeIf { Math.abs(it) <= SAFE }; else -> null }
 }
+
+/** A JSON object's keys: `keys()` is the one form both the desktop org.json and Android's have (Android has
+ *  no `keySet()` or `toMap()`). */
+fun JSONObject.keyList(): List<String> = keys().asSequence().toList()

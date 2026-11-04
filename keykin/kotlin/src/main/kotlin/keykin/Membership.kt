@@ -88,14 +88,14 @@ class Authority(val g: String, val epochId: String, val devices: Set<String>, va
 object Approvals {
     private val KNOWN = setOf("add", "remove", "lock", "seat", "paper", "redeal")
     /** The change's one type key; anything else (two keys, or an unknown one) is "unknown". */
-    fun type(c: JSONObject): String { val ks = c.keySet().filter { it != "to" }; return if (ks.size == 1 && ks[0] in KNOWN && (!c.has("to") || ks[0] == "remove")) ks[0] else "unknown" }
+    fun type(c: JSONObject): String { val ks = c.keyList().filter { it != "to" }; return if (ks.size == 1 && ks[0] in KNOWN && (!c.has("to") || ks[0] == "remove")) ks[0] else "unknown" }
     fun placeholder(list: JSONArray): JSONArray = JSONArray((0 until list.length()).map { k ->
         val c = list.getJSONObject(k)
         when {
             c.has("redeal") -> JSONObject().put("redeal", JSONObject().put("dealer", c.getJSONObject("redeal").getString("dealer")))
             // A paper is approved without `inner` and `state`; every other field stays (§6.7.2).
             c.opt("paper") is JSONObject -> { val p = c.getJSONObject("paper"); val o = JSONObject()
-                for (k in p.keySet()) if (k != "inner" && k != "state") o.put(k, p.get(k)); JSONObject().put("paper", o) }
+                for (k in p.keyList()) if (k != "inner" && k != "state") o.put(k, p.get(k)); JSONObject().put("paper", o) }
             else -> c
         }
     })
@@ -228,7 +228,7 @@ object Membership {
             "redeal" -> { val r = ch.getJSONObject("redeal"); h16(r.opt("id")); for (f in listOf("dealer", "paper_to", "paper_item", "dk", "rs")) k32(r.opt(f))
                 val D = r.optJSONArray("D"); need(D != null && D.length() == 3, "bad_change", "D is [D1, D2, D3]"); (0 until 3).forEach { point(D!!.getString(it)) }
                 for (f in listOf("base", "abandons")) { val a = r.optJSONArray(f) ?: refuse("malformed"); (0 until a.length()).forEach { h16(a.opt(it)) } }
-                val body = JSONObject(r.toMap().filterKeys { it != "sig" })
+                val body = JSONObject().also { b -> for (k in r.keyList()) if (k != "sig") b.put(k, r.get(k)) }
                 need(schnorrVerify(r.optString("sig"), Approvals.detached("redeal", rec.getString("g"), Json.obj(Jcs.of(body))), r.getString("dealer")), "bad_signature", "dealer") }
         }
         return Parsed(ev, c, ch, type, Approvals.hash(list), list)

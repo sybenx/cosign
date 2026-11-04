@@ -40,7 +40,7 @@ data class Event(val id: String, val pubkey: String, val createdAt: Long, val ki
         /** §9.5's event shape: exactly the NIP-01 fields (`rumor` and `cosign`: without `sig`), typed, hex lowercase. */
         fun shape(o: JSONObject, form: String): Event {
             val want = FIELDS[if (form == "signed") "signed" else "rumor"]!!
-            for (k in o.keySet()) if (k !in want) refuse("malformed", "the event has a field \"$k\"")
+            for (k in o.keyList()) if (k !in want) refuse("malformed", "the event has a field \"$k\"")
             for (k in want) if (!o.has(k)) refuse("malformed", "the event has no \"$k\"")
             val id = o.get("id") as? String ?: ""; val pk = o.get("pubkey") as? String ?: ""
             if (!HEX64.matches(id)) refuse("malformed", "id: 64 lowercase hex")

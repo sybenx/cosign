@@ -32,7 +32,7 @@ class OneCall(private val ctx: RoundContext, private val shares: Map<Long, BigIn
         mine = shares.keys.sorted().map { i -> Frost.commit(ctx.C, i, shares[i]!!, Frost.hedge(shares[i]!!, context)) }
         request = JSONObject().put("v", 1).put("type", "sign").put("g", ctx.g).put("epoch", ctx.epochId).put("id", id).put("cls", cls).put("state", ctx.state)
             .put("event", event.wire()).put("signers", JSONArray(signers)).put("commitments", JSONArray(mine!!.map { JSONObject().put("i", it.i).put("D", it.d).put("E", it.e) }))
-        for (k in extra.keySet()) request.put(k, extra.get(k))
+        for (k in extra.keyList()) request.put(k, extra.get(k))
     }
     /** Finish with the co-signer's `partial`: the signed event as JSON, or a refusal naming the member. */
     fun finish(partial: JSONObject): JSONObject {

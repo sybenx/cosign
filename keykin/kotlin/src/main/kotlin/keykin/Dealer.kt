@@ -145,7 +145,7 @@ class ListCall(private val ctx: RoundContext, private val shares: Map<Long, BigI
         request = JSONObject().put("v", 1).put("type", "sign").put("g", ctx.g).put("epoch", ctx.epochId).put("id", id).put("cls", "ask").put("state", ctx.state)
             .put("signers", JSONArray(signers))
             .put("list_events", JSONArray(events.mapIndexed { e, ev -> JSONObject().put("event", ev.wire()).put("commitments", JSONArray(mine!![e].map { JSONObject().put("i", it.i).put("D", it.d).put("E", it.e) })) }))
-        for (k in extra.keySet()) request.put(k, extra.get(k))
+        for (k in extra.keyList()) request.put(k, extra.get(k))
     }
     fun finish(partial: JSONObject): List<JSONObject> {
         val nonces = mine ?: refuse("used", "this round's nonces are spent")
