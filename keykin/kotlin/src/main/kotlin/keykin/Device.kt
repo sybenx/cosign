@@ -148,7 +148,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     /** The account's grants (Doors §1–§2): this device's, signed by it, and every device's, for listing. */
     val grants = GrantStore(this)
     /** Doors §1's evidence for decrypts to the account itself, and the ids of the account's grant events. */
-    val evidence = Evidence()
+    /** Device policy §1's metadata, synced: this device's records and every other current device's. */
+    val meta = MetaStore(this)
+    /** Doors §1's evidence for a decrypt to the account itself: every current device's records. */
+    val evidence: Evidence get() = meta.evidence()
     val protectedIds: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet())
     /** When this device last caught up with the servers (Doors §2: no site is answered on older news). */
     @Volatile var lastFetchAt = 0L
@@ -241,7 +244,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         wiped = true; state = ShareState(emptySet(), state.C, emptyMap())
         baseDk = ""; dkSeeds.clear(); releaseSeeds.clear(); pending.clear(); kept.clear(); paperVerified.clear(); dkHistory.clear()
         notices.clear(); onSiteRequest = null; carried = JSONObject(); pushKeys.clear(); inviter = null
-        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear(); grants.clear(); evidence.clear(); synchronized(xCache) { xCache.clear() }
+        reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear(); grants.clear(); meta.clear(); synchronized(xCache) { xCache.clear() }
         for (cb in gone) try { cb() } catch (_: Exception) {}
         save()
     }
@@ -344,7 +347,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         x.optJSONArray("forceReissue")?.let { a -> for (k in 0 until a.length()) forceReissue += a.getString(k) }
         members.load(x.optJSONObject("members"))
         grants.load(x.optJSONObject("grants"))
-        evidence.load(x.optJSONObject("evidence"))
+        meta.load(x.optJSONObject("meta"))
         x.optJSONArray("protectedIds")?.let { a -> for (k in 0 until a.length()) protectedIds += a.getString(k) }
         afterState()
     }
@@ -369,7 +372,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("pushKeys", ja(pushKeys.map { (u, k) -> ja(listOf(u, k)) }))
             .put("reissued", ja(reissued.map { (k, h) -> ja(listOf(k, h)) })).put("reissueEphs", ja(reissueEphs.map { (k, e) -> ja(listOf(k, e)) }))
             .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted())).put("grants", grants.dump())
-            .put("evidence", evidence.dump()).put("protectedIds", ja(synchronized(protectedIds) { protectedIds.toList() }))
+            .put("meta", meta.dump()).put("protectedIds", ja(synchronized(protectedIds) { protectedIds.toList() }))
         if (!x.has("name")) x.put("name", "kotlin")
         return x.toString()
     }
@@ -409,7 +412,11 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
         if (baseDk.isNotEmpty()) try {
             val (evs, answered, asked) = net.queryCounted(JSONObject().put("kinds", JSONArray(listOf(Grants.KIND))).put("authors", JSONArray(listOf(g))))
-            grants.take(evs, answered, asked); for (e in evs) protectedIds += e.id; save()
+            grants.take(evs, answered, asked); for (e in evs) protectedIds += e.id
+            // Device policy §1: every device's records, from the same fetch; this device's own at most every 10 minutes.
+            meta.take(evs)
+            if (meta.dirty.isNotEmpty() && net.now - meta.lastAt >= 600) try { meta.publish(net) } catch (_: Exception) {}
+            save()
         } catch (_: Exception) {}
         lastFetchAt = net.now
         for (e in nipQueue) try { onSiteRequest?.invoke(e) } catch (_: Exception) {}
@@ -785,7 +792,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     fun nip44(peer: String, text: String, encrypt: Boolean, owner: String? = null): String {
         val ck = hmac(utf8("nip44-v2"), ecdhX(peer))
         if (!encrypt) return Nip44.decrypt(text, ck)
-        return Nip44.encrypt(text, ck).also { if (peer.lowercase() == g) evidence.encrypted(it, owner ?: "member") }
+        return Nip44.encrypt(text, ck).also { if (peer.lowercase() == g) meta.encrypted(it, owner ?: "member") }
     }
     /** NIP-04 as the account, with `peer`: AES-256-CBC under the shared x. */
     fun nip04(peer: String, text: String, encrypt: Boolean): String {
@@ -811,7 +818,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val a = net.send(sk, s.key, r.request)
             if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; continue }
             // A faulty or hostile server's bad partial counts as silence: try the next one (review 12 L1).
-            try { return r.finish(a).also { ev -> evidence.event(kind, content); if (kind == Grants.KIND) protectedIds += ev.getString("id") } } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
+            try { return r.finish(a).also { ev -> meta.event(kind, content); if (kind == Grants.KIND) protectedIds += ev.getString("id") } } catch (e: KeykinException) { last = e.code } catch (e: Exception) { last = "bad_partial" }
         }
         refuse(last)
     }
