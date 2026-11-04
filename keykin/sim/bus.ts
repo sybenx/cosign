@@ -6,7 +6,7 @@ import { bytesToHex, randomBytes } from '../src/bytes.ts';
 import type { KeyPair, NostrEvent } from '../src/event.ts';
 
 export { TRANSPORT_FAILED, unreachable, type Node, type Transport, type PushOut } from '../runtime/net.ts';
-import { unreachable, type Node, type Transport, type PushOut } from '../runtime/net.ts';
+import { unreachable, matches, type Node, type Transport, type PushOut, type Filter, type Events } from '../runtime/net.ts';
 
 export class Bus implements Transport {
   now: number;
@@ -19,6 +19,12 @@ export class Bus implements Transport {
   published: NostrEvent[] = [];
   /** Web Push requests servers sent (core §8.2), as a gateway receives them. */
   pushes: PushOut[] = [];
+  /** An in-memory relay for raw events (Doors §3.3): every published event reaches every matching watch. */
+  #watches = new Set<{ f: Filter; cb: (e: any) => void }>();
+  events: Events = {
+    publishEvent: async (e: any) => { this.published.push(e); for (const w of [...this.#watches]) if (matches(w.f, e)) w.cb(e); },
+    watch: (f: Filter, cb: (e: any) => void) => { const w = { f, cb }; this.#watches.add(w); return { close: () => void this.#watches.delete(w) }; },
+  };
   constructor(now = 1_800_000_000) { this.now = now; }
   add(n: Node) { this.nodes.set(n.kp.pub, n); return n; }
   kill(pub: string) { this.dead.add(pub); }

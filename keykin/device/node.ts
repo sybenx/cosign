@@ -4,13 +4,19 @@
 // transport run the same code; its state goes to a `Store` (snapshot/restore). The paper holder's
 // recovery role and a recovery contact's are here too.
 
-import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes, b64u, strictJson } from '../src/bytes.ts';
+import { bytesToHex, randomBytes, hexToBytes, sha, shaHex, jcsBytes, refuse, KeykinError, utf8ToBytes, b64u, strictJson, utf8Strict } from '../src/bytes.ts';
 import { stateHash, pickSalt, detachedDigest, recoveryWaitId, seatedDigest, signpostD, signpostH, what } from '../src/codes.ts';
 import * as nip44 from 'nostr-tools/nip44';
 import { checkEpochRecord, checkOwnShares } from '../src/record.ts';
 import { computeMembership, takenIndices, signpostCount, signpostServers, adopt, type Membership } from '../src/membership.ts';
 import { CoSigner } from '../src/cosigner.ts';
-import { OneCall, TwoCall, ListCall } from '../src/coordinator.ts';
+import { OneCall, TwoCall, ListCall, ecdhRequest, ecdhFinish } from '../src/coordinator.ts';
+import { nip44Open } from '../src/nip44.ts';
+import { Nip46Home } from './nip46.ts';
+import { extract } from '@noble/hashes/hkdf.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { cbc } from '@noble/ciphers/aes.js';
+import { base64 } from '@scure/base';
 import { enrollReply } from '../src/serverprofile.ts';
 import { makeHeir, pieceAckDigest } from '../src/backup.ts';
 import { backupPieces } from '../src/slip39.ts';
@@ -105,6 +111,7 @@ export class DeviceNode implements Node {
     this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = [];
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
+    this.nip46?.sleep(); this.nip46 = new Nip46Home(this);   // signer keys go with everything else (core §7.3)
   }
   /** Account admin §3: after a delete, only the request, the first `deleted` and the servers' endpoints,
    *  kept so the device can go on sending until each server answers. */
@@ -423,7 +430,7 @@ export class DeviceNode implements Node {
       kept: [...this.kept].map(([k, x]) => [k, { ...x, d: x.d.map(scalarHex) }]), paperVerified: [...this.paperVerified],
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump() });
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump() });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
    *  by §3.4, every share against the commitments, and the member key a current device holding exactly
@@ -443,6 +450,7 @@ export class DeviceNode implements Node {
     d.paperVerified = new Map(x.paperVerified); d.pendingDeltas = new Map(x.pendingDeltas); d.notices = x.notices;
     d.pushKeys = new Map(x.pushKeys.map(([u, k]: [string, any]) => [u, { ...k, sk: hexToBytes(k.sk), auth: hexToBytes(k.auth) }]));
     d.signWatch.load(x.signWatch);
+    d.nip46.load(x.nip46);
     if (x.recEv && x.state) {
       const rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey });
       const m = computeMembership(rec, x.changes);
@@ -461,6 +469,37 @@ export class DeviceNode implements Node {
     }
     return d;
   }
+
+  // --- the account's own encryption (core §5.5): ECDH with a co-signer, never the whole key ---------
+  /** The x coordinate of `x·P` for a peer's x-only key `peer`, from one server's checked answer. */
+  async ecdhX(peer: string): Promise<Uint8Array> {
+    const Q = '02' + peer;
+    let last = 'no_server';
+    for (const s of this.servers()) {
+      if (!this.bus.alive(s.key)) continue;
+      const req = ecdhRequest(this.ctx(), [...this.state!.shares.keys()], { key: s.key, indices: s.shares }, [Q]);
+      const a = await this.bus.send(this.kp, s.key, req);
+      try { return hexToBytes(ecdhFinish(this.ctx(), req, this.me(), { key: s.key, indices: s.shares }, a)[0].slice(2)); }
+      catch (e) { last = (e as KeykinError).code ?? 'ecdh'; }
+    }
+    throw new KeykinError(last);
+  }
+  /** NIP-44 v2 as the account, with `peer`. */
+  async nip44(peer: string, text: string, encrypt: boolean): Promise<string> {
+    const ck = extract(sha256, await this.ecdhX(peer), utf8ToBytes('nip44-v2'));
+    return encrypt ? nip44.v2.encrypt(text, ck) : nip44Open(text, ck);
+  }
+  /** NIP-04 as the account, with `peer` (AES-256-CBC under the shared x). */
+  async nip04(peer: string, text: string, encrypt: boolean): Promise<string> {
+    const key = await this.ecdhX(peer);
+    if (encrypt) { const iv = randomBytes(16); return `${base64.encode(cbc(key, iv).encrypt(utf8ToBytes(text)))}?iv=${base64.encode(iv)}`; }
+    const [ct, iv] = text.split('?iv=');
+    if (!ct || !iv) refuse('malformed', 'nip04 payload');
+    return utf8Strict(cbc(key, base64.decode(iv)).decrypt(base64.decode(ct)));
+  }
+
+  /** NIP-46 sites this device is home to (Doors §3.3). */
+  nip46 = new Nip46Home(this);
 
   /** Core §6.7.9's quiet Backup line: which servers haven't helped sign this week. */
   signWatch = new SignWatch();

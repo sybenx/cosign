@@ -7,7 +7,7 @@ import { Relay } from 'nostr-tools/relay';
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
 import { wrap, unwrap, split, Reassembler, powBits, KIND_WRAP_LIVE } from '../src/transport.ts';
 import type { KeyPair, NostrEvent } from '../src/event.ts';
-import { unreachable, type Node, type Transport } from './net.ts';
+import { unreachable, type Node, type Transport, type Filter, type Events } from './net.ts';
 
 export interface RelayNetOpts { relays: string[]; timeoutMs?: number; resendMs?: number; log?: (s: string) => void }
 
@@ -44,6 +44,7 @@ export class RelayNet implements Transport {
       this.conns.set(url, r);
       this.#subs.set(url, []);
       this.#chunks.forEach((_, k) => this.#subscribe(url, k));
+      for (const w of this.#watches) this.#watchOn(url, w);
     } catch {
       this.conns.set(url, null);
       const wait = Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5));
@@ -64,6 +65,23 @@ export class RelayNet implements Transport {
     }) : null;
   }
   #resubscribe(k: number) { for (const url of this.conns.keys()) this.#subscribe(url, k); }
+
+  // --- raw events (Doors §3.3: NIP-46 requests and replies, watching) ---------------------------
+  #watches = new Set<{ f: Filter; cb: (e: any) => void; subs: Map<string, { close(): void }> }>();
+  #watchOn(url: string, w: { f: Filter; cb: (e: any) => void; subs: Map<string, { close(): void }> }) {
+    const c = this.conns.get(url); if (!c) return;
+    w.subs.get(url)?.close();
+    w.subs.set(url, c.subscribe([{ ...w.f, ...(w.f.since === undefined ? { since: this.now - 5 } : {}) } as any], { onevent: (e) => { if (!this.seen.has(`ev:${e.id}`)) { this.seen.add(`ev:${e.id}`); w.cb(e); } } }));
+  }
+  events: Events = {
+    publishEvent: async (e: any) => { await Promise.allSettled([...this.conns.values()].filter(Boolean).map((c) => c!.publish(e))); },
+    watch: (f: Filter, cb: (e: any) => void) => {
+      const w = { f, cb, subs: new Map<string, { close(): void }>() };
+      this.#watches.add(w);
+      for (const url of this.conns.keys()) this.#watchOn(url, w);
+      return { close: () => { this.#watches.delete(w); for (const s of w.subs.values()) s.close(); } };
+    },
+  };
 
   /** Host a node: its key joins a subscription on every relay. */
   add<N extends Node>(node: N): N {

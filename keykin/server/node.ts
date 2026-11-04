@@ -26,7 +26,7 @@ import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeh
 import { deletedDigest, verifyDeleted } from '../src/requests.ts';
 import { F1Watch, SignWatch, signNotice, signAnswer } from '../src/f1.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
-import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
+import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, verifyEvent, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
 import { softLock, type SoftLock } from '../src/lock.ts';
 import { TRANSPORT_FAILED, type Transport, type Node } from '../runtime/net.ts';
@@ -120,7 +120,7 @@ export class ServerNode implements Node {
       co: co && { changes: co.changes, ids: [...co.state.ids], shares: [...co.state.shares].map(([i, s]) => [i, scalarHex(s)]), co: co.snapshot() },
       seeds: [...this.seeds], items: this.items, base: this.base, uploads: [...this.uploads].map(([k, u]) => [k, { ...u, held: [...u.held] }]),
       answeredRepair: [...this.answeredRepair], quiet: [...this.quiet], forwarding: this.forwarding && { events: this.forwarding.events, allowed: [...this.forwarding.allowed] },
-      inbox: this.inbox.dump(), push: this.pushReg.dump(), notice: this.notice });
+      inbox: this.inbox.dump(), push: this.pushReg.dump(), notice: this.notice, watches: [...this.watches] });
   }
   /** A server restarted from storage: the same keys and seat, its co-signer rebuilt from the record,
    *  changes and state, checked as a welcome is (§3.4), and every round that was in flight gone. */
@@ -138,7 +138,7 @@ export class ServerNode implements Node {
     n.uploads = new Map(x.uploads.map(([k, u]: [string, any]) => [k, { ...u, held: new Set(u.held) }]));
     n.answeredRepair = new Set(x.answeredRepair); n.quiet = new Map(x.quiet);
     n.forwarding = x.forwarding && { events: x.forwarding.events, allowed: new Set(x.forwarding.allowed) };
-    n.inbox.load(x.inbox); n.pushReg.load(x.push); n.notice = x.notice ?? null;
+    n.inbox.load(x.inbox); n.pushReg.load(x.push); n.notice = x.notice ?? null; n.watches = new Map(x.watches ?? []);
     if (x.recEv) {
       n.rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey }); n.recEv = x.recEv;
     }
@@ -158,6 +158,7 @@ export class ServerNode implements Node {
         state: { ids: new Set(x.co.ids), C, shares }, upkeep: (p, mm) => n.upkeep(p, mm),
         uploads: { get: (id) => n.uploads.get(id), liveSeatHolders: (view) => [...view.values()].filter((v) => v.kind === 'server' && !n.quietSince(v.key) && n.bus.alive(v.key)).length } });
       n.co.restore(x.co.co);
+      n.rewatch();
     }
     return n;
   }
@@ -369,6 +370,69 @@ export class ServerNode implements Node {
   passive = false;
   lastActive = 0;
   pushReg = new PushRegistry();
+  // --- watching for NIP-46 homes (Doors §3.3, core §2 item 7) ------------------------------------
+  /** Per home (a device's member key): its grants' signer keys, bound clients and relays. */
+  watches = new Map<string, { signer: string; client: string | null; relays: string[]; firstSent?: boolean }[]>();
+  /** How long to wait for the home's own reply before pushing (3 s; tests shorten it). */
+  watchDelayMs = 3000;
+  #watchSubs: { close(): void }[] = [];
+  #burst = new Map<string, { pushedAt: number | null; pushes: number[]; answered: boolean; scheduled: boolean }>();
+  #seen46 = new Set<string>();
+  setWatch(home: string, grants: unknown) {
+    const hex = /^[0-9a-f]{64}$/;
+    if (!Array.isArray(grants) || grants.length > 64) refuse('malformed', 'grants');
+    const out = (grants as any[]).map((g) => {
+      if (!hex.test(g?.signer) || !(g.client === null || hex.test(g.client)) || !Array.isArray(g.relays) || g.relays.length > 8 || g.relays.some((r: any) => typeof r !== 'string' || !/^wss?:\/\//.test(r))) refuse('malformed', 'a grant');
+      return { signer: g.signer as string, client: g.client as string | null, relays: g.relays as string[] };
+    });
+    if (out.length) this.watches.set(home, out); else this.watches.delete(home);
+    this.rewatch();
+  }
+  /** Subscribe to every watched signer key's requests, and to its replies (to skip a push the home made
+   *  unneeded by answering first). */
+  rewatch() {
+    this.#watchSubs.forEach((x) => x.close()); this.#watchSubs = [];
+    const ev = this.bus.events;
+    const signers = [...this.watches.values()].flat().map((g) => g.signer);
+    if (!ev || !signers.length) return;
+    this.#watchSubs.push(ev.watch({ kinds: [24133], '#p': signers }, (e) => void this.#siteRequest(e)));
+    this.#watchSubs.push(ev.watch({ kinds: [24133], authors: signers }, (e) => this.#homeReplied(e)));
+  }
+  #homeReplied(e: NostrEvent) {
+    if (!verifyEvent(e)) return;
+    const st = this.#burst.get(e.pubkey); if (st) { st.answered = true; st.pushedAt = null; }
+  }
+  async #siteRequest(e: NostrEvent) {
+    if (!this.co || this.#seen46.has(e.id) || !verifyEvent(e)) return;
+    const signer = e.tags.find((t) => t[0] === 'p')?.[1];
+    const found = [...this.watches].flatMap(([home, gs]) => gs.filter((g) => g.signer === signer).map((g) => ({ home, g })))[0];
+    if (!found) return;
+    const { home, g } = found;
+    // A removed home's set is dropped; only the grant's client, or the first request to a live link.
+    if (!this.m.devices.has(home) || this.m.removed.has(home)) { this.watches.delete(home); this.rewatch(); return; }
+    if (g.client === null) { if (g.firstSent) return; g.firstSent = true; } else if (e.pubkey !== g.client) return;
+    if (Math.abs(this.now - e.created_at) > 120) return;
+    this.#seen46.add(e.id); if (this.#seen46.size > 50_000) this.#seen46.clear();
+    const at = this.now;
+    try {
+      this.inbox.deliver({ from: this.kp.pub, to: home, wrap: wrap(this.kp.sk, home, { type: 'nip46', event: e }, { at }), kind: 'notice', cls: 'ask', at,
+        isMember: (k) => this.m.members.has(k), isRemoved: (k) => this.m.removed.has(k), isBackup: (k) => k === this.m.backupKey });
+    } catch { return; }
+    // One push per burst, at most 60 an hour per signer key, none if the home answers within the delay.
+    // `answered`: a reply from the signer key seen since this request (not a timestamp: two can share a second).
+    const st = this.#burst.get(g.signer) ?? { pushedAt: null, pushes: [], answered: false, scheduled: false };
+    this.#burst.set(g.signer, st);
+    st.answered = false;
+    st.pushes = st.pushes.filter((t) => at - t < 3600);
+    // A push already scheduled for this burst counts as an earlier, unanswered one.
+    if (st.scheduled || (st.pushedAt !== null && at - st.pushedAt < 20) || st.pushes.length >= 60) return;
+    st.scheduled = true;
+    await new Promise((r) => setTimeout(r, this.watchDelayMs));
+    st.scheduled = false;
+    if (st.answered) return;
+    if (this.pushTo(home, 'sign', e.id)) { st.pushedAt = this.now; st.pushes.push(this.now); }
+  }
+
   /** Server profile §3's push cap, from the host: 60 an hour per address, wait notices always sent. */
   pushLimit: (url: string, wait: boolean) => boolean = () => true;
   /** Server profile §5: this seat's latest shutdown notice for the account (`null` cancels). */
@@ -518,6 +582,12 @@ export class ServerNode implements Node {
         if (body.type === 'notice_get') {
           if (!this.m.members.has(from) || this.m.removed.has(from)) refuse('not_member');
           return signAnswer(this.rec!.g, this.host, { shutdown: this.notice?.shutdown ?? null, seq: this.notice?.seq ?? 0, member: this.kp.pub }, body.id);
+        }
+        // Doors §3.3: watching for a NIP-46 home, only from a current device, about its own grants.
+        if (body.type === 'watch_set') {
+          if (!this.m.devices.has(from) || this.m.removed.has(from)) refuse('not_device');
+          this.setWatch(from, body.grants);
+          return { type: 'ack', re: body.id };
         }
         // §8.1: push addresses, per member, newest by the rumor's created_at; never copied to peers.
         if (body.type === 'push_register' || body.type === 'push_unregister') {
