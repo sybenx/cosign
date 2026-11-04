@@ -13,6 +13,7 @@ import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall, ecdhRequest, ecdhFinish } from '../src/coordinator.ts';
 import { nip44Open } from '../src/nip44.ts';
 import { Nip46Home } from './nip46.ts';
+import { DataKeys } from './datakey.ts';
 import { extract } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { cbc } from '@noble/ciphers/aes.js';
@@ -97,6 +98,7 @@ export class DeviceNode implements Node {
     this.recEv = recEv; this.rec = checkEpochRecord(recEv, { g: recEv.pubkey, own: { shares: state.shares, C: state.C, device: true } });
     this.changes = [...changes]; this.state = state;
     this.recompute();
+    this.dataKeys.note();
   }
   recompute() {
     this.m = computeMembership(this.rec!, this.changes);
@@ -108,7 +110,7 @@ export class DeviceNode implements Node {
    *  watches included (review 9 H2). */
   wipe() {
     this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() };
-    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = [];
+    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear();
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
     this.nip46?.sleep(); this.nip46 = new Nip46Home(this);   // signer keys go with everything else (core §7.3)
@@ -228,7 +230,8 @@ export class DeviceNode implements Node {
         const verified = this.paperVerified.get(`${m.backupKey}:${r.id}`) === true;
         if (paperValues && (!verified || this.f7)) this.kept.set(r.id, { b: m.record.seats.backup, d: paperValues, dk: d.dk, release: d.release });
         if (d.release) this.seeds.set(r.id, d.release);
-        if (d.dk) this.dkSeeds.push(d.dk);
+        if (d.dk && !this.dkSeeds.includes(d.dk)) this.dkSeeds.push(d.dk);
+        this.dataKeys.note();                               // the new state, now that its seed is in (core §4.5)
         again = true;
       }
     }
@@ -435,7 +438,7 @@ export class DeviceNode implements Node {
       kept: [...this.kept].map(([k, x]) => [k, { ...x, d: x.d.map(scalarHex) }]), paperVerified: [...this.paperVerified],
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump() });
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), dkHistory: this.dataKeys.dump() });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
    *  by §3.4, every share against the commitments, and the member key a current device holding exactly
@@ -456,6 +459,7 @@ export class DeviceNode implements Node {
     d.pushKeys = new Map(x.pushKeys.map(([u, k]: [string, any]) => [u, { ...k, sk: hexToBytes(k.sk), auth: hexToBytes(k.auth) }]));
     d.signWatch.load(x.signWatch);
     d.nip46.load(x.nip46);
+    d.dataKeys.load(x.dkHistory);
     if (x.recEv && x.state) {
       const rec = checkEpochRecord(x.recEv, { g: x.recEv.pubkey });
       const m = computeMembership(rec, x.changes);
@@ -509,6 +513,8 @@ export class DeviceNode implements Node {
     return utf8Strict(cbc(key, base64.decode(iv)).decrypt(base64.decode(ct)));
   }
 
+  /** The data key (core §4.5), for libraries that encrypt the account's own data. */
+  dataKeys = new DataKeys(this);
   /** NIP-46 sites this device is home to (Doors §3.3). */
   nip46 = new Nip46Home(this);
 

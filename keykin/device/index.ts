@@ -7,6 +7,7 @@
 //   DeviceNode.restore(transport, store.load(key), { lock })     // and comes back, checked (§4.4)
 
 export { DeviceNode, PaperHolder, FriendNode, approvalListOf } from './node.ts';
+export { DataKeys, type DataKey } from './datakey.ts';
 export { RelayNet, type RelayNetOpts } from '../runtime/relay.ts';
 export type { Transport, Node } from '../runtime/net.ts';
 export { useWasm } from '../src/wasm.ts';
