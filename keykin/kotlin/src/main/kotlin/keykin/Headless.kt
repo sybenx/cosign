@@ -11,7 +11,10 @@ import java.io.File
 fun main(args: Array<String>) {
     val net = RelayNet(args[1].split(",")).connect()
     try {
-        val d = Device(File(args[0]).readText(), net)
+        // The first argument is a TS device's snapshot, or `join:<invite code>` to join as a new device.
+        val d = if (args[0].startsWith("join:")) Device.join(args[0].removePrefix("join:"), net, { println(JSONObject().put("check", it).toString()); System.out.flush() })
+            else Device.fromSnapshot(File(args[0]).readText(), net)
+        println(JSONObject().put("device", d.pub).toString()); System.out.flush()
         val cmds = JSONArray(File(args[2]).readText())
         for (k in 0 until cmds.length()) {
             val c = cmds.getJSONObject(k)
@@ -23,7 +26,7 @@ fun main(args: Array<String>) {
                     else -> JSONObject().put("error", "unknown command")
                 }
             } catch (e: KeykinException) { JSONObject().put("error", e.code) }
-            println(out.toString())
+            println(out.toString()); System.out.flush()
         }
     } catch (e: KeykinException) { println("""{"error":"${e.code}"}""") } finally { net.close() }
     System.exit(0)

@@ -28,6 +28,10 @@ object Frost {
     fun verifyShare(c: List<Pt?>, msg: String, all: List<Committed>, i: Long, z: String) = FrostNative.call("verifyPartial", cj(c), msg, commits(all), idHex(i), z) == "true"
     fun aggregate(c: List<Pt?>, msg: String, all: List<Committed>, zs: List<Pair<Long, String>>) =
         FrostNative.call("aggregate", cj(c), msg, commits(all), JSONArray(zs.map { JSONArray(listOf(idHex(it.first), it.second)) }).toString())
+    /** A participant's share from the helpers' sigmas (core §4.2 step 5); the Rust side checks it against `C`. */
+    fun repairShare(c: List<Pt?>, sigmas: List<String>, participant: Long): BigInteger = try {
+        BigInteger(FrostNative.call("repairStep3", cj(c), JSONArray(sigmas).toString(), idHex(participant)), 16)
+    } catch (_: Exception) { refuse("repair_failed", "the summed share misses its point") }
     /** Account admin §1.1, all participants in one process (tests). Returns g, C and every share. */
     fun dkgLocal(indices: List<Long>): Triple<String, List<Pt?>, Map<Long, BigInteger>> {
         val rnd = java.security.SecureRandom()

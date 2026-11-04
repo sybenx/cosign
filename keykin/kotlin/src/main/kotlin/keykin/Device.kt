@@ -6,30 +6,59 @@ package keykin
 import org.json.JSONObject
 import java.math.BigInteger
 
-class Device(snapshot: String, private val net: RelayNet) {
-    val sk: ByteArray; val pub: String; val g: String; val epochId: String
-    val shares: Map<Long, BigInteger>; val ctx: RoundContext; val view: MembershipView
+class Device(val sk: ByteArray, rec: JSONObject, val changes: List<Event>, ids: List<String>, val shares: Map<Long, BigInteger>, private val net: RelayNet) {
+    val pub: String = Secp.Reference.pub(sk)
+    val g: String = rec.getString("g"); val epochId: String = rec.getJSONObject("epoch").getString("id")
+    val view: MembershipView = Membership.compute(rec, changes)
+    val ctx: RoundContext
     init {
-        val x = Json.obj(snapshot)
-        if (!Json.isInt(x.opt("v")) || Json.long(x.opt("v")) != 1L || x.optBoolean("wiped")) refuse("malformed", "not a live device snapshot")
-        sk = unhex(x.getString("kp")); pub = Secp.Reference.pub(sk)
-        val recEv = Event.of(x.getJSONObject("recEv"))
-        val rec = Record.check(recEv, recEv.pubkey)
-        g = rec.getString("g"); epochId = rec.getJSONObject("epoch").getString("id")
-        val ch = x.getJSONArray("changes"); val changes = (0 until ch.length()).map { Event.of(ch.getJSONObject(it)) }
-        view = Membership.compute(rec, changes)
-        val st = x.getJSONObject("state"); val ids = (0 until st.getJSONArray("ids").length()).map { st.getJSONArray("ids").getString(it) }
         // The share points at this state; a state after a redeal needs Upkeep's commitments (not yet ported).
         if (ids.isNotEmpty()) refuse("unsupported", "a state after a redeal")
         val C = (0 until rec.getJSONArray("commitment").length()).map { point(rec.getJSONArray("commitment").getString(it)) }
-        val sh = st.getJSONArray("shares")
-        shares = (0 until sh.length()).associate { sh.getJSONArray(it).let { p -> Json.long(p.get(0)) to BigInteger(p.getString(1), 16) } }
         // §4.4 step 2: the key a current device holding exactly these indices, every share on C.
         val me = view.members.firstOrNull { it.key == pub }
         if (me == null || me.kind != "device" || me.shares.sorted() != shares.keys.sorted()) refuse("not_member", "not a current device holding exactly these indices")
         for ((i, s) in shares) if (mul(s) != derive(C, BigInteger.valueOf(i))) refuse("bad_share", "share $i is not on the commitments")
         ctx = RoundContext(g, epochId, Codes.stateHash(ids), C)
         net.host(sk, pub)
+    }
+    companion object {
+        /** From a device's state as the TS reference writes it (device/node.ts `snapshot()`). */
+        fun fromSnapshot(snapshot: String, net: RelayNet): Device {
+            val x = Json.obj(snapshot)
+            if (!Json.isInt(x.opt("v")) || Json.long(x.opt("v")) != 1L || x.optBoolean("wiped")) refuse("malformed", "not a live device snapshot")
+            val recEv = Event.of(x.getJSONObject("recEv"))
+            val rec = Record.check(recEv, recEv.pubkey)
+            val ch = x.getJSONArray("changes"); val changes = (0 until ch.length()).map { Event.of(ch.getJSONObject(it)) }
+            val st = x.getJSONObject("state"); val ids = (0 until st.getJSONArray("ids").length()).map { st.getJSONArray("ids").getString(it) }
+            val sh = st.getJSONArray("shares")
+            val shares = (0 until sh.length()).associate { sh.getJSONArray(it).let { p -> Json.long(p.get(0)) to BigInteger(p.getString(1), 16) } }
+            return Device(unhex(x.getString("kp")), rec, changes, ids, shares, net)
+        }
+        /** Join an account by its invite code (core §4.1–§4.2): hello, nonce, the 6-digit check shown by
+         *  `onCheck`, then the welcome and the sigmas, checked. */
+        fun join(code: String, net: RelayNet, onCheck: (String) -> Unit, timeoutMs: Long = 120_000): Device {
+            val sk = ByteArray(32).also { java.security.SecureRandom().nextBytes(it); it[0] = (it[0].toInt() and 0x7f).toByte() }
+            val pub = Secp.Reference.pub(sk)
+            val j = Joiner(pub, null, net.now, parseCode(code))
+            val welcome = java.util.concurrent.CompletableFuture<Pair<String, JSONObject>>()
+            val sigmas = java.util.Collections.synchronizedList(ArrayList<JSONObject>())
+            net.host(sk, pub) { from, body, _ ->
+                when (body.optString("type")) {
+                    "repair_sigma" -> { sigmas += JSONObject(body.toString()).put("from", from); JSONObject().put("type", "ack") }
+                    "welcome" -> { welcome.complete(from to body); JSONObject().put("type", "ack") }
+                    else -> null
+                }
+            }
+            val (to, hello) = j.hello()
+            val nonce = net.send(sk, to, hello)
+            if (nonce.optString("type") != "join_nonce") refuse(nonce.optString("code").ifEmpty { "no_nonce" })
+            j.onNonce(to, nonce)
+            onCheck(j.check)
+            val (from, w) = welcome.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            val r = j.finish(from, w, sigmas.toList())
+            return Device(sk, r.rec, r.changes, r.ids, r.shares, net)
+        }
     }
     /** The seated servers, as members. */
     fun servers() = view.members.filter { it.kind == "server" }

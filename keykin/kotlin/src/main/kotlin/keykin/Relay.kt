@@ -17,6 +17,9 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
     private val socks = ArrayList<WebSocket>()
     private val waiting = ConcurrentHashMap<String, CompletableFuture<JSONObject>>()   // "to:id" → answer
     private val hosted = ConcurrentHashMap<String, ByteArray>()                         // our keys
+    /** What answers requests sent to one of our keys (null: answers, or ignores, nothing). */
+    private val handlers = ConcurrentHashMap<String, (String, JSONObject, Long) -> JSONObject?>()
+    private val answered = ConcurrentHashMap<String, JSONObject>()
     private val seen = ConcurrentHashMap.newKeySet<String>()
     private val parts = ConcurrentHashMap<String, Parts.Reassembler>()
 
@@ -38,7 +41,14 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         val o = try { env.unwrap(sk, Json.obj(e.toString())) } catch (_: KeykinException) { return }
         val body = try { synchronized(this) { parts.getOrPut(to) { Parts.Reassembler() }.take(o.from, o.body, now) } } catch (_: KeykinException) { return } ?: return
         // TS answers carry `re` and `__answer` (runtime/relay.ts).
-        if (body.has("re") && body.optBoolean("__answer")) waiting.remove("${o.from}:${body.getString("re")}")?.complete(body.also { it.remove("__answer") })
+        if (body.has("re") && body.optBoolean("__answer")) { waiting.remove("${o.from}:${body.getString("re")}")?.complete(body.also { it.remove("__answer") }); return }
+        // A request: answered once per (sender, id); a re-send gets the same answer (§5.3).
+        val h = handlers[to] ?: return
+        // A message with no id (a repair sigma) is handed on each time; only requests are answered once.
+        val id = body.optString("id")
+        val key = "${o.from}:$id"
+        val ans = (if (id.isNotEmpty()) answered[key] else null) ?: (h(o.from, body, o.sentAt) ?: return).put("re", id).put("__answer", true).also { if (id.isNotEmpty()) answered[key] = it }
+        for (part in Parts.split(ans)) publish(env.wrap(sk, o.from, part, now))
     }
 
     fun connect(): RelayNet {
@@ -47,8 +57,9 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         return this
     }
     /** Receive what is addressed to this key. */
-    fun host(sk: ByteArray, pub: String) {
+    fun host(sk: ByteArray, pub: String, handler: ((String, JSONObject, Long) -> JSONObject?)? = null) {
         hosted[pub] = sk
+        if (handler != null) handlers[pub] = handler
         val req = JSONArray(listOf("REQ", "kk-${pub.take(12)}", JSONObject().put("kinds", JSONArray(listOf(21059))).put("#p", JSONArray(listOf(pub))).put("since", System.currentTimeMillis() / 1000 - 5))).toString()
         for (s in socks) s.sendText(req, true).get(5, TimeUnit.SECONDS)
     }
