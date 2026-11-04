@@ -1092,7 +1092,7 @@ Further rules:
   - fetches its live peers first, so it knows of every paper change;
   - checks the approval and the dealer's signature;
   - holds a delta for every member in its post-list view, incoming seat holders included and the backup
-    excluded (the backup gets the `paper_item` instead), plus the `paper_item`, the `release_seed`, and a `paper_eph` and a `dk_seed` for every post-list device, and otherwise answers `missing`;
+    excluded (the backup gets the `paper_item` instead), plus the `paper_item`, the `release_seed`, and a `paper_eph` and a `dk_seed` for every post-list device (by each sealed delivery's declared type and recipient; their contents are the devices' check, §6.7.1 step 0), and otherwise answers `missing`;
   - refuses if `paper_to` is not the post-list current backup key, or if the item's hash doesn't match;
   - drops deltas addressed to removed keys.
 
