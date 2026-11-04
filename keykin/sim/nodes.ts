@@ -24,7 +24,7 @@ import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList } from '../src/approval.ts';
 import { deletedDigest, verifyDeleted } from '../src/requests.ts';
-import { F1Watch, signNotice, signAnswer } from '../src/f1.ts';
+import { F1Watch, SignWatch, signNotice, signAnswer } from '../src/f1.ts';
 import { commitmentFrom, scalarHex, scalarFrom, type Commitment } from '../src/curve.ts';
 import { newKey, pubOf, siteEvent, schnorrSign, schnorrVerify, type KeyPair, type NostrEvent, type Unsigned } from '../src/event.ts';
 import { KIND_CHANGE, KIND_SIGNPOST, type Approval, type Change, type EpochContent, type MemberEntry, type Redeal, type Waited } from '../src/types.ts';
@@ -573,14 +573,22 @@ export class DeviceNode implements Node {
     // The site's event as §9.5 reads it: absent fields filled, its id, sig and extra fields dropped.
     const { id: _id, ...event } = siteEvent({ created_at: this.now, kind: 1, ...ev }, this.g);
     let lastErr = 'no_server';
+    // Core §6.7.9: requests a server left with nothing (no answer, or a partial that doesn't verify; an
+    // `error` never counts), reported once another server co-signed the same event.
+    const silent: { host: string; id: string }[] = [];
     for (const s of this.servers()) {
       if (!this.bus.alive(s.key)) { lastErr = 'unreachable'; continue; }
       for (let tries = 0; tries < 2; tries++) {
         const r = new OneCall(this.ctx(), this.me(), { key: s.key, indices: s.shares }, event, extra);
         const a = await this.bus.send(this.kp, s.key, r.request);
         if (a?.type === 'stale') { r.abandon(); await this.fetch(); continue; }
+        if (a === null || a === undefined) { r.abandon(); silent.push({ host: s.host!, id: r.request.id }); lastErr = 'no_answer'; break; }
         if (a?.type !== 'partial') { r.abandon(); lastErr = a?.code ?? 'no_answer'; this.lastDetail = a?.detail; break; }
-        return r.finish(a);
+        let signed: NostrEvent;
+        try { signed = r.finish(a); } catch (e) { silent.push({ host: s.host!, id: r.request.id }); lastErr = (e as KeykinError).code ?? 'bad_partial'; break; }
+        for (const x of silent) this.signWatch.unanswered(x.host, x.id, this.now, true);
+        this.signWatch.partial(s.host!, r.request.id, this.now);
+        return signed;
       }
     }
     throw new KeykinError(lastErr, this.lastDetail);
@@ -840,6 +848,11 @@ export class DeviceNode implements Node {
     for (const s of this.servers()) out.push(await this.bus.send(this.kp, s.key, req));
     return out;
   }
+
+  /** Core §6.7.9's quiet Backup line: which servers haven't helped sign this week. */
+  signWatch = new SignWatch();
+  /** The hosts Backup shows "hasn't helped sign this week" for. */
+  notHelping() { return this.servers().map((s) => s.host!).filter((h) => this.signWatch.line(h, this.now)); }
 
   /** §8.1: one gateway address per server and wake class, pinned to that server's VAPID key, each with
    *  its own RFC 8291 keys, so the addresses can't be linked across servers or accounts. */
