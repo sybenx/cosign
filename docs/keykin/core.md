@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.19 · 2026-11-04 · `draft` `optional` · not built
+Draft 14.20 · 2026-11-04 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -597,7 +597,7 @@ Every request carries `cls`. Each message type allows only some classes:
 | `member` | 7 days | `hold`, `release_request`, deliveries |
 
 Types not in the table: deliveries and requests a sender repeats until answered (`cancel`, `withdraw`,
-`upload`, `upload_held`, `push_register`, `push_unregister`, `notify_register`, `paper_reissue`,
+`upload`, `upload_held`, `push_register`, `push_unregister`, `notify_register`, `paper_reissue`, `reissue_eph`,
 `helper_stop`, `helper_resume`, `account_delete`, `stop_relay`, `kept_done`, `kept_new`, `repair_ok`) are
 `member`; every other request (`changes_get`, `inbox_get`, `need_repair`, `rerepair`, `need_seeds`,
 `state_get`, `state`, `seated?`, `forward_get`, `take_out`, `pair_request`, `pair_sign`) is `ask`.
@@ -948,16 +948,21 @@ stuck. Two ideas make that safe:
   mismatch is answered with `stale {ids}`; the side missing ids fetches them (§7.1), applies them and
   retries.
 - **Applying a redeal:**
-  0. a device first verifies the redeal's paper item with its conversation key (§7.2) and records one
-     "paper item verified" bit for the redeal;
+  0. a device verifies the redeal's paper item (§7.2) after working out `δ(b1)`, `δ(b2)` (step 3's
+     computation, done first) and before destroying the old share or `δ(i)`, and records one "paper item verified" bit for the redeal. `paper_eph` is `{redeal, item hash, eph secret}`, sealed by the dealer. The device checks that it names this redeal and its `paper_item`, and that its public key is the item's ephemeral key, derives the NIP-44 conversation key itself from `paper_eph` and `paper_to`, exactly as
+     the backup key will from its side, opens the item with it, and checks the contents: `δ(b1)` and
+     `δ(b2)` equal its own (`δ(b)·G == Σ D_k·b^k`), and the seed equals the `dk_seed` delivery, whose hash is the change's `dk`. It never
+     takes a conversation key from the dealer: a dealer could otherwise seal the item so that a key it sent
+     opens it while `paper_to` can't, and devices would drop their copies of a paper item nobody can
+     recover from. It then destroys `paper_eph`, whether the check passed or not. A `paper_eph` that is missing, names another redeal or item, or whose public key isn't the item's `eph` counts as missing: the device fetches it from its peers' deliveries, and if it is still missing it applies the redeal, leaves the bit unset and re-issues (§6.7.6), with no dot. If a `paper_eph` bound to this item doesn't open it or opens it to wrong contents, the dealer is at fault: the device still applies the redeal, leaves the bit unset (so it keeps its paper values), re-issues the item, and shows a quiet line on Backup naming the dealing device ("*Laptop* sent a bad backup piece"), which the person can dismiss; the paper dot (§6.7.9) shows only while no item for the current K is verified;
   1. check `δ(i)·G == Σ_k D_k·i^k` for each of its indices;
   2. add it, and check `s'·G == P_i^{S'}`; a device also rebuilds `C_{S'}` from its own 3 points and `g`
      (§3.4 step 4);
   3. destroy, at once, the old share and `δ(i)`. A device also works out `δ(b1)`, `δ(b2)` (from the
      redeal's full `δ`: its own 3 values plus `δ(0) = 0`) and keeps them with the redeal's data-key seed,
      encrypted at rest, **until the paper item for the current backup key is verified** (§6.7.6; the
-     "verified" bit is kept per backup key), then destroys them and the paper conversation key. The device
-     running an F7 also keeps them for redeals applied during it, until its paper change commits or its
+     "verified" bit is kept per backup key), then destroys them. The device
+     running an F7 also keeps them for redeals applied during it, until the new K's items are confirmed (the paper change committed, and its own re-issued items held by two servers) or its
      approval expires, so it can re-issue the items the new paper misses;
   4. send `ack`.
 - **Never sign at a state you have left.** Honest members can't: they destroyed it.
@@ -1075,7 +1080,7 @@ Further rules:
   | Delivery | Sealed to | Contents |
   |---|---|---|
   | `delta` | each member | `δ(i)` for each of its indices |
-  | `paper_ck` | devices only | the conversation key for the paper item |
+  | `paper_eph` | devices only | the paper item's ephemeral secret key (§6.7.1 step 0) |
   | `dk_seed` | devices only | the data-key seed |
   | `release_seed` | devices, and current and incoming seat servers (never helpers, never retired holders) | the redeal's release seed |
   | `paper_item` | every server and device | the new material item (§7.2) |
@@ -1087,8 +1092,7 @@ Further rules:
   - fetches its live peers first, so it knows of every paper change;
   - checks the approval and the dealer's signature;
   - holds a delta for every member in its post-list view, incoming seat holders included and the backup
-    excluded (the backup gets the `paper_item` instead), plus the `paper_item` and the `release_seed`,
-    and otherwise answers `missing`;
+    excluded (the backup gets the `paper_item` instead), plus the `paper_item`, the `release_seed`, and a `paper_eph` and a `dk_seed` for every post-list device, and otherwise answers `missing`;
   - refuses if `paper_to` is not the post-list current backup key, or if the item's hash doesn't match;
   - drops deltas addressed to removed keys.
 
@@ -1250,18 +1254,15 @@ phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
 - **F11, paper-only recovery after changes.**
   1. The holder finds the current servers (§6.7.5) and runs §6.5.
   2. After the wait it receives every release seed of the servers' state and the material items.
-  3. It sums the base and the paper items of exactly the redeals in that state, leaving stranded ones
+  3. It sums the base and one paper item per redeal of exactly the redeals in that state (checking each seed against its change's `dk`), leaving stranded ones
      out, and checks the sum against `P_b^S`.
 
 **A device keeps a "paper item verified" bit** for each redeal it applied by delta (§6.7.1). If one not in
 the paper's `state` lacks a verified item for the current K, the device **re-issues** it from the paper
-values it kept (§6.7.1 step 3: `δ(b1)`, `δ(b2)`, the data-key seed). It seals them to K as a
-supplementary item under that redeal's release seed, signs it with its member key, publishes the item's
-`δ(b)·G` values in the clear, and delivers it (`paper_reissue`) to the servers. Servers accept items only
+values it kept (§6.7.1 step 3: `δ(b1)`, `δ(b2)`, the data-key seed). It seals them to K, from a fresh ephemeral key, as a supplementary item under that redeal's release seed, signs it with its member key (`detached("paper-reissue", …)`, §5.9), publishes the item's `δ(b)·G` values in the clear, delivers it (`paper_reissue`) to the servers, and delivers `reissue_eph {redeal, K, item hash, eph secret}` to the other devices only, as an ordinary delivery that is live at once (§8.2). A device re-issues at most once per redeal and K. Servers accept items only
 for the current K, from current devices, and only when the clear `δ(b)·G` match the redeal's
-commitments (`Σ D_k·b^k`); they keep every distinct valid one (at most one per device). Other devices
-check the clear values the same way and then set their own bit, so the kept paper values are destroyed.
-The holder opens each item and checks it against the clear values and the sum against `P_b^S`. This is not a repair: K learns only what devices
+commitments (`Σ D_k·b^k`); they keep the **first** valid one from each device per redeal and K, never replace it, pass it to their peers, and keep it after that device is removed. Other devices fetch the re-issuer's item from at least two live servers and check that both hold the one whose hash `reissue_eph` names (if not, or if `reissue_eph` names another K than the current one, it counts as missing: they wait and retry, with no dot, and after 7 days re-issue their own; a device that holds values and lacks a verified item re-issues at once only when no other device's `reissue_eph` for that redeal and K has reached it), check the clear values the same way, then open it with a conversation key they derive from the eph secret and K, as in §6.7.1 step 0, and compare its contents with the paper values they kept. Only then do they set their own bit and destroy their kept values. A device that kept no values for that redeal (it had already verified an item for the old K before an F7) has nothing left to lose: it checks the item's clear `δ(b)·G` against `Σ D_k·b^k`, sets its bit, and shows nothing (the holder checks the seed against `dk` at recovery, F11 step 3). A device that can't open the item it fetched, or finds other values, keeps them, re-issues its own once, and shows the same dismissable line naming the re-issuer; it ignores any later `reissue_eph` from the same device for that redeal and K. The re-issuer sets its own bit once two servers confirm, by hash, that they hold its item (or every live server, when fewer than two are live); a server that answers otherwise counts as not confirming, and the device asks another, with no dot. That line names a re-issuer only on proof: an item it signed, held by two servers, that a `reissue_eph` it sealed for that item and K doesn't open or opens to wrong values. Servers pass re-issued items to incoming seat holders like any other item (§7.1). A device asleep past a `reissue_eph`'s 7 days re-issues its own instead, which is safe.
+The holder opens each item, the dealer's included, and checks its `δ(b)` against `Σ D_k·b^k` (and a re-issued one against its clear values), dropping any that fail, and the sum against `P_b^S`. This is not a repair: K learns only what devices
 already know. A **new paper** (F7, the quiet dot) is for a paper that is lost or exposed, or when no
 current device can re-issue.
 
@@ -1386,7 +1387,7 @@ A server that was offline MUST fetch its deliveries from its peers before it co-
 statement or releases anything again, skipping a peer that has not answered for an hour. Changes are
 kept for ever (§3.2). Deliveries for a removed member are dropped, except its removal notice, kept 7
 days (§6.4); deliveries for the backup (which never fetches) are dropped; `deliver` from a removed
-member is refused. Data-key seeds and paper conversation keys go to devices only. Uploads made before a
+member is refused. Data-key seeds, `paper_eph` and `reissue_eph` go to devices only. Uploads made before a
 co-sign are inert and expire after 7 days (§6.7.3).
 
 Deliveries travel **through HTTPS, server inboxes, or live kind 21059 wraps** (which relays do not
@@ -1400,12 +1401,14 @@ The backup's shares exist only as **backup material**, a set of items that simpl
 - the **base item**: the shares at the paper's `state` (made and checked once, §4.3) and the base data
   key, NIP-44 to the backup key and signed by it (pinned by hash in the epoch record at creation, or in
   the `paper` change);
-- one **paper item** per later redeal: NIP-44 from an ephemeral key to that redeal's `paper_to`,
+- one **paper item** per later redeal: NIP-44 from a fresh ephemeral key, used for that item only and
+  carried in the item's clear `eph` field (inside the release-seed wrap, so K reads it before decrypting),
+  to that redeal's `paper_to`,
   carrying `{δ(b1), δ(b2), data-key seed}`.
 
 Each item is wrapped a second time, with XChaCha20-Poly1305, under **its own redeal's release seed** (the
 base item under the release seed made with it). Two redeals at once each add their own item, and the
-set is simply the union. Every server and every device keeps every item and every release seed of its
+set is simply the union, counting one item per redeal at recovery (§6.7.6 F11 step 3). Every server and every device keeps every item and every release seed of its
 state (so device + paper still works if every server is gone). Members refuse an item whose hash doesn't
 match its change (re-issued items: §6.7.6). Helpers and backups never hold release seeds; a recovery receives them only after the
 wait (§6.5).
@@ -1553,11 +1556,11 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 | `notice` | server → members | 6.3, 8.2 |
 | `push_register` / `push_unregister` / `notify_register` | device → server | 8.1 |
 | `inbox_get` / `inbox` / `inbox_ack` / `deliver` | member ↔ server | 8.2 |
-| `delta` / `paper_ck` / `dk_seed` / `release_seed` / `paper_item` | dealer → members (deliveries) | 6.7.3 |
+| `delta` / `paper_eph` / `dk_seed` / `release_seed` / `paper_item` | dealer → members (deliveries) | 6.7.3 |
 | `stale` / `missing` | co-signer → requester | 6.7.1, 6.7.3 |
 | `need_repair` / `rerepair` / `need_seeds` / `state_get` / `state` | member → servers / devices | 6.7.4 |
 | `upload` / `upload_held` | dealer → seat holders / seat holder → co-signer | 6.7.3, 6.7.1 |
-| `paper_reissue` | device → servers | 6.7.6 |
+| `paper_reissue` / `reissue_eph` | device → servers / device → devices (delivery) | 6.7.6 |
 | `seated?` / `seated` / `forward_get` / `forward` | paper app or device → servers / back | 6.7.5 |
 
 | `part`, `error` | anyone | 9.1 |
@@ -1697,8 +1700,7 @@ before `"9"` in JCS, unlike a JavaScript object's own key order).
   beforehand, ideally on other servers' operators; the old key stays usable to whoever holds it.
 - **A paper reaches every state since it was printed**, through its paper items. A stolen paper is
   dangerous until it is replaced, and the app cannot know it was exposed.
-- **A lone device has no second checker** of its own paper item; a mistake surfaces only at an optional
-  paper check, or at recovery.
+- **A lone device has no second checker** of a paper item it dealt itself. It opens the item with its own `paper_eph`, so a bug in its own sealing shows at once, but a fault it shares with the item surfaces only at an optional paper check, or at recovery.
 - **A dishonest helper at a redeal** learns `δ`, and with a retired server is the key. The helper is
   opt-in.
 - **A retired server that never hears it was replaced** keeps answering everyday rounds at its old
@@ -2219,3 +2221,14 @@ check. Never through a door; device keys only. The device API gets `members.devi
 a durable `members.removed` log that covers every way a key leaves. Every member-key signature in Core and
 its modules is now tagged, including the three challenge signatures (`keykin-retire/1`,
 `keykin-seated-ask/1`, `keykin-forward-ask/1`). Three red-team rounds (2 high, 1 high, then clean; no critical) are folded in.
+
+## Changes in draft 14.20
+
+From the reference implementation's review 13 (M4) and five red-team rounds (1 critical and 1 high, then 1, 2 and 2 high, then clean):
+- **`paper_eph` replaces `paper_ck`.** The dealer sends devices the paper item's ephemeral secret instead
+  of a conversation key. A device checks it against the item's `eph`, derives the conversation key itself,
+  and checks the item's contents against its own `δ(b1)`, `δ(b2)` and `dk_seed`. A dealer can no longer
+  make devices drop their paper values for an item the backup key can't open.
+- **Re-issued items** (§6.7.6) get the same treatment through `reissue_eph`, an ordinary delivery. Other devices open and compare them before destroying anything, which closes the same silent loss on the re-issue path (the critical). Servers keep the first item per device, redeal and K for good. Devices check that two servers hold it, and re-issue at most once. `reissue_eph` names its K, a server can't make a device blame anyone on its word alone, and an equivocating re-issuer only delays others' own re-issue by 7 days.
+- **A failed check** applies the redeal anyway, keeps the values and re-issues the item. It shows a dismissable line naming the dealer, separate from the paper dot. `paper_eph` is bound to its redeal and item, so a server replaying an old one can't make a device blame an honest dealer; a missing or mismatched one is fetched from peers and never brings the dot.
+- **The co-signer** also requires `paper_eph` and `dk_seed` deliveries.
