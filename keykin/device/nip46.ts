@@ -20,9 +20,11 @@ import { msg } from '../src/msg.ts';
 import { unwrap } from '../src/transport.ts';
 import type { DeviceNode } from './node.ts';
 import { siteGuard } from './doors.ts';
-import { scopeForEvent, scopeForDecrypt, type Scope } from './grants.ts';
+import { scopesForEvent, scopeForDecrypt, expired, type Scope } from './grants.ts';
 
 export const KIND_NIP46 = 24133;
+/** Doors §2: a home answers sites only on news at most this old. */
+const FRESH_S = 30;
 const LINK_S = 600, ENDED_KEEP_S = 30 * 86400, WINDOW_S = 120;
 const HELD_PER_GRANT = 8, HELD_MAX = 64, HELD_TTL_S = 7 * 86400;
 /** A replaceable or addressable event's list: kind, and `d` for addressable kinds. */
@@ -68,15 +70,17 @@ export class Nip46Home {
   /** The person allowed `scope` for a site (Doors §1: asked the first time it is needed). */
   allowScope(signer: string, scope: Scope) {
     const g = this.grants.get(signer); if (!g?.entry) throw new KeykinError('unknown_grant');
-    this.d.grants.widen(g.entry, [scope]); this.asks.get(signer)?.delete(scope); this.d.persist();
+    this.d.grants.widen(g.entry, [scope]); this.asks.get(signer)?.delete(scope); this.d.persist(); this.d.publishGrantsSoon();
   }
   #bind(g: Grant, client: string) {
     g.client = client; g.connectedAt = this.d.now;
     g.entry = this.d.grants.make({ site: client, says: g.site, door: 'nip46', connection: client, relays: g.relays, signer: g.signer, scopes: g.offered ?? ['sign-in', 'post'] }).id;
+    this.d.publishGrantsSoon();
   }
   #has(g: Grant, scope: Scope): boolean {
     const e = g.entry ? this.d.grants.own.get(g.entry) : undefined;
-    if (e?.scopes.includes(scope)) { this.d.grants.used(e.id); return true; }
+    // An expired grant grants nothing (review 16 M4).
+    if (e && e.scopes.includes(scope) && !expired(e, this.d.now, this.d.grants.lastUsed.get(e.id))) { this.d.grants.used(e.id); return true; }
     const a = this.asks.get(g.signer) ?? new Set<Scope>(); a.add(scope); this.asks.set(g.signer, a); this.d.persist();
     return false;
   }
@@ -108,7 +112,7 @@ export class Nip46Home {
   async end(signer: string) {
     const g = this.grants.get(signer); if (!g) return;
     g.endedAt = this.d.now;
-    if (g.entry) this.d.grants.end(this.d.kp.pub, g.entry);
+    if (g.entry) { this.d.grants.end(this.d.kp.pub, g.entry); this.d.publishGrantsSoon(); }
     this.asks.delete(signer);
     // Its held events go with it: nothing a site asked for is signed after it was disconnected (review 12 H1).
     for (const [k, h] of this.held) if (h.signer === signer) this.held.delete(k);
@@ -142,6 +146,7 @@ export class Nip46Home {
     if (typeof req?.id !== 'string' || typeof req?.method !== 'string' || !Array.isArray(req.params ?? [])) return false;
     const answer = await this.#answer(g, e.pubkey, req.method, req.params ?? []);
     await this.#reply(g, e.pubkey, { id: req.id, ...answer }, mode);
+    this.answeredCount++;
     return true;
   }
 
@@ -162,6 +167,9 @@ export class Nip46Home {
     if (from !== g.client) return { error: 'not-connected: connect first' };
     // Doors §1: each request needs its scope; one the site wasn't granted is asked on this home, once.
     const ask = (scope: Scope) => ({ error: `permission: ${scope} needs your OK on your phone` });
+    // Doors §2: never on old news. A home that hasn't caught up within 30 seconds does first (a site signed out
+    // elsewhere is then refused here).
+    if (method !== 'ping' && this.d.now - this.d.lastFetchAt > FRESH_S) { try { await this.d.fetch(); } catch { /* answers what needs no round */ } }
     // A grant ended on another device (a tombstone, a removal) ends here too.
     if (g.entry && !this.d.grants.own.has(g.entry)) { await this.end(g.signer); return { error: 'revoked: this site was disconnected' }; }
     try {
@@ -173,9 +181,10 @@ export class Nip46Home {
         case 'logout': await this.end(g.signer); return { result: 'ack' };
         case 'sign_event': {
           const ev = strictJson(String(params[0]));
-          siteGuard({ kind: ev?.kind, tags: Array.isArray(ev?.tags) ? ev.tags : [] }, this.d.g, this.#backupKeys());
-          const need = scopeForEvent(Number(ev?.kind));
-          if (!this.#has(g, need)) return ask(need);
+          siteGuard({ kind: ev?.kind, tags: Array.isArray(ev?.tags) ? ev.tags : [] }, this.d.g, this.#backupKeys(), this.d.protectedIds);
+          const needs = scopesForEvent(Number(ev?.kind), Array.isArray(ev?.tags) ? ev.tags : [], null);
+          if (needs === 'declined') return { error: 'declined: a deletion by token, or a token for no host, is never a site\'s to get signed' };
+          for (const n of needs) if (!this.#has(g, n)) return ask(n);
           // Device policy §4: while a hold for this list is pending, this site's changes to it wait (review 12 H3).
           const lk = listKey(ev);
           if (lk && [...this.held.values()].some((x) => x.wait && x.signer === g.signer && listKey(x.event) === lk)) return { error: 'try-later: a held change to this list is waiting' };
@@ -199,7 +208,8 @@ export class Nip46Home {
           // Encrypting to the account's own key is `post`; to anyone else, `dms`.
           const peer = String(params[0]);
           if (!this.#has(g, peer.toLowerCase() === this.d.g ? 'post' : 'dms')) return ask(peer.toLowerCase() === this.d.g ? 'post' : 'dms');
-          return { result: method === 'nip44_encrypt' ? await this.d.nip44(peer, String(params[1]), true) : await this.d.nip04(peer, String(params[1]), true) };
+          // An encryption to self is recorded for this grant: evidence for its later decrypts (Device policy §1).
+          return { result: method === 'nip44_encrypt' ? await this.d.nip44(peer, String(params[1]), true, { owner: `${this.d.kp.pub}:${g.entry}` }) : await this.d.nip04(peer, String(params[1]), true) };
         }
         case 'nip44_decrypt': case 'nip04_decrypt': {
           const peer = String(params[0]);
@@ -210,9 +220,14 @@ export class Nip46Home {
             if (!this.#has(g, 'dms')) return ask('dms');
             return { result: method === 'nip44_decrypt' ? await this.d.nip44(peer, String(params[1]), false) : await this.d.nip04(peer, String(params[1]), false) };
           }
+          // A grant holding none of the to-self scopes is refused before any round (review 16 M9).
+          const e = g.entry ? this.d.grants.own.get(g.entry) : undefined;
+          if (!e?.scopes.some((x) => ['lists', 'wallet', 'private-data', 'dms'].includes(x))) { this.#has(g, 'private-data'); return { error: 'permission: needs your OK on your phone' }; }
           const plain = method === 'nip44_decrypt' ? await this.d.nip44(this.d.g, String(params[1]), false) : await this.d.nip04(this.d.g, String(params[1]), false);
-          const need = scopeForDecrypt(this.d.g, peer.toLowerCase(), plain);
-          return this.#has(g, need) ? { result: plain } : ask(need);
+          const need = scopeForDecrypt(this.d.g, peer.toLowerCase(), plain, method === 'nip44_decrypt' ? { payload: String(params[1]), evidence: this.d.evidence, owner: `${this.d.kp.pub}:${g.entry}` } : {});
+          if (need === 'malformed') return { error: 'declined: not a canonical payload' };
+          // One message for every class, so a refusal never says what the ciphertext is (review 16 M9).
+          return this.#has(g, need) ? { result: plain } : { error: 'permission: needs your OK on your phone' };
         }
         default: return { error: `unsupported: ${method}` };
       }
@@ -304,17 +319,23 @@ export class Nip46Home {
   async wake(): Promise<number> {
     if (!this.watching) return 0;
     if (this.watchPending) await this.watchSet().catch(() => {});
+    // A catch-up first (Doors §2: grants' ends before any answer), which also answers what the watching server
+    // kept; then anything it kept that the catch-up didn't reach. Returns how many requests were answered.
+    const before = this.answeredCount;
+    await this.d.fetch();
     const inbox = await this.d.bus.send(this.d.kp, this.watching, msg('inbox_get', this.d.g, this.d.epochId, 'ask'));
-    const done: string[] = []; let n = 0;
+    const done: string[] = [];
     for (const it of inbox?.items ?? []) {
       let o; try { o = unwrap(this.d.kp.sk, it.wrap); } catch { continue; }
       if (o.from !== this.watching || o.body?.type !== 'nip46') continue;
-      if (await this.handle(o.body.event)) n++;
+      await this.handle(o.body.event);
       done.push(it.iid);
     }
     if (done.length) await this.d.bus.send(this.d.kp, this.watching, msg('inbox_ack', this.d.g, this.d.epochId, 'ask', { iids: done }));
-    return n;
+    return this.answeredCount - before;
   }
+  /** Requests this home answered (for `wake`). */
+  answeredCount = 0;
 
   /** Every backup key the account has had: the signpost names come from them. */
   #backupKeys() { const m = this.d.m!; return [...new Set([m.backupKey, ...m.accepted.filter((p) => p.type === 'paper').map((p) => (p.c.change as any).paper.key)].filter(Boolean) as string[])]; }

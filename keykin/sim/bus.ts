@@ -24,7 +24,7 @@ export class Bus implements Transport {
   events: Events = {
     publishEvent: async (e: any) => { this.published.push(e); for (const w of [...this.#watches]) if (matches(w.f, e)) w.cb(e); },
     watch: (f: Filter, cb: (e: any) => void) => { const w = { f, cb }; this.#watches.add(w); return { close: () => void this.#watches.delete(w) }; },
-    query: async (f: Filter) => this.published.filter((e) => matches(f, e)),
+    query: async (f: Filter) => ({ events: this.published.filter((e) => matches(f, e)), answered: 1, asked: 1 }),
   };
   constructor(now = 1_800_000_000) { this.now = now; }
   add(n: Node) { this.nodes.set(n.kp.pub, n); return n; }

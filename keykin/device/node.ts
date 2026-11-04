@@ -13,7 +13,7 @@ import { CoSigner } from '../src/cosigner.ts';
 import { OneCall, TwoCall, ListCall, ecdhRequest, ecdhFinish } from '../src/coordinator.ts';
 import { nip44Open } from '../src/nip44.ts';
 import { Nip46Home, listKey } from './nip46.ts';
-import { GrantStore, KIND_GRANTS } from './grants.ts';
+import { GrantStore, KIND_GRANTS, Evidence } from './grants.ts';
 import { DataKeys } from './datakey.ts';
 import { memberSign } from './membersig.ts';
 import { Members } from './members.ts';
@@ -48,6 +48,8 @@ import { msg, rid } from '../src/msg.ts';
 
 /** How long a device waits on another's re-issued item before re-issuing its own (core 14.20 §6.7.6). */
 const REISSUE_WAIT_S = 7 * 86400;
+/** Doors §1, "Decrypts in bulk": a batch window, the rate above which it widens, and the cache's life. */
+const X_BATCH_MS = 50, X_SLOW_MS = 2000, X_PER_MIN = 30, X_CACHE_S = 600;
 
 export class DeviceNode implements Node {
   kp = newKey();
@@ -176,7 +178,7 @@ export class DeviceNode implements Node {
    *  watches included (review 9 H2). */
   wipe() {
     this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() };
-    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear();
+    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.evidence?.clear();
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.reissued.clear(); this.reissueEphs.clear(); this.blamed.clear(); this.forceReissue.clear();
     this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
@@ -219,6 +221,10 @@ export class DeviceNode implements Node {
         this.signWatch.partial(s.host!, r.request.id, this.now);
         const lk = listKey(signed);
         if (lk && signed.created_at > (this.#lists.get(lk) ?? 0)) { this.#lists.set(lk, signed.created_at); }
+        // Doors §1's evidence: which account events carry which ciphertext (and the grant events' ids, which no
+        // site may delete).
+        this.evidence.event(signed.kind, signed.content);
+        if (signed.kind === KIND_GRANTS) this.protectedIds.add(signed.id);
         return signed;
       }
     }
@@ -243,6 +249,7 @@ export class DeviceNode implements Node {
 
   /** Catch up: the union of every server's change set, then every server's inbox (§3.2, §8.2). */
   async fetch() {
+    const nipQueue: any[] = [];
     for (const s of this.servers()) {
       const a = await this.bus.send(this.kp, s.key, msg('changes_get', this.g, this.epochId, 'ask'));
       if (a?.type === 'changes') this.takeChanges(a.changes);
@@ -255,7 +262,7 @@ export class DeviceNode implements Node {
       for (const it of a.items) try {
         // A site's request a watching server kept goes to the NIP-46 home, not into the void (review 11 M1).
         const o = unwrap(this.kp.sk, it.wrap);
-        if (o.body?.type === 'nip46' && o.from === s.key) await this.nip46.handle(o.body.event);
+        if (o.body?.type === 'nip46' && o.from === s.key) nipQueue.push(o.body.event);
         // A delivery with no room yet stays at the server: acking it would delete its only other copy (review 13 M1).
         else if (this.takeDelivery(it.wrap) === 'full') { keep.add(it.iid); }
       } catch { /* one bad item never wedges the rest */ }
@@ -267,6 +274,9 @@ export class DeviceNode implements Node {
     await this.reissueMissing();
     // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
     if (this.bus.events && this.baseDk) try { await this.grants.fetch(); } catch { /* relays out of reach: next time */ }
+    this.lastFetchAt = this.now;
+    // Sites' requests kept for this home are answered only now, after the grants' ends (review 16 M5).
+    for (const e of nipQueue) try { await this.nip46.handle(e); } catch { /* one never wedges the rest */ }
   }
   pendingDeltas = new Map<string, any>();
   pendingHeir: ReturnType<typeof makeHeir> | null = null;
@@ -617,7 +627,7 @@ export class DeviceNode implements Node {
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       reissued: [...this.reissued], reissueEphs: [...this.reissueEphs], blamed: [...this.blamed], forceReissue: [...this.forceReissue],
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists] });
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), evidence: this.evidence.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists] });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
    *  by §3.4, every share against the commitments, and the member key a current device holding exactly
@@ -638,7 +648,7 @@ export class DeviceNode implements Node {
     d.reissued = new Map(x.reissued ?? []); d.reissueEphs = new Map(x.reissueEphs ?? []); d.blamed = new Set(x.blamed ?? []); d.forceReissue = new Set(x.forceReissue ?? []);
     d.pushKeys = new Map(x.pushKeys.map(([u, k]: [string, any]) => [u, { ...k, sk: hexToBytes(k.sk), auth: hexToBytes(k.auth) }]));
     d.signWatch.load(x.signWatch);
-    d.nip46.load(x.nip46); d.grants.load(x.grants);
+    d.nip46.load(x.nip46); d.grants.load(x.grants); d.evidence.load(x.evidence); d.protectedIds = new Set(x.protectedIds ?? []);
     d.dataKeys.load(x.dkHistory);
     d.members.load(x.members);
     d.#lists = new Map(x.lists ?? []);
@@ -662,29 +672,72 @@ export class DeviceNode implements Node {
   }
 
   // --- the account's own encryption (core §5.5): ECDH with a co-signer, never the whole key ---------
-  /** The x coordinate of `x·P` for a peer's x-only key `peer`, from one server's checked answer. */
+  /** The x coordinate of `x·P` for a peer's x-only key `peer`, from one server's checked answer. Decrypts arriving
+   *  within about 50 ms go in one `ecdh` request with many points, and above about 30 a minute the window widens,
+   *  so a client decrypting junk one at a time can't use up the account's budget (Doors §1, "Decrypts in bulk");
+   *  a shared x is cached in memory only, for at most 10 minutes, never stored. */
   async ecdhX(peer: string): Promise<Uint8Array> {
     // A peer key that isn't a point is refused here, before any co-signer is asked (review 11 L5).
     if (typeof peer !== 'string' || !/^[0-9a-f]{64}$/.test(peer)) refuse('malformed', 'peer key');
     try { liftX(peer); } catch { refuse('malformed', 'peer key is not on the curve'); }
-    const Q = '02' + peer;
+    const hit = this.#xCache.get(peer);
+    if (hit && this.now - hit.at <= X_CACHE_S && !this.wiped) return hit.x;
+    return new Promise<Uint8Array>((ok, no) => {
+      const w = this.#xWaiting.get(peer) ?? []; w.push({ ok, no }); this.#xWaiting.set(peer, w);
+      if (this.#xTimer) return;
+      const recent = this.#xBatches.filter((t) => Date.now() - t < 60_000).length;
+      this.#xTimer = setTimeout(() => { this.#xTimer = null; void this.#flushX(); }, recent >= X_PER_MIN ? X_SLOW_MS : X_BATCH_MS);
+    });
+  }
+  #xCache = new Map<string, { x: Uint8Array; at: number }>();
+  #xWaiting = new Map<string, { ok: (x: Uint8Array) => void; no: (e: unknown) => void }[]>();
+  #xTimer: ReturnType<typeof setTimeout> | null = null;
+  #xBatches: number[] = [];
+  /** Clears the cache (a wipe, a redeal): a shared x never outlives the device's state. */
+  forgetX() { this.#xCache.clear(); }
+  async #flushX() {
+    const batch = new Map(this.#xWaiting); this.#xWaiting.clear();
+    const peers = [...batch.keys()];
+    this.#xBatches = [...this.#xBatches.filter((t) => Date.now() - t < 60_000), Date.now()];
+    try {
+      const xs = await this.#ecdhMany(peers);
+      peers.forEach((p, k) => { this.#xCache.set(p, { x: xs[k], at: this.now }); for (const w of batch.get(p)!) w.ok(xs[k]); });
+    } catch (e) { for (const ws of batch.values()) for (const w of ws) w.no(e); }
+  }
+  async #ecdhMany(peers: string[]): Promise<Uint8Array[]> {
+    const points = peers.map((p) => '02' + p);
     let last = 'no_server';
     for (const s of this.servers()) {
       if (!this.bus.alive(s.key)) continue;
       for (let tries = 0; tries < 2; tries++) {
-      const req = ecdhRequest(this.ctx(), [...this.state!.shares.keys()], { key: s.key, indices: s.shares }, [Q]);
+      const req = ecdhRequest(this.ctx(), [...this.state!.shares.keys()], { key: s.key, indices: s.shares }, points);
       const a = await this.bus.send(this.kp, s.key, req);
       if (a?.type === 'stale') { await this.fetch(); continue; }
-      try { return hexToBytes(ecdhFinish(this.ctx(), req, this.me(), { key: s.key, indices: s.shares }, a)[0].slice(2)); }
+      try { return ecdhFinish(this.ctx(), req, this.me(), { key: s.key, indices: s.shares }, a).map((x) => hexToBytes(x.slice(2))); }
       catch (e) { last = (e as KeykinError).code ?? 'ecdh'; break; }
       }
     }
     throw new KeykinError(last);
   }
-  /** NIP-44 v2 as the account, with `peer`. */
-  async nip44(peer: string, text: string, encrypt: boolean): Promise<string> {
+  /** NIP-44 v2 as the account, with `peer`. An encryption to the account's own key is recorded (Device policy §1,
+   *  Doors §1's evidence): for `owner`, a grant `${by}:${id}`, or else the member app. */
+  async nip44(peer: string, text: string, encrypt: boolean, o: { owner?: string } = {}): Promise<string> {
     const ck = extract(sha256, await this.ecdhX(peer), utf8ToBytes('nip44-v2'));
-    return encrypt ? nip44.v2.encrypt(text, ck) : nip44Open(text, ck);
+    if (!encrypt) return nip44Open(text, ck);
+    const out = nip44.v2.encrypt(text, ck);
+    if (peer === this.g) this.evidence.encrypted(out, o.owner ?? 'member');
+    return out;
+  }
+  /** Doors §1's evidence for decrypts to the account itself, and the ids of the account's grant events. */
+  evidence = new Evidence();
+  protectedIds = new Set<string>();
+  /** When this device last caught up with the servers (Doors §2: no site is answered on older news). */
+  lastFetchAt = 0;
+  #grantTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Publish this device's grants soon (a change to them: a bind, a widen, an end), at most once a second. */
+  publishGrantsSoon() {
+    if (this.#grantTimer || !this.bus.events) return;
+    this.#grantTimer = setTimeout(() => { this.#grantTimer = null; this.grants.publish().then(() => this.persist(), () => {}); }, 1000);
   }
   /** NIP-04 as the account, with `peer` (AES-256-CBC under the shared x). */
   async nip04(peer: string, text: string, encrypt: boolean): Promise<string> {
@@ -722,7 +775,7 @@ export class DeviceNode implements Node {
     dataKey: () => dev.dataKeys.current(), keyFor: (s) => dev.dataKeys.forState(s),
     sign: (ev) => dev.sign(ev),
     publish: async (e) => { await dev.bus.events?.publishEvent(e); },
-    query: async () => (await dev.bus.events?.query({ kinds: [KIND_GRANTS], authors: [dev.g] })) ?? [],
+    query: async () => (await dev.bus.events?.query({ kinds: [KIND_GRANTS], authors: [dev.g] })) ?? { events: [], answered: 0, asked: 0 },
   }))(this);
 
   /** Core §6.7.9's quiet Backup line: which servers haven't helped sign this week. */

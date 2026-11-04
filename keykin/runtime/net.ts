@@ -20,8 +20,9 @@ export const matches = (f: Filter, e: { kind: number; pubkey: string; tags: stri
 export interface Events {
   publishEvent(e: any, relays?: string[]): Promise<void>;
   watch(filter: Filter, onEvent: (e: any) => void, relays?: string[]): { close(): void };
-  /** The stored events matching `filter`, from every relay, until each says it sent them all (EOSE). */
-  query(filter: Filter, relays?: string[]): Promise<any[]>;
+  /** The stored events matching `filter`, from every relay, until each says it sent them all (EOSE); and how many
+   *  relays were asked and answered, so a caller can tell a failed fetch from an empty one. */
+  query(filter: Filter, relays?: string[]): Promise<{ events: any[]; answered: number; asked: number }>;
 }
 /** A Web Push request as a gateway receives it. */
 export interface PushOut { url: string; authorization: string; body: Uint8Array; at: number }

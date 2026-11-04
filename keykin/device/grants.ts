@@ -16,12 +16,14 @@ import { sha, bytesToHex, hexToBytes, randomBytes, jcs, utf8ToBytes, concatBytes
 import { schnorrSign, schnorrVerify, verifyEvent, type NostrEvent, type KeyPair } from '../src/event.ts';
 import { base64 } from '@scure/base';
 
-export type Scope = 'sign-in' | 'post' | 'lists' | 'dms' | 'private-data' | 'wallet';
+export type Scope = 'sign-in' | 'post' | 'lists' | 'dms' | 'private-data' | 'wallet' | `host:${string}`;
 export const SCOPES: Scope[] = ['sign-in', 'post', 'lists', 'dms', 'private-data', 'wallet'];
 export interface GrantEntry {
   id: string; v: number; site: string; says: string; door: 'nip07' | 'nip55' | 'nip46'; connection: string;
   relays?: string[]; signer?: string; scopes: Scope[]; borrowed: boolean; helper: boolean;
   made: number; expiry: 'unused-90d' | number | null; by: string; by_sig?: string; was?: [string, string];
+  /** The home's day of last use (unix seconds, at most one republish a day): other devices read it for expiry. */
+  last_used?: number;
 }
 export interface Ended { id: string; until: number }
 export interface UnionEnded { by: string; id: string; until: number }
@@ -30,6 +32,7 @@ export interface GrantSet { entries: GrantEntry[]; tombstones: Tombstone[]; ende
 
 export const KIND_GRANTS = 30078;
 const PART_PLAIN = 17_000;                          // a part's plaintext: its base64 ciphertext stays under 24 KB
+const MAX_PARTS = 64;                               // ~1.5 MB of grants: more is refused, never read
 const YEAR = 365 * 86400;
 
 // --- entries -----------------------------------------------------------------------------------
@@ -43,7 +46,7 @@ export function signEntry(g: string, kp: KeyPair, e: Omit<GrantEntry, 'by' | 'by
 export const entryOk = (g: string, e: GrantEntry) => { try { return schnorrVerify(e.by_sig!, entryDigest(g, e), e.by); } catch { return false; } };
 /** "Unused 90 days": expired once `last_used` (or `made`) is that old; a fixed expiry, once passed. */
 export const expired = (e: GrantEntry, now: number, lastUsed?: number) =>
-  e.expiry === 'unused-90d' ? now - (lastUsed ?? e.made) > 90 * 86400 : typeof e.expiry === 'number' ? now > e.expiry : false;
+  e.expiry === 'unused-90d' ? now - Math.max(lastUsed ?? 0, e.last_used ?? 0, e.made) > 90 * 86400 : typeof e.expiry === 'number' ? now > e.expiry : false;
 
 // --- the event ---------------------------------------------------------------------------------
 
@@ -80,6 +83,7 @@ export function readMaker(g: string, maker: string, baseDk: string, keyFor: (sta
     const same = mine.filter((e) => e.created_at === at);
     try {
       const n = Number(same[0].tags.find((t) => t[0] === 'parts')?.[1] ?? '1');
+      if (!Number.isInteger(n) || n < 1 || n > MAX_PARTS) continue;
       const parts = n === 1 ? [same.find((e) => dOf(e) === d)] : Array.from({ length: n }, (_, k) => same.find((e) => dOf(e) === `${d}:${k + 1}`));
       if (parts.some((p) => !p)) continue;
       const text = parts.map((p) => {
@@ -90,6 +94,7 @@ export function readMaker(g: string, maker: string, baseDk: string, keyFor: (sta
       }).join('');
       const x = strictJson(text);
       const set: GrantSet = { entries: x.entries ?? [], tombstones: x.tombstones ?? [], ended: x.ended ?? [], union: x.union ?? [] };
+      if (!setShapeOk(set)) continue;
       if (!schnorrVerify(x.maker_sig, setDigest(g, d, at, set), maker)) continue;
       return { at, set };
     } catch { /* a part we can't open, or a forgery: the next older event */ }
@@ -97,31 +102,110 @@ export function readMaker(g: string, maker: string, baseDk: string, keyFor: (sta
   return null;
 }
 const dOf = (e: NostrEvent) => e.tags.find((t) => t[0] === 'd')?.[1];
+const hex = (x: unknown, n: number) => typeof x === 'string' && x.length === 2 * n && /^[0-9a-f]+$/.test(x);
+const num = (x: unknown) => typeof x === 'number' && Number.isInteger(x) && x >= 0;
+/** A signed set still has to be a set: each list an array of the right objects (review 16 L2). */
+function setShapeOk(s: GrantSet): boolean {
+  return Array.isArray(s.entries) && s.entries.every((e) => e && hex(e.id, 16) && num(e.v) && hex(e.by, 32) && Array.isArray(e.scopes) && e.scopes.every((x) => typeof x === 'string') && typeof e.site === 'string')
+    && Array.isArray(s.tombstones) && s.tombstones.every((t) => t && hex(t.by, 32) && hex(t.id, 16) && num(t.at))
+    && Array.isArray(s.ended) && s.ended.every((t) => t && hex(t.id, 16) && num(t.until))
+    && Array.isArray(s.union) && s.union.every((t) => t && hex(t.by, 32) && hex(t.id, 16) && num(t.until));
+}
 
 // --- which scope a request needs (§1) ----------------------------------------------------------
 
-const WALLET = new Set([17375, 37375, 7375, 7376, 7374, 10019]);
-const SIGN_IN = new Set([22242, 27235, 24242]);
-const isList = (k: number) => k === 0 || k === 3 || k === 10002 || k === 10050 || (k >= 10000 && k < 10102) || (k >= 30000 && k <= 30030);
-/** The scope signing an event of `kind` needs. */
-export function scopeForEvent(kind: number): Scope { return SIGN_IN.has(kind) ? 'sign-in' : WALLET.has(kind) ? 'wallet' : isList(kind) ? 'lists' : 'post'; }
+export const WALLET_KINDS = new Set([17375, 37375, 7375, 7376, 7374, 10019]);
+/** Device policy §2's list and set kinds, exactly; the profile and relay lists count as lists here. */
+export const LIST_KINDS = new Set([0, 3, 10000, 10002, 10050, 10001, 10003, 10004, 10005, 10006, 10007, 10009, 10012, 10013, 10015, 10020, 10030, 10063, 10101, 10102,
+  30000, 30002, 30003, 30004, 30005, 30006, 30007, 30008, 30015, 30030, 39089]);
+const tagOf = (tags: string[][], n: string) => tags.find((t) => t[0] === n)?.[1];
+const hostOf = (u: string | undefined) => { try { return u ? new URL(u).host.toLowerCase() : null; } catch { return null; } };
+/** What signing an event needs (§1's table): its scopes (all of them), or `declined` (refused here; Device
+ *  policy's Confirm card is the person's way to do it). NIP-98 (27235) and Blossom (24242) tokens are for the
+ *  site's own host (`ownHost`, a NIP-07 origin's) under sign-in (PUT and PATCH under post); a token for another
+ *  host also needs `host:<host>`, asked once per host; a Blossom upload, media or get bound to one blob by an `x`
+ *  tag is silent; deletions by token are never silent (review 16 H1). */
+export function scopesForEvent(kind: number, tags: string[][] = [], ownHost: string | null = null): Scope[] | 'declined' {
+  if (kind === 22242) return ['sign-in'];
+  if (kind === 27235) {
+    const method = (tagOf(tags, 'method') ?? '').toUpperCase(), host = hostOf(tagOf(tags, 'u'));
+    if (method === 'DELETE' || !host) return 'declined';
+    const base: Scope[] = method === 'PUT' || method === 'PATCH' ? ['sign-in', 'post'] : ['sign-in'];
+    return host === ownHost ? base : [...base, `host:${host}`];
+  }
+  if (kind === 24242) {
+    const t = tagOf(tags, 't') ?? '';
+    if (t === 'delete') return 'declined';
+    if (['upload', 'media', 'get'].includes(t) && tags.filter((x) => x[0] === 'x').length === 1) return ['sign-in'];
+    const host = hostOf(tagOf(tags, 'server')) ?? 'any';
+    return host === ownHost ? ['sign-in'] : ['sign-in', `host:${host}`];
+  }
+  return [WALLET_KINDS.has(kind) ? 'wallet' : LIST_KINDS.has(kind) ? 'lists' : 'post'];
+}
+/** The single scope (for callers that need one): the first `scopesForEvent` names; `post` for a declined one. */
+export function scopeForEvent(kind: number): Scope { return WALLET_KINDS.has(kind) ? 'wallet' : LIST_KINDS.has(kind) ? 'lists' : kind === 22242 ? 'sign-in' : 'post'; }
+
 const LIST_TAGS = new Set(['p', 'e', 'a', 't', 'r', 'word', 'emoji', 'group', 'relay']);
 const WALLET_FIELDS = new Set(['privkey', 'mint', 'proofs', 'direction', 'amount', 'unit', 'balance']);
-/** The scope a decrypt needs: `dms` with someone else's key; for a decrypt-to-self, judged from the plaintext
- *  (the device decrypts locally first): a NIP-17 rumor of the account's own (14, 15, 7, 5) is `dms`; a tag array
- *  of list tags only is `lists`; wallet fields are `wallet`; anything else `private-data`. */
-export function scopeForDecrypt(g: string, peer: string, plaintext?: string): Scope {
+/** A NIP-51 list plaintext of list tags only, with no wallet field (§1's check before any release under lists). */
+export function listPlaintextOk(plain: string): boolean {
+  try { const x = JSON.parse(plain); return Array.isArray(x) && x.every((t) => Array.isArray(t) && t.length >= 1 && t.every((v: unknown) => typeof v === 'string') && LIST_TAGS.has(t[0])); }
+  catch { return false; }
+}
+/** Plaintext that looks like a wallet's: a NIP-60 token object (`mint`, `proofs`) or tags with wallet fields. */
+export function looksWallet(plain: string): boolean {
+  try {
+    const x = JSON.parse(plain);
+    if (x && typeof x === 'object' && !Array.isArray(x)) return 'proofs' in x || 'mint' in x || 'privkey' in x;
+    return Array.isArray(x) && x.some((t) => Array.isArray(t) && WALLET_FIELDS.has(t[0]));
+  } catch { return false; }
+}
+const RANK: Record<string, number> = { 'private-data': 3, wallet: 2, lists: 1, dms: 0 };
+/** What this device knows of the account's own ciphertexts (Device policy §1's metadata, its own part): the
+ *  kinds of the account's events carrying each ciphertext (by the SHA-256 of its decoded bytes), and who
+ *  encrypted it: a grant `${by}:${id}`, or the member app. Kept on this device; syncing it is Device policy's. */
+export class Evidence {
+  kinds = new Map<string, Set<number>>();
+  owners = new Map<string, Set<string>>();
+  static hashOf(payload: string): string | null {
+    try { const b = base64.decode(payload); return base64.encode(b) === payload ? bytesToHex(sha256(b)) : null; } catch { return null; }
+  }
+  encrypted(payload: string, owner: 'member' | string) { const h = Evidence.hashOf(payload); if (!h) return; const s = this.owners.get(h) ?? new Set(); s.add(owner); this.owners.set(h, s); this.#cap(); }
+  /** An account event this device signed or fetched (`pubkey == g`, verified by the caller). */
+  event(kind: number, content: string) { const h = Evidence.hashOf(content); if (!h) return; const s = this.kinds.get(h) ?? new Set(); s.add(kind); this.kinds.set(h, s); this.#cap(); }
+  #cap() { for (const m of [this.kinds, this.owners] as Map<string, unknown>[]) while (m.size > 20_000) m.delete(m.keys().next().value!); }
+  dump() { return { kinds: [...this.kinds].map(([h, k]) => [h, [...k]]), owners: [...this.owners].map(([h, o]) => [h, [...o]]) }; }
+  load(x: any) { this.kinds = new Map((x?.kinds ?? []).map(([h, k]: [string, number[]]) => [h, new Set(k)])); this.owners = new Map((x?.owners ?? []).map(([h, o]: [string, string[]]) => [h, new Set(o)])); }
+  clear() { this.kinds.clear(); this.owners.clear(); }
+}
+/** The scope a decrypt needs (§1, "Which scope a decrypt needs"). With someone else's key, `dms`. To the account
+ *  itself: the payload must be canonical base64, and is matched against the account's own events; an event counts
+ *  as evidence only if its ciphertext was encrypted for the same grant (`owner`) or the member app. Matched kinds
+ *  decide, the most private winning (private-data, then wallet, then lists; a kind 4 or 14 to self is dms). With
+ *  no encrypt record, a list kind's ciphertext matching no wallet or private-data event needs lists. Whatever the
+ *  evidence, lists is released only for a list plaintext; a wallet-looking one needs wallet. Unmatched bytes: a
+ *  NIP-17 rumor of the account's own (14, 15, 7, 5) is dms, a wallet-looking plaintext wallet, else private-data. */
+export function scopeForDecrypt(g: string, peer: string, plaintext?: string, o: { payload?: string; evidence?: Evidence; owner?: string } = {}): Scope | 'malformed' {
   if (peer.toLowerCase() !== g) return 'dms';
   if (plaintext === undefined) return 'private-data';
-  try {
-    const x = JSON.parse(plaintext);
-    if (x && typeof x === 'object' && !Array.isArray(x) && x.pubkey === g && [14, 15, 7, 5].includes(x.kind)) return 'dms';
-    if (Array.isArray(x) && x.every((t) => Array.isArray(t) && typeof t[0] === 'string')) {
-      if (x.some((t) => WALLET_FIELDS.has(t[0]))) return 'wallet';
-      if (x.every((t) => LIST_TAGS.has(t[0]))) return 'lists';
-    }
-  } catch { /* not JSON */ }
-  return 'private-data';
+  const h = o.payload !== undefined ? Evidence.hashOf(o.payload) : null;
+  if (o.payload !== undefined && !h) return 'malformed';
+  const kinds = h ? [...(o.evidence?.kinds.get(h) ?? [])] : [];
+  const owners = h ? o.evidence?.owners.get(h) : undefined;
+  const ofKind = (k: number): Scope => (WALLET_KINDS.has(k) ? 'wallet' : LIST_KINDS.has(k) ? 'lists' : k === 4 || k === 14 ? 'dms' : 'private-data');
+  let need: Scope | null = null;
+  if (kinds.length) {
+    const vouched = !!owners && (owners.has('member') || (o.owner !== undefined && owners.has(o.owner)));
+    const classes = kinds.map(ofKind);
+    if (vouched) need = classes.reduce((a, b) => (RANK[b] > RANK[a] ? b : a));
+    // With no encrypt record at all (no metadata to hand): a list kind's bytes matching no wallet or private event.
+    // A record for another grant is metadata: those bytes are that grant's, not evidence for this one.
+    else if (!owners?.size && classes.every((c) => c === 'lists')) need = 'lists';
+  }
+  if (need === 'lists' && !listPlaintextOk(plaintext)) need = looksWallet(plaintext) ? 'wallet' : 'private-data';
+  if (need === 'dms' || need === 'wallet' || need === 'private-data' || need === 'lists') return need === 'private-data' && looksWallet(plaintext) ? 'wallet' : need;
+  try { const x = JSON.parse(plaintext); if (x && typeof x === 'object' && !Array.isArray(x) && x.pubkey === g && [14, 15, 7, 5].includes(x.kind)) return 'dms'; } catch { /* not JSON */ }
+  return looksWallet(plaintext) ? 'wallet' : 'private-data';
 }
 
 // --- one device's store ------------------------------------------------------------------------
@@ -130,7 +214,7 @@ export function scopeForDecrypt(g: string, peer: string, plaintext?: string): Sc
 export interface GrantHost { g: string; kp: KeyPair; baseDk: string; now: number; currentDevices(): Set<string>;
   dataKey(): { state: string; key: Uint8Array }; keyFor(state: string): Uint8Array | null;
   sign(ev: { kind: number; created_at: number; tags: string[][]; content: string }): Promise<NostrEvent>;
-  publish(e: NostrEvent): Promise<void>; query(): Promise<NostrEvent[]> }
+  publish(e: NostrEvent): Promise<void>; query(): Promise<{ events: NostrEvent[]; answered: number; asked: number }> }
 
 export class GrantStore {
   own = new Map<string, GrantEntry>();               // id → this device's entries
@@ -187,7 +271,18 @@ export class GrantStore {
     for (const e of this.own.values()) if (e.site === site && e.door === door && (connection === undefined || e.connection === connection) && !expired(e, this.h.now, this.lastUsed.get(e.id)) && !this.union.has(`${e.by}:${e.id}`)) return e;
     return null;
   }
-  used(id: string) { this.lastUsed.set(id, this.h.now); }
+  /** A use of an own grant: recorded, and once a day put in the entry (re-signed), for other devices' expiry. */
+  used(id: string) {
+    this.lastUsed.set(id, this.h.now);
+    const e = this.own.get(id); if (!e) return;
+    const day = Math.floor(this.h.now / 86400) * 86400;
+    if ((e.last_used ?? 0) < day) { const { by: _b, by_sig: _s, ...rest } = e; this.own.set(id, signEntry(this.h.g, this.h.kp, { ...rest, last_used: day })); this.dirty = true; }
+  }
+  /** Own grants changed since the last publish. */
+  dirty = false;
+  /** When a fetch last heard from more than half of the relays asked (§2: a publish follows a good fetch). */
+  goodFetchAt = 0;
+  #chain: Promise<unknown> = Promise.resolve();
 
   /** This device's set as it publishes it: own live entries, its tombstones (30 days), its ended list and the
    *  union, each dropped after its `until`, the union kept only for current makers. */
@@ -201,31 +296,45 @@ export class GrantStore {
   }
   /** Publish this device's grant event, signed by the account, under the current data key. */
   async publish(): Promise<NostrEvent[]> {
+    // One at a time, so two publishes never sign two sets at one created_at (review 16 L6).
+    const run = this.#chain.then(() => this.#publish(), () => this.#publish());
+    this.#chain = run.catch(() => {});
+    return run;
+  }
+  async #publish(): Promise<NostrEvent[]> {
+    // Never publish over a copy this device hasn't read: a restored copy must take over its own newest event
+    // first, or it would publish an older set over it (§2; review 16, the fetch-before-publish gate).
+    if (!this.goodFetchAt) await this.fetch();
+    if (!this.goodFetchAt) throw new KeykinError('try_later', 'relays did not answer the grant fetch');
     const at = Math.max(this.h.now, this.lastPublish + 1);
     const evs = grantEvents(this.h.g, this.h.kp, this.h.baseDk, this.h.dataKey(), this.set(), at);
     const signed: NostrEvent[] = [];
     for (const e of evs) signed.push(await this.h.sign(e));
     this.lastPublish = at;
     for (const e of signed) await this.h.publish(e);
+    this.dirty = false;
     return signed;
   }
   /** Read every current device's newest grant event: others' sets for listing, their ended ids into the union,
    *  their tombstones for this device's own grants applied; and this device's own newest, if newer than its
    *  last publish (a restored copy), taken over: ended ids and tombstones always, entries made before it. */
   async fetch() {
-    const evs = await this.h.query();
+    const { events: evs, answered, asked } = await this.h.query();
+    if (asked > 0 && answered * 2 > asked) this.goodFetchAt = this.h.now;
     for (const m of this.h.currentDevices()) {
       const got = readMaker(this.h.g, m, this.h.baseDk, (s) => this.h.keyFor(s), evs);
       if (!got) continue;
       if (m === this.h.kp.pub) { this.#adoptOwn(got); continue; }
       const prev = this.others.get(m);
       if (!prev || got.at > prev.at) this.others.set(m, got);
-      for (const x of got.set.ended) this.union.set(`${m}:${x.id}`, { by: m, id: x.id, until: x.until });
-      for (const u of got.set.union) if (this.h.currentDevices().has(u.by)) this.union.set(`${u.by}:${u.id}`, u);
+      for (const x of got.set.ended) this.#unite({ by: m, id: x.id, until: x.until });
+      for (const u of got.set.union) if (this.h.currentDevices().has(u.by)) this.#unite(u);
       for (const t of got.set.tombstones) if (t.by === this.h.kp.pub && this.own.has(t.id)) this.end(t.by, t.id);
     }
     for (const u of this.union.values()) if (u.by === this.h.kp.pub && this.own.has(u.id)) this.end(u.by, u.id);
   }
+  /** A union entry: the later `until` wins, so no member can shorten another's (review 16 L1). */
+  #unite(u: UnionEnded) { const k = `${u.by}:${u.id}`, p = this.union.get(k); if (!p || u.until > p.until) this.union.set(k, { by: u.by, id: u.id, until: u.until }); }
   #adoptOwn(got: { at: number; set: GrantSet }) {
     for (const x of got.set.ended) { if (!this.ended.some((y) => y.id === x.id)) this.ended.push(x); this.own.delete(x.id); this.union.set(`${this.h.kp.pub}:${x.id}`, { by: this.h.kp.pub, id: x.id, until: x.until }); }
     for (const t of got.set.tombstones) if (!this.tombstones.some((y) => y.by === t.by && y.id === t.id)) this.tombstones.push(t);

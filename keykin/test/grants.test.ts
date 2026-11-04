@@ -98,8 +98,10 @@ test('which scope a request needs (§1)', () => {
   assert.equal(scopeForEvent(1), 'post'); assert.equal(scopeForEvent(3), 'lists'); assert.equal(scopeForEvent(10000), 'lists');
   assert.equal(scopeForEvent(22242), 'sign-in'); assert.equal(scopeForEvent(17375), 'wallet'); assert.equal(scopeForEvent(30078), 'post');
   assert.equal(scopeForDecrypt(g, 'cd'.repeat(32)), 'dms');
-  assert.equal(scopeForDecrypt(g, g, JSON.stringify([['p', 'x'], ['t', 'y']])), 'lists');
+  // A list-shaped plaintext with no evidence is private-data (review 16 M2); lists needs a matching list event.
+  assert.equal(scopeForDecrypt(g, g, JSON.stringify([['p', 'x'], ['t', 'y']])), 'private-data');
   assert.equal(scopeForDecrypt(g, g, JSON.stringify([['privkey', 'x']])), 'wallet');
+  assert.equal(scopeForDecrypt(g, g, JSON.stringify({ mint: 'https://m', proofs: [] })), 'wallet', 'a NIP-60 token is wallet (review 16 H2)');
   assert.equal(scopeForDecrypt(g, g, JSON.stringify({ kind: 14, pubkey: g, content: 'hi' })), 'dms');
   assert.equal(scopeForDecrypt(g, g, 'a private note'), 'private-data');
 });

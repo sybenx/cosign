@@ -111,14 +111,15 @@ export class RelayNet implements Transport {
     query: async (f: Filter, relays: string[] = []) => {
       const urls = [...new Set([...this.conns.keys(), ...relays])];
       const got = new Map<string, any>();
+      let answered = 0;
       await Promise.allSettled(urls.map(async (u) => {
         const c = this.conns.get(u) ?? await this.#relayFor(u); if (!c) return;
         await new Promise<void>((done) => {
           const t = setTimeout(() => { sub.close(); done(); }, 4000);
-          const sub = c.subscribe([f as any], { onevent: (e) => { got.set(e.id, e); }, oneose: () => { clearTimeout(t); sub.close(); done(); } });
+          const sub = c.subscribe([f as any], { onevent: (e) => { if (got.size < 5000) got.set(e.id, e); }, oneose: () => { answered++; clearTimeout(t); sub.close(); done(); } });
         });
       }));
-      return [...got.values()];
+      return { events: [...got.values()], answered, asked: urls.length };
     },
     watch: (f: Filter, cb: (e: any) => void, relays: string[] = []) => {
       const w = { f, cb, relays, subs: new Map<string, { close(): void }>(), seen: new Set<string>() };
