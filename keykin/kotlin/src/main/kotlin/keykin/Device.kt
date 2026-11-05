@@ -104,6 +104,75 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         synchronized(this) { carried.put("base", base); carried.put("items", JSONArray(its)) }
         save(); return true
     }
+    // --- F1 (core §6.7.6, §6.7.7): a dead server's seat moved to another server -------------------------------
+    /** What each seated server answered, for the F1 card (F1Watch). */
+    val f1 = F1Watch(g)
+    /** The seated servers as (seat id, host key, member key). */
+    private fun seatedServers(): List<Triple<String, String, String>> = view.members.filter { it.kind == "server" && it.key !in view.removed }.mapNotNull { m ->
+        val seat = view.seats.entries.firstOrNull { it.value == m.key }?.key ?: return@mapNotNull null
+        m.host?.let { Triple(seat, it, m.key) } }
+    /** Server profile §4.1: ask a seat's server for its current notice; only the live answer counts. */
+    fun askNotice(host: String) {
+        val s = seatedServers().firstOrNull { it.second == host } ?: return
+        val req = msg("notice_get", "ask")
+        f1.asked(host, req.getString("id"), net.now)
+        val a = net.send(sk, s.third, req)
+        if (a.optString("type") == "notice") f1.answer(a, s.third, net.now)
+        save()
+    }
+    /** Ask every seated server for the account's state, and return the F1 card's seats ({seat, host, why}): empty
+     *  while every server counts as alive. (A `deleted` answer counts as a denial here.) */
+    fun checkServers(): List<JSONObject> {
+        val seats = seatedServers()
+        for ((_, host, key) in seats) {
+            f1.seat(host, key, net.now)
+            val a = try { net.send(sk, key, msg("state_get", "ask")) } catch (_: Exception) { JSONObject() }
+            when {
+                a.optString("type") == "state" -> { f1.saw(host, "serving", net.now); try { askNotice(host) } catch (_: Exception) {} }
+                a.optString("type") == "deleted" || a.optString("code") == "unknown_account" -> f1.saw(host, "denied", net.now)
+                else -> f1.saw(host, "silent", net.now)
+            }
+        }
+        save()
+        return f1.card(seats.map { it.first to it.second }, net.now)
+    }
+    /** F1 / F4: move `seat` (e.g. "server:4") to the server behind front door `front` (a host key from the app's server
+     *  list), as the TS reference's `replaceServer`: enrol the account there; approve and co-sign `[seat, redeal]`
+     *  (the old holder told too); welcome the newcomer; repair its index with this device and a live server, sealed to
+     *  it; and send it the sigmas (`seat_fill`). `approve` approves the placeholder list. Returns the new member key. */
+    fun replaceSeat(seat: String, front: String, approve: (JSONArray) -> JSONObject): String {
+        if (wiped) refuse("wiped")
+        val v0 = view
+        if (!seat.startsWith("server:") || seat !in v0.seats) refuse("malformed", "no such server seat")
+        val idx = seat.removePrefix("server:").toLong()
+        val old = v0.seats[seat]
+        // Enrol the account at the new server's front door: its member key, signed by its host key (Server profile §4).
+        val e = net.send(sk, front, JSONObject().put("type", "enroll").put("g", g))
+        if (e.optString("type") != "enroll_reply") refuse(e.optString("code").ifEmpty { "enroll_failed" }, e.optString("detail"))
+        val reply = e.getJSONObject("reply")
+        if (reply.optString("host") != front) refuse("enroll_failed", "another host answered")
+        val y = reply.getString("member_key")
+        if (v0.members.any { it.key == y }) refuse("already_seated")
+        val entry = JSONObject().put("key", y).put("kind", "server").put("shares", JSONArray(listOf(idx))).put("host", reply.opt("host")).put("operator", reply.opt("operator"))
+            .put("own", false).put("https", reply.opt("https")).put("relays", reply.opt("relays")).put("vapid", reply.opt("vapid")).put("enroll", reply)
+        val list = JSONArray().put(JSONObject().put("seat", JSONObject().put("seat", seat).put("new", entry).put("replaces", old ?: JSONObject.NULL)))
+            .put(JSONObject().put("redeal", JSONObject().put("dealer", pub)))
+        submit(list, approve(list))
+        // The newcomer's welcome (no share yet), then its index repaired by this device and a live server, sealed to it.
+        val st = synchronized(this) { state }
+        val w = JSONObject().put("recEv", recEv.json()).put("changes", JSONArray(changes.map { it.json() })).put("state", JSONArray(st.ids.sorted()))
+            .put("seeds", JSONArray(releaseSeeds.map { (k, x) -> JSONArray(listOf(k, x)) })).put("items", carried.opt("items") ?: JSONArray()).put("base", carried.opt("base") ?: JSONObject.NULL)
+            .put("stops", JSONArray()).put("cleared", JSONArray())
+        val wa = net.send(sk, y, JSONObject().put("type", "seat_welcome").put("w", w))
+        if (wa.optString("type") != "ack") refuse(wa.optString("code").ifEmpty { "welcome_failed" }, wa.optString("detail"))
+        val helper = servers().firstOrNull { it.key != y && it.key != old } ?: refuse("no_server", "no live server to repair with")
+        val sigmas = repair(st, listOf(Signer(pub, st.shares.keys.sorted()), Signer(helper.key, helper.shares)), idx, y, "seat")
+        val fa = net.send(sk, y, JSONObject().put("type", "seat_fill").put("sigmas", JSONArray(sigmas)).put("state", JSONArray(st.ids.sorted())))
+        if (fa.optString("type") != "ack") refuse(fa.optString("code").ifEmpty { "fill_failed" }, fa.optString("detail"))
+        old?.let { f1.forget(v0.members.firstOrNull { m -> m.key == it }?.host ?: "") }
+        save()
+        return y
+    }
     /** Ask every other current device for the seeds it holds (core 14.21): each kept only if a co-signed redeal's
      *  `dk` names it. For F7, the request carries the approved `[paper, redeal]` list (`f7`). */
     fun askSeeds(f7: JSONObject? = null) {
@@ -427,6 +496,9 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             }
         }
         "pair_sign" -> { takePairSign(from, body); JSONObject().put("type", "ack") }
+        // Server profile §4.1: a pushed shutdown notice only prompts a live `notice_get` (off this thread).
+        "notice" -> { if (body.has("shutdown") && !body.has("re") && f1.pushed(body, net.now)) java.util.concurrent.CompletableFuture.runAsync({ try { askNotice(body.getString("host")) } catch (_: Exception) {} }, fetchPool)
+            JSONObject().put("type", "ack") }
         "join_hello" -> try { inviter?.onHello(from, body, net.now) } catch (_: KeykinException) { null }
         "join_confirm" -> if (inviter?.onConfirm(from, body) == true) JSONObject().put("type", "ack") else null
         // §4.3 step 4: the kept backup secret goes once a lock change committed (review 14 M4), or comes anew after an F7.
@@ -587,6 +659,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         x.optJSONArray("blamed")?.let { a -> for (k in 0 until a.length()) blamed += a.getString(k) }
         x.optJSONArray("forceReissue")?.let { a -> for (k in 0 until a.length()) forceReissue += a.getString(k) }
         members.load(x.optJSONObject("members"))
+        f1.load(x.optJSONArray("f1"))
         (x.opt("label") as? JSONObject)?.let { l -> label = Labels.Label(l.optString("name"), l.optString("model"), l.optLong("at")) }
         labelState = x.optString("labelState")
         x.optJSONArray("labels")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> p.optJSONObject(1)?.let { l -> labels[p.getString(0)] = Labels.Label(l.optString("name"), l.optString("model"), l.optLong("at")) } } }
@@ -730,7 +803,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("seeds", ja(releaseSeeds.map { (k, v) -> ja(listOf(k, v)) })).put("baseDk", baseDk).put("dkSeeds", ja(dkSeeds))
             .put("kept", ja(kept.map { (k, v) -> ja(listOf(k, v)) })).put("paperVerified", ja(paperVerified.map { (k, v) -> ja(listOf(k, v)) }))
             .put("pendingDeltas", ja(pending.flatMap { (id, m) -> m.map { (from, b) -> ja(listOf("$id:$from", b)) } })).put("notices", ja(notices.toList()))
-            .put("dkHistory", ja(dkHistory.map { ja(it) })).put("members", members.dump())
+            .put("dkHistory", ja(dkHistory.map { ja(it) })).put("members", members.dump()).put("f1", f1.dump())
             .put("label", label?.json() ?: JSONObject.NULL).put("labelState", labelState)
             .put("labels", ja(labels.map { (k, l) -> ja(listOf(k, l.json())) })).put("lastSeen", ja(lastSeen.map { (k, t) -> ja(listOf(k, t)) }))
             .put("pushKeys", ja(pushKeys.map { (u, k) -> ja(listOf(u, k)) }))

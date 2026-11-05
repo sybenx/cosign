@@ -133,6 +133,11 @@ fun main(args: Array<String>) {
                         try { JSONObject().put("paper", Backup.backupWords(K).joinToString(" ")).put("key", Keykin.secp.pub(K)) } finally { K.fill(0) } }
                     // Whether `words` are this account's current paper (nothing leaves the device).
                     "paper_is" -> { val sk = Backup.readBackupWords(c.getString("words").trim().split(Regex("\\s+"))); try { JSONObject().put("current", Keykin.secp.pub(sk) == d.view.backup) } finally { sk.fill(0) } }
+                    // F1: the card's seats ({seat, host, why}); the seats with their holders; move a seat (approved with the paper).
+                    "check_servers" -> JSONObject().put("card", JSONArray(d.checkServers()))
+                    "seats" -> JSONObject().put("seats", JSONObject().also { o -> for ((seat, key) in d.view.seats) if (key != null && seat.startsWith("server:")) o.put(seat, JSONObject().put("key", key).put("host", d.view.members.firstOrNull { it.key == key }?.host ?: JSONObject.NULL)) })
+                    "replace_seat" -> { val old = Backup.readBackupWords(c.getString("words").trim().split(Regex("\\s+")))
+                        try { JSONObject().put("new", d.replaceSeat(c.getString("seat"), c.getString("front")) { list -> d.approveWithPaper(list, old) }) } finally { old.fill(0) } }
                     "devices" -> JSONObject().put("devices", JSONArray(d.memberKeys())).put("wiped", d.wiped)
                     "quit" -> break
                     "seeds" -> JSONObject().put("records", d.seedRecords().size).put("held", JSONArray(d.seedOnlyHeld()))

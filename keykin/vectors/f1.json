@@ -1,0 +1,32 @@
+{
+ "note": "pushed: a notice with no re; answer: the live answer to notice_get re; both host-signed (detached shutdown / shutdown-answer)",
+ "g": "abababababababababababababababababababababababababababababababab",
+ "host": "baf7689c0a3558fb604589036a8d1e4b685d909f6e0e2c6018a14049ae64ec26",
+ "member": "cb144659ef300200912762786a173663150592d78f4408390c47e9956d9a6c31",
+ "pushed": {
+  "type": "notice",
+  "shutdown": 1900000000,
+  "seq": 5,
+  "member": "cb144659ef300200912762786a173663150592d78f4408390c47e9956d9a6c31",
+  "host": "baf7689c0a3558fb604589036a8d1e4b685d909f6e0e2c6018a14049ae64ec26",
+  "host_sig": "21cf9654d71e29f8063ff173d868ede4fc95a8095340aa20f20b70c4391762ebd97150eeaaa2dcd100ddea75e8916dbd459b5fbe0773f84b472150c30ccd326c"
+ },
+ "answer": {
+  "type": "notice",
+  "re": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+  "shutdown": 1900000000,
+  "seq": 6,
+  "member": "cb144659ef300200912762786a173663150592d78f4408390c47e9956d9a6c31",
+  "host": "baf7689c0a3558fb604589036a8d1e4b685d909f6e0e2c6018a14049ae64ec26",
+  "host_sig": "c69ce1bc8eb52aefc2260b335c39198463dfc141d0c4cf34f5f74559861e1bcf13839947a891601be6130edfdf8bcae80d1ce9a7f23b69d42f2ed44d8bf61bcc"
+ },
+ "cancel": {
+  "type": "notice",
+  "re": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+  "shutdown": null,
+  "seq": 7,
+  "member": "cb144659ef300200912762786a173663150592d78f4408390c47e9956d9a6c31",
+  "host": "baf7689c0a3558fb604589036a8d1e4b685d909f6e0e2c6018a14049ae64ec26",
+  "host_sig": "9c46bb95b70a2072e0d51e1a7c10ff53ded99971d3f930d0a840a4675e9027889cb5714485062a0986b13152a82f036c097f25f81387252990291355cad3d246"
+ }
+}

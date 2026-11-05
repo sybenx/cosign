@@ -85,7 +85,7 @@ const freePort = () => new Promise<number>((ok, no) => { const t = createServer(
 
 /** One scenario's stack and laptop. `slow`: the devices reach the relays through the slow proxy. (`_base` was a fixed
  *  port range; the ports are now free ones.) */
-async function stack(_base: number, o: { slow?: boolean; testW?: number } = {}) {
+async function stack(_base: number, o: { slow?: boolean; testW?: number; extra?: number } = {}) {
   const ports = [await freePort(), await freePort()];
   const direct = ports.map((p) => `ws://127.0.0.1:${p}`);
   for (const p of ports) procs.push(spawn('nak', ['serve', '--hostname', '127.0.0.1', '--port', String(p)], { stdio: 'ignore' }));
@@ -93,18 +93,21 @@ async function stack(_base: number, o: { slow?: boolean; testW?: number } = {}) 
   for (const [k, p] of proxied.entries()) await slowProxy(p, ports[k]);
   const devRelays = o.slow ? proxied.map((p) => `ws://127.0.0.1:${p}`) : direct;
   await wait(1500);
-  const fronts = await Promise.all([0, 1, 2].map((k) => new Promise<string>((res, rej) => {
+  // Three servers for the account, and `extra` more standing by (F1: a seat moves to one of them).
+  const serverProcs: { front: string; p: ChildProcess }[] = [];
+  const all = await Promise.all(Array.from({ length: 3 + (o.extra ?? 0) }, (_, k) => k).map((k) => new Promise<string>((res, rej) => {
     const d = mkdtempSync(join(tmpdir(), 'kk-dr-s-'));
     const p = spawn(process.execPath, [join(root, 'server/main.ts')], { env: { PATH: process.env.PATH, KEYKIN_RELAYS: direct.join(','), KEYKIN_DATA: join(d, 'data'), KEYKIN_KEYS: join(d, 'keys'), KEYKIN_PORT: '0', ...(o.testW ? { KEYKIN_TEST_W: String(o.testW) } : {}) }, stdio: ['ignore', 'pipe', 'inherit'] });
     procs.push(p);
-    let out = ''; p.stdout!.on('data', (c) => { out += c; const l = out.split('\n').find((x) => x.includes('"started"')); if (l) res(JSON.parse(l).host); }); p.on('exit', (c) => rej(new Error(`server exited ${c}`)));
+    let out = ''; p.stdout!.on('data', (c) => { out += c; const l = out.split('\n').find((x) => x.includes('"started"')); if (l) { const h = JSON.parse(l).host; serverProcs[k] = { front: h, p }; res(h); } }); p.on('exit', (c) => rej(new Error(`server exited ${c}`)));
   })));
+  const fronts = all.slice(0, 3), spare = all.slice(3);
   const dir = mkdtempSync(join(tmpdir(), 'kk-dr-'));
   const cli = (args: string[]) => spawnSync(process.execPath, [join(root, 'cli/account.ts'), ...args, '--dir', dir], { encoding: 'utf8', timeout: 180_000 });
   const made = cli(['create', '--relays', direct.join(','), '--fronts', fronts.join(',')]);
   assert.equal(made.status, 0, made.stderr);
   const created = JSON.parse(made.stdout.split('\n')[0]);
-  return { dir, cli, g: created.g as string, laptop: created.device as string, devRelays, fronts, words: readFileSync(join(dir, 'paper.txt'), 'utf8').trim() };
+  return { dir, cli, g: created.g as string, laptop: created.device as string, devRelays, fronts, spare, serverProcs, words: readFileSync(join(dir, 'paper.txt'), 'utf8').trim() };
 }
 type Stack = Awaited<ReturnType<typeof stack>>;
 
@@ -382,4 +385,27 @@ test('J: the phone makes a new paper (F7), approved with the old; the account is
       assert.equal((await D.sign({ kind: 1, content: 'back in with the new paper', tags: [] })).pubkey, s.g);
     } finally { net.close(); }
   } finally { setTestW(3 * 86400); }
+});
+
+test('K: F1, a dead server\'s seat moved to a spare server by the phone; the new server co-signs alone', { skip, timeout: 900_000 }, async () => {
+  const s = await stack(17580, { extra: 1 });
+  const phone = new Device(s, 'phone'); await phone.join();
+  const seats = (await phone.cmd({ cmd: 'seats' })).seats;
+  const deadSeat = Object.keys(seats).find((k) => seats[k].host === s.fronts[2])!;
+  assert.ok(deadSeat, JSON.stringify(seats));
+  // The third server dies. A fresh check notices it but doesn't call it dead yet (7 days quiet, core §6.7.7).
+  s.serverProcs[2].p.kill('SIGKILL');
+  const card = (await phone.cmd({ cmd: 'check_servers' })).card;
+  assert.deepEqual(card, [], 'quiet for minutes is not dead');
+  // The person moves its piece to the spare server (F4's mechanics, as the F1 card does), approved with the paper.
+  const moved = await phone.cmd({ cmd: 'replace_seat', seat: deadSeat, front: s.spare[0], words: s.words });
+  assert.equal(moved.error, undefined, JSON.stringify(moved));
+  const after = (await phone.cmd({ cmd: 'seats' })).seats;
+  assert.equal(after[deadSeat].key, moved.new);
+  assert.equal(after[deadSeat].host, s.spare[0]);
+  // The two old live servers die too: only the new one can co-sign, so a signature proves its share is good.
+  s.serverProcs[0].p.kill('SIGKILL'); s.serverProcs[1].p.kill('SIGKILL');
+  const ev = await phone.cmd({ cmd: 'sign', content: 'co-signed by the new server alone' });
+  assert.equal(ev.error, undefined, JSON.stringify(ev));
+  assert.equal(ev.pubkey, s.g);
 });
