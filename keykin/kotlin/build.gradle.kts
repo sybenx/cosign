@@ -30,6 +30,7 @@ tasks.test {
     systemProperty("keykin.backupwords", file("../vectors/backup-words.json").absolutePath)
     systemProperty("keykin.decryptscopes", file("../vectors/decrypt-scopes.json").absolutePath)
     systemProperty("keykin.metadata", file("../vectors/metadata.json").absolutePath)
+    systemProperty("keykin.material", file("../vectors/material.json").absolutePath)
     systemProperty("keykin.policy", file("../vectors/policy.json").absolutePath)
     systemProperty("keykin.slip39words", file("../vectors/slip39/wordlist.txt").absolutePath)
     systemProperty("keykin.slip39vectors", file("../vectors/slip39/vectors.json").absolutePath)
