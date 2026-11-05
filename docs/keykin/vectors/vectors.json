@@ -416,6 +416,59 @@
    "vapid_sk": "9b4ed0c794babdaedf1cdbd54cfeecbc2dfc2debca3dbcc508009381bc5e4572",
    "vapid_counter": 0,
    "note": "Server profile §4: HKDF-SHA256, empty salt, ikm = enrol secret, info = label ‖ g ‖ nonce ‖ counter byte, 32 bytes; cross-checked by the reference implementation"
+  },
+  "app_private": {
+   "identity_domains": [
+    {
+     "identity": "android:org.example.notes:abababababababababababababababababababababababababababababababab",
+     "domain": "id-7e1b64d5dd15b89b9946ba796d0de2fad0f1caabb15cfa391e32c21a1b2a0f6d/notes/1"
+    },
+    {
+     "identity": "apple:ABCDE12345:org.example.notes",
+     "domain": "id-2c853c163251a3d00879f9f354eadc57dab51c57818ea72db9c85a9c460c206c/notes/1"
+    }
+   ],
+   "derive": [
+    {
+     "dk_S": "c4af916220bd2a612e1536730b177fa36193468ad5e7f79dbed885c81fb0cdcf",
+     "domain": "id-7e1b64d5dd15b89b9946ba796d0de2fad0f1caabb15cfa391e32c21a1b2a0f6d/notes/1",
+     "bytes": "7265636f72642d31",
+     "key": "1679174ab374b5377e669c38eab511889c4c3af318ffff5b693a28d6cbccfb2f"
+    },
+    {
+     "dk_S": "c4af916220bd2a612e1536730b177fa36193468ad5e7f79dbed885c81fb0cdcf",
+     "domain": "id-2c853c163251a3d00879f9f354eadc57dab51c57818ea72db9c85a9c460c206c/notes/1",
+     "bytes": "7265636f72642d31",
+     "key": "d8630e5941ca004ccb980791eece21e11005b4c6b4bea8ce2acab59b6874cee7"
+    },
+    {
+     "dk_S": "c4af916220bd2a612e1536730b177fa36193468ad5e7f79dbed885c81fb0cdcf",
+     "domain": "nostr-vault/owner/1",
+     "bytes": "7265636f72642d31",
+     "key": "23ade44086eaeb34ef57ce995c379bdd5fb97380db13863ade4548b1d1d70e5a"
+    }
+   ],
+   "refused": [
+    {
+     "domain": "id-7e1b64d5dd15b89b9946ba796d0de2fad0f1caabb15cfa391e32c21a1b2a0f6dx/notes/1",
+     "why": "malformed identity domain"
+    },
+    {
+     "domain": "id-7e1b64d5dd15b89b9946ba796d0de2fad0f1caabb15cfa391e32c21a1b2a0f6d/notes/1",
+     "caller": "apple:ABCDE12345:org.example.notes",
+     "why": "identity domain of another app"
+    },
+    {
+     "caller": "ext:chrome:abcdefghijklmnopabcdefghijklmnop",
+     "domain": "notes.example/data/1",
+     "why": "extensions derive only under open domains"
+    },
+    {
+     "caller": "linux:/usr/bin/notes",
+     "why": "no identity domain on Linux or Windows"
+    }
+   ],
+   "note": "core §4.5: identity domain = 'id-' ‖ lowercase hex SHA-256(utf8 identity), first segment exactly; derive = HKDF-SHA256(empty salt, ikm = dk(S), info = utf8(domain) ‖ 0x00 ‖ bytes, 32 bytes)"
   }
  }
 }
