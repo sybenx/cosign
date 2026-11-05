@@ -10,6 +10,8 @@
 //   E  a restart in the middle of a report-lost, relays 1-3 s slow, and clocks 30 s fast and slow.
 //   F  the extension's member (a TS device, device/join.ts) joins by invite over the relays; a Kotlin phone joins
 //      unseen; the extension reports the laptop lost from its stale list with the paper; both still post.
+//   G  the other direction: the extension shows its own hello code (a QR), the phone scans it, the person types the
+//      extension's digits on the phone, and the phone approves the add with the paper.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -19,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { RelayNet } from '../runtime/relay.ts';
-import { joinByCode } from '../device/join.ts';
+import { joinByCode, joinByShowing } from '../device/join.ts';
 import { readBackupWords } from '../src/backup.ts';
 import { pubOf } from '../src/event.ts';
 import type { Change } from '../src/types.ts';
@@ -67,7 +69,7 @@ async function stack(base: number, o: { slow?: boolean } = {}) {
   await wait(1500);
   const fronts = await Promise.all([0, 1, 2].map((k) => new Promise<string>((res, rej) => {
     const d = mkdtempSync(join(tmpdir(), 'kk-dr-s-'));
-    const p = spawn(process.execPath, [join(root, 'server/main.ts')], { env: { PATH: process.env.PATH, KEYKIN_RELAYS: direct.join(','), KEYKIN_DATA: join(d, 'data'), KEYKIN_KEYS: join(d, 'keys'), KEYKIN_PORT: String(base + 100 + k) }, stdio: ['ignore', 'pipe', 'inherit'] });
+    const p = spawn(process.execPath, [join(root, 'server/main.ts')], { env: { PATH: process.env.PATH, KEYKIN_RELAYS: direct.join(','), KEYKIN_DATA: join(d, 'data'), KEYKIN_KEYS: join(d, 'keys'), KEYKIN_PORT: '0' }, stdio: ['ignore', 'pipe', 'inherit'] });
     procs.push(p);
     let out = ''; p.stdout!.on('data', (c) => { out += c; const l = out.split('\n').find((x) => x.includes('"started"')); if (l) res(JSON.parse(l).host); }); p.on('exit', (c) => rej(new Error(`server exited ${c}`)));
   })));
@@ -217,5 +219,32 @@ test('F: the extension\'s TS member joins by invite and reports the laptop lost 
     await phone.post('the phone still posts');
     assert.equal((await ext.sign({ kind: 1, content: 'and the extension', tags: [] })).pubkey, s.g);
     assert.equal(s.cli(['show']).status, 3, 'the laptop knows it was removed');
+  } finally { net.close(); }
+});
+
+test('G: the extension shows its hello code, the phone scans it and adds it', { skip, timeout: 900_000 }, async () => {
+  const s = await stack(17500);
+  const phone = new Device(s, 'phone'); await phone.join();
+  const net = new RelayNet({ relays: s.devRelays, timeoutMs: 9000, resendMs: 1500 });
+  await net.connect();
+  try {
+    let code = '', digits = '';
+    const joined = joinByShowing(net as any, s.devRelays, { name: 'extension', onCode: (c) => { code = c; }, onCheck: (d) => { digits = d; } });
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.match(code, /^keykin:hello\?/, 'a hello code to show as a QR');
+    const offered = await phone.cmd({ cmd: 'invite_scanned', code });
+    assert.equal(offered.error, undefined, JSON.stringify(offered));
+    for (let i = 0; i < 60 && !digits; i++) await new Promise((r) => setTimeout(r, 500));
+    assert.match(digits, /^\d{6}$/);
+    assert.equal((await phone.cmd({ cmd: 'invite_typed', digits: '000000' === digits ? '000001' : '000000' })).typed, false, 'wrong digits don\'t match');
+    assert.equal((await phone.cmd({ cmd: 'invite_typed', digits })).typed, true);
+    const added = await phone.cmd({ cmd: 'add_invited', words: s.words });
+    assert.equal(added.error, undefined, JSON.stringify(added));
+    const ext = await joined;
+    assert.equal(ext.kp.pub, added.added);
+    assert.equal((await ext.sign({ kind: 1, content: 'gm from the extension, joined by its own QR', tags: [] })).pubkey, s.g);
+    assert.ok(ext.checkPaper(s.words.split(/\s+/)), 'the paper check');
+    assert.ok(!ext.checkPaper(s.words.replace(/^\S+/, 'zoo').split(/\s+/)));
+    assert.deepEqual((await phone.devices()).sort(), [s.laptop, phone.key, ext.kp.pub].sort());
   } finally { net.close(); }
 });

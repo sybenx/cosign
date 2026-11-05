@@ -13,27 +13,19 @@ import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
 import { finalizeEvent, verifyEvent as ntVerify } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes, randomBytes, strictJson, KeykinError } from '../src/bytes.ts';
-import { newKey, pubOf, siteEvent, type NostrEvent } from '../src/event.ts';
+import { newKey, pubOf, type NostrEvent } from '../src/event.ts';
 import { what } from '../src/codes.ts';
 import { msg } from '../src/msg.ts';
 import { unwrap } from '../src/transport.ts';
 import type { DeviceNode } from './node.ts';
-import { siteGuard, vaultPlaintext } from './doors.ts';
-import { scopesForEvent, scopeForDecrypt, expired, type Scope } from './grants.ts';
+import { expired, type Scope } from './grants.ts';
 
 export const KIND_NIP46 = 24133;
 /** Doors §2: a home answers sites only on news at most this old. */
-const FRESH_S = 30;
 const LINK_S = 600, ENDED_KEEP_S = 30 * 86400, WINDOW_S = 120;
 const HELD_PER_GRANT = 8, HELD_MAX = 64, HELD_TTL_S = 7 * 86400;
-/** A replaceable or addressable event's list: kind, and `d` for addressable kinds. */
-export const listKey = (e: any): string | null => {
-  const k = e?.kind;
-  if (!Number.isSafeInteger(k)) return null;
-  if (k === 0 || k === 3 || (k >= 10000 && k < 20000)) return `${k}`;
-  if (k >= 30000 && k < 40000) return `${k}:${(e.tags ?? []).find((t: string[]) => t[0] === 'd')?.[1] ?? ''}`;
-  return null;
-};
+import { listKey, type DoorCaller } from './doors-request.ts';
+export { listKey };
 
 export interface Grant {
   signer: string; signerSk: string; client: string | null; secret: string | null; linkExpires: number | null;
@@ -169,113 +161,38 @@ export class Nip46Home {
       return from === g.client ? { result: 'ack' } : { error: 'not-connected: this link belongs to another client; mint a new one' };
     }
     if (from !== g.client) return { error: 'not-connected: connect first' };
-    // Doors §1: each request needs its scope; one the site wasn't granted is asked on this home, once.
-    const ask = (scope: Scope) => ({ error: `permission: ${scope} needs your OK on your phone` });
-    // Doors §2: never on old news. A home that hasn't caught up within 30 seconds does first (a site signed out
-    // elsewhere is then refused here).
-    if (method !== 'ping' && this.d.now - this.d.lastFetchAt > FRESH_S) { try { await this.d.fetch(); } catch { /* answers what needs no round */ } }
-    // A grant ended on another device (a tombstone, a removal) ends here too.
-    if (g.entry && !this.d.grants.own.has(g.entry)) { await this.end(g.signer); return { error: 'revoked: this site was disconnected' }; }
-    try {
-      switch (method) {
-        case 'ping': return { result: 'pong' };
-        case 'get_public_key': return this.#has(g, 'sign-in') ? { result: this.d.g } : ask('sign-in');
-        case 'get_relays': return { result: JSON.stringify(Object.fromEntries(g.relays.map((r) => [r, { read: true, write: true }]))) };
-        case 'switch_relays': return { result: JSON.stringify(g.relays) };
-        case 'logout': await this.end(g.signer); return { result: 'ack' };
-        case 'sign_event': {
-          const ev = strictJson(String(params[0]));
-          siteGuard({ kind: ev?.kind, tags: Array.isArray(ev?.tags) ? ev.tags : [] }, this.d.g, this.#backupKeys(), this.d.protectedIds, (id) => this.d.history.get(id)?.kind);
-          const needs = scopesForEvent(Number(ev?.kind), Array.isArray(ev?.tags) ? ev.tags : [], null);
-          if (needs === 'declined') return { error: 'declined: a deletion by token, or a token for no host, is never a site\'s to get signed' };
-          for (const n of needs) if (!this.#has(g, n)) return ask(n);
-          // Device policy §4: while a hold for this list is pending, this site's changes to it wait (review 12 H3).
-          const lk = listKey(ev);
-          // Any site's, not only the one whose change is held (review 18 L9).
-          if (lk && [...this.held.values()].some((x) => x.wait && listKey(x.event) === lk)) return { error: 'try-later: a held change to this list is waiting' };
-          // Device policy §2: judged first. A Confirm waits for the person's answer on this home, a single deletion
-          // 10 seconds for an Undo; Held goes to the person at once.
-          const owner = `${this.d.kp.pub}:${g.entry}`;
-          const event = siteEvent({ ...ev, created_at: ev?.created_at ?? now }, this.d.g);
-          // The helper has no person to ask: it signs only the helper kinds, which the co-signers enforce (Helper §2).
-          if (this.d.role === 'helper') { const r = await this.d.sign(event, { owner: `helper:${g.signer}` }); this.signedSinceReport++; return { result: JSON.stringify(r) }; }
-          // A site's deletions and list changes are judged and signed one at a time (review 18 M1).
-          try {
-            // Signed for this grant: the evidence records who got each ciphertext signed (review 17 M1).
-            const r = await this.d.guard.serve(event, owner, (g.entry ? this.d.grants.own.get(g.entry)?.scopes : undefined) ?? [], () => this.d.sign(event, { owner }));
-            if ('signed' in r) return { result: JSON.stringify(r.signed) };
-            if ('error' in r) return { error: r.error };
-          } catch (err) {
-            if ((err as KeykinError).code !== 'needs_approval') throw err;
-            // A server's demand the device's own check doesn't explain: Held only when two servers demand it (§2).
-            if (((err as any).demands ?? 0) < 2) return { error: 'try-later: a server asked for an approval; try again later' };
-          }
-          {
-            // Held (Doors §3.3, Device policy §4, review 11 L4): kept on this home for the person, who
-            // approves it with the lock or lets a hold's wait pass; the result is published, not returned.
-            this.#expireHeld();
-            // One entry per event, at most 8 per site and 64 in all (review 12 H2).
-            if (![...this.held.values()].some((x) => x.event.id === event.id)) {
-              if ([...this.held.values()].filter((x) => x.signer === g.signer).length >= HELD_PER_GRANT || this.held.size >= HELD_MAX) return { error: 'try-later: too many events waiting for you' };
-              const h = { id: event.id, signer: g.signer, event, at: now, wait: null as string | null };
-              this.held.set(h.id, h); this.d.persist();
-            }
-            return { error: 'held: approve on your phone' };
-          }
-        }
-        case 'nip44_encrypt': case 'nip04_encrypt': case 'nip44_decrypt': case 'nip04_decrypt':
-          if (this.d.role === 'helper') return { error: 'unsupported: the helper can\'t encrypt or decrypt' };
-          return await this.#crypto(g, method, params);
-        default: return { error: `unsupported: ${method}` };
-      }
-    } catch (err) {
-      const code = (err as KeykinError).code;
-      if (this.d.role === 'helper' && (code === 'helper_kind' || code === 'needs_approval' || code === 'declined')) return { error: 'declined: ask on your phone' };
-      if (code === 'needs_approval' || code === 'hold_not_passed') return { error: 'held: approve on your phone' };
-      if (code === 'declined') return { error: `declined: ${(err as Error).message.replace(/^declined: /, '') || 'not allowed for this site'}` };
-      if (code === 'unreachable' || code === 'no_server' || code === 'no_answer') return { error: 'try-later: no server answered' };
-      return { error: `declined: ${code ?? 'refused'}` };
-    }
-  }
-  async #crypto(g: Grant, method: string, params: any[]): Promise<{ result?: string; error?: string }> {
-    const ask = (scope: Scope) => ({ error: `permission: ${scope} needs your OK on your phone` });
+    // A grant ended on another device answers nothing more but ping (its relays included).
+    if (method !== 'ping' && this.d.role !== 'helper' && g.entry && !this.d.grants.own.has(g.entry)) { await this.end(g.signer); return { error: 'revoked: this site was disconnected' }; }
+    // NIP-46's own methods; everything a site asks of the account goes through the one door-neutral path
+    // (device/doors-request.ts), with this grant as the caller.
     switch (method) {
-        case 'nip44_encrypt': case 'nip04_encrypt': {
-          // Encrypting to the account's own key is `post`; to anyone else, `dms`.
-          const peer = String(params[0]);
-          // Doors 20 §2: no door encrypts a vault invitation or vault payload for a site.
-          if (vaultPlaintext(String(params[1]))) return { error: 'declined: vault material is the vault apps\' own' };
-          if (!this.#has(g, peer.toLowerCase() === this.d.g ? 'post' : 'dms')) return ask(peer.toLowerCase() === this.d.g ? 'post' : 'dms');
-          // At most 300 encryptions to self an hour per site: each becomes a metadata record (review 17 H2).
-          if (peer.toLowerCase() === this.d.g && !this.#budget(g.signer)) return { error: 'try-later: too many encryptions; wait a while' };
-          // An encryption to self is recorded for this grant: evidence for its later decrypts (Device policy §1).
-          return { result: method === 'nip44_encrypt' ? await this.d.nip44(peer, String(params[1]), true, { owner: `${this.d.kp.pub}:${g.entry}` }) : await this.d.nip04(peer, String(params[1]), true) };
-        }
-        case 'nip44_decrypt': case 'nip04_decrypt': {
-          const peer = String(params[0]);
-          if (!/^[0-9a-fA-F]{64}$/.test(peer)) return { error: 'declined: a peer key is 32 bytes of hex' };
-          // With someone else's key, `dms`. To the account itself: decrypted here first, released only under the
-          // scope its plaintext needs (lists, wallet, dms for its own NIP-17 copies, private-data otherwise).
-          if (peer.toLowerCase() !== this.d.g) {
-            if (!this.#has(g, 'dms')) return ask('dms');
-            const text = method === 'nip44_decrypt' ? await this.d.nip44(peer, String(params[1]), false) : await this.d.nip04(peer, String(params[1]), false);
-            // Doors 20 §2: never a vault invitation or vault secret to a site, under any scope (a `dms` client included).
-            return vaultPlaintext(text) ? { error: 'declined: vault material reaches a site only through the vault API' } : { result: text };
-          }
-          // A grant holding none of the to-self scopes is refused before any round (review 16 M9).
-          const e = g.entry ? this.d.grants.own.get(g.entry) : undefined;
-          if (!e?.scopes.some((x) => ['lists', 'wallet', 'private-data', 'dms'].includes(x))) { this.#has(g, 'private-data'); return { error: 'permission: needs your OK on your phone' }; }
-          const plain = method === 'nip44_decrypt' ? await this.d.nip44(this.d.g, String(params[1]), false) : await this.d.nip04(this.d.g, String(params[1]), false);
-          const need = scopeForDecrypt(this.d.g, peer.toLowerCase(), plain, method === 'nip44_decrypt' ? { payload: String(params[1]), evidence: this.d.evidence, owner: `${this.d.kp.pub}:${g.entry}` } : {});
-          if (need === 'malformed') return { error: 'declined: not a canonical payload' };
-          // One message for every class, so a refusal never says what the ciphertext is (review 16 M9).
-          if (vaultPlaintext(plain)) return { error: 'declined: vault material reaches a site only through the vault API' };
-          return this.#has(g, need) ? { result: plain } : { error: 'permission: needs your OK on your phone' };
-        }
-        default: return { error: `unsupported: ${method}` };
+      case 'ping': return { result: 'pong' };
+      case 'get_relays': return { result: JSON.stringify(Object.fromEntries(g.relays.map((r) => [r, { read: true, write: true }]))) };
+      case 'switch_relays': return { result: JSON.stringify(g.relays) };
+      case 'logout': await this.end(g.signer); return { result: 'ack' };
     }
+    const r = await this.d.doors.answer(this.#caller(g), method, params);
+    if (this.d.role === 'helper' && method === 'sign_event' && r.result) this.signedSinceReport++;
+    return r;
   }
-
+  /** This home's grant as a door caller: its scopes and asks, its held events, its end. */
+  #caller(g: Grant): DoorCaller {
+    return {
+      entry: g.entry ?? null, key: g.signer, helper: this.d.role === 'helper',
+      has: (scope) => this.#has(g, scope),
+      heldWaiting: (lk) => [...this.held.values()].some((x) => x.wait && listKey(x.event) === lk),
+      ended: () => this.end(g.signer),
+      hold: (event) => {
+        this.#expireHeld();
+        // One entry per event, at most 8 per site and 64 in all (review 12 H2).
+        if (![...this.held.values()].some((x) => x.event.id === event.id)) {
+          if ([...this.held.values()].filter((x) => x.signer === g.signer).length >= HELD_PER_GRANT || this.held.size >= HELD_MAX) return { error: 'try-later: too many events waiting for you' };
+          this.held.set(event.id, { id: event.id, signer: g.signer, event, at: this.d.now, wait: null }); this.d.persist();
+        }
+        return { error: 'held: approve on your phone' };
+      },
+    };
+  }
   async #reply(g: Grant, to: string, body: object, mode: 'nip44' | 'nip04' = 'nip44') {
     const sk = hexToBytes(g.signerSk), text = JSON.stringify(body);
     const content = mode === 'nip04' ? await nip04.encrypt(sk, to, text) : nip44.v2.encrypt(text, nip44.v2.utils.getConversationKey(sk, to));
@@ -372,17 +289,10 @@ export class Nip46Home {
     if (done.length) await this.d.bus.send(this.d.kp, this.watching, msg('inbox_ack', this.d.g, this.d.epochId, 'ask', { iids: done }));
     return this.answeredCount - before;
   }
-  #crypt = new Map<string, number[]>();
-  #budget(signer: string): boolean {
-    const q = (this.#crypt.get(signer) ?? []).filter((t) => this.d.now - t < 3600);
-    if (q.length >= 300) { this.#crypt.set(signer, q); return false; }
-    q.push(this.d.now); this.#crypt.set(signer, q); return true;
-  }
   /** Requests this home answered (for `wake`). */
   answeredCount = 0;
 
   /** Every backup key the account has had: the signpost names come from them. */
-  #backupKeys() { const m = this.d.m!; return [...new Set([m.backupKey, ...m.accepted.filter((p) => p.type === 'paper').map((p) => (p.c.change as any).paper.key)].filter(Boolean) as string[])]; }
 
   // --- on the helper (Helper module §2, §4) ---------------------------------------------------------------------
   /** Ends delivered to the helper by a current device: a tombstone names a grant by its signer key (that device's

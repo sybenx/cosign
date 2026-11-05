@@ -1,7 +1,9 @@
-// Joining by an invite code over real relays (core §4.1–§4.2), the joiner's side, as the Kotlin device's `Device.join`:
-// the extension (or any TS device) scans or pastes another device's code, says hello, shows the 6 digits the person types
-// there, then takes the inviter's welcome and the repair sigmas (one from the inviter, one from a server) and builds
-// its shares. Until the welcome, a small joining node on the transport collects them; then the device itself is hosted.
+// Joining over real relays (core §4.1–§4.2), the joiner's side, as the Kotlin device's `Device.join`, both directions:
+//   joinByCode    the extension (or any TS device) scans or pastes another device's invite code and says hello;
+//   joinByShowing it shows its own hello code (a QR the phone scans), and the phone's offer arrives.
+// Either way it shows the 6 digits the person types on the other device, then takes the inviter's welcome and the
+// repair sigmas (one from the inviter, one from a server) and builds its shares. Until the welcome, a small joining node
+// on the transport collects them; then the device itself is hosted.
 
 import { DeviceNode } from './node.ts';
 import { Joiner, parseCode } from '../src/join.ts';
@@ -12,33 +14,50 @@ import type { Transport, Node } from '../runtime/net.ts';
 /** Sigmas a stranger can make the joiner keep: bounded (review 12 L2). */
 const SIGMAS_MAX = 64;
 
-export async function joinByCode(net: Transport & { add<N extends Node>(n: N): N; kill(pub: string): void }, code: string,
-  o: { onCheck: (digits: string) => void; lock?: Lock | null; timeoutMs?: number; name?: string }): Promise<DeviceNode> {
-  const d = new DeviceNode(net, o.name ?? 'device', o.lock ?? null);
+type Net = Transport & { add<N extends Node>(n: N): N; kill(pub: string): void };
+type JoinOptions = { onCheck: (digits: string) => void; lock?: Lock | null; timeoutMs?: number; name?: string };
+
+/** Join with another device's invite code (`keykin:join?…`). */
+export async function joinByCode(net: Net, code: string, o: JoinOptions): Promise<DeviceNode> {
   const invite = parseCode(code);
   if (invite.kind !== 'join') refuse('malformed', 'not an invite code');
-  const j = new Joiner({ n: d.kp.pub, lock: d.lock?.pub ?? null, now: net.now, scanned: invite as any });
+  return join(net, o, (d) => new Joiner({ n: d.kp.pub, lock: d.lock?.pub ?? null, now: net.now, scanned: invite as any }), true);
+}
+/** Join by showing this device's own hello code (`keykin:hello?…`, over `relays`) for another device to scan: `onCode`
+ *  gets the code to show as a QR. The other device's offer starts the exchange. */
+export async function joinByShowing(net: Net, relays: string[], o: JoinOptions & { onCode: (code: string) => void }): Promise<DeviceNode> {
+  return join(net, o, (d) => { const j = new Joiner({ n: d.kp.pub, lock: d.lock?.pub ?? null, now: net.now }); o.onCode(j.helloCode(relays)); return j; }, false);
+}
+
+async function join(net: Net, o: JoinOptions, make: (d: DeviceNode) => Joiner, sayHello: boolean): Promise<DeviceNode> {
+  const d = new DeviceNode(net, o.name ?? 'device', o.lock ?? null);
+  const j = make(d);
   const got: { welcome?: { from: string; body: any } } = {};
   const sigmas = new Map<string, any>();
-  // Only the inviter's welcome counts: `n` is public, and a stranger's would abort the join (review 12 K1).
+  // Only the inviter's welcome counts: `n` is public, and a stranger's would abort the join (review 12 K1). In the
+  // join-code direction the offer names the inviter; its nonce comes after the hello, and the digits with it.
   const joining: Node = { kp: d.kp, handle: (from: string, body: any) => {
+    if (body?.type === 'welcome_offer' && !sayHello) { try { return j.onOffer(from, body, net.now).msg; } catch { return null; } }
+    if (body?.type === 'join_nonce' && !sayHello) { try { j.onNonce(from, body); o.onCheck(j.check); return { type: 'ack' }; } catch { return null; } }
     if (body?.type === 'repair_sigma') {
       const key = `${from}:${body.index}`;
       if (from === j.m || sigmas.size < SIGMAS_MAX) if (!sigmas.has(key)) sigmas.set(key, { ...body, from });
       return { type: 'ack' };
     }
-    if (body?.type === 'welcome' && from === j.m) { got.welcome = { from, body }; return { type: 'ack' }; }
+    if (body?.type === 'welcome' && j.m && from === j.m) { got.welcome = { from, body }; return { type: 'ack' }; }
     return null;
   } };
   net.add(joining);
-  const deadline = Date.now() + (o.timeoutMs ?? 120_000);
+  const deadline = Date.now() + (o.timeoutMs ?? (sayHello ? 120_000 : 600_000));
   let r: ReturnType<Joiner['finish']>;
   try {
-    const h = j.hello();
-    const nonce = await net.send(d.kp, h.to, h.msg);
-    if (nonce?.type !== 'join_nonce') refuse(nonce?.code ?? 'no_nonce');
-    j.onNonce(h.to, nonce);
-    o.onCheck(j.check);
+    if (sayHello) {
+      const h = j.hello();
+      const nonce = await net.send(d.kp, h.to, h.msg);
+      if (nonce?.type !== 'join_nonce') refuse(nonce?.code ?? 'no_nonce');
+      j.onNonce(h.to, nonce);
+      o.onCheck(j.check);
+    }
     // The welcome, and every sigma it needs: the welcome may overtake a server's sigma on the relays.
     for (;;) {
       if (Date.now() > deadline) refuse('timeout', 'no welcome from the inviting device');

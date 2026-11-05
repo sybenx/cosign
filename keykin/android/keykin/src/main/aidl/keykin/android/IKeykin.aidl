@@ -33,6 +33,10 @@ interface IKeykin {
     /** The person typed the new device's 6 digits: true if they match. Then the app starts KeykinApprove with action
      *  "add_invited" (KeykinClient.approve), where the person approves the add with the lock or the paper. */
     boolean inviteTyped(String slot, String digits);
+    /** The other direction: this phone scanned the new device's hello code (the extension shows one as a QR). The
+     *  offer goes, the hello comes back; the new device then shows the 6 digits, typed here with `inviteTyped`, and the
+     *  add is approved on KeykinApprove ("add_invited") as for an invite. {"ok": true} or {"error": code}. */
+    String inviteScanned(String slot, String helloCode);
     /** The membership's end on this phone: its sealed state and key go. */
     oneway void forget(String slot);
 

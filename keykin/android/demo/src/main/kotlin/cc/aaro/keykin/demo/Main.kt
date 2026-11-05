@@ -71,7 +71,7 @@ class Main : Activity() {
         run(JSONObject().put("cmd", cmd).put("code", i.getStringExtra("code") ?: "").put("relays", i.getStringExtra("relays") ?: RELAYS)
             .put("content", i.getStringExtra("content") ?: "gm from the keykin-android demo").put("scopes", i.getStringExtra("scopes") ?: "sign-in,post")
             .put("id", i.getStringExtra("id") ?: "").put("allow", i.getStringExtra("allow") == "true").put("signer", i.getStringExtra("signer") ?: "").put("scope", i.getStringExtra("scope") ?: "")
-            .put("action", i.getStringExtra("action") ?: "").put("key", i.getStringExtra("key") ?: "").put("with", i.getStringExtra("with") ?: "").put("digits", i.getStringExtra("digits") ?: "").put("invite_relays", i.getStringExtra("invite_relays") ?: ""))
+            .put("action", i.getStringExtra("action") ?: "").put("key", i.getStringExtra("key") ?: "").put("with", i.getStringExtra("with") ?: "").put("digits", i.getStringExtra("digits") ?: "").put("invite_relays", i.getStringExtra("invite_relays") ?: "").put("code", i.getStringExtra("code") ?: ""))
     }
     private fun say(x: JSONObject) { (lastSay ?: ::sayHere)(x) }
     private fun sayHere(x: JSONObject) { val line = x.toString(); Log.i("KeykinDemo", line); runOnUiThread { out.append(line + "\n\n") } }
@@ -99,6 +99,7 @@ class Main : Activity() {
                 // approval screen, whose outcome comes back as the state's "last_action".
                 "refresh" -> say(JSONObject().put("refreshed", JSONObject(k.refresh(slot()) ?: "{}")))
                 "invite" -> say(JSONObject(k.invite(slot(), c.optString("invite_relays")) ?: "{}"))
+                "invite_scanned" -> say(JSONObject(k.inviteScanned(slot(), c.getString("code")) ?: "{}").put("scanned", true))
                 "pair_asks" -> say(JSONObject().put("pair_asks", org.json.JSONArray(k.pairAsks(slot()) ?: "[]")))
                 "invite_typed" -> say(JSONObject().put("typed", k.inviteTyped(slot(), c.getString("digits"))))
                 "approve" -> { client.approve(slot(), c.getString("action"), c.optString("key").ifEmpty { null }, c.optString("id").ifEmpty { null }, c.optString("with").ifEmpty { null }); say(JSONObject().put("approving", c.getString("action"))) }

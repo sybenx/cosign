@@ -78,11 +78,23 @@ class Joiner(val n: String, val lock: JSONObject?, now: Long, scanned: Code?) {
     }
 }
 
-/** The inviting device's side (§4.1), invite direction, as TS `Inviter`: the code, the hello checked, the
- *  nonce, and the 6 digits the person types from the new device's screen. */
-class Inviter(val g: String, val m: String, now: Long) {
-    val s: String = hex(ByteArray(16).also { SecureRandom().nextBytes(it) })
-    val x: Long = now + CODE_TTL_S
+/** The inviting device's side (§4.1), either direction, as TS `Inviter`: the code (or the new device's scanned
+ *  hello code and the offer sealed to it), the hello checked, the nonce, and the 6 digits the person types from the new
+ *  device's screen. */
+class Inviter(val g: String, val m: String, now: Long, scanned: Code? = null) {
+    val s: String
+    val x: Long
+    /** Join-code direction: the `n` of the scanned hello code, the only key that may be added. */
+    val expectN: String?
+    init {
+        if (scanned != null) {
+            if (scanned.kind != "hello") refuse("bad_code")
+            if (scanned.x < now) refuse("expired")
+            s = scanned.s; x = scanned.x; expectN = scanned.n
+        } else { s = hex(ByteArray(16).also { SecureRandom().nextBytes(it) }); x = now + CODE_TTL_S; expectN = null }
+    }
+    /** Join-code direction: the offer, sealed to the scanned code's `n`. */
+    fun offer(): Pair<String, JSONObject> = (expectN ?: refuse("no_code")) to JSONObject().put("type", "welcome_offer").put("g", g).put("m", m).put("s", s)
     data class Accepted(val n: String, val lock: JSONObject?, val t: String)
     @Volatile var accepted: Accepted? = null; private set
     @Volatile var confirmed = false; private set
@@ -96,6 +108,7 @@ class Inviter(val g: String, val m: String, now: Long) {
         if (now > x) refuse("expired")
         if (hello.optString("s") != s) refuse("bad_secret")
         if (hello.optString("n") != from) refuse("not_sealed_by_n")
+        if (expectN != null && from != expectN) refuse("not_sealed_by_n", "the join-code direction adds only the scanned n")
         val lock = hello.opt("lock") as? JSONObject
         val t = hex(ByteArray(16).also { SecureRandom().nextBytes(it) })
         accepted = Accepted(from, lock, t)

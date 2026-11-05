@@ -813,6 +813,18 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     /** Inviting (§4.1–§4.2): the code to show, then `addInvited` once the person typed the new device's digits. */
     @Volatile var inviter: Inviter? = null
     fun invite(relays: List<String>): String = Inviter(g, pub, net.now).also { inviter = it }.invite(relays)
+    /** The other direction (§4.1): this device scanned the new device's hello code (the extension shows one). It sends
+     *  the offer, takes the hello, answers the nonce; the new device then shows the 6 digits the person types here,
+     *  and `addInvited` goes on as for an invite. */
+    fun inviteScanned(helloCode: String) {
+        val inv = Inviter(g, pub, net.now, parseCode(helloCode)).also { inviter = it }
+        val (to, offer) = inv.offer()
+        val hello = net.send(sk, to, offer)
+        if (hello.optString("type") != "join_hello") refuse(hello.optString("code").ifEmpty { "no_hello" })
+        val nonce = inv.onHello(to, hello, net.now)
+        val ack = net.send(sk, to, nonce)
+        if (ack.optString("type") != "ack") refuse(ack.optString("code").ifEmpty { "no_ack" })
+    }
     /** §4.2 steps 2–4 for the invited device: its add (with its lock, approved by this device's lock), a
      *  repair of each of its indices by this device and one server, sealed to it, and the welcome. */
     fun addInvited(): String = addInvited(null)

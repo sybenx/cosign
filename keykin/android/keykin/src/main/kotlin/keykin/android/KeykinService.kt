@@ -126,6 +126,13 @@ class KeykinService : Service() {
                 JSONObject().put("invite", code).toString()
             }
         } catch (e: Exception) { errorJson(e) }
+        override fun inviteScanned(slot: String, helloCode: String): String? = try {
+            val d = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
+            // Off the membership queue: the offer and the hello wait on the relays.
+            slow.submit<Unit> { d.inviteScanned(helloCode) }.get(60, java.util.concurrent.TimeUnit.SECONDS)
+            onWork { invites[slot] = JSONObject().put("status", "waiting"); publish(slot) }
+            JSONObject().put("ok", true).toString()
+        } catch (e: java.util.concurrent.ExecutionException) { errorJson((e.cause as? Exception) ?: e) } catch (e: Exception) { errorJson(e) }
         override fun inviteTyped(slot: String, digits: String): Boolean = onWork {
             val d = Memberships.signer(slot).device ?: return@onWork false
             val ok = try { d.inviter?.typed(digits.trim()) == true } catch (_: Exception) { false }

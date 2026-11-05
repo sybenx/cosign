@@ -107,6 +107,15 @@ fun main(args: Array<String>) {
                         d.submit(list, ap); JSONObject().put("devices", JSONArray(d.memberKeys())).put("wiped", d.wiped)
                     }
                     // The membership as this device sees it, without fetching (a Devices screen opened earlier).
+                    // The other join direction: scan a new device's hello code, type its digits, approve the add with this
+                    // device's lock or, lockless, the paper's words.
+                    "invite_scanned" -> { d.inviteScanned(c.getString("code")); JSONObject().put("offered", true) }
+                    "invite_typed" -> JSONObject().put("typed", d.inviter?.typed(c.getString("digits")) == true)
+                    "add_invited" -> {
+                        val list = d.inviteAddList()
+                        val ap = if (list == null || d.lock != null) null else { val sk = Backup.readBackupWords(c.getString("words").trim().split(Regex("\\s+"))); try { d.approveWithPaper(list, sk) } finally { sk.fill(0) } }
+                        JSONObject().put("added", d.addInvited(ap))
+                    }
                     "devices" -> JSONObject().put("devices", JSONArray(d.memberKeys())).put("wiped", d.wiped)
                     "quit" -> break
                     "seeds" -> JSONObject().put("records", d.seedRecords().size).put("held", JSONArray(d.seedOnlyHeld()))

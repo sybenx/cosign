@@ -24,6 +24,7 @@ const sameUndo = (a: any, b: any) => a.addr === b.addr;
 import { destructive, isReplaceable, type Ev } from '../src/destructive.ts';
 import { DataKeys } from './datakey.ts';
 import { VaultCalls } from './vaultcalls.ts';
+import { DoorRequests } from './doors-request.ts';
 import { memberSign } from './membersig.ts';
 import { Members } from './members.ts';
 import { extract } from '@noble/hashes/hkdf.js';
@@ -31,7 +32,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { cbc } from '@noble/ciphers/aes.js';
 import { base64 } from '@scure/base';
 import { enrollReply } from '../src/serverprofile.ts';
-import { makeHeir, pieceAckDigest } from '../src/backup.ts';
+import { makeHeir, pieceAckDigest, readBackupWords } from '../src/backup.ts';
 import { backupPieces } from '../src/slip39.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
 import { checkDelivery, checkItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
@@ -84,6 +85,12 @@ export class DeviceNode implements Node {
     const ch = await this.bus.send(this.keptSecret!, s.key, msg('challenge', this.g, this.epochId, 'ask'));
     const host = [...this.m!.members.values()].find((x) => x.key === s.key)!.host!;
     return approvePaper(this.g, this.epochId, approvalListOf(list), this.now + 3600, this.kp, this.keptSecret!, ch.challenge, host);
+  }
+  /** The paper check (Backup): whether `words` (24) are this account's current paper. Nothing leaves the device. */
+  checkPaper(words: string[]): boolean {
+    let sk: Uint8Array;
+    try { sk = readBackupWords(words); } catch { return false; }
+    try { return pubOf(sk) === this.m?.backupKey; } finally { sk.fill(0); }
   }
   /** A `paper` approval from the paper itself (its secret, read from its 24 words or QR), with a challenge the
    *  server bound to the backup key (§6.2). */
@@ -194,7 +201,7 @@ export class DeviceNode implements Node {
    *  watches included (review 9 H2). */
   wipe() {
     this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() };
-    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.meta?.clear(); this.history?.clear(); this.guard?.clear(); this.vault?.clear(); this.undoOutbox = [];
+    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.meta?.clear(); this.history?.clear(); this.guard?.clear(); this.vault?.clear(); this.doors?.clear(); this.undoOutbox = [];
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.reissued.clear(); this.reissueEphs.clear(); this.blamed.clear(); this.forceReissue.clear();
     this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
@@ -789,7 +796,7 @@ export class DeviceNode implements Node {
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       reissued: [...this.reissued], reissueEphs: [...this.reissueEphs], blamed: [...this.blamed], forceReissue: [...this.forceReissue],
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox, seedOnly: [...this.seedOnly], vaultApps: this.vault.dump(),
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox, seedOnly: [...this.seedOnly], vaultApps: this.vault.dump(), doors: this.doors.dump(),
       helperReport: this.helperReport, unnamed: [...this.unnamed], report: { key: this.reportKey, at: this.reportAt, seq: this.reportSeq } });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
@@ -815,7 +822,7 @@ export class DeviceNode implements Node {
     d.dataKeys.load(x.dkHistory);
     d.members.load(x.members);
     d.#lists = new Map(x.lists ?? []);
-    d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? []; d.seedOnly = new Map(x.seedOnly ?? []); d.vault.load(x.vaultApps);
+    d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? []; d.seedOnly = new Map(x.seedOnly ?? []); d.vault.load(x.vaultApps); d.doors.load(x.doors);
     d.helperReport = x.helperReport ?? null; d.unnamed = new Map(x.unnamed ?? []);
     d.reportKey = x.report?.key ?? ''; d.reportAt = x.report?.at ?? 0; d.reportSeq = x.report?.seq ?? 0;
     if (x.recEv && x.state) {
@@ -1111,6 +1118,8 @@ export class DeviceNode implements Node {
   nip46 = new Nip46Home(this);
   /** The device calls for vault apps on this machine (Doors 20 §3.7). */
   vault = new VaultCalls(this);
+  /** A site's requests, whatever the door (Doors §1–§2): the NIP-46 home's, and the extension's NIP-07. */
+  doors = new DoorRequests(this);
   /** The account's grants (Doors §1–§2): this device's, signed by it, and every other device's, for listing. */
   grants = ((dev: DeviceNode) => new GrantStore({
     get g() { return dev.g; }, get kp() { return dev.kp; }, get baseDk() { return dev.baseDk; }, get now() { return dev.now; },
