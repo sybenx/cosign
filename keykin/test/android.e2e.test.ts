@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { RelayNet } from '../runtime/relay.ts';
-import { createByDkg } from '../sim/account.ts';
+import { createByDkg, invite } from '../sim/account.ts';
+import { backupWords } from '../src/backup.ts';
 import { Inviter } from '../src/join.ts';
 import { pickSalt } from '../src/codes.ts';
 import { takenIndices } from '../src/membership.ts';
@@ -28,13 +29,13 @@ const apk = join(root, 'android/demo/build/outputs/apk/debug/demo-debug.apk');
 const haveNak = spawnSync('nak', ['--version']).status === 0;
 const procs: ChildProcess[] = []; let net: RelayNet | undefined;
 after(() => { net?.close(); procs.forEach((p) => p.kill('SIGTERM')); });
-// The demo's default relays: the emulator reaches the host's loopback as 10.0.2.2.
-const ports = [17311, 17312];
-const relays = ports.map((p) => `ws://127.0.0.1:${p}`);
-const appRelays = ports.map((p) => `ws://10.0.2.2:${p}`).join(',');
+// The demo's default relays: the emulator reaches the host's loopback as 10.0.2.2. Each test has its own stack.
+let ports = [17311, 17312], serverBase = 18821;
+let relays = ports.map((p) => `ws://127.0.0.1:${p}`);
+let appRelays = ports.map((p) => `ws://10.0.2.2:${p}`).join(',');
 
 function server(k: number, dir: string): Promise<string> {
-  const proc = spawn(process.execPath, [join(root, 'server/main.ts')], { env: { PATH: process.env.PATH, KEYKIN_RELAYS: relays.join(','), KEYKIN_DATA: join(dir, 'data'), KEYKIN_KEYS: join(dir, 'keys'), KEYKIN_PORT: String(18821 + k) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const proc = spawn(process.execPath, [join(root, 'server/main.ts')], { env: { PATH: process.env.PATH, KEYKIN_RELAYS: relays.join(','), KEYKIN_DATA: join(dir, 'data'), KEYKIN_KEYS: join(dir, 'keys'), KEYKIN_PORT: String(serverBase + k) }, stdio: ['ignore', 'pipe', 'inherit'] });
   procs.push(proc);
   return new Promise((res, rej) => { let out = ''; proc.stdout!.on('data', (c) => { out += c; const l = out.split('\n').find((x) => x.includes('"started"')); if (l) res(JSON.parse(l).host); }); proc.on('exit', (c) => rej(new Error(`server exited ${c}`))); });
 }
@@ -59,7 +60,8 @@ const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
 const run = (cmd: string, extra: string[] = []) => sh('shell', 'am', 'start', '-n', 'cc.aaro.keykin.demo/.Drive', '--es', 'cmd', cmd, '--es', 'relays', q(appRelays),
   ...extra.map((x) => (x.startsWith('--') ? x : q(x))));
 
-test('the keykin-android demo joins by invite code on an emulator, checked both ways, and signs', { skip: (!serial && 'set KEYKIN_ANDROID_SERIAL to an emulator this test may use') || (!haveNak && 'nak not installed') || (!existsSync(apk) && 'build the demo: (cd android && ./gradlew :demo:assembleDebug)'), timeout: 600_000 }, async () => {
+/** A stack on `ports`, an account made by DKG, and the demo app joined to it by invite code (the person's digits typed). */
+async function joined() {
   for (const u of relays) procs.push(spawn('nak', ['serve', '--hostname', '127.0.0.1', '--port', u.split(':').pop()!], { stdio: 'ignore' }));
   await new Promise((r) => setTimeout(r, 1500));
   const fronts = await Promise.all([0, 1, 2].map((k) => server(k, mkdtempSync(join(tmpdir(), 'kk-an-')))));
@@ -92,6 +94,11 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   const joined = await next();
   assert.equal(joined.device, n, JSON.stringify(joined));
 
+  return { acc, A, next, n, net };
+}
+
+test('the keykin-android demo joins by invite code on an emulator, checked both ways, and signs', { skip: (!serial && 'set KEYKIN_ANDROID_SERIAL to an emulator this test may use') || (!haveNak && 'nak not installed') || (!existsSync(apk) && 'build the demo: (cd android && ./gradlew :demo:assembleDebug)'), timeout: 600_000 }, async () => {
+  const { acc, A, next, n, net } = await joined();
   run('sign', ['--es', 'content', 'gm from keykin-android']);
   const ev = await next();
   assert.equal(ev.error, undefined, JSON.stringify(ev));
@@ -148,4 +155,44 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   run('answer', ['--es', 'id', String(card.card.id), '--es', 'allow', 'true']);
   const listEv = lineOf(await cut);
   assert.ok(verifyEvent(listEv) && listEv.kind === 3 && listEv.tags.length === 1, JSON.stringify(listEv));
+
+});
+
+test('on the emulator, the phone reports a device lost after another joined unseen, and checks the paper', { skip: (!serial && 'set KEYKIN_ANDROID_SERIAL to an emulator this test may use') || (!haveNak && 'nak not installed') || (!existsSync(apk) && 'build the demo: (cd android && ./gradlew :demo:assembleDebug)'), timeout: 900_000 }, async () => {
+  net?.close();
+  ports = [17331, 17332]; serverBase = 18841;
+  relays = ports.map((p) => `ws://127.0.0.1:${p}`); appRelays = ports.map((p) => `ws://10.0.2.2:${p}`).join(',');
+  const { acc, A } = await joined();
+  // Report lost on the phone (the dry run's real path, result 6): a tablet joins while the phone isn't told; the phone
+  // reports the laptop lost on its Devices and paper screen with the paper's words (it is lockless); the redeal must
+  // include the tablet, which the phone first learns of by fetching. Then the paper check, right and wrong words.
+  const C = await invite(acc, A, (l) => A.approveLock(l));
+  const words = backupWords(acc.paper.sk).join(' ');
+  const tap = (text: string) => {
+    sh('shell', 'uiautomator', 'dump', '/sdcard/kk.xml');
+    const xml = sh('shell', 'cat', '/sdcard/kk.xml').stdout; sh('shell', 'rm', '-f', '/sdcard/kk.xml');
+    const node = xml.split('>').find((x) => x.toLowerCase().includes(`text="${text.toLowerCase()}"`) && x.includes('package="cc.aaro.keykin.demo"'));
+    const m = node && /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(node);
+    assert.ok(m, `no "${text}" on screen`);
+    sh('shell', 'input', 'tap', String((+m![1] + +m![3]) >> 1), String((+m![2] + +m![4]) >> 1));
+  };
+  const screenText = () => { sh('shell', 'uiautomator', 'dump', '/sdcard/kk.xml'); const x = sh('shell', 'cat', '/sdcard/kk.xml').stdout; sh('shell', 'rm', '-f', '/sdcard/kk.xml'); return x.toLowerCase(); };
+  const typeWords = (w: string) => { tap('the paper\'s 24 words'); sh('shell', 'input', 'text', q(w.replace(/ /g, '%s'))); sh('shell', 'input', 'keyevent', '111'); };
+  const until = async (f: () => boolean, ms = 90_000) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 2000))) if (f()) return true; return false; };
+  sh('shell', 'am', 'start', '-W', '-n', 'cc.aaro.keykin.demo/.Main');
+  await new Promise((r) => setTimeout(r, 3000));
+  tap('Devices and paper');
+  assert.ok(await until(() => screenText().includes(`report ${A.kp.pub.slice(0, 12)}`)), 'the Devices screen lists the laptop');
+  typeWords(words);
+  tap(`Report ${A.kp.pub.slice(0, 12)}… lost`);
+  assert.ok(await until(() => screenText().includes('reported lost with the paper'), 240_000), 'not reported; the screen: ' + (screenText().match(/text="[^"]+"/g) ?? []).slice(0, 4).join(' ') + ' log: ' + sh('logcat', '-d', '-t', '40', '-s', 'KeykinSigner', 'Keykin', 'AndroidRuntime').stdout.slice(-800));
+  await C.fetch();
+  assert.ok(C.m!.removed.has(A.kp.pub) && !C.wiped, 'the tablet applied the redeal: it was dealt to');
+  assert.equal((await C.sign({ kind: 1, content: 'the tablet still posts', tags: [] })).pubkey, acc.g);
+  typeWords(words); tap('Check the paper');
+  assert.ok(await until(() => screenText().includes('the paper is this account\'s')), 'the paper checks');
+  typeWords(words.replace(/^\S+/, 'zoo')); tap('Check the paper');
+  assert.ok(await until(() => screenText().includes('not this account\'s paper')), 'a wrong word doesn\'t');
+  sh('shell', 'input', 'keyevent', '4');
+  sh('uninstall', 'cc.aaro.keykin.demo');
 });
