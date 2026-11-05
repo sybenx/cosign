@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 20 · 2026-11-04 · module of [Keykin Core](../core.md) draft 14.21 · not built
+Draft 21 · 2026-11-05 · module of [Keykin Core](../core.md) draft 14.22 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -46,7 +46,7 @@ a request needs by looking at what it is.
 | `lists` | the profile (0); follows, mutes and other lists (3, 10000, and the other list and set kinds Device policy §2 lists exactly); relay lists (10002, 10050); and decrypting the private items of those lists | the first time it tries |
 | `dms` | NIP-04/NIP-44 encrypt and decrypt **with other people's keys**, NIP-59 unwrap, the person's own sent NIP-17 copies (below), and NIP-55 `decrypt_zap_event` | the first time: "Let *site* read and send your messages?" |
 | `wallet` | NIP-60/61 wallet events (17375, 37375, 7375, 7376, 7374), payment targets (10019), and decrypting them | the first time: "Let *site* use your ecash wallet?" |
-| `private-data` | any other **decrypt** of something encrypted to the account's own key (notes, private app data) | the first time: "Let *site* read your private notes and app data?" |
+| `private-data` | any other **decrypt** of something encrypted to the account's own key (notes, private app data): the shared to-self pool, never app-private records kept under derived keys (core §4.5) | the first time: "Let *site* read your private notes and app data, from any app?" |
 | `vaults` | the extension's vault API (§3.7), per vault: `read`, or `write` (put in the account's own vaults, contribute to shared ones); NIP-07 only | through the `list()` picker only (§3.7), naming the vaults: "Let *site* read *Family photos*?" |
 
 - **Which scope a decrypt needs.** The device parses the peer key as a 32-byte x-coordinate and compares
@@ -232,7 +232,7 @@ for listing. The wildcard is also published in the ending device's event.
   or 30811 (AUTH, CERT, KEYRING), or a kind 5 that targets one by `e`, `a` or `k`, or a kind 13 seal whose content it just encrypted from a kind-4812 rumor; and no door encrypts (NIP-44 or NIP-04), for a site, a plaintext that parses as a kind-4812 rumor or has the vault-payload shape below. And no door ever
   releases to a site, under any scope, a plaintext that parses as a rumor of kind 4812 (INVITE), or whose top-level JSON (or, for a rumor, its content's top-level JSON) is an object with a `vault` member together with `keys`, `keys_ref`, `secret`, `inboxes` or `genesis` (keyring entries, invitations, rekey wraps), whether from a NIP-59 unwrap, a NIP-44 or NIP-04
   decrypt, or a decrypt-to-self. So a DM client with `dms` can't read the vaults shared with the account,
-  and a notes site with `private-data` can't read its keyring. Vault data reaches a site only through §3.7. These guards bind the doors only; vault apps on the same machine (Marble, Onyx) get exactly these operations through the device API instead (§3.7). These kind numbers are the vaults spec's and provisional, like core's.
+  and a notes site with `private-data` can't read its keyring. Vault data reaches a site only through §3.7. These guards bind the doors only; vault apps on the same machine (any notes or photo app) get exactly these operations through the device API instead (§3.7). These kind numbers are the vaults spec's and provisional, like core's.
 
 ## 3. The doors
 
@@ -319,15 +319,19 @@ digest. Android apps on the phone share the one member (core §4.6).
 
 ### 3.4 The QRST signer-ticket
 
-The site shows a QRST code for the `signer-ticket` profile (`{pubkey, signer, relays, t, expires}`). A
-member device scans it, shows the site as "says it is *name*", the person taps **Connect** (choosing
-scopes), and the site redeems the ticket as a NIP-46 `connect` secret. QRST check level `none` is allowed
-for a camera scan or a verified App Link; `compare` for a pasted link, the `qrst:` handoff or a custom
-scheme. A member app MUST work with no bounce host reachable.
+The site offers a QRST code for the `signer-ticket` profile (`{pubkey, signer, relays, t, expires}`),
+by default through the neutral `qrst:` hand-off, which any member app on the device may answer, and as
+a code to scan. A member device takes it, shows the site as "says it is *name*", the person taps
+**Connect** (choosing scopes), and the site redeems the ticket as a NIP-46 `connect` secret. QRST check
+level `none` is allowed for a camera scan or a verified App Link; `compare` for the `qrst:` hand-off, a
+pasted link or a custom scheme. A member app MUST work with no bounce host reachable, and no host,
+domain or app is named by this spec as a default: any QRST host is only an example.
 
-*Guidance for sites, not rules:* skip your own "Sign in as …?" only when you handed the code to one
-specific app by a verified `https` App Link. In people's words, say "Sign in with your phone" and
-"sign-in app", never "signer", "key", "relay" or "Nostr".
+*Guidance for sites, not rules:* offer the neutral `qrst:` hand-off first, so the person's own app
+answers, whichever it is; send the code to one specific app by an App Link only if the person chose that
+app. Skip your own "Sign in as …?" only in that App Link case. Label the button plainly, **Sign in**,
+never with a product's name; in people's words, say "Sign in with your phone" and "sign-in app", never
+"signer", "key", "relay" or "Nostr".
 
 ### 3.5 The same-device door on iPhone
 
@@ -453,6 +457,10 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
   when they change.
 
 ## Changes
+
+- **Draft 21**, a neutrality pass: the neutral `qrst:` hand-off comes first and no host or app is a
+  default; sites label the button plain **Sign in**; no app is named.
+
 
 - **Draft 20**, for the vaults spec (vaults.md §12.3): the extension's vault API (§3.7) with a per-vault
   `vaults` scope, NIP-07 only; the member's own vault roots with `ksig`; the extension–desktop handover

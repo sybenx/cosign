@@ -80,7 +80,7 @@ being published, because it is already signed; **Unschedule** asks the publisher
 
 1. The friend installs a Keykin app on an always-on machine (a desktop app left running, or a home-server
    package) and picks **Be a helper**. It shows a join code (core §4.1) carrying its host key, and tells
-   the friend: "Your npub will be listed in *name*'s account." As soon as the hello names the account
+   the friend: "Your npub will be listed in *name*'s account." As soon as the offer names the account
    (core §4.1, before any seat change), it checks the machine (its own apps, and extensions over native
    messaging, and a machine-wide marker file every Keykin app writes, so other user accounts on the same
    computer count too); the add screen also asks "Does anyone else use this computer with this account?";
@@ -97,7 +97,7 @@ being published, because it is already signed; **Unschedule** asks the publisher
    delete anything, unless it and one of your servers work against you together: then they hold your whole
    key. It can sign in to your relays as you, which can show it posts in private relay groups and who
    writes to you. Any of your devices can stop it at once."
-3. The typed join check (core §4.1), then the approval (a lock, a second device, or the paper), then
+3. The join check (core §4.1): the friend's device that scanned the helper's code shows the digits, and the person types them into the helper's setup page, which then confirms; then the approval (a lock, a second device, or the paper), then
    `[seat helper→H, redeal]`. The device and one server repair the helper seat (core §6.7.6 F6).
 
 The helper's member entry is `{"key", "kind": "helper", "shares": <the helper seat>, "host": <its host

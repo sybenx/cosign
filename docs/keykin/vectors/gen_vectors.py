@@ -258,4 +258,18 @@ C["enrol_keys"] = {"enrol_secret": hx(enrol_secret), "g": hx(g), "nonce": hx(enr
     "member_sk": "%064x" % msk, "member_counter": mc, "vapid_sk": "%064x" % vsk, "vapid_counter": vc,
     "note": "Server profile §4: HKDF-SHA256, empty salt, ikm = enrol secret, info = label ‖ g ‖ nonce ‖ counter byte, 32 bytes; cross-checked by the reference implementation"}
 
+dkS = hkdf(base_dk + b"".join(seeds), b"keykin-dk/1")
+idents = ["android:org.example.notes:" + "ab" * 32, "apple:ABCDE12345:org.example.notes"]
+id_domains = ["id-" + hx(sha(i.encode())) + "/notes/1" for i in idents]
+def info(domain, msg): return domain.encode() + b"\x00" + msg
+C["app_private"] = {
+    "identity_domains": [{"identity": i, "domain": d} for i, d in zip(idents, id_domains)],
+    "derive": [{"dk_S": hx(dkS), "domain": d, "bytes": hx(b"record-1"),
+                "key": hx(hkdf(dkS, info(d, b"record-1")))} for d in id_domains + ["nostr-vault/owner/1"]],
+    "refused": [{"domain": "id-" + hx(sha(idents[0].encode())) + "x/notes/1", "why": "malformed identity domain"},
+                {"domain": "id-" + hx(sha(idents[0].encode())) + "/notes/1", "caller": idents[1], "why": "identity domain of another app"},
+                {"caller": "ext:chrome:abcdefghijklmnopabcdefghijklmnop", "domain": "notes.example/data/1", "why": "extensions derive only under open domains"},
+                {"caller": "linux:/usr/bin/notes", "why": "no identity domain on Linux or Windows"}],
+    "note": "core §4.5: identity domain = 'id-' ‖ lowercase hex SHA-256(utf8 identity), first segment exactly; derive = HKDF-SHA256(empty salt, ikm = dk(S), info = utf8(domain) ‖ 0x00 ‖ bytes, 32 bytes)"}
+
 print(json.dumps(out, indent=1, ensure_ascii=False))
