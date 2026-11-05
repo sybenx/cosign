@@ -218,6 +218,8 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                     // At most 300 encryptions to self an hour per site: each becomes a metadata record (review 17 H2).
                     if (need == "post" && !budget(g.signer)) return err("try-later: too many encryptions; wait a while")
                     // An encryption to self is recorded for this grant: evidence for its later decrypts.
+                    // Doors 20 §2: never a vault invitation or vault payload encrypted for a site.
+                    if (Doors.vaultPlaintext(params[1])) return err("declined: vault material is the vault apps' own")
                     ok(if (method == "nip44_encrypt") d.nip44(params[0], params[1], true, "${d.pub}:${g.entry}") else d.nip04(params[0], params[1], true))
                 }
                 "nip44_decrypt", "nip04_decrypt" -> {
@@ -225,7 +227,9 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                     val peer = params[0].lowercase()
                     if (peer != d.g) {
                         if (!has(g, "dms")) return ask("dms")
-                        return ok(if (method == "nip44_decrypt") d.nip44(peer, params[1], false) else d.nip04(peer, params[1], false))
+                        val text = if (method == "nip44_decrypt") d.nip44(peer, params[1], false) else d.nip04(peer, params[1], false)
+                        // Doors 20 §2: never vault material to a site, under any scope.
+                        return if (Doors.vaultPlaintext(text)) err("declined: vault material reaches a site only through the vault API") else ok(text)
                     }
                     // To self: a grant with no to-self scope is refused before any round; then the scope the bytes'
                     // evidence and plaintext need, checked whatever it is (review 16 M1, M9), one message for every class.
@@ -235,6 +239,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                     val need = Grants.scopeForDecrypt(d.g, peer, plain, if (method == "nip44_decrypt") params[1] else null, d.evidence, "${d.pub}:${g.entry}")
                     if (need == "malformed") return err("declined: not a canonical payload")
                     if (!has(g, need)) return err("permission: needs your OK on your phone")
+                    if (Doors.vaultPlaintext(plain)) return err("declined: vault material reaches a site only through the vault API")
                     ok(plain)
                 }
                 else -> err("unsupported: $method")

@@ -18,7 +18,7 @@ import { what } from '../src/codes.ts';
 import { msg } from '../src/msg.ts';
 import { unwrap } from '../src/transport.ts';
 import type { DeviceNode } from './node.ts';
-import { siteGuard } from './doors.ts';
+import { siteGuard, vaultPlaintext } from './doors.ts';
 import { scopesForEvent, scopeForDecrypt, expired, type Scope } from './grants.ts';
 
 export const KIND_NIP46 = 24133;
@@ -185,7 +185,7 @@ export class Nip46Home {
         case 'logout': await this.end(g.signer); return { result: 'ack' };
         case 'sign_event': {
           const ev = strictJson(String(params[0]));
-          siteGuard({ kind: ev?.kind, tags: Array.isArray(ev?.tags) ? ev.tags : [] }, this.d.g, this.#backupKeys(), this.d.protectedIds);
+          siteGuard({ kind: ev?.kind, tags: Array.isArray(ev?.tags) ? ev.tags : [] }, this.d.g, this.#backupKeys(), this.d.protectedIds, (id) => this.d.history.get(id)?.kind);
           const needs = scopesForEvent(Number(ev?.kind), Array.isArray(ev?.tags) ? ev.tags : [], null);
           if (needs === 'declined') return { error: 'declined: a deletion by token, or a token for no host, is never a site\'s to get signed' };
           for (const n of needs) if (!this.#has(g, n)) return ask(n);
@@ -243,6 +243,8 @@ export class Nip46Home {
         case 'nip44_encrypt': case 'nip04_encrypt': {
           // Encrypting to the account's own key is `post`; to anyone else, `dms`.
           const peer = String(params[0]);
+          // Doors 20 §2: no door encrypts a vault invitation or vault payload for a site.
+          if (vaultPlaintext(String(params[1]))) return { error: 'declined: vault material is the vault apps\' own' };
           if (!this.#has(g, peer.toLowerCase() === this.d.g ? 'post' : 'dms')) return ask(peer.toLowerCase() === this.d.g ? 'post' : 'dms');
           // At most 300 encryptions to self an hour per site: each becomes a metadata record (review 17 H2).
           if (peer.toLowerCase() === this.d.g && !this.#budget(g.signer)) return { error: 'try-later: too many encryptions; wait a while' };
@@ -256,7 +258,9 @@ export class Nip46Home {
           // scope its plaintext needs (lists, wallet, dms for its own NIP-17 copies, private-data otherwise).
           if (peer.toLowerCase() !== this.d.g) {
             if (!this.#has(g, 'dms')) return ask('dms');
-            return { result: method === 'nip44_decrypt' ? await this.d.nip44(peer, String(params[1]), false) : await this.d.nip04(peer, String(params[1]), false) };
+            const text = method === 'nip44_decrypt' ? await this.d.nip44(peer, String(params[1]), false) : await this.d.nip04(peer, String(params[1]), false);
+            // Doors 20 §2: never a vault invitation or vault secret to a site, under any scope (a `dms` client included).
+            return vaultPlaintext(text) ? { error: 'declined: vault material reaches a site only through the vault API' } : { result: text };
           }
           // A grant holding none of the to-self scopes is refused before any round (review 16 M9).
           const e = g.entry ? this.d.grants.own.get(g.entry) : undefined;
@@ -265,6 +269,7 @@ export class Nip46Home {
           const need = scopeForDecrypt(this.d.g, peer.toLowerCase(), plain, method === 'nip44_decrypt' ? { payload: String(params[1]), evidence: this.d.evidence, owner: `${this.d.kp.pub}:${g.entry}` } : {});
           if (need === 'malformed') return { error: 'declined: not a canonical payload' };
           // One message for every class, so a refusal never says what the ciphertext is (review 16 M9).
+          if (vaultPlaintext(plain)) return { error: 'declined: vault material reaches a site only through the vault API' };
           return this.#has(g, need) ? { result: plain } : { error: 'permission: needs your OK on your phone' };
         }
         default: return { error: `unsupported: ${method}` };

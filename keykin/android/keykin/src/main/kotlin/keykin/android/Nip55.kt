@@ -122,8 +122,13 @@ object Nip55 {
             when (r.type) {
                 "get_public_key" -> out.putExtra("result", d.g).putExtra("package", a.packageName)
                 "sign_event" -> sign(d, r.payload, owner, screen = true).let { out.putExtra("result", it.getString("sig")).putExtra("signature", it.getString("sig")).putExtra("event", it.toString()) }
-                "nip44_encrypt", "nip44_decrypt" -> out.putExtra("result", d.nip44(r.peer, r.payload, r.type.endsWith("encrypt"), owner))
-                "nip04_encrypt", "nip04_decrypt" -> out.putExtra("result", d.nip04(r.peer, r.payload, r.type.endsWith("encrypt")))
+                // Doors 20 §2: no vault material encrypted for an app, nor released to one, even on the screen.
+                "nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt" -> {
+                    if (r.type.endsWith("encrypt") && keykin.Doors.vaultPlaintext(r.payload)) return deny(a, r)
+                    val res = if (r.type.startsWith("nip44")) d.nip44(r.peer, r.payload, r.type.endsWith("encrypt"), owner) else d.nip04(r.peer, r.payload, r.type.endsWith("encrypt"))
+                    if (r.type.endsWith("decrypt") && keykin.Doors.vaultPlaintext(res)) return deny(a, r)
+                    out.putExtra("result", res)
+                }
                 else -> return deny(a, r)
             }
             if (remember && scope != null && scope != "malformed") Memberships.grant(slot, pkg, r.caller ?: pkg, listOf(scope))

@@ -44,6 +44,8 @@ class Nip55Provider : ContentProvider() {
                 "NIP44_ENCRYPT", "NIP04_ENCRYPT" -> {
                     if ((if (peer.lowercase() == d.g) "post" else "dms") !in grant.scopes || !budget("crypt:${grant.id}", 300)) return null
                     // An encryption to self is this grant's: evidence for its later decrypts (Doors §1).
+                    // Doors 20 §2: never a vault invitation or payload encrypted for an app.
+                    if (keykin.Doors.vaultPlaintext(payload)) return null
                     row("result" to if (type.startsWith("NIP44")) d.nip44(peer, payload, true, "${d.pub}:${grant.id}") else d.nip04(peer, payload, true))
                 }
                 "NIP44_DECRYPT", "NIP04_DECRYPT" -> {
@@ -54,7 +56,7 @@ class Nip55Provider : ContentProvider() {
                     val plain = if (type.startsWith("NIP44")) d.nip44(peer, payload, false) else d.nip04(peer, payload, false)
                     // With someone else's key, dms; to the account itself, the scope its evidence and plaintext need.
                     val need = Grants.scopeForDecrypt(d.g, peer.lowercase(), plain, if (type.startsWith("NIP44")) payload else null, d.evidence, "${d.pub}:${grant.id}")
-                    if (need !in grant.scopes) return null
+                    if (need !in grant.scopes || keykin.Doors.vaultPlaintext(plain)) return null
                     row("result" to plain)
                 }
                 else -> null

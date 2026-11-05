@@ -6,9 +6,38 @@
 // never a wallet's unless the app says so (review 15 M9).
 package keykin
 
+import org.json.JSONObject
+
 object Doors {
+    /** Doors 20 §2: the vaults spec's machinery (AUTH, CERT, KEYRING) and invitations (provisional numbers). */
+    val VAULT_KINDS = setOf(4810, 4811, 30811)
+    const val KIND_VAULT_INVITE = 4812
+    private val VAULT_SECRETS = listOf("keys", "keys_ref", "secret", "inboxes", "genesis")
+    /** The strict parser's reading; text it refuses that a site's lenient parser might still read (duplicate keys, say)
+     *  counts as vault material when it names `vault` or kind 4812 at all, so nothing slips through on a parse gap. */
+    private object Unreadable
+    private fun parse(t: String): Any? = try { Json.parse(t) } catch (_: Exception) { if (t.contains("\"vault\"") || Regex("\"kind\"\\s*:\\s*4812\\b").containsMatchIn(t)) Unreadable else null }
+    private fun vaultShape(x: Any?) = x is JSONObject && x.has("vault") && VAULT_SECRETS.any { x.has(it) }
+    /** A plaintext no site may get or have encrypted: a kind-4812 rumor, or an object with `vault` and a secret field,
+     *  at the top level or in a rumor's content (as TS `vaultPlaintext`). */
+    fun vaultPlaintext(text: String?): Boolean {
+        if (text == null) return false
+        val x = parse(text)
+        if (x === Unreadable || vaultShape(x)) return true
+        if (x is JSONObject && (x.opt("kind") as? Number)?.toLong() != null && x.opt("content") is String) {
+            if ((x.opt("kind") as Number).toLong() == KIND_VAULT_INVITE.toLong()) return true
+            val inner = parse(x.getString("content")); if (inner === Unreadable || vaultShape(inner)) return true
+        }
+        return false
+    }
     fun siteGuard(d: Device, kind: Int, tags: List<List<String>>) {
         if (kind == 30242 || kind == 24302) refuse("declined", "account machinery")
+        // Doors 20 §2: vault machinery is the vault apps' own, never a site's; nor a deletion aimed at it by e, a or k.
+        if (kind in VAULT_KINDS) refuse("declined", "vault machinery is never a site's to sign")
+        if (kind == 5) for (t in tags) { if (t.size < 2) continue
+            if (t[0] == "k" && t[1].toIntOrNull() in VAULT_KINDS) refuse("declined", "a deletion of vault machinery")
+            if (t[0] == "a" && t[1].substringBefore(':').toIntOrNull() in VAULT_KINDS) refuse("declined", "a deletion of vault machinery")
+            if (t[0] == "e" && d.history.get(t[1])?.kind in VAULT_KINDS) refuse("declined", "a deletion of vault machinery") }
         if (kind in 1244..1247) refuse("declined", "a key-family event is the person's own act, never a site's")
         val backups = listOfNotNull(d.view.backup)
         val signposts = backups.map { hex(sha(utf8("keykin-beacon/1"), unhex(it))) }.toSet()
