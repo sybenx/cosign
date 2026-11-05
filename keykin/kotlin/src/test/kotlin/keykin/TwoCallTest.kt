@@ -45,6 +45,24 @@ class TwoCallTest {
         assertEquals("unknown_after", S.handle(devKey, base("sign").put("after", commit.getString("id")).put("event", event("again").first).put("commitments", cj(mine + theirs)), now).getString("code"))
     }
 
+    /** The coordinator's side (TwoCall, recovery step 2) against this co-signer: commit, sign after it, finish. */
+    @Test fun coordinatorSignsWithTheCoSigner() {
+        val S = server(); val sv = v.getJSONObject("server")
+        val ctx = RoundContext(g, epoch, Codes.stateHash(emptyList()), C)
+        val shares = devShares.toMap()
+        val t = TwoCall(ctx, shares, shares.keys.sorted(), listOf(Signer(sv.getString("key"), listOf(sv.getLong("index")))), listOf(Unsigned(g, now, 1, emptyList(), "signed by a TwoCall")))
+        t.took(sv.getString("key"), S.handle(devKey, t.commitRequest("sign"), now))
+        val partial = S.handle(devKey, t.signRequest("sign"), now)
+        val signed = t.finishAll(mapOf(sv.getString("key") to partial)).single()
+        assertTrue(verifyEvent(Event.of(signed)) && signed.getString("pubkey") == g)
+        // A tampered partial names the member.
+        val t2 = TwoCall(ctx, shares, shares.keys.sorted(), listOf(Signer(sv.getString("key"), listOf(sv.getLong("index")))), listOf(Unsigned(g, now, 1, emptyList(), "again")))
+        t2.took(sv.getString("key"), S.handle(devKey, t2.commitRequest("sign"), now))
+        val p2 = S.handle(devKey, t2.signRequest("sign"), now)
+        p2.getJSONArray("z").getJSONObject(0).put("z", "11".repeat(32))
+        assertEquals("bad_partial", kotlin.test.assertFailsWith<KeykinException> { t2.finishAll(mapOf(sv.getString("key") to p2)) }.code)
+    }
+
     @Test fun refusals() {
         val S = server()
         val (ev, _) = event("x")

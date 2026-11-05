@@ -55,6 +55,60 @@ class OneCall(private val ctx: RoundContext, private val shares: Map<Long, BigIn
     fun abandon() { mine = null }
 }
 
+/** The coordinator's side of a two-call round (core §5.1–§5.2), as the TS reference's `TwoCall`: `commit` to every
+ *  co-signer first, then `sign` with `after` and everyone's commitments; for one event or a list. A paper holder at a
+ *  recovery (its backup seat plus two servers) signs this way, since no single co-signer reaches the threshold with it. */
+class TwoCall(private val ctx: RoundContext, private val shares: Map<Long, BigInteger>, private val myIndices: List<Long>, private val cos: List<Signer>, val events: List<Unsigned>) {
+    val commitId: String = hex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+    val signId: String = hex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+    private val ids = events.map { it.id }
+    val signers: List<Long> = (myIndices + cos.flatMap { it.indices }).sorted()
+    private var mine: List<List<Frost.Committed>>? = ids.map { evId -> myIndices.map { i ->
+        Frost.commit(ctx.C, i, shares[i]!!, Frost.hedge(shares[i]!!, unhex(evId) + signers.fold(ByteArray(0)) { a, x -> a + u32(x) } + unhex(commitId) + utf8("two-call"))) } }
+    private val theirs = HashMap<String, List<List<Frost.Committed>>>()
+    private val isList get() = events.size > 1
+    init { for (e in events) if (e.pubkey != ctx.g) refuse("wrong_pubkey") }
+    private fun cj(c: Frost.Committed) = JSONObject().put("i", c.i).put("D", c.d).put("E", c.e)
+    fun commitRequest(cls: String = "ask"): JSONObject = JSONObject().put("v", 1).put("type", "commit").put("g", ctx.g).put("epoch", ctx.epochId).put("id", commitId)
+        .put("cls", cls).put("state", ctx.state).put("signers", JSONArray(signers)).also { if (isList) it.put("count", events.size) else it.put("event", events[0].wire()) }
+    /** A co-signer's `commitments` answer (one set per event for a list). */
+    fun took(co: String, answer: JSONObject) {
+        if (answer.optString("type") != "commitments") refuse(answer.optString("code").ifEmpty { "no_commitments" }, co)
+        fun set(a: JSONArray) = (0 until a.length()).map { a.getJSONObject(it).let { c -> Frost.Committed(Json.long(c.get("i")), "", c.getString("D"), c.getString("E")) } }
+        theirs[co] = if (isList) answer.getJSONArray("sets").let { s -> (0 until s.length()).map { set(s.getJSONArray(it)) } } else listOf(set(answer.getJSONArray("commitments")))
+    }
+    private fun commitmentsFor(e: Int) = (mine ?: refuse("used"))[e] + cos.flatMap { theirs[it.key]?.get(e) ?: emptyList() }
+    fun signRequest(cls: String = "ask", extra: JSONObject = JSONObject()): JSONObject {
+        val r = JSONObject().put("v", 1).put("type", "sign").put("g", ctx.g).put("epoch", ctx.epochId).put("id", signId).put("cls", cls).put("state", ctx.state)
+            .put("signers", JSONArray(signers)).put("after", commitId)
+        for (k in extra.keyList()) r.put(k, extra.get(k))
+        if (isList) r.put("list_events", JSONArray(events.indices.map { e -> JSONObject().put("event", events[e].wire()).put("commitments", JSONArray(commitmentsFor(e).map(::cj))) }))
+        else r.put("event", events[0].wire()).put("commitments", JSONArray(commitmentsFor(0).map(::cj)))
+        return r
+    }
+    /** Every co-signer's `partial`, checked against its share points; the signed events. */
+    fun finishAll(partials: Map<String, JSONObject>): List<JSONObject> {
+        val out = events.indices.map { e ->
+            val all = commitmentsFor(e)
+            val zs = ArrayList<Pair<Long, String>>()
+            for (co in cos) {
+                val p = partials[co.key]
+                if (p == null || p.optString("type") != "partial") refuse(p?.optString("code")?.ifEmpty { null } ?: "no_partial", "member ${co.key}")
+                val z = (if (isList) p.optJSONArray("events")?.optJSONObject(e)?.optJSONArray("z") else p.optJSONArray("z")) ?: JSONArray()
+                val got = (0 until z.length()).map { z.getJSONObject(it).let { x -> Json.long(x.get("i")) to x.getString("z") } }
+                if (got.map { it.first }.sorted() != co.indices.sorted()) refuse("bad_partial", "member ${co.key}")
+                for ((i, zz) in got) { if (!Frost.verifyShare(ctx.C, ids[e], all, i, zz)) refuse("bad_partial", "member ${co.key}"); zs += i to zz }
+            }
+            for (n in mine!![e]) zs += n.i to Frost.sign(ctx.C, n, shares[n.i]!!, ids[e], all)
+            val signed = events[e].wire().put("sig", Frost.aggregate(ctx.C, ids[e], all, zs))
+            if (!verifyEvent(Event.of(signed))) refuse("bad_signature", "the aggregate does not verify")
+            signed
+        }
+        mine = null
+        return out
+    }
+}
+
 /** The coordinator's side of a decryption (core §5.5): one co-signer's weighted answers, every proof
  *  checked, summed with this device's own weighted parts into `x·Q`. The own part is share arithmetic in
  *  the BigInteger reference curve: an Android build does it in libsecp256k1, as it does signing. */
