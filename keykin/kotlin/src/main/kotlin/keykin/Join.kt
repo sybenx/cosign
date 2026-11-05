@@ -51,15 +51,19 @@ class Joiner(val n: String, val lock: JSONObject?, now: Long, scanned: Code?) {
     data class Joined(val rec: JSONObject, val recEv: Event, val changes: List<Event>, val view: MembershipView, val shares: Map<Long, BigInteger>, val C: List<Pt?>, val ids: List<String>)
     /** §4.2 step 5: the welcome sealed by `m`, its record and changes checked, a valid add of this key with
      *  this lock, and each share from exactly the inviter's sigma and one server's. */
-    fun finish(from: String, welcome: JSONObject, sigmas: List<JSONObject>): Joined {
-        if (from != m) refuse("not_sealed_by_m", "a welcome from a stranger")
-        // Never before the digits were shown (red team 23, as TS).
-        if (t == null) refuse("no_nonce", "a welcome before the 6 digits")
+    /** `recovery`: a recovery join (core §4.4): the welcome comes from the paper's holder (`recovery`, the account's
+     *  current backup key), and each share from its sigma and two servers'. */
+    fun finish(from: String, welcome: JSONObject, sigmas: List<JSONObject>, recovery: String? = null): Joined {
+        val sealer = recovery ?: m
+        if (from != sealer) refuse("not_sealed_by_m", "a welcome from a stranger")
+        // Never before the digits were shown (red team 23, as TS); a recovery join has no digits.
+        if (recovery == null && t == null) refuse("no_nonce", "a welcome before the 6 digits")
         val recEv = Event.of(welcome.getJSONObject("record"))
         val rec = Record.check(recEv, g!!)
         val ch = welcome.getJSONArray("changes"); val changes = (0 until ch.length()).map { Event.of(ch.getJSONObject(it)) }
         val view = Membership.compute(rec, changes)
         if (view.invariant) refuse("invariant")
+        if (recovery != null && recovery != view.backup) refuse("not_current_backup")
         val me = view.members.firstOrNull { it.key == n }
         if (me == null || me.kind != "device") refuse("no_add", "no valid change adds this key")
         if (Jcs.of(me.lock ?: JSONObject.NULL) != Jcs.of(lock ?: JSONObject.NULL)) refuse("no_add", "the add names another lock")
@@ -70,9 +74,12 @@ class Joiner(val n: String, val lock: JSONObject?, now: Long, scanned: Code?) {
         val servers = view.members.filter { it.kind == "server" }.map { it.key }.toSet()
         val shares = me.shares.associateWith { i ->
             val at = sigmas.filter { Json.isInt(it.opt("index")) && Json.long(it.get("index")) == i && it.optString("state") == sh }
-            val fromInviter = at.firstOrNull { it.optString("from") == m } ?: refuse("sigma_missing", "the inviter's sigma")
-            val fromServer = at.firstOrNull { it.optString("from") in servers } ?: refuse("sigma_missing", "a server's sigma")
-            val share = Frost.repairShare(C, listOf(fromInviter.getString("sigma"), fromServer.getString("sigma")), i)
+            val fromInviter = at.firstOrNull { it.optString("from") == sealer } ?: refuse("sigma_missing", "the inviter's sigma")
+            // Exactly the sealer's sigma and the servers' (one; two in a recovery join): stray parts are ignored.
+            val need = if (recovery != null) 2 else 1
+            val fromServers = at.filter { it.optString("from") in servers }.distinctBy { it.optString("from") }.take(need)
+            if (fromServers.size < need) refuse("sigma_missing", "a server's sigma")
+            val share = Frost.repairShare(C, listOf(fromInviter.getString("sigma")) + fromServers.map { it.getString("sigma") }, i)
             if (Keykin.secp.mulG(share) != derive(C, BigInteger.valueOf(i))) refuse("repair_failed", "share $i")
             share
         }
