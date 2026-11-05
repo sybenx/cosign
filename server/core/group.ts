@@ -110,7 +110,9 @@ export function openGroup(loaded: Loaded, io: Io) {
   const lastSeen = new Map<number, number>();
   const seen = (idx: number) => lastSeen.get(idx) ?? 0;
   // Pings go out every 10 s; three missed means gone.
-  const online = (m: Member) => m.idx === me.idx || io.now() - seen(m.idx) < 30_000;
+  // Pinged every PING_EVERY (tick): a member heard from within two and a half of those is up.
+  const PING_EVERY = Number(process.env.COSIGN_PING_EVERY ?? 60_000);
+  const online = (m: Member) => m.idx === me.idx || io.now() - seen(m.idx) < PING_EVERY * 2.5;
 
   const activity: { ts: number; text: string }[] = [];
   // How often this server helped sign today: a count for its page, nothing about what.
@@ -242,7 +244,7 @@ export function openGroup(loaded: Loaded, io: Io) {
 
     const fromPhone = isDevice(from); // any of your devices
     switch (msg.type) {
-      case 'ping': return;
+      case 'ping': if (fromPhone) send(from.pk!, { type: 'ping', idx: me.idx, ts: io.now() }); return;
       case 'asking': { if (fromPhone) waitLonger(String(msg.id)); return; }
       case 'sign_req': return answerOnce(from, msg.id, () => onSignReq(msg, from));
       // An app on your phone asked it to sign (Android signer): the phone runs the round.
@@ -344,7 +346,7 @@ export function openGroup(loaded: Loaded, io: Io) {
   // answers are kept for a while and sent again to a repeat, freshly wrapped: strfry
   // refuses an event id it has already seen, even an ephemeral one.
 
-  // The first server answers sites; another steps in once it has been gone 30 s.
+  // The first server answers sites; another steps in once it has missed two and a half pings.
   const firstServer = () => members.filter(m => m.role === 'server' && !m.removed && !m.noSites).sort((a, b) => a.idx - b.idx)[0];
   const coordinating = () => !!S.signer && !!firstServer() && (firstServer().idx === me.idx || (io.now() - startedAt > 30_000 && !online(firstServer())));
   const answers = new Map<string, { at: number; body: string; scheme: 'nip44' | 'nip04' }>();
@@ -1838,7 +1840,9 @@ export function openGroup(loaded: Loaded, io: Io) {
 
   // --- Liveness ----------------------------------------------------------------
 
-  const pingAll = () => { for (const m of members) if (m.pk && m.idx !== me.idx) send(m.pk, { type: 'ping', idx: me.idx, ts: io.now() }); };
+  // The other servers, on the timer; a device instead hears back when it pings (it does every 10 s while it runs),
+  // so a phone or browser that's closed costs nothing and an open one still sees this server up.
+  const pingAll = () => { for (const m of members) if (m.pk && m.idx !== me.idx && !isDevice(m)) send(m.pk, { type: 'ping', idx: me.idx, ts: io.now() }); };
 
   // Pick up what's already published under your key, so the first change is judged
   // against something.
@@ -1869,9 +1873,12 @@ export function openGroup(loaded: Loaded, io: Io) {
     note('started');
   }
 
-  /** Every 10 s, from the host: pings, forgetting old answers, and the archive every 15 min. */
+  /** Every 10 s, from the host: pings every minute, forgetting old answers, and the archive every 15 min. */
+  // Pings only order who is asked first (a partner that's down times out and the next is asked), and every
+  // member pinging every other every 10 s, in every group, was most of a shared relay's traffic.
+  let pingedAt = 0;
   function tick() {
-    pingAll();
+    if (io.now() - pingedAt >= PING_EVERY) { pingedAt = io.now(); pingAll(); }
     finishGuards();
     dropStalePending();
     for (const [k, v] of given) if (io.now() - v.at > 120_000) given.delete(k);
