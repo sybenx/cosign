@@ -1105,8 +1105,7 @@ Further rules:
   | `release_seed` | devices, and current and incoming seat servers (never helpers, never retired holders) | the redeal's release seed |
   | `paper_item` | every server and device | the new material item (§7.2) |
 
-  The dealer sends them with `upload {list, approval, items[]}`, which must carry the approval list and
-  its valid approval, or it is refused. Uploads are inert until the co-sign and expire after 7 days. A
+  Before dealing, the dealer fetches the account's changes from its live servers (`changes_get`), so its post-list view names every current member; a device that missed a join would otherwise leave the new member without a delta. If a server still answers `missing`, the dealer fetches again and deals a fresh redeal, with a new id, under the same approval (the placeholder list, and so the list hash and any `paper` challenge, stay the same). The dealer sends them with `upload {list, approval, items[]}`, which must carry the approval list and its valid approval, or it is refused. Uploads are inert until the co-sign and expire after 7 days. A
   co-signer applies a redeal, and destroys its old share, only once it holds the group-signed list.
 - **The co-signer of a redeal:**
   - fetches its live peers first, so it knows of every paper change;
