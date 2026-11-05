@@ -95,6 +95,80 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
     /** A lockless creator keeps the paper's secret until the paper is written down (core §4.3 step 4). */
     internal fun keepSecret(secret: String) = synchronized(this) { carried.put("keptSecret", secret); save() }
+    /** The current paper's material, kept once it matches the paper change's pin (core 14.21: devices keep every item). */
+    fun takeMaterial(base: JSONObject, seedItems: JSONArray?): Boolean {
+        val v = view; val K = v.backup ?: return false
+        val pin = v.papers.lastOrNull { it.key == K }?.inner ?: return false
+        val its = (0 until (seedItems?.length() ?: 0)).mapNotNull { seedItems!!.optJSONObject(it) }
+        if (try { Material.inner(base, its) } catch (_: Exception) { null } != pin) return false
+        synchronized(this) { carried.put("base", base); carried.put("items", JSONArray(its)) }
+        save(); return true
+    }
+    /** Ask every other current device for the seeds it holds (core 14.21): each kept only if a co-signed redeal's
+     *  `dk` names it. For F7, the request carries the approved `[paper, redeal]` list (`f7`). */
+    fun askSeeds(f7: JSONObject? = null) {
+        val v = view
+        for (d in v.members.filter { it.kind == "device" && it.key != pub && it.key !in v.removed }) try {
+            val a = net.send(sk, d.key, msg("need_seeds", "ask").also { m -> f7?.let { m.put("f7", it) } })
+            if (a.optString("type") != "seeds") continue
+            val o = env.unwrap(sk, a.getJSONObject("wrap")); if (o.from != d.key) continue
+            val recs = o.body.optJSONArray("dk") ?: continue
+            synchronized(this) {
+                val want = view.redeals.values.map { it.r.getString("dk") }.toSet()
+                for (k in 0 until recs.length()) { val sd = recs.optJSONObject(k)?.optString("seed") ?: continue
+                    if (Regex("^[0-9a-f]{64}$").matches(sd) && hex(sha(unhex(sd))) in want && sd !in dkSeeds) dkSeeds += sd }
+            }
+        } catch (_: Exception) { /* a device that doesn't answer costs only itself */ }
+        save()
+    }
+
+    /** F7, a new paper (core §6.7.6, §4.3; 14.21), as the TS reference's `newPaper`: approve `[paper K, redeal]`; repair
+     *  the backup seat's shares towards K with one server at the current state; seal the base and every seed this
+     *  device holds (asking the other devices for any of the state it lacks) under the redeal's release seed, read
+     *  them back with K; then co-sign the list with the paper change's pin, `state` and `seeds`, and send the material
+     *  with it. Returns K's secret: the app shows its 24 words once and has them typed back, then destroys it.
+     *  `approve` approves the placeholder list (the lock, a pair or the paper). */
+    fun newPaper(approve: (JSONArray) -> JSONObject): ByteArray {
+        if (wiped) refuse("wiped")
+        val Ksk = ByteArray(32).also { java.security.SecureRandom().nextBytes(it); it[0] = (it[0].toInt() and 0x7f).toByte() }
+        val K = Keykin.secp.pub(Ksk)
+        val old = view.backup ?: refuse("no_backup")
+        val list = JSONArray().put(JSONObject().put("paper", JSONObject().put("key", K).put("replaces", old))).put(JSONObject().put("redeal", JSONObject().put("dealer", pub)))
+        val approval = approve(list)
+        val f7 = JSONObject().put("list", Approvals.placeholder(list)).put("approval", approval)
+        try { fetch() } catch (_: Exception) {}
+        submitOnce(list, approval) { dealt, st ->
+            val v = view
+            val server = servers().firstOrNull() ?: refuse("no_server")
+            val helpers = listOf(Signer(pub, st.shares.keys.sorted()), Signer(server.key, server.shares))
+            val shares = LinkedHashMap<Long, java.math.BigInteger>()
+            for (b in ints(rec.getJSONObject("seats").getJSONArray("backup"))) {
+                val ws = repair(st, helpers, b, K, "paper", f7)
+                shares[b] = Frost.repairShare(st.C, ws.map { env.unwrap(Ksk, it).body.getString("sigma") }, b)
+            }
+            val repairedAt = st.ids.sorted()
+            val base = Material.baseItem(Ksk, dealt.releaseSeed, shares, baseDk, repairedAt)
+            shares.clear()
+            // Every seed this device holds, and any of the state it lacks asked of the other devices first (review 21 M3).
+            askSeeds(f7)
+            val records = seedRecords()
+            if (repairedAt.any { id -> records.none { it.first == id } }) refuse("missing_seed", "a seed of this state is missing: the paper would lose data")
+            val seedIts = Material.seedItems(Ksk, dealt.releaseSeed, records)
+            // Read back with K, as K will at a recovery: every listed seed must come out.
+            val back = Material.openSeeds(seedIts, dealt.releaseSeed, Ksk, v.redeals.mapValues { it.value.r.getString("dk") })
+            if (records.any { it.first !in back }) refuse("bad_material", "the seed items don't read back")
+            val paper = JSONObject().put("key", K).put("replaces", old).put("inner", Material.inner(base, seedIts))
+                .put("state", JSONArray(repairedAt)).put("seeds", JSONArray(records.map { it.first }.sorted()))
+            Finish(JSONArray().put(JSONObject().put("paper", paper)).put(JSONObject().put("redeal", dealt.redeal)), base, seedIts)
+        }
+        // A lockless account keeps the new key's secret as it kept the old one, and every lockless device gets it.
+        if (carried.has("keptSecret")) {
+            keepSecret(hex(Ksk))
+            for (d in view.members.filter { it.kind == "device" && it.key != pub && it.key !in view.removed && (view.locks[it.key] == null) })
+                try { net.send(sk, d.key, JSONObject().put("type", "kept_new").put("secret", hex(Ksk))) } catch (_: Exception) {}
+        }
+        return Ksk
+    }
     internal fun takeWelcomeExtras(w: JSONObject) = synchronized(this) {
         w.optJSONArray("seeds")?.let { a -> for (i in 0 until a.length()) (a.opt(i) as? JSONArray)?.let { p ->
             val k = p.optString(0); val x = p.optString(1)
@@ -333,7 +407,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
     /** What other members send this device directly (§6.7.6: live devices get the list and their delivery). */
     private fun handle(from: String, body: JSONObject): JSONObject? = when (body.optString("type")) {
-        "change" -> { val a = body.optJSONArray("events"); if (a != null) takeChanges((0 until minOf(a.length(), CHANGES_PER_MESSAGE)).mapNotNull { a.optJSONObject(it)?.let(Event::of) }); JSONObject().put("type", "ack") }
+        "change" -> { val a = body.optJSONArray("events"); if (a != null) takeChanges((0 until minOf(a.length(), CHANGES_PER_MESSAGE)).mapNotNull { a.optJSONObject(it)?.let(Event::of) })
+            // A new paper's material comes with its list: kept once it matches the paper change's pin (§7.2).
+            body.optJSONObject("material")?.let { takeMaterial(it, body.optJSONArray("seed_items")) }
+            JSONObject().put("type", "ack") }
         // §6.7.4 (core 14.21): seeds to a current device, as {id, seed}, with release seeds; to a seat server, release
         // seeds only. Every answer is a notice ("restored its pieces"), as TS (review 21 L5).
         "need_seeds" -> synchronized(this) {
@@ -766,7 +843,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             fetch(); submitOnce(list, approval)
         }
     }
-    private fun submitOnce(list: JSONArray, approval: JSONObject): List<JSONObject> {
+    /** What a list's dealer fills in after dealing, before the co-sign (F7): the full list (the paper change with its
+     *  `inner`, `state` and `seeds`), and the paper's material, sent with the list. */
+    class Finish(val full: JSONArray, val material: JSONObject? = null, val seedItems: List<JSONObject> = emptyList())
+    private fun submitOnce(list: JSONArray, approval: JSONObject, finish: ((Dealt, ShareState) -> Finish)? = null): List<JSONObject> {
         if (wiped) refuse("wiped")
         Approvals.shape(list)                                // one redeal at most, and a list the servers accept (review 14 L6)
         val (v, st) = synchronized(this) { view to state }
@@ -804,16 +884,23 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
                 for (s in post.values.filter { it.kind == "server" }) net.send(sk, s.key, JSONObject(up.toString()))
                 full.put(JSONObject().put("redeal", dl.redeal))
             }
+            // F7: the dealer fills in the paper change and makes the material now (it needs this deal's release seed).
+            var material: JSONObject? = null; var seedIts: List<JSONObject> = emptyList(); var fullList = full
+            dealt?.let { d -> finish?.invoke(d, st)?.let { f -> fullList = f.full; material = f.material; seedIts = f.seedItems } }
+            val extra = JSONObject().also { x -> material?.let { x.put("material", it); if (seedIts.isNotEmpty()) x.put("seed_items", JSONArray(seedIts)) } }
             // Every event of the list in one request, each with its own nonces (§6.7.10, §5.2).
             val now = net.now
-            val evs = (0 until full.length()).map { k -> Unsigned(g, now, KIND_CHANGE, listOf(listOf("v", "1"), listOf("epoch", epochId)),
-                Jcs.of(JSONObject().put("v", 1).put("g", g).put("epoch", epochId).put("change", full.get(k)).put("list", ph).put("approval", approval))) }
-            val signed = coSign(st, evs)
+            val evs = (0 until fullList.length()).map { k -> Unsigned(g, now, KIND_CHANGE, listOf(listOf("v", "1"), listOf("epoch", epochId)),
+                Jcs.of(JSONObject().put("v", 1).put("g", g).put("epoch", epochId).put("change", fullList.get(k)).put("list", ph).put("approval", approval))) }
+            val signed = coSign(st, evs, extra)
             // The list as one to every server, current and incoming; live devices get it and their delivery directly.
             val evArr = JSONArray(signed)
-            for (t in (v.members + post.values).filter { it.kind == "server" }.map { it.key }.distinct()) net.send(sk, t, JSONObject().put("type", "change").put("events", evArr))
+            fun changeMsg() = JSONObject().put("type", "change").put("events", evArr).also { m -> for (k in extra.keys()) m.put(k, extra.get(k)) }
+            for (t in (v.members + post.values).filter { it.kind == "server" }.map { it.key }.distinct()) net.send(sk, t, changeMsg())
+            // This device keeps every item of the paper it printed (§7.2), so its welcomes carry them.
+            material?.let { m -> synchronized(this) { carried.put("base", m); carried.put("items", JSONArray(seedIts)) } }
             for (x in post.values.filter { it.kind == "device" && it.key != pub }) {
-                net.tell(sk, x.key, JSONObject().put("type", "change").put("events", evArr))
+                net.tell(sk, x.key, changeMsg())
                 wraps[x.key]?.let { net.tell(sk, x.key, JSONObject().put("type", "delta_push").put("wrap", it)) }
             }
             own?.let { (id, b) -> synchronized(this) { pending.getOrPut(id) { LinkedHashMap() }[pub] = b } }
@@ -1002,7 +1089,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
     /** One repair of `participant` by `helpers` (this device among them), sealed to `sealTo` (§4.2 step 3,
      *  §6.7.4): repair_start to each helper, the deltas exchanged, repair_finish; one sigma wrap per helper. */
-    private fun repair(st: ShareState, helpers: List<Signer>, participant: Long, sealTo: String, why: String): List<JSONObject> {
+    private fun repair(st: ShareState, helpers: List<Signer>, participant: Long, sealTo: String, why: String, extra: JSONObject? = null): List<JSONObject> {
         val sh = Codes.stateHash(st.ids.toList())
         val rid = hex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) })
         val hj = JSONArray(helpers.map { JSONObject().put("key", it.key).put("indices", JSONArray(it.indices)) })
@@ -1014,6 +1101,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             for (h in helpers) for (j in h.indices) { val d = byIndex[j] ?: refuse("repair_failed"); if (h.key == pub) keptMine += d else toOthers.getOrPut(h.key) { ArrayList() } += d }
         }
         val start = JSONObject().put("type", "repair_start").put("participant", participant).put("helpers", hj).put("state", sh).put("rid", rid).put("why", why).put("seal_to", sealTo)
+        extra?.let { x -> for (k in x.keys()) start.put(k, x.get(k)) }
         val outs = HashMap<String, JSONObject>()
         for (h in helpers.filter { it.key != pub }) {
             val a = net.send(sk, h.key, JSONObject(start.toString()))
@@ -1036,18 +1124,18 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         return wraps
     }
     /** Co-sign events with the first server that answers: one event as a plain round, a list as one call. */
-    private fun coSign(st: ShareState, evs: List<Unsigned>): List<JSONObject> {
+    private fun coSign(st: ShareState, evs: List<Unsigned>, extra: JSONObject = JSONObject()): List<JSONObject> {
         val c = RoundContext(g, epochId, st.hash, st.C)
         var last = "no_server"; var detail: String? = null
         for (s in servers()) {
             val co = Signer(s.key, s.shares)
             if (evs.size == 1) {
-                val r = OneCall(c, st.shares, co, evs[0])
+                val r = OneCall(c, st.shares, co, evs[0], JSONObject(extra.toString()))
                 val a = net.send(sk, s.key, r.request)
                 if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; detail = a.optString("detail"); continue }
                 try { return listOf(r.finish(a)) } catch (e: KeykinException) { last = e.code } catch (_: Exception) { last = "bad_partial" }
             } else {
-                val r = ListCall(c, st.shares, co, evs)
+                val r = ListCall(c, st.shares, co, evs, JSONObject(extra.toString()))
                 val a = net.send(sk, s.key, r.request)
                 if (a.optString("type") != "partial") { r.abandon(); last = a.optString("code").ifEmpty { "no_answer" }; detail = a.optString("detail"); continue }
                 try { return r.finish(a) } catch (e: KeykinException) { last = e.code }

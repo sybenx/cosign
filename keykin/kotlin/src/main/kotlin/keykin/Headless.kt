@@ -126,6 +126,10 @@ fun main(args: Array<String>) {
                         val ap = if (list == null || d.lock != null) null else { val sk = Backup.readBackupWords(c.getString("words").trim().split(Regex("\\s+"))); try { d.approveWithPaper(list, sk) } finally { sk.fill(0) } }
                         JSONObject().put("added", d.addInvited(ap))
                     }
+                    // F7: a new paper, approved with the old one (its words); prints the new paper's words once.
+                    "new_paper" -> { val old = Backup.readBackupWords(c.getString("words").trim().split(Regex("\\s+")))
+                        val K = try { d.newPaper { list -> d.approveWithPaper(list, old) } } finally { old.fill(0) }
+                        try { JSONObject().put("paper", Backup.backupWords(K).joinToString(" ")).put("key", Keykin.secp.pub(K)) } finally { K.fill(0) } }
                     "devices" -> JSONObject().put("devices", JSONArray(d.memberKeys())).put("wiped", d.wiped)
                     "quit" -> break
                     "seeds" -> JSONObject().put("records", d.seedRecords().size).put("held", JSONArray(d.seedOnlyHeld()))

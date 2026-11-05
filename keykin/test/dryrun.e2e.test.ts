@@ -354,3 +354,27 @@ test('I: paper recovery over the relays with a test W, reporting the lost device
     } finally { net.close(); }
   } finally { setTestW(3 * 86400); }
 });
+
+test('J: the phone makes a new paper (F7), approved with the old; the account is recovered from the new paper alone', { skip, timeout: 900_000 }, async () => {
+  setTestW(20);
+  try {
+    const s = await stack(17560, { testW: 20 });
+    const phone = new Device(s, 'phone'); await phone.join();
+    await phone.post('before the new paper');
+    const made = await phone.cmd({ cmd: 'new_paper', words: s.words });
+    assert.equal(made.error, undefined, JSON.stringify(made));
+    const words: string = made.paper;
+    assert.equal(words.split(' ').length, 24);
+    assert.notEqual(words, s.words);
+    // Then everything is lost, and only the new paper's words remain.
+    const net = new RelayNet({ relays: s.devRelays, timeoutMs: 9000, resendMs: 1500 });
+    await net.connect();
+    try {
+      const D = await recoverWithPaper(net as any, words.split(' '), { hosts: s.fronts, name: 'recovered', lost: [s.laptop, phone.key], pollMs: 3000, giveUpAt: Date.now() + 240_000 });
+      assert.equal(D.g, s.g);
+      assert.ok(D.checkPaper(words.split(' ')), 'the new paper is the account\'s');
+      assert.ok(!D.checkPaper(s.words.split(/\s+/)), 'the old paper no longer is');
+      assert.equal((await D.sign({ kind: 1, content: 'back in with the new paper', tags: [] })).pubkey, s.g);
+    } finally { net.close(); }
+  } finally { setTestW(3 * 86400); }
+});
