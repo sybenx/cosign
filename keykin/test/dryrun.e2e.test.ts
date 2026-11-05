@@ -80,12 +80,18 @@ function slowProxy(port: number, to: number): Promise<void> {
   return new Promise((ok) => s.listen(port, '127.0.0.1', () => ok()));
 }
 
-/** One scenario's stack and laptop. `slow`: the devices reach the relays through the slow proxy. */
-async function stack(base: number, o: { slow?: boolean; testW?: number } = {}) {
-  const direct = [base, base + 1].map((p) => `ws://127.0.0.1:${p}`);
-  for (const u of direct) procs.push(spawn('nak', ['serve', '--hostname', '127.0.0.1', '--port', u.split(':').pop()!], { stdio: 'ignore' }));
-  if (o.slow) for (const k of [0, 1]) await slowProxy(base + 10 + k, base + k);
-  const devRelays = o.slow ? [base + 10, base + 11].map((p) => `ws://127.0.0.1:${p}`) : direct;
+/** A port nothing listens on now (the OS's pick): fixed ports clashed with other runs on this machine. */
+const freePort = () => new Promise<number>((ok, no) => { const t = createServer(); t.on('error', no); t.listen(0, '127.0.0.1', () => { const p = (t.address() as any).port; t.close(() => ok(p)); }); });
+
+/** One scenario's stack and laptop. `slow`: the devices reach the relays through the slow proxy. (`_base` was a fixed
+ *  port range; the ports are now free ones.) */
+async function stack(_base: number, o: { slow?: boolean; testW?: number } = {}) {
+  const ports = [await freePort(), await freePort()];
+  const direct = ports.map((p) => `ws://127.0.0.1:${p}`);
+  for (const p of ports) procs.push(spawn('nak', ['serve', '--hostname', '127.0.0.1', '--port', String(p)], { stdio: 'ignore' }));
+  const proxied = o.slow ? [await freePort(), await freePort()] : [];
+  for (const [k, p] of proxied.entries()) await slowProxy(p, ports[k]);
+  const devRelays = o.slow ? proxied.map((p) => `ws://127.0.0.1:${p}`) : direct;
   await wait(1500);
   const fronts = await Promise.all([0, 1, 2].map((k) => new Promise<string>((res, rej) => {
     const d = mkdtempSync(join(tmpdir(), 'kk-dr-s-'));

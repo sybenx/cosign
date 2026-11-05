@@ -288,14 +288,21 @@ export class DeviceNode implements Node {
   /** Catch up: the union of every server's change set, then every server's inbox (§3.2, §8.2). */
   async fetch() {
     const nipQueue: any[] = [];
-    for (const s of this.servers()) {
-      const a = await this.bus.send(this.kp, s.key, msg('changes_get', this.g, this.epochId, 'ask'));
-      if (a?.type === 'changes') this.takeChanges(a.changes);
-    }
+    // Every server at once (latency: one round trip for the change sets and one for the inboxes, not one per server per
+    // message), applied in the same order as before: every change set, then each inbox.
+    const ss = this.servers();
+    const ask = (key: string, type: string) => this.bus.send(this.kp, key, msg(type, this.g, this.epochId, 'ask')).catch(() => null);
+    const changesP = ss.map((s) => ask(s.key, 'changes_get'));
+    const inboxP = ss.map((s) => ask(s.key, 'inbox_get'));
+    for (const a of await Promise.all(changesP)) if (a?.type === 'changes') this.takeChanges(a.changes);
     if (this.wiped) return;
-    for (const s of this.servers()) {
-      const a = await this.bus.send(this.kp, s.key, msg('inbox_get', this.g, this.epochId, 'ask'));
+    const acks: Promise<unknown>[] = [];
+    const inboxes = await Promise.all(inboxP);
+    for (const [k, s] of ss.entries()) {
+      const a = inboxes[k];
       if (a?.type !== 'inbox') continue;
+      // Only from a server still seated after the changes above.
+      if (!this.servers().some((x) => x.key === s.key)) continue;
       const keep = new Set<unknown>();
       for (const it of a.items) try {
         // A site's request a watching server kept goes to the NIP-46 home, not into the void (review 11 M1).
@@ -304,8 +311,9 @@ export class DeviceNode implements Node {
         // A delivery with no room yet stays at the server: acking it would delete its only other copy (review 13 M1).
         else if (this.takeDelivery(it.wrap) === 'full') { keep.add(it.iid); }
       } catch { /* one bad item never wedges the rest */ }
-      await this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid).filter((x: any) => !keep.has(x)) }));
+      acks.push(this.bus.send(this.kp, s.key, msg('inbox_ack', this.g, this.epochId, 'ask', { iids: a.items.map((x: any) => x.iid).filter((x: any) => !keep.has(x)) })).catch(() => null));
     }
+    await Promise.all(acks);
     this.applyAll();
     // §6.7.6 (core 14.20): check others' re-issued items before destroying anything, then re-issue what's left.
     await this.checkReissues();

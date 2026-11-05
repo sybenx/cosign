@@ -253,6 +253,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         try { f.get(waitMs, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: Exception) {}
     }
     @Volatile private var catching: java.util.concurrent.CompletableFuture<Void>? = null
+    /** Threads for a fetch's requests to every server at once. */
+    private val fetchPool = java.util.concurrent.Executors.newCachedThreadPool { r -> Thread(r, "keykin-fetch").also { it.isDaemon = true } }
     private val grantPublisher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "keykin-grants").also { it.isDaemon = true } }
     @Volatile private var grantPublishPending = false
     /** Publish this device's grants soon (a bind, a widen, an end), at most once a second; stored first (M6). */
@@ -619,14 +621,20 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         // Sites' requests kept for the NIP-46 home: answered after the grants' fetch, and acked only once answered
         // (review 20 M6): (server, iid, event).
         val nipQueue = ArrayList<Triple<String, Any?, JSONObject>>()
-        for (s in servers()) {
-            val a = net.send(sk, s.key, msg("changes_get", "ask"))
-            if (a.optString("type") == "changes") a.optJSONArray("changes")?.let { c -> takeChanges((0 until minOf(c.length(), CHANGES_PER_MESSAGE)).mapNotNull { c.optJSONObject(it)?.let(Event::of) }) }
-        }
+        val t0 = System.currentTimeMillis()
+        // Every server at once (latency: one round trip each for changes and inboxes, not one per server per message),
+        // then applied here in the same order as before: all changes, then each inbox.
+        val ss = servers()
+        fun ask(key: String, type: String) = java.util.concurrent.CompletableFuture.supplyAsync({ try { net.send(sk, key, msg(type, "ask")) } catch (_: Exception) { JSONObject() } }, fetchPool)
+        val changesF = ss.map { ask(it.key, "changes_get") }
+        val inboxF = ss.map { it.key to ask(it.key, "inbox_get") }
+        for (f in changesF) { val a = f.join(); if (a.optString("type") == "changes") a.optJSONArray("changes")?.let { c -> takeChanges((0 until minOf(c.length(), CHANGES_PER_MESSAGE)).mapNotNull { c.optJSONObject(it)?.let(Event::of) }) } }
         if (wiped) return
-        for (s in servers()) {
-            val a = net.send(sk, s.key, msg("inbox_get", "ask"))
+        for ((key, f) in inboxF) {
+            val a = f.join()
             if (a.optString("type") != "inbox") continue
+            // The inbox is read from a server still seated after the changes above.
+            if (servers().none { it.key == key }) continue
             val items = a.optJSONArray("items") ?: continue
             val iids = org.json.JSONArray()
             for (k in 0 until items.length()) {
@@ -635,14 +643,16 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
                     val w = it.getJSONObject("wrap"); val o = env.unwrap(sk, w)
                     // A site's request a watching server kept goes to the NIP-46 home (review 11 M1).
                     // Kept for after the grants' fetch, so a site signed out elsewhere is refused (review 16 M5).
-                    if (o.body.optString("type") == "nip46" && o.from == s.key) { o.body.optJSONObject("event")?.let { e -> nipQueue += Triple(s.key, it.opt("iid"), e) }; continue }
+                    if (o.body.optString("type") == "nip46" && o.from == key) { o.body.optJSONObject("event")?.let { e -> nipQueue += Triple(key, it.opt("iid"), e) }; continue }
                     // A delivery with no room yet stays at the server (review 13 M1).
                     else if (takeDelivery(w) == "full") continue
                 } catch (_: Exception) { /* one bad item never wedges the rest */ }
                 iids.put(it.opt("iid"))
             }
-            net.send(sk, s.key, msg("inbox_ack", "ask").put("iids", iids))
+            // The ack needn't hold up the catch-up: an item acked late is only offered again.
+            if (iids.length() > 0) java.util.concurrent.CompletableFuture.runAsync({ try { net.send(sk, key, msg("inbox_ack", "ask").put("iids", iids)) } catch (_: Exception) {} }, fetchPool)
         }
+        Keykin.trace?.invoke("fetch: servers ${System.currentTimeMillis() - t0} ms")
         applyAll()
         // §6.7.6 (core 14.20): check others' re-issued items before destroying anything, then re-issue what's left.
         checkReissues()
@@ -651,7 +661,9 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
         if (baseDk.isNotEmpty()) try {
             // Doors §2: from the counted relays, a majority of them (and of the last publish's set) for a good fetch.
+            val tg = System.currentTimeMillis()
             val evs = grants.fetch(net)
+            Keykin.trace?.invoke("fetch: grants ${System.currentTimeMillis() - tg} ms")
             // An own helper grant unused for 90 days by the helper's report expires: the helper is told (review 19 H5).
             for (e in grants.own.values.toList()) if (e.optBoolean("helper") && Grants.expired(e, net.now, grants.lastUsedOf(e.getString("id")))) grants.end(pub, e.getString("id"))
             if (grants.helperEnds.isNotEmpty()) publishEnds(emptyMap())
@@ -662,7 +674,9 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             for (e in evs) if ((e.tag("d") ?: "").startsWith("keykin-")) protect(e.id)
             // Device policy §1: the indexes first by d (a site's own 30078 events can't crowd them out, M6), then
             // the parts they name; this device's own at most every 10 minutes.
+            val tr = System.currentTimeMillis()
             refreshRecords()
+            Keykin.trace?.invoke("fetch: records ${System.currentTimeMillis() - tr} ms")
             if (meta.dirty.isNotEmpty() && net.now - meta.lastAt >= 600) try { meta.publish(net) } catch (_: Exception) {}
             save()
         } catch (_: Exception) {}
