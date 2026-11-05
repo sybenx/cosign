@@ -51,4 +51,55 @@ object Material {
         } catch (_: Exception) { /* an item that doesn't open costs only itself */ }
         return out
     }
+
+    /** What a paper opens to at a recovery (core §6.5 step 4, 14.21): the backup seat's shares at the servers' state,
+     *  that state's commitment, the base data key, and every data-key seed it can open. */
+    class Opened(val shares: Map<Long, BigInteger>, val C: List<Pt?>, val dk: String, val dkSeeds: List<String>)
+    /** As the TS reference's `openMaterial`: the base and K's seed items must match the pin (`inner`, or a pre-14.21
+     *  base alone); the base opened under its release seed; then, for each redeal of `state` after the base's, the
+     *  dealt item to K (or a re-issued one whose values match its clear values), whose `δ(b)` must lie on that redeal's
+     *  commitments; the sums must lie on the state's commitment. `seeds`: each redeal's release seed (and "base"). */
+    fun openMaterial(g: String, Ksk: ByteArray, pin: String, base: JSONObject, baseSeed: String, items: List<JSONObject>, seeds: Map<String, String>,
+                     seedItemsIn: List<JSONObject>?, C0: List<Pt?>, redeals: List<JSONObject>, state: Set<String>): Opened {
+        val K = Keykin.secp.pub(Ksk)
+        fun signedByK(x: JSONObject) = try { schnorrVerify(x.optString("sig"), sha(utf8(Upkeep.itemHash(x))), K) } catch (_: Exception) { false }
+        val seedIts = (seedItemsIn ?: items.filter { it.optString("kind") == "seeds" }).filter { it.optString("kind") == "seeds" && it.optString("to") == K && signedByK(it) }
+        if (inner(base, seedIts) != pin && !(seedIts.isEmpty() && Upkeep.itemHash(base) == pin)) refuse("bad_material", "the base and seed items do not match their pin")
+        if (!signedByK(base)) refuse("bad_material", "not signed by the backup key")
+        val b = Upkeep.openItem(base, baseSeed, backupSk = Ksk)
+        val shares = LinkedHashMap<Long, BigInteger>()
+        b.getJSONArray("shares").let { a -> for (k in 0 until a.length()) a.getJSONArray(k).let { p -> shares[Json.long(p.get(0))] = BigInteger(p.getString(1), 16) } }
+        val baseState = b.optJSONArray("state")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet()
+        val dkSeeds = ArrayList<String>()
+        for (r in redeals.filter { it.getString("id") in state && it.getString("id") !in baseState }) {
+            val id = r.getString("id")
+            val seed = seeds[id] ?: refuse("missing_item", id)
+            val cands = listOfNotNull(items.firstOrNull { it.opt("redeal") == id && it.optString("to") == K && Upkeep.itemHash(it) == r.optString("paper_item") }) +
+                items.filter { it.opt("redeal") == id && it.optString("kind") == "reissue" && it.optString("to") == K }
+            var v: JSONObject? = null
+            val seat = shares.keys.sorted()
+            for (it in cands) try {
+                val x = Upkeep.openItem(it, seed, backupSk = Ksk)
+                val bs = x.getJSONArray("b").let { a -> (0 until a.length()).map { Json.long(a.get(it)) } }
+                val ds = x.getJSONArray("d").let { a -> (0 until a.length()).map { BigInteger(a.getString(it), 16) } }
+                if (bs.sorted() != seat || ds.size != bs.size) continue
+                val D = Upkeep.dPoints(r)
+                if (!bs.indices.all { k -> mul(ds[k])?.let(::comp) == Upkeep.deriveDelta(D, BigInteger.valueOf(bs[k]))?.let(::comp) }) continue
+                if (it.optString("kind") == "reissue") { val clear = it.optJSONArray("clear") ?: continue
+                    if (ds.size != clear.length() || !ds.indices.all { k -> mul(ds[k])?.let(::comp) == clear.optString(k) }) continue }
+                v = x; break
+            } catch (_: Exception) { /* try the next */ }
+            val got = v ?: refuse("missing_item", id)
+            val bs = got.getJSONArray("b"); val ds = got.getJSONArray("d")
+            for (k in 0 until bs.length()) { val i = Json.long(bs.get(k)); shares[i] = (shares[i]!! + BigInteger(ds.getString(k), 16)).mod(N) }
+            // The data-key seed rides in the item, so a recovery loses no data (§4.5); checked against `dk`.
+            (got.opt("dk_seed") as? String)?.let { sd -> if (hex(sha(unhex(sd))) == r.optString("dk")) dkSeeds += sd }
+        }
+        val C = Upkeep.commitmentAt(C0, redeals.filter { it.getString("id") in state })
+        for ((i, sh) in shares) if (mul(sh)?.let(::comp) != derive(C, BigInteger.valueOf(i))?.let(::comp)) refuse("bad_material", "the sum misses P_$i")
+        // Every seed of the seed items and every seed-only item it can open, each checked against its change's `dk`.
+        val dkOf = redeals.associate { it.getString("id") to it.optString("dk") }
+        for (sd in openSeeds(seedIts + items.filter { it.optString("kind") == "seed-only" && it.optString("to") == K }, baseSeed, Ksk, dkOf).values) if (sd !in dkSeeds) dkSeeds += sd
+        return Opened(shares, C, b.getString("dk"), dkSeeds)
+    }
 }
