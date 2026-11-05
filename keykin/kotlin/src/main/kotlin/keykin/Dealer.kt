@@ -67,6 +67,11 @@ object Approve {
     fun pairDigest(g: String, epochId: String, list: JSONArray, expiry: Long, r: String): ByteArray =
         Approvals.detached("pair", g, JSONObject().put("what", hex(changeWhat(list, epochId, expiry))).put("r", r))
     /** §6.2 `paper`: this device's `sig` over what, and the backup key's over the list hash and the server's challenge. */
+    /** §6.5 / §4.4 `recovery` for the placeholder `list` (Approvals.placeholder): the backup key's signature over its hash, the release request it waited under, and
+     *  the servers' waited statements (two, each for that wait), as the TS reference's `approveRecovery`. */
+    fun recovery(g: String, list: JSONArray, backupSk: ByteArray, releaseRequest: JSONObject, waited: JSONArray): JSONObject =
+        JSONObject().put("recovery", JSONObject().put("backup", Keykin.secp.pub(backupSk)).put("release_request", releaseRequest).put("waited", waited)
+            .put("backup_sig", Keykin.secp.schnorrSign(Approvals.detached("recovery", g, JSONObject().put("list", Approvals.hash(list))), backupSk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) })))
     fun paper(g: String, epochId: String, list: JSONArray, expiry: Long, deviceSk: ByteArray, paperSk: ByteArray, challenge: String, server: String): JSONObject {
         val rnd = { ByteArray(32).also { java.security.SecureRandom().nextBytes(it) } }
         val sig = Keykin.secp.schnorrSign(Approvals.detached("paper", g, JSONObject().put("what", hex(changeWhat(list, epochId, expiry)))), deviceSk, rnd())

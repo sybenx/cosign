@@ -33,6 +33,7 @@ tasks.test {
     systemProperty("keykin.material", file("../vectors/material.json").absolutePath)
     systemProperty("keykin.f1", file("../vectors/f1.json").absolutePath)
     systemProperty("keykin.openmaterial", file("../vectors/open-material.json").absolutePath)
+    systemProperty("keykin.recoveryapproval", file("../vectors/recovery-approval.json").absolutePath)
     systemProperty("keykin.policy", file("../vectors/policy.json").absolutePath)
     systemProperty("keykin.slip39words", file("../vectors/slip39/wordlist.txt").absolutePath)
     systemProperty("keykin.slip39vectors", file("../vectors/slip39/vectors.json").absolutePath)

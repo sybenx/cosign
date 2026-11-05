@@ -1,0 +1,54 @@
+{
+ "note": "digest = detached(\"recovery\", g, {list: hash(placeholder(list))})",
+ "g": "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+ "cases": [
+  {
+   "list": [
+    {
+     "add": {
+      "key": "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b",
+      "kind": "device",
+      "lock": null,
+      "salt": 0
+     }
+    }
+   ],
+   "placeholder": [
+    {
+     "add": {
+      "key": "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b",
+      "kind": "device",
+      "lock": null,
+      "salt": 0
+     }
+    }
+   ],
+   "hash": "90fefd933bc0cca02cfda8ab92fca4e52ea8475c3985dcb1bc17c902d08a7f07",
+   "digest": "6bc87a2256100855cff2d008a67e6aa73d185a1e821a9ce212ef1c6f43d6d306"
+  },
+  {
+   "list": [
+    {
+     "remove": "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"
+    },
+    {
+     "redeal": {
+      "dealer": "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b"
+     }
+    }
+   ],
+   "placeholder": [
+    {
+     "remove": "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"
+    },
+    {
+     "redeal": {
+      "dealer": "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b"
+     }
+    }
+   ],
+   "hash": "c83162974a55daeb82c4e69cd93d4e1695fa6a95d3ddb3c7e2bb5accf6923878",
+   "digest": "f82c4865525643b868401903ecdc610d3286d50938fb983116492e18da1fa01c"
+  }
+ ]
+}
