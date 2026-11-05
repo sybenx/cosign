@@ -287,7 +287,9 @@ class KeykinService : Service() {
 
         override fun pairAsks(slot: String): String = onWork {
             val d = Memberships.signer(slot).device ?: return@onWork "[]"
-            JSONArray(d.pairAsks.values.map { JSONObject().put("id", it.getString("id")).put("from", it.getString("from")).put("list", it.getJSONArray("list")).put("expiry", it.getLong("expiry")) }).toString()
+            // A held event to approve together (core 14.26) carries "event" (public: what the site asks to sign) and "reason".
+            JSONArray(d.pairAsks.values.map { JSONObject().put("id", it.getString("id")).put("from", it.getString("from")).put("list", it.getJSONArray("list")).put("expiry", it.getLong("expiry"))
+                .also { o -> it.optJSONObject("event")?.let { e -> o.put("event", e).put("reason", it.optString("reason")) } } }).toString()
         }
         override fun pairApprove(slot: String, id: String, code: String): Boolean = onWork {
             try { Memberships.signer(slot).device?.pairApprove(id, code) ?: false } catch (_: Exception) { false }

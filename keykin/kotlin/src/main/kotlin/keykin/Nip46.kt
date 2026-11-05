@@ -17,7 +17,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     /** `entry`: the grant store's entry once a client is bound (Doors §1); `offered`: the scopes the link offered. */
     class Grant(val signer: String, val signerSk: ByteArray, var client: String?, val secret: String?, var linkExpires: Long?, val relays: List<String>, var endedAt: Long? = null,
                 var entry: String? = null, val offered: List<String> = listOf("sign-in", "post"), val site: String = "", var connectedAt: Long? = null)
-    class Held(val id: String, val signer: String, val event: Unsigned, val at: Long, var wait: String? = null, val reason: String = "")
+    class Held(val id: String, val signer: String, val event: Unsigned, val at: Long, var wait: String? = null, val reason: String = "", var waitEnd: Long? = null)
     /** The server this home asked to watch for it (one per account), and whether a watch_set is still to send. */
     @Volatile var watching: String? = null; private set
     @Volatile var watchPending = false; private set
@@ -302,7 +302,11 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     @Synchronized fun heldList(): JSONArray = JSONArray(held.values.map { h -> JSONObject().put("id", h.id).put("signer", h.signer)
         .put("site", grants[h.signer]?.let { g -> g.site.ifEmpty { g.entry?.let { d.grants.own[it]?.optString("says") } ?: "" } } ?: "")
         // What it does, in the judge's words, and its tags too, so the person sees what changes (review 20 L13).
-        .put("reason", h.reason).put("kind", h.event.kind).put("tags", h.event.tags.size).put("content", h.event.content.take(200)).put("at", h.at).put("wait", h.wait ?: JSONObject.NULL) })
+        .put("reason", h.reason).put("kind", h.event.kind).put("tags", h.event.tags.size).put("content", h.event.content.take(200)).put("at", h.at).put("wait", h.wait ?: JSONObject.NULL)
+        // When it can go on: the earliest end any server stated for its own wait (a server co-signs once its own passed).
+        .put("wait_end", h.waitEnd ?: JSONObject.NULL) })
+    /** A held event, to be approved by a pair (core 14.26): the event exactly as held, or null. */
+    @Synchronized fun heldEvent(id: String): Unsigned? = held[id]?.event
     /** Sign a held event unchanged with the lock's approval (`{"lock": {member, assertion}}` over "sign" ‖ event id),
      *  and publish it to the site's relays and the account's. */
     fun approveHeld(id: String, approval: JSONObject): JSONObject {
@@ -318,7 +322,10 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         val h = heldLive(id)
         if (synchronized(this) { held.values.any { it !== h && it.signer == h.signer && it.wait != null } }) refuse("try_later", "a hold for this site is already waiting")
         var wait: String? = null
-        for (s in d.servers()) try { val a = d.send(s.key, d.msg("hold", "member").put("event", h.event.wire())); if (a.optString("kind") == "hold") wait = a.optString("wait").ifEmpty { wait } } catch (_: Exception) {}
+        var end: Long? = null
+        for (s in d.servers()) try { val a = d.send(s.key, d.msg("hold", "member").put("event", h.event.wire())); if (a.optString("kind") == "hold") { wait = a.optString("wait").ifEmpty { wait }
+            (a.opt("end") as? Number)?.toLong()?.let { e -> end = minOf(end ?: e, e) } } } catch (_: Exception) {}
+        synchronized(this) { h.waitEnd = end }
         synchronized(this) { h.wait = wait ?: refuse("no_server", "no server started the hold") }; d.saveNow(); changed()
         return h.wait!!
     }
@@ -340,7 +347,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
             .put("secret", g.secret ?: JSONObject.NULL).put("linkExpires", g.linkExpires ?: JSONObject.NULL).put("relays", JSONArray(g.relays)).put("site", g.site)
             .put("connectedAt", g.connectedAt ?: JSONObject.NULL).put("endedAt", g.endedAt ?: JSONObject.NULL).put("entry", g.entry ?: JSONObject.NULL).put("offered", JSONArray(g.offered)) }))
         .put("watching", watching ?: JSONObject.NULL).put("watchPending", watchPending)
-        .put("held", JSONArray(held.values.map { h -> JSONObject().put("id", h.id).put("signer", h.signer).put("event", h.event.wire()).put("at", h.at).put("wait", h.wait ?: JSONObject.NULL).put("reason", h.reason) }))
+        .put("held", JSONArray(held.values.map { h -> JSONObject().put("id", h.id).put("signer", h.signer).put("event", h.event.wire()).put("at", h.at).put("wait", h.wait ?: JSONObject.NULL).put("reason", h.reason).put("waitEnd", h.waitEnd ?: JSONObject.NULL) }))
         .put("asks", JSONArray(asks.map { (k, v) -> JSONArray(listOf(k, JSONArray(v.toList()))) }))
         .put("seen", JSONArray(seen.map { (k, v) -> JSONArray(listOf(k, v)) }))
     @Synchronized private fun load(x: JSONObject?) {
@@ -356,7 +363,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         x.optJSONArray("held")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { o -> val e = o.optJSONObject("event") ?: return@let
             val tags = e.optJSONArray("tags")?.let { t -> (0 until t.length()).map { k -> strs(t.optJSONArray(k)) } } ?: emptyList()
             val u = Unsigned(e.optString("pubkey"), e.optLong("created_at"), e.optInt("kind"), tags, e.optString("content"))
-            held[o.optString("id")] = Held(o.optString("id"), o.optString("signer"), u, o.optLong("at"), str(o, "wait"), o.optString("reason")) } }
+            held[o.optString("id")] = Held(o.optString("id"), o.optString("signer"), u, o.optLong("at"), str(o, "wait"), o.optString("reason"), if (o.isNull("waitEnd")) null else o.optLong("waitEnd").takeIf { o.has("waitEnd") }) } }
         x.optJSONArray("seen")?.let { a -> for (i in 0 until a.length()) a.optJSONArray(i)?.let { p -> (p.opt(1) as? Number)?.let { seen[p.getString(0)] = it.toLong() } } }
         x.optJSONArray("asks")?.let { a -> for (i in 0 until a.length()) a.optJSONArray(i)?.let { p -> asks[p.getString(0)] = strs(p.optJSONArray(1)).toMutableSet() } }
         if (grants.values.any { it.endedAt == null }) listen()

@@ -409,3 +409,24 @@ test('K: F1, a dead server\'s seat moved to a spare server by the phone; the new
   assert.equal(ev.error, undefined, JSON.stringify(ev));
   assert.equal(ev.pubkey, s.g);
 });
+
+test('L: a held event approved by two phones together (core 14.26), not the lock, not a 3-day hold', { skip, timeout: 900_000 }, async () => {
+  const s = await stack(17600);
+  const phone = new Device(s, 'phone'); await phone.join();
+  const tablet = new Device(s, 'tablet'); await tablet.join();
+  // An empty follow list is destructive on its face: no server signs it without an approval or a passed hold.
+  // The phone asks the tablet; the person types the phone's code there; the tablet's own policy sees the event first.
+  const started = await phone.cmd({ cmd: 'pair_sign', kind: 3, with: tablet.key, seconds: 180 });
+  const code: string = started.code;
+  assert.ok(code, JSON.stringify(started));
+  assert.match(code, /^\d{6}$/);
+  let asks: any[] = [];
+  for (let i = 0; i < 40 && !asks.length; i++) { asks = (await tablet.cmd({ cmd: 'pair_asks' })).asks; if (!asks.length) await new Promise((r) => setTimeout(r, 1500)); }
+  assert.equal(asks.length, 1, 'the tablet got the ask');
+  assert.match(asks[0].event_id, /^[0-9a-f]{64}$/);
+  assert.equal((await tablet.cmd({ cmd: 'pair_approve', id: asks[0].id, code: code === '000000' ? '000001' : '000000' })).approved, false, 'a wrong code signs nothing');
+  assert.equal((await tablet.cmd({ cmd: 'pair_approve', id: asks[0].id, code })).approved, true);
+  const signed = await phone.lines.next(120_000, 'the pair-approved event');
+  assert.equal(signed.error, undefined, JSON.stringify(signed));
+  assert.equal(signed.kind, 3); assert.equal(signed.pubkey, s.g); assert.equal(signed.id, asks[0].event_id);
+});

@@ -11,7 +11,7 @@ import { commit, signShare, hedge, type SignCommit, type Nonces } from './frost.
 import { ecdhAnswer } from './ecdh.ts';
 import { checkAssertion } from './lock.ts';
 import { eventId, eventShape, schnorrVerify, verifyEvent, tag, type KeyPair, type NostrEvent, type Unsigned } from './event.ts';
-import { checkApproval, approvalType, approvalHash, placeholderList, changeKey, checkWaited, signWaited, changeWhat, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
+import { checkApproval, approvalType, approvalHash, placeholderList, changeKey, checkWaited, signWaited, changeWhat, checkSignPair, MAX_EXPIRY_S, W_DEFAULT } from './approval.ts';
 import { computeMembership, parseChange, adopt, type Membership } from './membership.ts';
 import { pointFrom, commitmentFrom, scalarHex, type Commitment } from './curve.ts';
 import { stateOf, commitmentAt, type State } from './redeal.ts';
@@ -478,6 +478,11 @@ export class CoSigner {
       if (msg.hold !== undefined) {
         const h = this.holds.get(msg.hold);
         if (!h || h.eventId !== evId || h.cancelled || h.end > now) refuse('hold_not_passed');
+      } else if (msg.approval?.pair) {
+        // Core 14.26: a pair of two distinct current devices, the requester one of them, over "sign" ‖ event id.
+        const e = checkSignPair(this.g, (k) => this.m.devices.has(k) && !this.m.removed.has(k), evId, msg.approval.pair, from);
+        if (e) refuse(e);
+        lockApproved = true;
       } else if (msg.approval?.lock) {
         const coord = this.m.members.get(from)!;
         if (msg.approval.lock.member !== from || !coord.lock) refuse('needs_approval');
@@ -702,6 +707,8 @@ export class CoSigner {
     if (twoCall) this.#twoCall.delete(`${from}:${msg.after}`);
     if (single) {
       if (msg.event.kind === 5 && !single.lockApproved && msg.hold === undefined) this.burst.add(now, deletionTargets(msg.event));
+      // Core 14.26 §5.8: co-signed with an approval (the lock or a pair), this server's own hold for the event is over.
+      if (single.lockApproved && msg.approval) this.holds.delete(holdWaitId(single.evId));
       if (single.signpost) this.noteSignpost(single.evId);
       return { v: 1, type: 'partial', re: msg.id, ...out[0] };
     }

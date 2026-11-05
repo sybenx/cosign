@@ -26,7 +26,7 @@ class KeykinApprove : FragmentActivity() {
         const val RELAYS = "keykin.relays"; const val FRONTS = "keykin.fronts"; const val SEAT = "keykin.seat"; const val FRONT = "keykin.front"; const val WHY = "keykin.why"
         /** The actions: create an account (relays, fronts), report a device lost, check the paper, make a new paper,
          *  add the invited device, approve a pair request, remove a device with a pair. */
-        val ACTIONS = setOf("create", "report_lost", "paper_check", "new_paper", "move_seat", "add_invited", "pair_approve", "pair_remove")
+        val ACTIONS = setOf("create", "report_lost", "paper_check", "new_paper", "move_seat", "held", "add_invited", "pair_approve", "pair_remove")
     }
     private lateinit var line: TextView
     private lateinit var col: LinearLayout
@@ -69,6 +69,32 @@ class KeykinApprove : FragmentActivity() {
                     done(true, if (ok) "this account's paper" else "not this account's paper") }.start() }
             }
             "new_paper" -> return newPaper(s, d)
+            // A held event (core §5.8, Device policy §4): with a lock, approved at once (the prompt signs "sign" ‖ its
+            // id); without one, a 3-day hold at every server, released once it has passed. Or declined.
+            "held" -> {
+                val id = intent.getStringExtra(ID).orEmpty()
+                val h = (0 until d.nip46.heldList().length()).map { d.nip46.heldList().getJSONObject(it) }.firstOrNull { it.getString("id") == id } ?: return done(false, "unknown_held")
+                val site = h.optString("site").ifEmpty { "A site" }
+                line.text = "$site asks to sign: ${h.optString("reason").ifEmpty { "a change that needs your OK" }} (kind ${h.optInt("kind")}${h.optString("content").let { if (it.isEmpty()) "" else ": \u201c${it.take(120)}\u201d" }})."
+                // Device policy draft 19: the lock; then another device (a pair, core 14.26); the 3-day hold last, and only
+                // on a lockless device.
+                if (s.lock() != null) button("Approve with your lock") { LockPrompt.approveHeld(this, slot, id, "Approve what $site asks", site) { signed, why -> done(signed != null, if (signed != null) "signed" else why ?: "not approved", id) } }
+                for (o in d.memberKeys().filter { it != d.pub }) button("Approve with ${d.nameOf(o).optString("name").takeIf { it.isNotEmpty() && it != "null" } ?: "another device (${o.take(8)}…)"}") {
+                    val e = d.nip46.heldEvent(id) ?: return@button done(false, "unknown_held")
+                    val (code, approval) = try { d.pairStartSign(e, o) } catch (ex: KeykinException) { return@button done(false, ex.code) }
+                    col.removeAllViews(); col.addView(line)
+                    line.text = "On that device, open Keykin: it shows the same request. Type this code there:\n\n$code\n\nWaiting for it (up to 10 minutes)."
+                    Thread { finishWith { val a = approval.get(10, java.util.concurrent.TimeUnit.MINUTES) ?: throw KeykinException("refused"); d.nip46.approveHeld(id, a); "signed" } }.start()
+                }
+                if (s.lock() == null) {
+                    val wait = h.opt("wait") as? String
+                    if (wait == null) {
+                        col.addView(TextView(this).apply { text = "Or, as a last resort, wait 3 days at your servers (any of your other devices can stop it), then release it." })
+                        button("Wait 3 days") { Thread { finishWith { d.nip46.holdHeld(id); "waiting 3 days" } }.start() }
+                    } else button("Release it (once the wait has passed)") { Thread { finishWith { d.nip46.releaseHeld(id); "signed" } }.start() }
+                }
+                button("Decline") { d.nip46.declineHeld(id); done(true, "declined", id) }
+            }
             // The F1 card (core §6.7.6): a seat whose server the device counts as dead, moved to the server the app
             // picked from its server list (FRONT: that server's front-door host key; WHY: quiet, shutdown or denied).
             "move_seat" -> {
@@ -88,7 +114,11 @@ class KeykinApprove : FragmentActivity() {
             "pair_approve" -> {
                 val id = intent.getStringExtra(ID).orEmpty()
                 val ask = d.pairAsks[id] ?: return done(false, "unknown_pair")
-                line.text = "${ask.getString("from").take(12)}… asks this phone to approve: ${describe(ask.getJSONArray("list"))}\n\nType the 6 digits the other device shows. Only if you are holding both."
+                // A held event (core 14.26) shows what it does, as this phone's own policy judged it; a list, its changes.
+                val what = ask.optJSONObject("event")?.let { e -> "sign ${ask.optString("reason").ifEmpty { "a change that needs your OK" }} (kind ${e.optInt("kind")})" } ?: describe(ask.getJSONArray("list"))
+                val asker = d.nameOf(ask.getString("from")).optString("name").takeIf { it.isNotEmpty() && it != "null" } ?: "${ask.getString("from").take(12)}…"
+                // Core 14.26 (red team): name the asking device; type only if you hold it, otherwise report it lost.
+                line.text = "$asker asks this phone to approve: $what\n\nType the 6 digits it shows only if you are holding it now. If you aren't, don't: report it lost instead."
                 val code = EditText(this).apply { hint = "6 digits"; inputType = InputType.TYPE_CLASS_NUMBER }; col.addView(code)
                 button("Approve") { val c = code.text.toString().trim(); Thread {
                     val ok = try { d.pairApprove(id, c) } catch (e: Exception) { return@Thread done(false, (e as? KeykinException)?.code ?: "failed") }

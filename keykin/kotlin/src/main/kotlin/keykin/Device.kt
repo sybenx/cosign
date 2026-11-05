@@ -1058,6 +1058,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     private val pairWaits = java.util.concurrent.ConcurrentHashMap<String, Pair<JSONObject, java.util.concurrent.CompletableFuture<JSONObject?>>>()
     /** Ask device `to` to approve `list` with this one: the code to show, and the approval once the person typed it there. */
     fun pairStart(list: JSONArray, to: String): Pair<String, java.util.concurrent.CompletableFuture<JSONObject?>> {
+        if (to !in view.devices) try { fetch() } catch (_: Exception) {}
         val v = view
         if (to !in v.devices || to in v.removed || to == pub) refuse("not_device", "a pair is two current devices")
         val l = Approvals.placeholder(list); val expiry = net.now + 600
@@ -1070,10 +1071,38 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         for (s in servers()) net.send(sk, s.key, msg("deliver", "member").put("to", to).put("wrap", w))
         return Codes.pairCode(g, Approvals.hash(l), r) to f
     }
+    /** Core 14.26 §5.8: a held event approved by this device and device `to` (a pair, for a lockless phone instead of the
+     *  3-day hold). Returns the code the person types on `to`, and the approval (`{"pair": [...]}`) once `to` signed;
+     *  `to` signs only after its own Device policy agrees and the code matches. */
+    fun pairStartSign(event: Unsigned, to: String): Pair<String, java.util.concurrent.CompletableFuture<JSONObject?>> {
+        // A device that joined since this one last looked: catch up once before refusing.
+        if (to !in view.devices) try { fetch() } catch (_: Exception) {}
+        val v = view
+        if (to !in v.devices || to in v.removed || to == pub) refuse("not_device", "a pair is two current devices")
+        if (event.pubkey != g) refuse("wrong_pubkey")
+        val evId = event.id; val expiry = net.now + 600
+        val r = hex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }); val id = hex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) })
+        val sig = Keykin.secp.schnorrSign(signPairDigest(evId, r), sk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) })
+        val f = java.util.concurrent.CompletableFuture<JSONObject?>()
+        pairWaits[id] = JSONObject().put("event_id", evId).put("expiry", expiry).put("r", r).put("sig", sig).put("to", to) to f
+        val w = env.wrap(sk, to, JSONObject().put("type", "pair_request").put("id", id).put("sign", event.wire()).put("expiry", expiry).put("r", r).put("sig", sig), net.now)
+        net.tell(sk, to, JSONObject().put("type", "delta_push").put("wrap", w))
+        for (s in servers()) net.send(sk, s.key, msg("deliver", "member").put("to", to).put("wrap", w))
+        return Codes.pairCode(g, evId, r) to f
+    }
+    /** The pair digest for a signature (core 14.26 §5.8): `detached("pair", {what: hex("sign" ‖ event id), r})`. */
+    private fun signPairDigest(evId: String, r: String) = Approvals.detached("pair", g, JSONObject().put("what", hex(Codes.whatSign(evId))).put("r", r))
     /** On the second device: the person typed `code` for request `id`. Signs only if it matches. */
     fun pairApprove(id: String, code: String): Boolean {
         val p = pairAsks[id] ?: refuse("unknown_pair")
         if (net.now > p.getLong("expiry")) { pairAsks.remove(id); refuse("expired") }
+        p.optString("event_id").takeIf { it.isNotEmpty() }?.let { evId ->
+            if (!java.security.MessageDigest.isEqual(utf8(Codes.pairCode(g, evId, p.getString("r"))), utf8(code))) return false
+            val cs = Keykin.secp.schnorrSign(signPairDigest(evId, p.getString("r")), sk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) })
+            pairAsks.remove(id)
+            net.send(sk, p.getString("from"), JSONObject().put("type", "pair_sign").put("id", id).put("code_sig", cs))
+            return true
+        }
         val l = p.getJSONArray("list")
         if (!java.security.MessageDigest.isEqual(utf8(Codes.pairCode(g, Approvals.hash(l), p.getString("r"))), utf8(code))) return false
         val cs = Keykin.secp.schnorrSign(Approve.pairDigest(g, epochId, l, p.getLong("expiry"), p.getString("r")), sk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) })
@@ -1084,9 +1113,23 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     private fun takePairRequest(from: String, b: JSONObject) {
         val v = view
         if (from !in v.devices || from in v.removed || from == pub) return
-        val id = b.opt("id") as? String ?: return; val l = b.optJSONArray("list") ?: return; val r = b.opt("r") as? String ?: return
+        val id = b.opt("id") as? String ?: return; val r = b.opt("r") as? String ?: return
         val expiry = (b.opt("expiry") as? Number)?.toLong() ?: return
         if (net.now > expiry || expiry - net.now > 3600) return
+        if (!Regex("^[0-9a-f]{32}$").matches(r)) return
+        // A held event to approve together (core 14.26): kept only if it is the account's, signed for by `from`, and this
+        // device's own Device policy doesn't decline it (the person sees it with what it does).
+        b.optJSONObject("sign")?.let { o ->
+            val e = try { Unsigned(o.getString("pubkey"), o.getLong("created_at"), o.getInt("kind"),
+                o.getJSONArray("tags").let { t -> (0 until t.length()).map { k -> t.getJSONArray(k).let { x -> (0 until x.length()).map { x.getString(it) } } } }, o.getString("content")) } catch (_: Exception) { return }
+            if (e.pubkey != g || !schnorrVerify(b.optString("sig"), signPairDigest(e.id, r), from)) return
+            val verdict = try { guard.judge(e, "member", listOf("sign-in", "post", "lists", "dms", "wallet", "private-data")) } catch (_: Exception) { return }
+            if (verdict.level == "declined") return
+            if (pairAsks.size >= 16 && !pairAsks.containsKey(id)) return
+            pairAsks[id] = JSONObject().put("id", id).put("from", from).put("event", o).put("event_id", e.id).put("reason", verdict.reason).put("list", JSONArray()).put("expiry", expiry).put("r", r)
+            return
+        }
+        val l = b.optJSONArray("list") ?: return
         try { if ("pair" !in Approvals.allowed(l) || !schnorrVerify(b.optString("sig"), Approve.pairDigest(g, epochId, l, expiry, r), from)) return } catch (_: Exception) { return }
         if (pairAsks.size >= 16 && !pairAsks.containsKey(id)) return
         pairAsks[id] = JSONObject().put("id", id).put("from", from).put("list", l).put("expiry", expiry).put("r", r)
@@ -1095,6 +1138,13 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val id = b.opt("id") as? String ?: return
         val (w, f) = pairWaits[id] ?: return
         if (from != w.getString("to")) return
+        w.optString("event_id").takeIf { it.isNotEmpty() }?.let { evId ->
+            try { if (!schnorrVerify(b.optString("code_sig"), signPairDigest(evId, w.getString("r")), from)) return } catch (_: Exception) { return }
+            pairWaits.remove(id)
+            f.complete(JSONObject().put("pair", JSONArray().put(JSONObject().put("member", pub).put("sig", w.getString("sig")).put("r", w.getString("r")))
+                .put(JSONObject().put("member", from).put("code_sig", b.getString("code_sig")))))
+            return
+        }
         try { if (!schnorrVerify(b.optString("code_sig"), Approve.pairDigest(g, epochId, w.getJSONArray("list"), w.getLong("expiry"), w.getString("r")), from)) return } catch (_: Exception) { return }
         pairWaits.remove(id)
         f.complete(JSONObject().put("expiry", w.getLong("expiry")).put("pair", JSONArray().put(JSONObject().put("member", pub).put("sig", w.getString("sig")).put("r", w.getString("r")))

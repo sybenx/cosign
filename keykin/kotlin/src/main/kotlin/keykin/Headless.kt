@@ -83,6 +83,17 @@ fun main(args: Array<String>) {
                     }
                     // Pair (§6.2): ask device `with` to approve removing `key` with this one; print the code, wait for the
                     // person to type it there, then deal and submit the list with the pair approval.
+                    // Core 14.26: sign a held event (`kind`, empty: a destructive one) with a pair: print the code, wait for
+                    // the person to type it on device `with`, then sign with the pair approval.
+                    "pair_sign" -> {
+                        val e = Unsigned(d.g, net.now, c.getInt("kind"), emptyList(), c.optString("content"))
+                        val (code, approval) = d.pairStartSign(e, c.getString("with"))
+                        println(JSONObject().put("code", code).toString()); System.out.flush()
+                        val a = approval.get(c.optLong("seconds", 120), java.util.concurrent.TimeUnit.SECONDS) ?: refuse("refused")
+                        d.sign(e.kind, e.content, e.tags, e.createdAt, "member", JSONObject().put("approval", a))
+                    }
+                    "pair_asks" -> { try { d.fetch() } catch (_: Exception) {}; JSONObject().put("asks", JSONArray(d.pairAsks.values.map { JSONObject().put("id", it.getString("id")).put("from", it.getString("from")).put("event_id", it.optString("event_id")).put("reason", it.optString("reason")) })) }
+                    "pair_approve" -> JSONObject().put("approved", d.pairApprove(c.getString("id"), c.getString("code")))
                     "pair_remove" -> {
                         val list = JSONArray().put(JSONObject().put("remove", c.getString("key"))).put(JSONObject().put("redeal", JSONObject().put("dealer", d.pub)))
                         val (code, approval) = d.pairStart(list, c.getString("with"))

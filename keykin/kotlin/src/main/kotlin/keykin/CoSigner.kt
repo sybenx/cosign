@@ -109,10 +109,17 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
             if ((c.optJSONArray("list")?.length() ?: 0) > 1) refuse("list_in_one_request"); refuse("unsupported_change") }
         val evId = e.id
         if (Rules.destructive(kind, ev.getString("content"), tags)) {
-            val l = msg.optJSONObject("approval")?.optJSONObject("lock") ?: refuse("needs_approval")
-            val lock = s.lock ?: refuse("needs_approval")
-            if (l.getString("member") != from) refuse("needs_approval")
-            checkAssertion(g, lock.getString("pub"), lock.getString("rp"), Codes.whatSign(evId), l.getJSONObject("assertion"))?.let { refuse(it) }
+            val ap = msg.optJSONObject("approval")
+            val pair = ap?.optJSONArray("pair")
+            if (pair != null) {
+                // Core 14.26 §5.8: a pair of two distinct current devices (the requester one of them) over "sign" ‖ event id.
+                Approvals.checkSignPair(g, { k -> k in view.devices && k !in view.removed }, evId, pair, from)?.let { refuse(it) }
+            } else {
+                val l = ap?.optJSONObject("lock") ?: refuse("needs_approval")
+                val lock = s.lock ?: refuse("needs_approval")
+                if (l.getString("member") != from) refuse("needs_approval")
+                checkAssertion(g, lock.getString("pub"), lock.getString("rp"), Codes.whatSign(evId), l.getJSONObject("assertion"))?.let { refuse(it) }
+            }
         }
         // Fresh nonces for a one-call request, or the ones kept for `after`; either way used once (§5.2).
         val mine = kept?.mine ?: Frost.commit(C, index, share, Frost.hedge(share, sha(utf8(Jcs.of(msg)), u32(0))))

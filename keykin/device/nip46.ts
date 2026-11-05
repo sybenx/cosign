@@ -213,7 +213,7 @@ export class Nip46Home {
   // --- the wake path ---------------------------------------------------------------------------
   // --- held events (Doors §3.3, Device policy §4) ----------------------------------------------
   /** Site events waiting for the person: shown on the home, approved with the lock or by a hold. */
-  held = new Map<string, { id: string; signer: string; event: any; at: number; wait: string | null }>();
+  held = new Map<string, { id: string; signer: string; event: any; at: number; wait: string | null; waitEnd?: number | null }>();
   /** Approve with the lock: sign it unchanged, and publish it to the grant's relays and the account's. */
   /** A held event of a live grant, or refused; one a newer version of its list overtook is dropped. */
   async #heldLive(id: string) {
@@ -245,13 +245,14 @@ export class Nip46Home {
   /** Lockless: start a hold at every server (core §5.8); `releaseHeld` once its wait has passed. */
   async holdHeld(id: string): Promise<string> {
     const h = await this.#heldLive(id);
-    let wait: string | null = null;
+    let wait: string | null = null, end: number | null = null;
     for (const s of this.d.servers()) {
       const a = await this.d.bus.send(this.d.kp, s.key, msg('hold', this.d.g, this.d.epochId, 'member', { event: h.event }));
-      if (a?.kind === 'hold') wait = a.wait;
+      if (a?.kind === 'hold') { wait = a.wait; if (Number.isSafeInteger(a.end)) end = end === null ? a.end : Math.min(end, a.end); }
     }
     if (!wait) throw new KeykinError('no_server', 'no server started the hold');
-    h.wait = wait; this.d.persist();
+    // When it can go on: the earliest end a server stated for its own wait (a server co-signs once its own passed).
+    h.wait = wait; h.waitEnd = end; this.d.persist();
     return wait;
   }
   async releaseHeld(id: string): Promise<NostrEvent> {

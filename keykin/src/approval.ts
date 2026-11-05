@@ -132,6 +132,20 @@ export const checkWaited = (g: string, w: Waited, W: number) =>
 
 /** Null if the approval is valid for this list in every member's eyes; otherwise the code. The
  *  approvers it names are returned for the co-signer's freshness checks. */
+/** Core 14.26 §5.8: a pair approving the signature of event `evId`: two distinct current devices, `requester` one of
+ *  them, both over `detached("pair", {what: hex("sign" ‖ event id), r})`. Null when it holds, else why not. */
+export function checkSignPair(g: string, isDevice: (k: string) => boolean, evId: string, pair: unknown, requester: string): string | null {
+  try {
+    if (!Array.isArray(pair) || pair.length !== 2) return 'bad_approval';
+    const [x, y] = pair as any[];
+    if (!isDevice(x?.member) || !isDevice(y?.member)) return 'approver_not_device';
+    if (x.member === y.member) return 'pair_same_device';
+    if (requester !== x.member && requester !== y.member) return 'needs_approval';
+    const d = detachedDigest('pair', g, { what: bytesToHex(what.sign(evId)), r: x.r });
+    return schnorrVerify(x.sig, d, x.member) && schnorrVerify(y.code_sig, d, y.member) ? null : 'bad_signature';
+  } catch { return 'bad_approval'; }
+}
+
 export function checkApproval(auth: Authority, list: Change[], a: Approval): { error: string | null; approvers: string[] } {
   const fail = (error: string) => ({ error, approvers: [] as string[] });
   const t = approvalType(a);

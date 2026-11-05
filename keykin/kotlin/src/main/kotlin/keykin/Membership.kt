@@ -103,6 +103,21 @@ object Approvals {
     /** §9.5's comparison form: JCS bytes. An add always carries `lock` (core 14.16). */
     fun key(c: Any?): String = Jcs.of(c)
     fun detached(type: String, g: String, body: Any) = sha(utf8("keykin-$type/1"), unhex(g), utf8(Jcs.of(body)))
+    /** Core 14.26 §5.8: a pair approving the signature of event `evId`: two distinct current devices, `requester` one of
+     *  them, both over `detached("pair", {what: hex("sign" ‖ event id), r})`. Null when it holds, else why not. */
+    fun checkSignPair(g: String, isDevice: (String) -> Boolean, evId: String, pair: JSONArray, requester: String): String? = try {
+        if (pair.length() != 2) "bad_approval" else {
+            val x = pair.getJSONObject(0); val y = pair.getJSONObject(1)
+            val a = x.getString("member"); val b = y.getString("member")
+            when {
+                !isDevice(a) || !isDevice(b) -> "approver_not_device"
+                a == b -> "pair_same_device"
+                requester != a && requester != b -> "needs_approval"
+                else -> { val d = detached("pair", g, JSONObject().put("what", hex(Codes.whatSign(evId))).put("r", x.getString("r")))
+                    if (schnorrVerify(x.getString("sig"), d, a) && schnorrVerify(y.getString("code_sig"), d, b)) null else "bad_signature" }
+            }
+        }
+    } catch (_: Exception) { "bad_approval" }
     fun shape(list: JSONArray) {
         need(list.length() > 0, "bad_list", "empty")
         val types = (0 until list.length()).map { type(list.getJSONObject(it)) }
