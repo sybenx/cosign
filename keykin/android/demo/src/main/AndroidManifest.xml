@@ -11,6 +11,8 @@
         </activity>
         <!-- Tests drive the demo through this alias only: DUMP is the shell's, never an ordinary app's. -->
         <activity-alias android:name=".Drive" android:targetActivity=".Main" android:exported="true" android:permission="android.permission.DUMP" />
+        <!-- Report a device lost and the paper check: in the signer process, beside the shares and the lock. -->
+        <activity android:name=".Tools" android:process=":signer" android:exported="false" android:theme="@style/Theme.AppCompat.DayNight" />
         <!-- NIP-55's screen runs in the signer process, beside the provider and the shares. -->
         <activity android:name=".Nip55Activity" android:process=":signer" android:exported="true">
             <intent-filter>

@@ -18,6 +18,14 @@ object PaperEntry {
         val sk = Backup.readBackupWords(words)
         try { return d.submit(list, d.approveWithPaper(list, sk)) } finally { sk.fill(0) }
     }
+    /** The paper check (Backup): whether the 24 words the person typed are this account's current paper. The words
+     *  are read and destroyed here, in the signer process, and never submit anything. */
+    fun check(slot: String, words: List<String>): Boolean {
+        Proc.signerOnly("PaperEntry")
+        val d = Memberships.signer(slot).device ?: throw KeykinException("no_membership")
+        val sk = try { Backup.readBackupWords(words) } catch (_: KeykinException) { return false }
+        try { return keykin.Keykin.secp.pub(sk) == d.view.backup } finally { sk.fill(0) }
+    }
     /** The list for removing a lost device (core §6.7.6 F2): the remove and its redeal, dealt by this one. */
     fun removeList(slot: String, key: String): JSONArray {
         val d = Memberships.signer(slot).device ?: throw KeykinException("no_membership")

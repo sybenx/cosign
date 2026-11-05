@@ -33,8 +33,12 @@ class Main : Activity() {
         input = EditText(this).apply { hint = "invite code (keykin:join?…)" }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 48, 32, 32) }
         col.addView(input)
-        for ((label, cmd) in listOf("Join" to "join", "Sign a note" to "sign", "State" to "state", "Fetch" to "fetch", "Forget" to "forget"))
-            col.addView(Button(this).apply { text = label; setOnClickListener { run(JSONObject().put("cmd", cmd).put("code", input.text.toString()).put("relays", RELAYS)) } })
+        for ((label, cmd) in listOf("Join" to "join", "Post a note" to "sign", "State" to "state", "Fetch" to "fetch", "Forget" to "forget"))
+            col.addView(Button(this).apply { text = label; setOnClickListener { run(JSONObject().put("cmd", cmd).put("code", input.text.toString()).put("relays", RELAYS)
+                .put("content", if (cmd == "sign" && input.text.isNotBlank() && !input.text.startsWith("keykin")) input.text.toString() else "gm from the keykin-android demo")) } })
+        // Report a device lost, and check the paper: on a screen in the signer process (the lock, the paper's words).
+        col.addView(Button(this).apply { text = "Devices and paper"; setOnClickListener {
+            prefs.getString("slot", null)?.let { s -> startActivity(Intent(this@Main, Tools::class.java).putExtra("slot", s)) } } })
         col.addView(out)
         setContentView(ScrollView(this).apply { addView(col) })
         // What the signer tells: the check digits once, the join once, errors as they come. One client and one
@@ -93,7 +97,8 @@ class Main : Activity() {
     }
     private fun slot() = prefs.getString("slot", null) ?: error("join first")
     companion object {
-        const val RELAYS = "ws://10.0.2.2:17311,ws://10.0.2.2:17312"
+        /** The relays a join uses: the emulator's local stack in a debug build, the test stack's in the dry-run build. */
+        val RELAYS: String = BuildConfig.RELAYS
         private var client: KeykinClient? = null
         @Synchronized fun shared(c: android.content.Context) = client ?: KeykinClient(c).bind().also { client = it }
         @Volatile private var listening = false
