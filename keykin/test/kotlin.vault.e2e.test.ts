@@ -66,11 +66,13 @@ test('a Kotlin device answers a vault app\'s calls as the TS device does', { ski
     { cmd: 'vault_unwrap', app: APP, wrap: toSelf },
     { cmd: 'vault_decrypt', app: APP, peer: peer.pub, payload: enc(payload) },
     { cmd: 'vault_decrypt', app: APP, peer: peer.pub, payload: enc('a private message') },
+    { cmd: 'vault_sign', app: APP, kind: 5, tags: [['a', `30811:${A.g}`]], content: '' },   // review 22 L7: no d part
+    { cmd: 'vault_decrypt', app: APP, peer: peer.pub, payload: enc(JSON.stringify({ kind: 4812, content: '{}', vault: 'v', keys: {} })) },
   ]));
   const r = spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=${snap} ${relays.join(',')} ${cmds}`], { env: { ...process.env, JAVA_HOME: java }, encoding: 'utf8', timeout: 300_000 });
   const all = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
   assert.equal(all[0]?.device, B.kp.pub, r.stdout + r.stderr.slice(-800));
-  const [early, allowed, ksig, derived, badDomain, cert, kind1, wrap, badInvite, unwrapped, plain, dm] = all.slice(1);
+  const [early, allowed, ksig, derived, badDomain, cert, kind1, wrap, badInvite, unwrapped, plain, dm, looseA, rumorish] = all.slice(1);
   assert.equal(early.error, 'declined', 'nothing before the grant');
   assert.deepEqual(allowed.allowed, [APP]);
   assert.equal(ksig.mk, B.kp.pub); assert.ok(memberVerify(ksig.ksig, 'nostr-vault/ksig/1', Buffer.from(vroot, 'hex'), B.kp.pub));
@@ -87,4 +89,5 @@ test('a Kotlin device answers a vault app\'s calls as the TS device does', { ski
   assert.equal(unwrapped.seal, A.g, JSON.stringify(unwrapped)); assert.equal(unwrapped.rumor.kind, 4812);
   assert.equal(plain.plain, payload);
   assert.equal(dm.error, 'declined');
+  assert.equal(looseA.error, 'declined'); assert.equal(rumorish.error, 'declined', 'review 22 L1');
 });

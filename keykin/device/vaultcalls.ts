@@ -15,9 +15,11 @@
 //                                   and `keys`, `keys_ref`, `secret`, `inboxes` or `genesis`)
 //
 // So a vault app gets vault material and nothing else of the account's: no DMs, no other private data. A rumor is
-// never answered by `decrypt`, even a vault-shaped one: an invitation's seal content reaches an app only through
+// never answered by `decrypt`, even a vault-shaped one (nor an object with an event's `kind` and `content`): an invitation's seal content reaches an app only through
 // `unwrap`, with its signer check. The grant is this device's only, kept with the device and cleared by a wipe; the
-// app id is whatever the platform vouches for (the Android calling package, checked against its uid).
+// app id is whatever the platform vouches for (on Android, the calling uid's package and signing certificate). The
+// open domains, once registered for a grant, stay registered for the process: they are open to every vault app by
+// design (core 14.21 §5.9), and a call still needs the app's grant (review 22 L6).
 
 import { KeykinError, refuse, randomBytes, strictJson } from '../src/bytes.ts';
 import { eventId, eventShape, verifyEvent, type NostrEvent, type Unsigned } from '../src/event.ts';
@@ -34,6 +36,11 @@ export const VAULT_DERIVE_DOMAINS = new Set(['nostr-vault/owner/1', 'nostr-vault
 /** NIP-59: a seal's and a wrap's created_at is up to two days in the past, so it says nothing of when it was made. */
 const TWO_DAYS = 2 * 24 * 3600;
 const HEX64 = /^[0-9a-f]{64}$/;
+/** Per app and hour (review 22 M2), as NIP-55's grants: signatures (invitations' seals included), and decrypts and
+ *  unwraps, each an ECDH round with a co-signer. */
+export const VAULT_SIGNS_PER_HOUR = 60, VAULT_OPENS_PER_HOUR = 300;
+/** Kind 5's `a` target: exactly `<vault kind>:<account>:<d>` (review 22 L7). */
+const VAULT_ADDR = /^(4810|4811|30811):([0-9a-f]{64}):/;
 
 const no = (why: string): never => { throw new KeykinError('declined', why); };
 
@@ -41,6 +48,9 @@ export class VaultCalls {
   readonly d: DeviceNode;
   /** The apps granted the three open domains, by app id. */
   apps = new Set<string>();
+  /** Apps the person said "Don't allow" to, remembered until they change it (review 22 L7). */
+  declined = new Set<string>();
+  #used = new Map<string, { at: number; signs: number; opens: number }>();
   constructor(d: DeviceNode) { this.d = d; }
 
   /** The person said yes to the one question for the set. */
@@ -48,13 +58,23 @@ export class VaultCalls {
     if (typeof app !== 'string' || !app || app.length > 256) refuse('malformed', 'an app id');
     if (this.d.wiped) refuse('wiped');
     for (const x of VAULT_DERIVE_DOMAINS) registerDomain(x);
-    this.apps.add(app); this.d.persist();
+    this.apps.add(app); this.declined.delete(app); this.d.persist();
   }
-  revoke(app: string) { if (this.apps.delete(app)) this.d.persist(); }
+  /** "Don't allow": the app isn't asked about again until the person changes it. */
+  decline(app: string) { if (typeof app === 'string' && app) { this.apps.delete(app); this.declined.add(app); this.d.persist(); } }
+  /** The person changed it: no grant, and the app may ask again. */
+  revoke(app: string) { if (this.apps.delete(app) || this.declined.delete(app)) this.d.persist(); }
+  mayAsk(app: string) { return !this.apps.has(app) && !this.declined.has(app); }
   allowed(): string[] { return [...this.apps].sort(); }
   #need(app: string) {
     if (this.d.wiped) refuse('wiped');
     if (!this.apps.has(app)) no('this app hasn\'t been granted your vaults on this device');
+  }
+  #spend(app: string, what: 'signs' | 'opens') {
+    const u = this.#used.get(app);
+    const cur = u && this.d.now - u.at < 3600 ? u : { at: this.d.now, signs: 0, opens: 0 };
+    if (cur[what] >= (what === 'signs' ? VAULT_SIGNS_PER_HOUR : VAULT_OPENS_PER_HOUR)) refuse('try-later', 'too many requests from this app this hour');
+    cur[what]++; this.#used.set(app, cur);
   }
 
   ksig(app: string, root: Uint8Array): { mk: string; ksig: string } {
@@ -73,21 +93,25 @@ export class VaultCalls {
   states(app: string) { this.#need(app); return this.d.dataKeys.forApps().states(); }
 
   /** Kinds 4810, 4811 and 30811 as a normal co-signed round; a kind 5 of only those, by the account, through Device
-   *  policy. A Held deletion waits for the person and is `try-later:` here. */
+   *  policy. Held (by Device policy or a co-signer's approval) is declined: a vault app has no held events. */
   async sign(app: string, ev: Partial<Unsigned>): Promise<NostrEvent> {
     this.#need(app);
     const kind = Number(ev?.kind);
-    if (VAULT_KINDS.has(kind)) return this.d.sign({ ...ev, created_at: ev.created_at ?? this.d.now }, { owner: `vault:${app}` });
-    if (kind !== 5) no('a vault app gets signatures for kinds 4810, 4811 and 30811 only');
+    if (!VAULT_KINDS.has(kind) && kind !== 5) no('a vault app gets signatures for kinds 4810, 4811 and 30811 only');
+    this.#spend(app, 'signs');
+    // An event core §5.8 or Device policy would hold has no way to the person from a vault app: declined, not a
+    // try-later the app would retry forever (review 22 M1).
+    const held = (e: unknown): never => { if ((e as KeykinError).code === 'needs_approval') no('this would need your approval on your phone; vault apps get no held events'); throw e; };
+    if (VAULT_KINDS.has(kind)) return this.d.sign({ ...ev, created_at: ev.created_at ?? this.d.now }, { owner: `vault:${app}` }).catch(held);
     const tags: string[][] = Array.isArray(ev.tags) ? ev.tags : [];
     await this.#vaultTargets(tags);
     const e: Unsigned = { pubkey: this.d.g, created_at: ev.created_at ?? this.d.now, kind: 5, tags, content: ev.content ?? '' };
     eventShape({ ...e, id: '0'.repeat(64) }, 'rumor');
     const owner = `vault:${app}`;
-    const r = await this.d.guard.serve(e, owner, ['sign-in', 'post'], () => this.d.sign(e, { owner }));
+    const r = await this.d.guard.serve(e, owner, ['sign-in', 'post'], () => this.d.sign(e, { owner })).catch(held);
     if ('signed' in r) return r.signed;
     if ('error' in r) { const [code, ...why] = r.error.split(': '); throw new KeykinError(code === 'try-later' ? 'try-later' : 'declined', why.join(': ') || r.error); }
-    throw new KeykinError('try-later', 'held for you on your phone');
+    return no('Device policy holds this deletion; vault apps get no held events');
   }
   /** Every target of a deletion is a 4810, 4811 or 30811 by the account: by `e` (its kind known to this device or
    *  fetched), by `a` (kind and pubkey in the address), and `k` only naming those kinds. At least one target. */
@@ -98,11 +122,11 @@ export class VaultCalls {
       if (!Array.isArray(t) || typeof t[1] !== 'string') continue;
       if (t[0] === 'k' && !VAULT_KINDS.has(Number(t[1]))) no('a deletion of something other than vault machinery');
       if (t[0] === 'a') {
-        const [k, pk] = t[1].split(':');
-        if (!VAULT_KINDS.has(Number(k)) || pk?.toLowerCase() !== g) no('a deletion of something other than the account\'s vault machinery');
+        const m = VAULT_ADDR.exec(t[1]);
+        if (!m || m[2] !== g) no('a deletion of something other than the account\'s vault machinery');
         n++;
       }
-      if (t[0] === 'e') { es.push(t[1].toLowerCase()); n++; }
+      if (t[0] === 'e') { if (!HEX64.test(t[1])) no('an e target is a lowercase event id'); es.push(t[1]); n++; }
     }
     if (!n) no('a deletion with no target');
     const unknown = es.filter((id) => !this.d.history.get(id));
@@ -122,11 +146,14 @@ export class VaultCalls {
     if (rumor?.kind !== KIND_VAULT_INVITE) no('an invitation is a kind-4812 rumor');
     if (rumor.pubkey !== this.d.g) no('an invitation is by this account');
     if ('sig' in (rumor as object)) no('a rumor is unsigned');
-    const r: Unsigned = { pubkey: this.d.g, created_at: rumor.created_at!, kind: KIND_VAULT_INVITE, tags: rumor.tags ?? [], content: rumor.content ?? '' };
-    eventShape({ ...r, id: '0'.repeat(64) }, 'rumor');
+    // Exactly a rumor's fields, none filled in (review 22 L7: as Kotlin's Event.shape).
+    const { id: given, ...fields } = rumor as any;
+    eventShape({ ...fields, id: '0'.repeat(64) }, 'rumor');
+    const r: Unsigned = { pubkey: this.d.g, created_at: fields.created_at, kind: KIND_VAULT_INVITE, tags: fields.tags, content: fields.content };
     const id = eventId(r);
-    if (rumor.id !== undefined && rumor.id !== id) refuse('malformed', 'the rumor id differs from its fields');
-    const content = await this.d.nip44(recipient, JSON.stringify({ ...r, id }), true);
+    if (given !== undefined && given !== id) refuse('malformed', 'the rumor id differs from its fields');
+    this.#spend(app, 'signs');
+    const content = await this.d.nip44(recipient, JSON.stringify({ ...r, id }), true, { owner: `vault:${app}` });
     const seal = await this.d.sign({ kind: KIND_SEAL, created_at: this.#past(), tags: [], content }, { owner: `vault:${app}` });
     const eph = randomBytes(32);
     return finalizeEvent({ kind: KIND_WRAP_STORED, created_at: this.#past(), tags: [['p', recipient]],
@@ -139,6 +166,7 @@ export class VaultCalls {
    *  saying what it held. */
   async unwrap(app: string, wrap: NostrEvent): Promise<{ rumor: Unsigned & { id: string }; seal: string }> {
     this.#need(app);
+    this.#spend(app, 'opens');
     const nope = (): never => no('not a vault invitation');
     if (wrap?.kind !== KIND_WRAP_STORED || !verifyEvent(wrap)) nope();
     // A co-signer that can't be reached is said as such; anything that doesn't open is just "not an invitation".
@@ -155,6 +183,7 @@ export class VaultCalls {
   /** NIP-44 as the account with `peer`, answered only when the plaintext is a vault payload. */
   async decrypt(app: string, peer: string, payload: string): Promise<string> {
     this.#need(app);
+    this.#spend(app, 'opens');
     await this.d.ecdhX(peer);
     let plain: string;
     try { plain = await this.d.nip44(peer, payload, false); } catch { return no('not a vault payload'); }
@@ -162,7 +191,12 @@ export class VaultCalls {
     return plain;
   }
 
-  dump() { return [...this.apps]; }
-  load(x: unknown) { this.apps = new Set(Array.isArray(x) ? x.filter((a) => typeof a === 'string') : []); if (this.apps.size) for (const d of VAULT_DERIVE_DOMAINS) registerDomain(d); }
-  clear() { this.apps.clear(); }
+  /** As Kotlin keeps it (review 22 L2): `{apps, declined}`. */
+  dump() { return { apps: [...this.apps], declined: [...this.declined] }; }
+  load(x: any) {
+    const strs = (a: unknown) => (Array.isArray(a) ? a.filter((v) => typeof v === 'string') : []);
+    this.apps = new Set(Array.isArray(x) ? strs(x) : strs(x?.apps)); this.declined = new Set(strs(x?.declined));
+    if (this.apps.size) for (const d of VAULT_DERIVE_DOMAINS) registerDomain(d);
+  }
+  clear() { this.apps.clear(); this.declined.clear(); this.#used.clear(); }
 }

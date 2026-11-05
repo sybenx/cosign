@@ -59,7 +59,17 @@ class KeykinService : Service() {
             .put("removed", JSONArray(d.members.removed(0).map { it.json() })).put("notices", JSONArray(d.notices.toList()))
             .also { o -> hooked(slot, d); val v = d.guard.view { owner -> d.grants.own[owner.substringAfter(':')]?.optString("says") }
                 o.put("cards", v.getJSONArray("cards")).put("undos", v.getJSONArray("undos")).put("held", d.nip46.heldList())
-                .put("sites", JSONArray(d.nip46.asks.map { (k, sc) -> JSONObject().put("signer", k).put("scopes", JSONArray(sc.toList())) })) }
+                .put("sites", JSONArray(d.nip46.asks.map { (k, sc) -> JSONObject().put("signer", k).put("scopes", JSONArray(sc.toList())) }))
+                .put("vault_apps", JSONArray(vaultApps(d))).put("vault_declined", JSONArray(d.vault.declinedApps())) }
+    }
+    /** The vault apps granted on this device (Doors 20 §3.7), listed for the person (review 22 M3). A grant whose package
+     *  is uninstalled or now signed by someone else is dropped here. */
+    private fun vaultApps(d: keykin.Device): List<String> {
+        for (app in d.vault.allowed()) {
+            val uid = try { packageManager.getPackageUid(app.substringBefore('@'), 0) } catch (_: Exception) { -1 }
+            if (uid < 0 || VaultService.appOf(this, uid) != app) d.vault.revoke(app)
+        }
+        return d.vault.allowed()
     }
     /** Cards and Undo waits change outside any call: each change goes out as the slot's state at once. */
     // Per device, not per slot: a membership forgotten and joined again gets its hooks again (review 20 M9).
@@ -202,6 +212,9 @@ class KeykinService : Service() {
                 work.execute { joining[slot] = JSONObject().put("pair", JSONObject().put("status", status)); publish(slot) }
             }
             code
+        }
+        override fun revokeVaultApp(slot: String, app: String) = work.execute {
+            Memberships.signer(slot).device?.vault?.revoke(app); publish(slot)
         }
         override fun forget(slot: String) = work.execute {
             Memberships.forget(slot); joining.remove(slot)

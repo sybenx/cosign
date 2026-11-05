@@ -17,5 +17,12 @@
         <!-- The Android signer in the background (NIP-55): granted apps get answers without the app opening. -->
         <provider android:name="keykin.android.Nip55Provider" android:process=":signer" android:exported="true"
             android:authorities="${applicationId}.GET_PUBLIC_KEY;${applicationId}.SIGN_EVENT;${applicationId}.NIP04_ENCRYPT;${applicationId}.NIP04_DECRYPT;${applicationId}.NIP44_ENCRYPT;${applicationId}.NIP44_DECRYPT" />
+        <!-- Vault apps on the same phone (Doors 20 §3.7): any app may bind, nothing is answered until the person grants
+             it all three open vault domains on VaultGrantActivity (not exported: only VaultService's PendingIntent). -->
+        <service android:name="keykin.android.VaultService" android:process=":signer" android:exported="true">
+            <intent-filter><action android:name="keykin.android.VAULTS" /></intent-filter>
+        </service>
+        <activity android:name="keykin.android.VaultGrantActivity" android:process=":signer" android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" android:excludeFromRecents="true" />
     </application>
 </manifest>

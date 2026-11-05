@@ -15,7 +15,8 @@ class VaultTest {
             JSONObject().put("vault", "v").put("keys", JSONObject()).toString() to true,
             JSONObject().put("vault", "v").put("secret", "x").toString() to true,
             JSONObject().put("vault", "v").put("name", "Notes").toString() to false,
-            rumor to false, "a private message" to false, "{\"vault\":1,\"vault\":2,\"keys\":{}}" to false)
+            rumor to false, "a private message" to false,
+            JSONObject().put("kind", 4812).put("content", "{}").put("vault", "v").put("keys", JSONObject()).toString() to false, "{\"vault\":1,\"vault\":2,\"keys\":{}}" to false)
         for ((t, want) in cases) assertEquals(want, Doors.vaultPayload(t), t)
     }
     @Test fun deriveAsVaultsJson() {

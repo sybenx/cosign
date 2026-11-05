@@ -44,6 +44,9 @@ interface IKeykin {
     /** "Sign out of every site" (Doors §1): every own grant ends, and every other home, the helper included, gets a
      *  wildcard for every grant it made before now. */
     oneway void signOutEverywhere(String slot);
+    /** The person took back a vault app's grant, or a "Don't allow" (Doors 20 §3.7): the slot's state lists them as
+     *  "vault_apps" and "vault_declined". Granting is only ever on the signer process's own screen. */
+    oneway void revokeVaultApp(String slot, String app);
     /** "Let the helper answer for this site" (Helper module §2): the bunker:// link the helper minted, or null. */
     String helperSite(String slot, String site, String relaysCsv);
 

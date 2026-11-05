@@ -15,7 +15,12 @@ const VAULT_SECRETS = ['keys', 'keys_ref', 'secret', 'inboxes', 'genesis'];
 const parse = (t: string): unknown => { try { return JSON.parse(t); } catch { return null; } };
 const vaultShape = (x: unknown) => !!x && typeof x === 'object' && !Array.isArray(x) && 'vault' in (x as object) && VAULT_SECRETS.some((k) => k in (x as object));
 /** Whether a plaintext is a vault payload itself (not a rumor): what a vault app's decrypt answers (Doors 20 §3.7). */
-export const vaultPayload = (text: unknown) => typeof text === 'string' && vaultShape(parse(text));
+export const vaultPayload = (text: unknown) => {
+  if (typeof text !== 'string') return false;
+  const x = parse(text) as any;
+  // Never an event or rumor with vault fields added (review 22 L1): those go through the unwrap's signer check.
+  return vaultShape(x) && !('kind' in x) && !('content' in x) && !('sig' in x);
+};
 /** Whether a plaintext is vault material no site may get, or have encrypted (Doors 20 §2): a kind-4812 rumor, or an
  *  object with `vault` and `keys`, `keys_ref`, `secret`, `inboxes` or `genesis`, at the top level or in a rumor's
  *  content. */
