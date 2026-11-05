@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.23 · 2026-11-05 · `draft` `optional` · not built
+Draft 14.24 · 2026-11-05 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -90,14 +90,13 @@ and the user cut them (decision log, 2026-11-02; reasoning in `simplification.md
 These are the only things this document requires an app to show, because the protocol's safety
 depends on a person seeing them:
 
-1. the 6-digit join check, shown on the new device and **typed** by the person on the inviting
-   device before a join goes ahead (§4.1);
+1. the 6-digit join check, shown on the side that scanned the code and **typed** by the person on the side
+   that showed it, before a join goes ahead (§4.1);
 2. the account a device joined, when it joined from a join code (§4.2);
 3. a refused epoch record or change, with the member it came from (§3.4);
 4. that an update is needed, when a device meets a version it does not know (§11.1);
 5. a two-device approval: the first device shows a 6-digit code and the person **types** it on the
-   second device; for adding a device, the code is the join check shown on the new device, typed on
-   the second device (§6.2);
+   second device; for adding a device, the code is the join check, typed on the second device as the scanning side shows it (§6.2);
 6. the paper: before a device forgets the backup secret, the person shows the paper is readable by
    scanning it back or re-entering it (§4.3), unless they declined a paper (on a lockless device it is kept
    until a lock is registered or a paper is read back, §4.3);
@@ -312,8 +311,7 @@ a device (§1.1). A member never signs at a state it has left (§6.7.1).
 
 Adding a device uses this handshake. Seating a server or the helper uses the same check and repair
 (§6.7). A joining member trusts
-nothing it did not get from a code the person scanned, from the group key, or from the check both
-screens show. (This closes live finding #17.)
+nothing it did not get from a code the person scanned, from the group key, or from the join check the person typed (§4.1). (This closes live finding #17.)
 
 ### 4.1 The codes and the check
 
@@ -330,26 +328,41 @@ at most 10 minutes ahead. Readers MUST also accept `cosign:` in place of `keykin
 
 **The check, always.** Anyone who sees a code can race the honest device to answer it, whichever
 direction it goes. So after the hello, the side that received it answers with a fresh 16-byte `t`
-(`join_nonce`), and both screens show (§1.1) a 6-digit number,
+(`join_nonce`), and both sides compute a 6-digit number,
 `int(SHA-256("keykin-join/1" ‖ g ‖ m ‖ n ‖ s ‖ t)[0..8], big-endian) mod 10^6` (keys as 32 raw
 bytes, `s` and `t` as 16 raw bytes; in the join-code direction `g` and `m` are those in the
-`welcome_offer`). The **new device shows** it and the person **types** it on the inviting device,
-which goes on only if it matches. The hello fixes `n` before `t` exists, so nobody can grind a key
-whose number matches.
+`welcome_offer`). The **side that scanned shows** it, and the person **types** it on the **side that showed the code**,
+which is the side someone else could have answered; that side goes on only if it matches. The side that
+scanned needs no check of its own: it sealed to the key it scanned, so only that key can answer it.
+
+- **Invite direction:** the new device shows the number and the person types it on the inviting device.
+- **Join-code direction:** the inviting device shows the number and the person types it on the new
+  device, which then sends `join_confirm {s, t}` sealed to `m`. The inviter starts the add (§4.2 step 2)
+  only after a `join_confirm` sealed by `n` with its own `s` and `t`, and the new device takes a
+  `welcome` only after it sent one. A helper's setup page (Helper module) takes the typed digits the
+  same way.
+
+Safety rests on each side accepting one hello (or offer) per `s` and sealing to the key it scanned: a
+racer who answers first ends up in a session for which the honest device shows no number, so the person
+has nothing to type. Before it confirms, a new device that gets a second `welcome_offer` for the same `s`
+(sealed by another `m`, or naming another `g`) stops and asks for a fresh code, with a new `s` and a new
+`n` ("Someone else answered this code. Show a new one."); after its `join_confirm` it ignores further
+offers. In the invite direction an inviter that gets a second `join_hello` for its `s` before the check
+shows the same message and makes a new invite.
 
 ### 4.2 The handshake
 
 1. **Hello.** The side that scanned writes to the other, sealed to the key in the code:
    - invite direction: the new device sends `join_hello {n, s, lock}`: its member key, the secret,
      and its lock public key if it has one;
-   - join-code direction: the inviter sends `welcome_offer {g, m, s}`, and the new device answers
+      - join-code direction: the inviter sends `welcome_offer {g, m, s}`, sealed by `m`, and the new device answers
      `join_hello {n, s, lock}` sealed to `m`. The inviter MUST accept only a `join_hello` sealed by
      the code's `n`, with `n` equal to it; that key, and no other, is the one added.
 
    A side MUST drop a hello or offer without the right `s`, after `x`, or after it already accepted
    one for this `s`. The receiver of the hello sends `join_nonce {t}`, sealed to the hello's sender;
    that sender MUST accept a `join_nonce` only from the key it sent the hello to.
-2. **The change.** After the check, the inviting device gets the add approved (§6.2: its lock, a
+2. **The change.** After the check (and, in the join-code direction, the `join_confirm`), the inviting device gets the add approved (§6.2: its lock, a
    second device with the typed join check, or the paper) and gets the change co-signed by a server.
    A new member is always a `device`; it never chooses its own kind.
 3. **Repair.** At the current state (named in every message), for each new index, the inviting device
@@ -373,7 +386,7 @@ whose number matches.
    Then it sends `ack` to the inviter and to every server, and destroys the sigmas.
 
 Why this holds: nobody without 4 points can produce a change signed by `g`, the inviter's
-contribution cannot be forged, and a racer's hello fails the check.
+contribution cannot be forged, and a racer's hello or offer leaves the honest side with no number to type (§4.1).
 
 ### 4.3 The paper backup
 
@@ -835,8 +848,7 @@ by `lock`, `pair` and `paper`; `detached(type, body)` below means a BIP-340 sign
 - **`pair`**: `[ { "member": <key>, "sig": … }, { "member": <key>, "code_sig": … } ]` from two distinct
   devices, each after asking its person (§1.1). The first device shows a 6-digit code,
   `int(SHA-256("keykin-pair/1" ‖ g ‖ change hash ‖ r)[0..8]) mod 10^6` with a fresh 16-byte `r` it sends
-  along; the person **types** it on the second device, which signs only if it matches. For adding a
-  device, the code is the join check shown on the new device (§4.1). Two devices are 6 points, already
+  along; the person **types** it on the second device, which signs only if it matches. For adding a device, the code is the join check (§4.1), as the side that scanned shows it: the inviting device sends the second device `{n, s, t}` (with `r` = `t`) so it can compute the check, and both signatures still cover `what`, which binds the change hash. Two devices are 6 points, already
   the key, but the typed code proves the person can see both. `r` travels in the first entry
   (`{member, sig, r}`); the code itself never travels. Both `sig` and `code_sig` are
   `detached("pair", {"what": hex(what), "r": r})`, with `what` as a lock would sign it (§6.1). A `cancel`
@@ -1553,7 +1565,7 @@ server MAY ask for proof of work (NIP-13) on enrollment.
 
 | `type` | From → to | § |
 |---|---|---|
-| `welcome_offer` / `join_hello` / `join_nonce` | inviter → new device / new device → inviter / receiver of the hello → sender | 4.1, 4.2 |
+| `welcome_offer` / `join_hello` / `join_nonce` / `join_confirm` | inviter → new device / new device → inviter / receiver of the hello → sender / new device → inviter (join-code direction) | 4.1, 4.2 |
 | `welcome` | inviting device (or backup holder) → new device | 4.2, 4.4 |
 | `repair_delta` / `repair_sigma` | helper ↔ helper / helper → new member or backup key | 4.2, 4.3 |
 | `commit` / `commitments` | coordinator → co-signer / back (two-call form only) | 5.1 |
@@ -1687,7 +1699,7 @@ before `"9"` in JCS, unlike a JavaScript object's own key order).
 - A server can delay or withhold its share and see what it co-signs. It cannot sign, cannot make an
   epoch record or a change, cannot add a member that others believe (live finding #1), cannot read
   messages (decryption answers are useless without a device's own points), and cannot fake a push.
-- A joining device trusts only its scan, the group key and the check on both screens (#17).
+- A joining device trusts only its scan, the group key and the join check typed on the side that showed the code (#17).
 - A lock is a biometric-only signature that servers check, not a device's word (#4). A face reset on a
   stolen phone kills its lock.
 - **No account change without a lock, two devices with a typed code, or the paper.** A thief holding one
@@ -2288,3 +2300,11 @@ From the reference implementation's paper recovery over real relays:
   endpoint and relays (§6.7.5 route 1).
 - A words-only holder checks the signpost's `h` once `seated?` has given it the epoch id (route 3).
 - The answer is a list of entries and a hint, trusted only once two servers return matching records; an heir gets no member keys. `W` is a Core constant (§1).
+
+## Changes in draft 14.24
+
+From the reference implementation's red team of joining by showing a code (§4.1): the 6 digits now
+protect whichever side showed the code. The side that scanned shows them, and the person types them on
+the side that showed the code. In the join-code direction the new device confirms with `join_confirm`
+before the inviter adds it. Before, someone who saw a new device's code could answer first and make the
+device join their own account. A second offer for the same code stops the join.

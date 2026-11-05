@@ -150,7 +150,7 @@ owner into reporting the wrong one. The `keykin-` guard (Doors and grants §2) k
 The person picks **Add a device** on a member, or opens the app on the new device and picks **I already
 have an account**. Either side shows a code (core §4.1). Then:
 
-1. The new device shows a 6-digit number; the person types it on the old device (core §4.1).
+1. The device that scanned shows a 6-digit number; the person types it on the device that showed the code (core §4.1).
 2. The old device asks for its approval: its lock; or, with no lock, the person picks **Use another
    device** (a `pair`), **Scan my paper**, or, on a lockless device that kept its backup, **Use the backup
    this browser kept** (core §6.2).
