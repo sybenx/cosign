@@ -45,6 +45,14 @@ interface IKeykin {
      *  the status to "confirmed" (core 14.24). Then the add is approved on KeykinApprove ("add_invited") as for an
      *  invite. {"error": code} on failure. */
     String inviteScanned(String slot, String helloCode);
+    /** Core 14.25: this app's own key for `label` (lowercase segments ending in a version, e.g. "marble/devices/1"),
+     *  derived from the account's data key under the identity domain of the app calling (its package and original
+     *  signing certificate, checked here, never passed): {"key": hex32, "state": <data-key state hash>} or {"error"}.
+     *  Seal each record under it and name the state; when the slot's "data_state" changes, re-seal. */
+    String ownKey(String slot, String label);
+    /** The same key for an older data-key state, to read and re-seal a record sealed under it: {"key", "state"}, or
+     *  {"error": "state_gone"} once this device can't tell that state's key. */
+    String ownKeyAt(String slot, String label, String state);
     /** Name this phone (Account admin §2), as the person typed it; its model is read in the signer process. Every
      *  device's entry in the state's "devices" then carries "name", "model", "same_name" (two devices with one name:
      *  show a warning) and "last_seen" (unix s, this phone's own observation; null for itself or never). Names are

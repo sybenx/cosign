@@ -1086,6 +1086,17 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val dk = derive(ids) ?: refuse("missing_seed", "this device lacks a seed of that state")
         return hkdf32(dk, utf8(domain) + byteArrayOf(0) + bytes)
     }
+    /** Core 14.25: an app's own key for `label` under its identity domain (`identity` worked out by the caller's host,
+     *  never taken from the app), for the current state, or for `stateHash` (an older state, to read and re-seal what
+     *  was sealed before a rotation). Returns the state hash and the key; `state_gone` once this device can't tell
+     *  that state's key. */
+    @Synchronized fun ownKey(identity: String, label: String, stateHash: String? = null): Pair<String, ByteArray> {
+        val domain = AppDomains.own(identity, label)
+        AppDomains.check(identity, domain)
+        if (wiped) refuse("wiped")
+        val (st, dk) = if (stateHash == null) dataKey() else (dataKeyFor(stateHash)?.let { stateHash to it } ?: refuse("state_gone", "this device no longer holds that state's key"))
+        return st to AppDomains.derive(dk, domain, ByteArray(0))
+    }
     /** The app's view of the current state: its ids and hash, never a key. */
     @Synchronized fun currentState(): Pair<List<String>, String> = state.ids.sorted().let { it to Codes.stateHash(it) }
     /** The states this device has held, newest first: ids and hash, never a key (core 14.21 §4.5 `states()`). */

@@ -65,6 +65,8 @@ class KeykinService : Service() {
         for (k in listOf("error", "check", "joining")) x.remove(k)
         val (self, asOf, keys) = d.members.devices()
         return x.put("joined", true).put("device", self).put("account", d.g).put("state", asOf).put("wiped", d.wiped)
+            // Core 14.25: the data-key state an app's own records are sealed under; re-seal when it changes.
+            .put("data_state", try { d.currentState().second } catch (_: Exception) { JSONObject.NULL })
             .put("devices", JSONArray(keys.map { k -> d.nameOf(k.key).put("key", k.key).put("flagged", k.flagged) }))
             .put("removed", JSONArray(d.members.removed(0).map { it.json() })).put("notices", JSONArray(d.notices.toList()))
             .also { o -> hooked(slot, d); val v = d.guard.view { owner -> d.grants.own[owner.substringAfter(':')]?.optString("says") }
@@ -102,6 +104,19 @@ class KeykinService : Service() {
             ?.split(",")?.mapNotNull { it.trim().toIntOrNull() }?.toSet() } catch (_: Exception) { null }
     }
 
+    /** Core 14.25's Android identity for the app calling as `uid`: its one package, and the SHA-256 of its original
+     *  signing certificate (the first of a v3 lineage). A uid shared by several packages, or an APK with several
+     *  signers, gets no identity domain. */
+    private fun callerIdentity(uid: Int): String {
+        val pkgs = packageManager.getPackagesForUid(uid)?.toList() ?: emptyList()
+        if (pkgs.size != 1) throw KeykinException("bad_caller")
+        val info = packageManager.getPackageInfo(pkgs[0], android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+        val si = info.signingInfo ?: throw KeykinException("bad_caller")
+        if (si.hasMultipleSigners()) throw KeykinException("bad_caller")
+        val original = si.signingCertificateHistory?.firstOrNull() ?: throw KeykinException("bad_caller")
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(original.toByteArray())
+        return keykin.AppDomains.androidIdentity(pkgs[0], digest.joinToString("") { "%02x".format(it) })
+    }
     private fun csv(x: String) = x.split(",").map { it.trim() }.filter { it.isNotEmpty() }
     private fun appScopes(x: String) = csv(x).filter { it in APP_SCOPES }.ifEmpty { listOf("sign-in", "post") }
     private val binder = object : IKeykin.Stub() {
@@ -232,6 +247,15 @@ class KeykinService : Service() {
         }
 
         // --- UnifiedPush -----------------------------------------------------------------------------------------
+        // Core 14.25: the calling app's own key, under its identity domain, worked out here from the binder's caller.
+        override fun ownKey(slot: String, label: String): String = ownKeyFor(slot, label, null)
+        override fun ownKeyAt(slot: String, label: String, state: String): String = ownKeyFor(slot, label, state)
+        private fun ownKeyFor(slot: String, label: String, state: String?): String = try {
+            val identity = callerIdentity(android.os.Binder.getCallingUid())
+            val d = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
+            val (st, key) = d.ownKey(identity, label, state)
+            JSONObject().put("key", keykin.hex(key)).put("state", st).toString().also { key.fill(0) }
+        } catch (e: Exception) { errorJson(e) }
         override fun setLabel(slot: String, name: String): String = try {
             val d = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
             // The model is this phone's own, read here: a stolen phone can rename itself, never pass for another model.
