@@ -495,7 +495,19 @@ export class DeviceNode implements Node {
 
   /** Make, co-sign and deliver a list (§6.7.6: one approval, the dealer uploads, one server co-signs,
    *  the dealer destroys δ, everyone applies). `extraView` adds incoming members for the deltas. */
-  async submit(list: Change[], approval: Approval, o: { cosigner?: (evs: Unsigned[], extra: object) => Promise<NostrEvent[]>; dieAfterUpload?: boolean; deliverTo?: string[];
+  /** A list with a redeal is dealt to the account's current members, so the dealer first brings its membership up to
+   *  date: a device that missed another's join would otherwise leave it out, and every server refuses that redeal as
+   *  `missing` (core §6.7.3; dry-run result 6). If a server still says `missing`, it fetches and deals once more. */
+  async submit(list: Change[], approval: Approval, o: Parameters<DeviceNode['submitOnce']>[2] = {}): Promise<NostrEvent[]> {
+    const deals = list.some((c) => 'redeal' in c) && !o.cosigner && !o.dieAfterUpload && !o.tamper;
+    if (deals) await this.fetch().catch(() => {});
+    try { return await this.submitOnce(list, approval, o); } catch (e) {
+      if (!deals || (e as KeykinError).code !== 'missing') throw e;
+      await this.fetch();
+      return this.submitOnce(list, approval, o);
+    }
+  }
+  async submitOnce(list: Change[], approval: Approval, o: { cosigner?: (evs: Unsigned[], extra: object) => Promise<NostrEvent[]>; dieAfterUpload?: boolean; deliverTo?: string[];
     tamper?: (dealt: Dealt, items: { type: string; to: string; release: boolean; wrap: NostrEvent; paper_eph?: boolean; dk_seed?: boolean }[]) => void;
     /** After dealing, before the co-sign: fill in the list (F7's paper `inner`/`state`) and the material. */
     finish?: (dealt: Dealt) => Promise<{ full: Change[]; material?: Item; seedItems?: Item[] }> } = {}): Promise<NostrEvent[]> {

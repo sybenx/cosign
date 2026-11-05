@@ -176,7 +176,9 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         return { watches.remove(id); subs.remove(id); sendAll(JSONArray(listOf("CLOSE", id)).toString()) }
     }
     private fun publish(w: JSONObject) = sendAll(JSONArray(listOf("EVENT", w)).toString())
-    val now: Long get() = System.currentTimeMillis() / 1000
+    /** Seconds this device's clock is off by: tests only (a phone's clock 30 s fast or slow). */
+    @Volatile var skew: Long = 0
+    val now: Long get() = System.currentTimeMillis() / 1000 + skew
     private fun prune() {
         val t = now; if (t - pruned < 60) return
         pruned = t; answered.entries.removeIf { t - it.value.first > ANSWER_TTL_S }

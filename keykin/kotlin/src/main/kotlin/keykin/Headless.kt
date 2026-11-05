@@ -1,6 +1,8 @@
 // A headless Kotlin device, for cross-language tests (test/kotlin.e2e.test.ts): load a TS device's
 // snapshot, run each command of a JSON list over the given relays, print one JSON line per result.
 //   keykin.HeadlessKt <snapshot.json> <relay,relay> <commands.json>
+//   With `-` for the commands, they are read one JSON object per line from stdin until it ends, so a test can drive
+//   several devices in turn (test/dryrun.e2e.test.ts).
 //   commands: [{"cmd":"sign","content":"…"}, {"cmd":"nip44"|"nip04","peer":"<hex>","text":"…","encrypt":true}, {"cmd":"fetch"}, {"cmd":"members"}, {"cmd":"datakey"}]
 package keykin
 
@@ -12,15 +14,26 @@ fun main(args: Array<String>) {
     // A test harness: the JDK's socket, and a TS snapshot's soft lock may be used (never in an app).
     Keykin.wire = JdkWire; Keykin.allowSoftLock = true
     val net = RelayNet(args[1].split(",")).connect()
+    // Tests only: a clock off by KEYKIN_CLOCK_SKEW seconds; a joined device's state kept in KEYKIN_STATE, so a test can
+    // kill the process and start it again from that file.
+    System.getenv("KEYKIN_CLOCK_SKEW")?.toLongOrNull()?.let { net.skew = it }
+    val stateFile = System.getenv("KEYKIN_STATE")?.let { File(it) }
     try {
         // The first argument is a TS device's snapshot, or `join:<invite code>` to join as a new device.
         val d = if (args[0].startsWith("join:")) Device.join(args[0].removePrefix("join:"), net, { println(JSONObject().put("check", it).toString()); System.out.flush() })
+                .also { dev -> stateFile?.let { f -> dev.persist = { f.writeText(it) }; dev.saveNow() } }
             else Device.fromSnapshot(File(args[0]).readText(), net).also { dev -> dev.persist = { File(args[0]).writeText(it) } }
         println(JSONObject().put("device", d.pub).toString()); System.out.flush()
-        val cmds = JSONArray(File(args[2]).readText())
+        val fromStdin = args[2] == "-"
+        val cmds = if (fromStdin) JSONArray() else JSONArray(File(args[2]).readText())
         var lastGrant = ""
-        for (k in 0 until cmds.length()) {
-            val c = cmds.getJSONObject(k).let { x -> if (x.optString("id") == "__ID__") JSONObject(x.toString()).put("id", lastGrant) else x }
+        var k = -1
+        while (true) {
+            k++
+            val raw: JSONObject
+            if (fromStdin) { val line = (readLine() ?: break).trim(); if (line.isEmpty()) continue; raw = JSONObject(line) }
+            else if (k < cmds.length()) raw = cmds.getJSONObject(k) else break
+            val c = raw.let { x -> if (x.optString("id") == "__ID__") JSONObject(x.toString()).put("id", lastGrant) else x }
             val out = try {
                 when (c.getString("cmd")) {
                     "sign" -> d.sign(1, c.getString("content"))
@@ -86,6 +99,16 @@ fun main(args: Array<String>) {
                     "vault_invite" -> d.vault.invite(c.getString("app"), c.getJSONObject("rumor").put("pubkey", d.g).put("created_at", d.now), c.getString("to"))
                     "vault_unwrap" -> d.vault.unwrap(c.getString("app"), c.getJSONObject("wrap")).let { (r, seal) -> JSONObject().put("rumor", r).put("seal", seal) }
                     "vault_decrypt" -> JSONObject().put("plain", d.vault.decrypt(c.getString("app"), c.getString("peer"), c.getString("payload")))
+                    // Report another device lost (§6.4), approved with this device's lock, or the paper's words on a lockless
+                    // one, as keykin-android's Devices and paper does; the members afterwards.
+                    "report_lost" -> {
+                        val list = JSONArray().put(JSONObject().put("remove", c.getString("key"))).put(JSONObject().put("redeal", JSONObject().put("dealer", d.pub)))
+                        val ap = if (d.lock != null) d.approveLock(list) else { val sk = Backup.readBackupWords(c.getString("words").trim().split(Regex("\\s+"))); try { d.approveWithPaper(list, sk) } finally { sk.fill(0) } }
+                        d.submit(list, ap); JSONObject().put("devices", JSONArray(d.memberKeys())).put("wiped", d.wiped)
+                    }
+                    // The membership as this device sees it, without fetching (a Devices screen opened earlier).
+                    "devices" -> JSONObject().put("devices", JSONArray(d.memberKeys())).put("wiped", d.wiped)
+                    "quit" -> break
                     "seeds" -> JSONObject().put("records", d.seedRecords().size).put("held", JSONArray(d.seedOnlyHeld()))
                     // Be a NIP-46 home (Doors §3.3): print a bunker:// link, then answer sites for `seconds`.
                     "bunker" -> { val home = d.nip46; println(JSONObject().put("bunker", home.mintBunker(args[1].split(","), "", c.optString("scopes", "sign-in,post").split(",").filter { it.isNotBlank() })).toString()); System.out.flush()

@@ -650,7 +650,18 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
      *  deals it and uploads every recipient's delivery to the seat servers; one server co-signs every event of
      *  the list in one request (§6.7.10); the list goes to every server and the live devices; then this device
      *  applies its own delta and destroys the rest. `list` names the redeal as `{redeal: {dealer: <this key>}}`. */
+    /** A list with a redeal is dealt to the account's current members, so the dealer first brings its membership up to
+     *  date (a device that missed another's join would leave it out, and every server refuses that redeal as `missing`,
+     *  core §6.7.3; dry-run result 6). If a server still says `missing`, it fetches and deals once more. */
     fun submit(list: JSONArray, approval: JSONObject): List<JSONObject> {
+        val deals = (0 until list.length()).any { list.optJSONObject(it)?.has("redeal") == true }
+        if (deals) try { fetch() } catch (_: Exception) {}
+        return try { submitOnce(list, approval) } catch (e: KeykinException) {
+            if (!deals || e.code != "missing") throw e
+            fetch(); submitOnce(list, approval)
+        }
+    }
+    private fun submitOnce(list: JSONArray, approval: JSONObject): List<JSONObject> {
         if (wiped) refuse("wiped")
         Approvals.shape(list)                                // one redeal at most, and a list the servers accept (review 14 L6)
         val (v, st) = synchronized(this) { view to state }
