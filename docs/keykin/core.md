@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.21 · 2026-11-04 · `draft` `optional` · not built
+Draft 14.22 · 2026-11-05 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -129,7 +129,7 @@ would.
    relays and home device, for watching (below);
 8. if the person set up an heir (Backup module), the heir record (the envelope, the heir's public key and
    the commitments to the envelope key) and its own piece of the envelope key;
-9. the newest public server list it has verified, and its own seat keys, enrol secrets and the inert
+9. the newest version it has verified of each server list its operator configured it to follow, and its own seat keys, enrol secrets and the inert
    uploads for incoming seats (Server profile module);
 10. after an account is deleted (Account admin module), only `SHA-256(g)`, the epoch record, the approved
    `account_delete` and the changes that prove its approval (the approving devices' adds and lock changes, and for a
@@ -748,13 +748,18 @@ be read as one Core makes, and no Core flow can be made to produce one.
   modules and Cosign 0.12, and a device refuses it for an app. Every member-key signature Core and its modules make for themselves is a Nostr event id (a seal, §9.1, whose preimage starts with `[`) or `SHA-256` over a `keykin-…/1` tag followed by fixed fields: `detached(type, body)` (§6.2),
   `keykin-self/1` (§6.4), Doors' `keykin-grant/1` and `keykin-grant-set/1`, and the three challenge
   signatures (`keykin-retire/1`, §4.6; `keykin-seated-ask/1` and `keykin-forward-ask/1`, §6.7.5). The
-  other items "signed by a member key" are `detached` with these types, hyphens and all, over the item as sent without its signature: `paper-reissue` and `paper-reissue-seed` (§6.7.6, §4.5), `policy-snapshot` (Device policy) and `label` (Account admin's device names). A member key never signs raw bytes a server, site or app chose. When the member itself acts as an app (Doors' vaults, §3.7), it signs under the app's domain like any app, and the app list names the Keykin app for those domains. The reserved prefixes are the guarantee: every Core preimage starts with `keykin` or `[`, which no app domain may, and the `0x00` that ends a domain keeps two apps' preimages apart.
-- **Who may ask.** A domain is granted to an app, not claimed by it. The app maker's signed **app list**
-  (published like the server list, §6.7.7, versioned on its own) names each domain and the app identities that may use it. An entry may name a whole first segment (`nostr-vault`), covering every domain whose first `/`-separated segment is exactly that, for signatures (§5.9) and data-key derivation (§4.5) alike. A device signs only for a listed app on its own machine, under the device API, and
+  other items "signed by a member key" are `detached` with these types, hyphens and all, over the item as sent without its signature: `paper-reissue` and `paper-reissue-seed` (§6.7.6, §4.5), `policy-snapshot` (Device policy) and `label` (Account admin's device names). A member key never signs raw bytes a server, site or app chose. When the member itself acts as an app (Doors' vaults, §3.7), it signs under the app's domain like any app, and the app lists it follows name it for those domains. The reserved prefixes are the guarantee: every Core preimage starts with `keykin` or `[`, which no app domain may, and the `0x00` that ends a domain keeps two apps' preimages apart.
+- **Who may ask.** A domain is granted to an app, not claimed by it. An **app list** is a signed list,
+  published like a server list (§6.7.7) and versioned on its own, that names domains and the app
+  identities that may use each. Any app maker or community may publish one, and no list is special. A device follows the app lists its
+  app pins and any the person adds, with a warning. A domain named by any list it follows goes only to an
+  app that **every** followed list naming that domain allows, and is `open` only if every such list marks
+  it open. A list the person added may not name a domain or segment that a pinned list names; such entries
+  are ignored. So adding a list can only narrow, never widen, what a pinned list allows. An entry may name a whole first segment (`nostr-vault`), covering every domain whose first `/`-separated segment is exactly that, for signatures (§5.9) and data-key derivation (§4.5) alike. A device signs only for a listed app on its own machine, under the device API, and
   checks the identity the way the OS can prove it: an Android signing-certificate digest, an Apple team id
   from the caller's audit token, a browser's own extension id. A person may also grant an app a domain by
   hand, with one question naming the app and the domain ("Let Notes sign for `notes.example/sig/1`?"),
-  but **never a domain the app list names**, unless the list marks that domain `open` (it marks `nostr-vault/ksig/1`, `nostr-vault/owner/1` and `nostr-vault/keyring/1`; `open` is per domain, never for a whole segment; a hand grant of an open domain covers both signatures and `dataKeys.derive` under it, and the question says so): an open domain may be granted by hand to any app, with the list's own wording for the question ("Let *Notes* use all your vaults, in every app, on this device?"). Other listed domains go only to the apps it names, and the device checks the current list on every call, so a hand grant ends once the list names its domain. Where the OS can't prove
+  but **never a domain a followed list names**, unless it is `open` (above) (lists for vault apps mark `nostr-vault/ksig/1`, `nostr-vault/owner/1` and `nostr-vault/keyring/1`; `open` is per domain, never for a whole segment; a hand grant of an open domain covers both signatures and `dataKeys.derive` under it, and the question says so): an open domain may be granted by hand to any app, with the lists' wording for the question ("Let *Notes* use all your vaults, in every app, on this device?"). Other listed domains go only to the apps allowed above, and the device checks the current lists on every call, so a hand grant ends once a followed list names its domain. Where the OS can't prove
   the caller (native messaging and local sockets on Linux or Windows), the grant comes with a per-grant
   secret the app keeps in its own storage and presents on every call. Never through a door (NIP-07,
   NIP-46, NIP-55): a site can't ask. Signing itself needs no prompt, and the device logs each use.
@@ -924,7 +929,7 @@ second device or the paper. A helper never approves anything.
 
 A round with no device-class member (I4) happens only in a recovery session.
 
-0. The holder finds the current servers (§6.7.5): it asks the public list, follows the forwarding notes
+0. The holder finds the current servers (§6.7.5): it asks the server lists it trusts, follows the forwarding notes
    from the servers printed on the paper, and reads the signpost. The group-signed seat changes decide.
 1. The backup holder picks a random `r`, asks each server for a `challenge`, and sends each a
    `release_request {r}` signed by the backup key over that server's challenge. Servers pass it to their peers as a delivery (§7.1), so a server that was down starts its
@@ -1163,8 +1168,7 @@ Further rules:
 A paper must always be able to find today's servers, even after every server printed on it has been
 replaced. Three routes, tried in order:
 
-1. **Ask the public list.** The paper app takes the app maker's signed public server list (§6.7.7) and
-   asks each listed server `seated? {H(key), challenge, sig}`, where the key is the backup key or, from a
+1. **Ask the server lists.** The paper app takes the signed server lists it trusts (§6.7.7) and asks each listed server `seated? {H(key), challenge, sig}`, where the key is the backup key or, from a
    device, its member key, and `sig` is that key's signature over `SHA-256("keykin-seated-ask/1" ‖ H(key) ‖ challenge)` (a server answers only if it verifies). A server that holds a seat for an account where that key is the current backup
    key or a current device answers with a reply sealed to the key, carrying its host signature outside
    the seal, over `SHA-256("keykin-seated/1" ‖ H(key) ‖ challenge ‖ ciphertext)`, so the asker can check
@@ -1175,7 +1179,7 @@ replaced. Three routes, tried in order:
    (the backup keys, device keys, other seat servers' keys and any heir key it knew). It serves that change to a
    request signed by one of them, over `SHA-256("keykin-forward-ask/1" ‖ H(key) ‖ challenge)` with the server's challenge. That is a forwarding note with no secrets. From
    the printed servers, the paper app walks the notes to today's servers.
-3. **The signpost**, for servers the person runs themself that are not on the public list. It is a kind
+3. **The signpost**, for servers the person runs themself that are on no list the recovering app trusts. It is a kind
    30078 event signed by `g`, with `d = hex(SHA-256("keykin-beacon/1" ‖ backup key))`.
    - Its clear fields are `n`, the count of every seat and paper change in the change set (co-signed or
      F3, void ones included),
@@ -1283,12 +1287,12 @@ current device can re-issue.
 
 #### 6.7.7 Choosing a replacement
 
-- The public server list is signed by the app maker, and apps pin its minimum version. (For now the user
-  signs it and the app pins it; co-signers are added once other operators exist.)
-- The server that sends the `ask` names a candidate. A device accepts it only if it is the deterministic
-  pick `hash(g ‖ dead key ‖ seat ‖ version)` over the **newest list version the device knows** (at least
-  the pin), taken from that seat's own slice of the list (the list's servers dealt round-robin to the
-  three server seats), never putting two seats on one
+- **Server lists are open.** Any app maker, operator or community may publish a signed server list
+  (Server profile module) under its own list key; no list is special, and Keykin has no canonical one.
+  An app pins the list keys it trusts and their minimum versions. The person may add a list by hand in settings, after a warning that its publisher will propose their servers; a hand-added list's floor is the first version the device verifies. Each device decides on one list, its **chosen list**: the person's choice,
+  else its app's first pin. Operators are invited to run servers and to get them onto lists, or to
+  publish their own.
+- The server that sends the `ask` names a candidate. The `ask` names the list key. A device accepts the candidate only if it is the deterministic pick `hash(g ‖ dead key ‖ seat ‖ version)` over the **newest version it knows of its chosen list** (at least the pin); for an `ask` that names another list, it uses its own pick from its chosen list. The pick is taken from that seat's own slice of the chosen list (its servers dealt round-robin to the three server seats), never putting two seats on one
   `operator` while another eligible one exists. If that pick refuses the seat or doesn't answer within a
   minute, the device takes the next server in the slice, in list order, and the `ask` names which one.
   It checks for itself that the server is dead (or has a shutdown notice confirmed by a live answer, Server profile §4.1, or answers `deleted` or "unknown account" for an account its peers still serve, for a day) before it shows the card; such a server triggers the F1 card on its own. When there is no other operator, the card says "All your servers are run by X".
@@ -1714,6 +1718,10 @@ before `"9"` in JCS, unlike a JavaScript object's own key order).
   server from an older state can be the key, with no wait. Prompt replacement and a new paper narrow
   this; nothing in the core ends it. Key families (a module) let followers move to a new master set up
   beforehand, ideally on other servers' operators; the old key stays usable to whoever holds it.
+- **Devices of one account may follow different server lists** (different apps, or a list added by
+  hand). A server sending the `ask` can then choose which device to ask, and so choose among those
+  devices' picks. Each pick is still deterministic on its list, and no seat moves without the person's
+  approval.
 - **A stolen paper plus one dishonest server reads the account's data**, never signs. Every server holds
   the release seeds that open the paper's items, so with the paper it gets the seeds, and so every data
   key, without a wait. A paper already did for every state after it; since 14.21 it also does for the states before it, because it carries every seed so that an honest recovery loses no data.
@@ -1865,14 +1873,13 @@ Each is a short document of its own, and none may weaken anything above.
   leaving, delete (NIP-62 plus destroying shares and forgetting push addresses), taking data out.
 - **Server profile**: the duties as an operator sees them, abuse defaults, the 30-day shutdown notice,
   telling the person calmly after a week that a server is quiet and offering to move its piece (§6.7.6
-  F1), the signed public server list (§6.7.7),
+  F1), signed server lists, any number of them (§6.7.7),
   announcements (kind 30243/10243), the operator notice.
 - **Device policy**: the destructive check, Undo from the device's own history, rebasing staged drafts onto
   the newest version, honest quiet notices.
 - **Doors and grants**: NIP-07, NIP-46 (per-site signer keys, bunker://, watching), NIP-55, the QRST
   signer-ticket, the same-device door on iPhone, grants and scopes, the iOS push appendix.
-- **Backup**: 24 words, recovery contacts, heir. (A paper finds today's servers by the public list, forwarding
-  notes and the signpost, §6.7.5; the old escape hatch is F3.)
+- **Backup**: 24 words, recovery contacts, heir. (A paper finds today's servers by the server lists, forwarding notes and the signpost, §6.7.5; the old escape hatch is F3.)
 - **Helper**: the opt-in (joins by a `seat` change, §6.7.6 F6).
 - **Key families**: family events signed by both keys, NIP-03 timestamps, release and leaked events; child groups. This is the answer to a
   serious leak of the key itself.
@@ -2234,7 +2241,7 @@ in §10, and §6.7.9 adds a quiet Backup line with a button to move it by hand (
 
 For the encrypted-sync spec, in the signing form the reference implementation built (deaab29; its grant model is not built yet): §5.9, member-key
 signatures for apps, `SHA-256(utf8(domain) ‖ 0x00 ‖ message)` by the device's own member key, with every
-`keykin…` and `cosign…` domain reserved. Domains are granted by the app maker's app list with OS-checked
+`keykin…` and `cosign…` domain reserved. Domains are granted by app lists with OS-checked
 identities; a by-hand grant never covers a listed domain; a per-grant secret is used where the OS can't
 check. Never through a door; device keys only. The device API gets `members.devices()` (with F5 flags) and
 a durable `members.removed` log that covers every way a key leaves. Every member-key signature in Core and
@@ -2266,3 +2273,11 @@ For the vaults spec (vaults.md §12.3), and a core gap it found:
 - **§10** states that a stolen paper plus one dishonest server reads the data, as a creation paper always
   allowed.
 - Eight red-team rounds (2, 2, 2, 2, 1, 1 and 1 high, then clean; no critical) are folded in. In the end the design is simple: every device sends every seed it holds to the current backup key, the paper carries the printer's copy, and the paper's own release seed is kept while it is current.
+
+## Changes in draft 14.22
+
+A neutrality pass, with no change to what any check verifies:
+- **Server lists:** any app maker, operator or community may publish one, and none is special. Apps pin the lists they trust, the person may add one with a warning, and each device picks replacements from its chosen list (§6.7.7). The `ask` names its list. §10 states that devices on different lists give a server a choice among their picks.
+- **App lists (§5.9):** open to anyone in the same way. A domain goes only to apps every followed list naming it allows, and a hand-added list can only narrow a pinned one.
+- **"Keykin minimum"** (`minimum.md`) states the smallest set of MUSTs for a door, a member device or a
+  server.

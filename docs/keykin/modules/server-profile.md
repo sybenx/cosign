@@ -1,9 +1,9 @@
 # Keykin module: Server profile
 
-Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.18 · not built
+Draft 9 · 2026-11-05 · module of [Keykin Core](../core.md) draft 14.22 · not built
 
 This module covers running a Keykin server and being listed as one: the duties as an operator sees them,
-abuse defaults, how a server enrols and announces itself, the signed public list, closing and moving,
+abuse defaults, how a server enrols and announces itself, signed server lists, closing and moving,
 and the notice an operator gives its users. It adds no power to a server. Wherever this module and the
 core disagree, the core wins, and nothing here may weaken it. The bar is the core's: an nsec in a password
 manager.
@@ -118,7 +118,7 @@ creation limits and proof of work apply to. At creation, a server's member keys 
 reply, stored and aged as in §4; the epoch record naming the reply stands in for the seat change (Account
 admin §1.1).
 
-## 4. Enrolling, announcing, and the signed public list
+## 4. Enrolling, announcing, and signed server lists
 
 - **Stateless enrol, with keys that can be destroyed.** A server keeps a rotating **enrol secret**: a
   new random one each calendar month, named by an id. A device asks `enroll {g}`, and the server picks a
@@ -182,30 +182,27 @@ admin §1.1).
   new accounts need an invite code from the operator. Seats never do.
 - **Operator list.** The operator publishes a kind 10243 event listing its servers' host keys with
   `["p", <host key>]`. A server belongs to an operator only when both name each other.
-- **The signed public list** is what apps pick replacement servers from (core §6.7.7), and what a paper
-  uses to find today's servers (§6.7.5).
-  - It is a kind 30078 event with `d = "keykin-server-list"`, published by the list key, an ordinary Nostr
-    key that is pinned in the app. Its content is `{"version": <integer>, "issued": <unix>, "key_next":
+- **Signed server lists** are what apps pick replacement servers from (core §6.7.7), and what a paper
+  uses to find today's servers (core §6.7.5). Any app maker, operator or community may publish one, and
+  no list is special: a list is one publisher's proposal, never the network's. Operators are invited to
+  run servers and to ask any list publisher to include them, or to publish a list of their own.
+  - It is a kind 30078 event with `d = "keykin-server-list"`, published by its list key, an ordinary Nostr key. Apps pin the list keys they trust; the person may add one by hand, with a warning (core §6.7.7). Its content is `{"version": <integer>, "issued": <unix>, "key_next":
     <optional next list key>, "servers": [ {host, operator, https, relays, versions, closing}, … ]}`,
     with `servers` sorted by host key and `version` below 2^53. The event's own signature is the list's signature.
-  - The list key is pinned in the app **and in each server's configuration**, so servers verify the list
-    the same way.
-  - Apps fetch newer versions from the app maker's site and from relays. A newer version is accepted only
+  - A server's operator configures which list keys it follows, so a server verifies each list the same way apps do.
+  - Apps fetch newer versions from relays and from wherever the publisher serves them. A newer version is accepted only
     if it is signed by the pinned key (or by a `key_next` that a version signed by the pinned key named,
     which then becomes the pin) and has a higher `version`. A device never accepts a version lower than
-    the newest it has seen **from that key**, so the list can't be rolled back. If the list key is stolen,
-    an app update (and server configuration) re-pins, and the floor starts again for the new key; nothing
-    else can.
+    the newest it has seen **from that key**, so the list can't be rolled back. If a list key is stolen, an app update or the person re-pins, and server operators reconfigure; the floor starts again for the new key.
   - **Listed servers** are `enroll: open`, HTTPS, with a working verified `seated?`, an operator list
     naming them, and support for the current Core major version. A **closing** server stays listed with
     `closing: true` until it ends: it is left out before the list is dealt into seat slices, so picks
     skip it, and lookups still ask it. A listed server that refuses a
     seat for which it signed an enrol reply is removed from the list.
-  - Servers keep only the newest list they have verified (core §2).
+  - Servers keep only the newest version they have verified of each list they follow (core §2).
   - The list never decides anything an account has already decided. It only proposes candidates and
     answers lookups.
-- **Picking, and falling through.** The server that sends the `ask` names the list version and its
-  candidate (core §6.7.7). If the device doesn't have that version, it tries to fetch it for a minute, then
+- **Picking, and falling through.** The server that sends the `ask` names the list key, its version and its candidate (core §6.7.7); a device decides on its own chosen list. If the `ask` names the device's chosen list and the device doesn't have that version, it tries to fetch it for a minute, then
   decides on the newest version it has. It never decides on a version older than its newest, and accepts
   the candidate only if it is the pick, or a later one reached by the fall-through below; when the `ask`
   names another, the device uses its own pick. The pick is
@@ -302,7 +299,7 @@ fields extend core's `notice` and `error` (core §11.1 keeps unknown fields).
 - **Planned closing.** An operator announces it at least **30 days** ahead with `notice {shutdown: <unix>,
   seq, host, member}`, signed by the host key (§4.1), to every account it serves, to every notice channel (in the
   core's fixed words, with the date) and to its peers. A later notice with a higher `seq` can move the
-  date or cancel it. An operator adds a new host to the list before closing one.
+  date or cancel it. An operator asks list publishers to add a new host before closing one.
   - Devices treat a shutdown notice, confirmed by a live answer (§4.1), as "dead" for the
     seat-replacement card (core §6.7.6 F1):
     the card calmly, then a quiet dot on Backup until the seat has moved or the closing is cancelled (§4.1).
@@ -348,24 +345,23 @@ Every listed server publishes this on its HTTPS page and links it from its annou
 > server. If we were forced to, or acted in bad faith, we could also stop passing on your alerts, ignore
 > a request to stop a recovery, or keep records and old pieces from then on.
 >
-> Today the same person runs all the listed servers and signs the list your app picks servers from. So
-> that person together with your paper, or with a stolen device whose pieces can be copied out, could take
+> [Only while it is true:] Today the same person runs all the servers on the list your app picks from,
+> and signs that list. So that person together with your paper, or with a stolen device whose pieces can be copied out, could take
 > your account with no wait. We keep no history of what you sign. If we close, we will tell your app 30
 > days ahead, and keep running for at least a year after that date so your piece can move.
 
 ## 7. Limits, said plainly
 
-- **One operator today.** Every listed server is run by one person, so "a different operator" means
-  nothing yet. The app says "All your servers are run by X" (core §6.7.7).
+- **Few operators today.** While a list's servers are all run by one person, "a different operator" means nothing for that list; more operators and more lists fix it. The app says "All your servers are run by X" (core §6.7.7).
 - **Operators are pubkeys.** One person with two npubs can pose as two operators. The list's signer is the
   defence: it lists only operators it knows to be distinct.
-- **The list signer** chooses which servers are candidates. By publishing versions, it can steer which
+- **Each list's signer** chooses which servers are candidates for the devices that chose its list. By publishing versions, it can steer which
   server a given account's next pick lands on. Someone who steals the list key can do the same, and can
   name a `key_next` of their own. It can never move a seat without the person's approval. A list signed
   by several keys is future work.
 - **A compelled server** can do everything in §1's "if compelled" list. It cannot sign on its own.
 - **Forwarding notes end with the server.** Once a closed server is finally switched off, a paper that
-  printed it can't follow its note. The public list and the signpost still work.
+  printed it can't follow its note. Server lists and the signpost still work.
 - **Logged traffic** to a seat that has retired can be opened by a host compromised within 13 months of
   the enrol reply (§4); after that, it can't. While the seat is current, a compromised host opens
   everything anyway.
@@ -374,6 +370,10 @@ Every listed server publishes this on its HTTPS page and links it from its annou
   and a paper alone can then never recover the account.
 
 ## Changes
+
+- **Draft 9**, a neutrality pass: server lists are open to any publisher and none is special; apps pin
+  the lists they trust and the person may switch; servers follow the lists their operator configures.
+
 
 - **Draft 8**, from the reference implementation's item 47 and seven red-team rounds (0 critical; 2, 2, 1,
   1, 2, 1 and 1 high): the signed forms of a shutdown notice and of a host-signed refusal, the cancel

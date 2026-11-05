@@ -92,9 +92,10 @@ other value.
   moves to Keykin only by import (core §11.2). Cosign 0.12 never had 24 words.
 - **Finding servers.**
   - From the **QR code** or an account card, all three of the core's routes work (core §6.7.5).
-  - From the **words alone**, only the public list works (`seated?`). An account with a server that isn't
-    on the list needs the QR code; when the person picks words only and has such a server, the app says
-    so once: "Your own server isn't on the public list. Keep the QR code too."
+  - From the **words alone**, only the server lists the recovering app trusts work (`seated?`). An account
+    with a server on no such list needs the QR code, or the person adds the list their app used; when the
+    person picks words only and has a server outside its app's pinned lists, the app says so once: "Your
+    own server isn't on your app's list. Keep the QR code too."
 - **Pinning the account.** The QR code and the account card pin `g`. With the words alone, the app takes
   `g` and the epoch id only when **two servers return matching epoch records** and change sets, and it
   shows the npub for the person to confirm, as at joining (core §1.1).
@@ -285,7 +286,7 @@ servers. The app offers it calmly, after 7 days with every server unreachable fr
 - **A removed device keeps the holder-inbox key** (it comes from the base data key, which never rotates),
   so it can read friends' still-holding and lost notes, and so learn who the friends are.
 - **24 words in the wrong place** (a photo, a cloud note) are as dangerous as the paper.
-- **Words alone** can't find servers that aren't on the public list.
+- **Words alone** can't find servers that are on no list the recovering app trusts.
 - With no paper, no friends and every device lost, the account is gone. That is the likeliest loss, and
   there an nsec in a password manager does better.
 

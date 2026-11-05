@@ -19,7 +19,7 @@ randomness ‖ a fresh per-purpose counter ‖ what it is for)`.
 
 ### 1.1 Fresh (DKG)
 
-1. **Pick servers.** The device takes the signed public list (Server profile §4) and, by default, makes
+1. **Pick servers.** The device takes its chosen signed server list (Server profile §4, core §6.7.7) and, by default, makes
    three deterministic picks for a new account (one per seat slice, `hash(device's new member key ‖ seat ‖
    version)`, never two seats on one operator while another exists). This is a default, not a rule servers
    check: the person may add a server of their own instead of one pick. It asks each to `create`.
