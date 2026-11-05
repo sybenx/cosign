@@ -575,7 +575,7 @@ sends `sign` to one co-signer:
 { "type": "sign", "epoch": "<epoch id>", "state": "<SHA-256 of sorted redeal ids>", "event": { /* the full unsigned event, pubkey = g */ },
   "signers": [1, 2, 3, 4],                               // every index in this round
   "commitments": [ { "i": 1, "D": "…", "E": "…" }, … ],  // exactly the coordinator's indices
-  "approval": { /* optional lock assertion, §5.8 */ }, "hold": "<wait id, optional, §5.8>" }
+  "approval": { "lock": … } | { "pair": [ … ] } /* optional, §5.8 */, "hold": "<wait id, optional, §5.8>" }
 ```
 
 The co-signer checks (§5.7), makes fresh nonces for its own indices, and answers `partial` with its
@@ -749,11 +749,13 @@ policy module) and refuses when that says to; it never prompts, because nobody m
 
 Servers keep no history, so they cannot tell that a follow list shrank. They can recognise a few events
 that are destructive on their face, and for these a server MUST require **either** an `approval`, **or** a passed hold. The approval is a lock assertion
-from the coordinating device over `"sign" ‖ event id` (§6.1), or a `pair` approval (§6.2) over the same
-`what = "sign" ‖ event id`: two current devices, each after asking its person, the second after the
-typed code and after its own destructive policy (Device policy) agrees. Either is valid for that event at
+from the coordinating device over `"sign" ‖ event id` (§6.1), or a `pair` approval (§6.2) over the same `what = "sign" ‖ event id`, whose code uses the event id in
+place of the change hash: two distinct current members of kind `device` (never the helper), each after
+asking its person. The first device's `pair_request` carries the full event, and the second recomputes
+its id (§5.4), shows its own Held card for it (Device policy) and signs only on the person's Allow after
+the typed code matches. Co-signers check both members and both signatures. Either is valid for that event at
 any co-signer and any retry. Two devices are 6 points and could sign without any server, so the pair
-form adds nothing an attacker with two devices lacks; it spares a lockless person the wait. The rule
+form adds nothing an attacker with two devices lacks; it spares a lockless person the wait. A server that co-signs an event with an approval ends its own hold for that event (`SHA-256("hold" ‖ event id)`) at once. The second device's card names the asking device and says to type the code only if the person holds it ("otherwise, Report lost"), and offers no other path while in the pair flow. A `sign` or `cancel` pair carries no `expiry`. The rule
 covers:
 
 - every request to vanish (kind 62);
@@ -887,8 +889,7 @@ by `lock`, `pair` and `paper`; `detached(type, body)` below means a BIP-340 sign
 - **`lock`**: `{ "member": <key>, "assertion": … }`, the asking device's lock (§6.1).
 - **`pair`**: `[ { "member": <key>, "sig": … }, { "member": <key>, "code_sig": … } ]` from two distinct
   devices, each after asking its person (§1.1). The first device shows a 6-digit code,
-  `int(SHA-256("keykin-pair/1" ‖ g ‖ change hash ‖ r)[0..8]) mod 10^6` with a fresh 16-byte `r` it sends
-  along; the person **types** it on the second device, which signs only if it matches. For adding a device, the code is the join check (§4.1), as the side that scanned shows it: the inviting device sends the second device `{n, s, t}` (with `r` = `t`) so it can compute the check, and both signatures still cover `what`, which binds the change hash. Two devices are 6 points, already
+  `int(SHA-256("keykin-pair/1" ‖ g ‖ change hash ‖ r)[0..8]) mod 10^6` with a fresh 16-byte `r` it sends along (for a held event, §5.8, the event id stands in for the change hash; for a cancel, the wait id); the person **types** it on the second device, which signs only if it matches. For adding a device, the code is the join check (§4.1), as the side that scanned shows it: the inviting device sends the second device `{n, s, t}` (with `r` = `t`) so it can compute the check, and both signatures still cover `what`, which binds the change hash. Two devices are 6 points, already
   the key, but the typed code proves the person can see both. `r` travels in the first entry
   (`{member, sig, r}`); the code itself never travels. Both `sig` and `code_sig` are
   `detached("pair", {"what": hex(what), "r": r})`, with `what` as a lock would sign it (§6.1). A `cancel`
@@ -2355,5 +2356,4 @@ App-private data (§4.5): NIP-44 to self stays a shared pool that `private-data`
 
 ## Changes in draft 14.26
 
-A held event (§5.8) may also be approved by a `pair` (two devices and the typed code) over
-`"sign" ‖ event id`, not only by a lock or a passed hold.
+A held event (§5.8) may also be approved by a `pair` (two devices and the typed code) over `"sign" ‖ event id`, not only by a lock or a passed hold. From its red team (1 high, 0 critical): Device policy accepts it when co-signing and offers it on the Held card; the code uses the event id; `pair_request` carries the full event, which the second device checks and shows on its own Held card; the approval field is tagged; a running hold for the event is withdrawn once it is signed.

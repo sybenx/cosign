@@ -208,7 +208,7 @@ account is a key family's master, it first says "This also ends your key familie
 the children's followers (Key families module §7).
 
 1. **Erase my posts** (optional, offered first): a request to vanish (NIP-62, kind 62, `["relay",
-   "ALL_RELAYS"]`), Held like any vanish (core §5.8): the lock, or a 3-day hold. It erases everything the
+   "ALL_RELAYS"]`), Held like any vanish (core §5.8): the lock, another device, or a 3-day hold. It erases everything the
    account published on relays that honour it, the profile, follows and lists included, and leaves the
    key alone, so a person can erase their posts and keep their npub. Afterwards the device republishes the
    signpost and its grant and labels events.

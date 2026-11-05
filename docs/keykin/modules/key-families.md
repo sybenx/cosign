@@ -110,7 +110,7 @@ also names the master). Nothing else counts, and the child's current profile nev
 
 - A Keykin device never signs accept, family, release or leaked events on a site's request (Doors and
   grants §2), and never a kind 5 aimed at any of them.
-- **All four kinds are Held**, by devices and by servers (core §5.8): the key's lock, or a 3-day hold every
+- **All four kinds are Held**, by devices and by servers (core §5.8): the key's lock, another device, or a 3-day hold every
   device is told about. So a stolen phone with no lock can't quietly accept a thief's master. On a key with
   no lock, a family or a leaked warning therefore waits 3 days.
 - A Keykin app watches the index relays for families naming the person's own keys and shows any it didn't

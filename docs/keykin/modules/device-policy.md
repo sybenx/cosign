@@ -1,6 +1,6 @@
 # Keykin module: Device policy
 
-Draft 18 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
+Draft 19 · 2026-11-05 · module of [Keykin Core](../core.md) draft 14.26 · not built
 
 The device is the real gate on what the account signs (core §5.7, §5.8). This module says how a device
 judges an event before it signs or co-signs it, how Undo works from the device's own history, how drafts
@@ -15,7 +15,7 @@ hold:
 |---|---|---|
 | **Silent** | nothing, or a quiet notice | ordinary events |
 | **Confirm** | one card on the signing device; one tap (no lock needed) | changes a device judges risky but servers don't hold |
-| **Held** | the core's §5.8 answer: a lock assertion, or a 3-day hold the person starts | exactly the core §5.8 set |
+| **Held** | the core's §5.8 answer: a lock assertion, another device (a pair), or a 3-day hold the person starts | exactly the core §5.8 set |
 
 ## 1. What the device keeps
 
@@ -145,9 +145,10 @@ of, wallet deletions included. So heavy wallet use can make a burst Held, which 
 follows?"), with Allow and Decline. No lock is needed, because servers would co-sign it anyway. A thief
 holding the device can tap Allow; that is no worse than an nsec, which is the bar.
 
-**Held** shows the same card with the core §5.8 answer: the device's lock, or, on a device with no lock,
-**Wait 3 days**, which the person chooses themself. During a recovery wait (core §6.3) the card offers only
-the lock, and says a recovery is running. A site's request can lead to a hold only by the person
+**Held** shows the same card with the core §5.8 answer: the device's lock; **Approve with another
+device** (a `pair`: the other device shows the same card and the person types the code there); or, as a
+last resort, **Wait 3 days**, which the person chooses themself. During a recovery wait (core §6.3) the
+card offers only the lock or another device, and says a recovery is running. A site's request can lead to a hold only by the person
 choosing it on this card; it never starts one itself. The card says the change happens on *date* unless
 they stop it. There is at most one pending hold per site. The person can always **Withdraw** their own
 hold (core §6.3), even on a device without a lock.
@@ -167,7 +168,7 @@ signing, so it already knows which events need one.
 
 **Co-signing for another device.** A device asked to co-sign (not the coordinator) never prompts anyone,
 because nobody may be looking at it. It enforces only **Held**: for an event this table rates Held, it
-co-signs only with the coordinator's lock assertion over `"sign" ‖ event id`, or the hold's waited
+co-signs only with the coordinator's lock assertion over `"sign" ‖ event id`, a `pair` approval over the same `what` (core §5.8), or the hold's waited
 statements from two servers, carried in the `sign` request as `"waited": [<statement>, <statement>]` and
 checked as core §6.3 does: `kind` is `hold`, each signature verifies, the two come from two distinct host
 keys that each hold a current seat, the wait id is `SHA-256("hold" ‖ event id)`, `end − start ≥ W`, and
@@ -282,6 +283,8 @@ rebased: §4 applies to it.
 
 ## Changes
 
+- **Draft 19**: a Held event can also be approved with another device (core 14.26 §5.8). The Held card
+  offers it, a recovery wait included, and co-signing devices accept it.
 - **Draft 18**, from its sixteenth red team (0 critical, 0 high), its mediums and lows:
   - NIP-98 deletes batched only for file URLs, others shown in full (DP16-1);
   - an Allow covers only the files and servers on the card (DP16-2);
