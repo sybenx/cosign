@@ -240,7 +240,7 @@ admin §1.1).
   where it can't ask before decrypting, senders attach proof of work at the announced difficulty; under a
   flood, relay messages without it may be dropped unread, which is why devices repeat cancels and also use
   HTTPS (core §6.3, §9.2).
-- **`seated?` is verified.** The request carries a signature by the key it asks about, over the server's
+- **`seated?` is verified.** The request carries a signature by the key it asks about (core §6.7.5's `keykin-seated-ask/1` form), over the server's
   challenge. A server answers only if that signature verifies, so seeing a member key on relays isn't
   enough to learn which servers serve it.
 

@@ -1,6 +1,6 @@
 # Keykin module: Doors and grants
 
-Draft 19 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.15 · not built
+Draft 20 · 2026-11-04 · module of [Keykin Core](../core.md) draft 14.21 · not built
 
 Sites and apps reach a Keykin account through the doors they already use: NIP-07 (browser extension),
 NIP-55 (Android), NIP-46 (remote signer) and the QRST signer-ticket. **Sites change nothing.** This module
@@ -26,6 +26,7 @@ server (a watching server sees only public keys, §3.3).
   "relays": ["<NIP-46 relays, nip46 only>"],
   "signer": "<the per-site NIP-46 signer public key, nip46 only>",
   "scopes": ["sign-in", "post", "lists", "dms", "private-data", "wallet"],
+  "vaults": { "<vault id>": "read" | "write" },   // nip07 only (§3.7)
   "borrowed": false,
   "helper": false,
   "made": <unix>, "expiry": "unused-90d" | <unix> | null,
@@ -46,6 +47,7 @@ a request needs by looking at what it is.
 | `dms` | NIP-04/NIP-44 encrypt and decrypt **with other people's keys**, NIP-59 unwrap, the person's own sent NIP-17 copies (below), and NIP-55 `decrypt_zap_event` | the first time: "Let *site* read and send your messages?" |
 | `wallet` | NIP-60/61 wallet events (17375, 37375, 7375, 7376, 7374), payment targets (10019), and decrypting them | the first time: "Let *site* use your ecash wallet?" |
 | `private-data` | any other **decrypt** of something encrypted to the account's own key (notes, private app data) | the first time: "Let *site* read your private notes and app data?" |
+| `vaults` | the extension's vault API (§3.7), per vault: `read`, or `write` (put in the account's own vaults, contribute to shared ones); NIP-07 only | through the `list()` picker only (§3.7), naming the vaults: "Let *site* read *Family photos*?" |
 
 - **Which scope a decrypt needs.** The device parses the peer key as a 32-byte x-coordinate and compares
   bytes to tell a decrypt-to-self from a message.
@@ -111,8 +113,8 @@ for listing. The wildcard is also published in the ending device's event.
   `base64(24-byte nonce ‖ ciphertext)`. Expired entries are pruned from it, and once a part's encrypted, base64-encoded content
   would pass 24 KB (under strfry's and most relays' 32–64 KB limits) it is split into `d ‖ ":1"`, `":2"`, …, each part its own encrypted chunk of the
   JCS-encoded set, all with the same `created_at` and a `["parts", n]` tag; the parts count as one
-  event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `"keykin-grant-set/1"
-  ‖ g ‖ d ‖ created_at ‖ SHA-256(JCS({entries, tombstones, ended, union}))`. The maker publishes at `created_at = max(now,
+  event, newest only when every part is present. Inside, `maker_sig` is the maker's member-key signature over `SHA-256("keykin-grant-set/1"
+  ‖ g ‖ d ‖ created_at ‖ SHA-256(JCS({entries, tombstones, ended, union})))` (core §5.9). The maker publishes at `created_at = max(now,
   last + 1)`.
 - **The counted relays** are the account's **live recorded relays**: the epoch record's relays plus the
   current seat holders' relays, leaving out a relay that has failed **10 tries over at least 7 days, each
@@ -179,8 +181,7 @@ for listing. The wildcard is also published in the ending device's event.
   for helper grants, until the helper's report no longer lists them. Each device also applies, for its own
   grants, any tombstone it finds in other devices' events. A home answers `revoked:` for 30 days for a
   NIP-46 grant it dropped (so its signer key tells the site); NIP-07 and NIP-55 sites, and second-browser
-  origins (which make a fresh key on the next sign-in), can sign in again at once. For equal `v`, the
-  narrower scopes win (the scope set that is a subset of the other's), and otherwise the later event's
+  origins (which make a fresh key on the next sign-in), can sign in again at once. For equal `v`, the narrower scopes win (the scope set that is a subset of the other's, and, for a `vaults` map, every vault in it present in the other's at an equal or higher level; both must hold), and otherwise the later event's
   copy.
 - No tombstone is sent to the helper because of a device's removal; the helper ends those grants itself
   (Helper module §2), so kept ones survive.
@@ -226,8 +227,12 @@ for listing. The wildcard is also published in the ending device's event.
   doesn't let the same origin sign silently in another browser, profile or machine. Synced copies are for
   listing and signing out.
 - The `keykin-` app-data prefix is guarded: a device never signs, on a site's request, a kind 30078 with
-  a `d` starting with `keykin-`, or a kind 5 that targets one by `e` or `a`; nor any key-family kind
-  (1244–1247, Key families module), or a kind 5 aimed at one or at any kind 1040 the account authored.
+  a `d` starting with `keykin-`, or a kind 5 that targets one by `e` or `a`; nor any key-family kind (1244–1247, Key families module), or a kind 5 aimed at one or at any kind 1040 the account authored.
+- **Vault machinery is guarded the same way** (vaults spec): no door signs, for a site (any door: NIP-07, NIP-46, NIP-55, QRST, a pairing, a borrowed computer), kinds 4810, 4811
+  or 30811 (AUTH, CERT, KEYRING), or a kind 5 that targets one by `e`, `a` or `k`, or a kind 13 seal whose content it just encrypted from a kind-4812 rumor; and no door encrypts (NIP-44 or NIP-04), for a site, a plaintext that parses as a kind-4812 rumor or has the vault-payload shape below. And no door ever
+  releases to a site, under any scope, a plaintext that parses as a rumor of kind 4812 (INVITE), or whose top-level JSON (or, for a rumor, its content's top-level JSON) is an object with a `vault` member together with `keys`, `keys_ref`, `secret`, `inboxes` or `genesis` (keyring entries, invitations, rekey wraps), whether from a NIP-59 unwrap, a NIP-44 or NIP-04
+  decrypt, or a decrypt-to-self. So a DM client with `dms` can't read the vaults shared with the account,
+  and a notes site with `private-data` can't read its keyring. Vault data reaches a site only through §3.7. These guards bind the doors only; vault apps on the same machine (Marble, Onyx) get exactly these operations through the device API instead (§3.7). These kind numbers are the vaults spec's and provisional, like core's.
 
 ## 3. The doors
 
@@ -344,6 +349,47 @@ that is itself a NIP-46 client of the machine's member.
 - "Is this your computer?" is asked once, at pairing; the per-origin grants under it inherit the answer.
   Ending the pairing ends every grant under it.
 
+### 3.7 Vaults through the extension
+
+The machine's member (the extension, or the desktop app behind it, core §4.6) is itself a vault app (the
+vaults spec), and lends its vaults to sites through the extension. Vault data never goes to a site any
+other way (§2's guards).
+
+- **The API** is `window.nostr.vaults`, injected into the top-level window of every origin with a NIP-07 grant (never into frames, never for a second-browser pairing, §3.6, or a borrowed grant, §4). The content script accepts only messages whose `event.source` is that window itself, and takes the origin from the top frame, so an iframe can't post requests to it. Every script running on that origin, other extensions' injected scripts included, counts as the site:
+  - `list()`: the vaults this grant names, with their names and levels, and a picker to ask for more;
+  - `read(vault, query)`: the plaintext of only the items asked for, never following a `mount` into
+    another vault;
+  - `put(vault, item)`: a new version in a vault the account owns (`write`);
+  - `contribute(vault, item)`: a contribution to a vault shared with the account (`write`), only of the
+    `item` and `cancel` kinds, never `leave` or `revoke`, which only the person does, in the member's
+    own screens;
+  - `conflicts(vault)` and `resolve(vault, item, choice)` (`write`).
+
+  An unknown vault and an ungranted one get the same error. The member does the vault work itself: its
+  own device vault keys sign heads and contributions, and keys never leave it. Changes past the vaults
+  spec's mass-change threshold (its §10) need a Confirm card. No vault access through NIP-46 or NIP-55
+  in this version.
+- **The scope.** Only the `list()` picker asks, from a top-level page and a user gesture, naming the
+  vaults ("Let *notes.example* read and edit *Notes*?"); the person picks the vaults and the level. It is
+  part of the grant: listed, synced and signed out like the rest (§2). "Don't allow" is remembered until the person changes it; closing the picker declines for that page load only.
+- **Its own vault roots.** The member makes its one device root and cert (the vaults spec, §3.4), signs
+  its `ksig` with its member key under `nostr-vault/ksig/1`, and derives its vault keys with
+  `dataKeys.derive` under `nostr-vault/owner/1` and `nostr-vault/keyring/1` (core §4.5, §5.9; the app list
+  names the Keykin app for these domains). It never uses `dk(S)` itself.
+- **Vault apps on the same machine** get, through the device API, once granted all three open domains
+  together (`nostr-vault/ksig/1`, `owner/1`, `keyring/1`; core §5.9; one hand-grant question covers the set, in the app list's own wording for these domains, "Let *Notes* use all your vaults, in every app, on this device?"): `ksig`, `derive`, account signatures for kinds 4810, 4811 and 30811 (genesis, device certs,
+  keyring entries) each a normal co-signed round; an invitation call that takes an unsigned rumor, checks `kind == 4812` and `pubkey == g`, and itself encrypts it to the named recipient and signs the kind 13 seal (vault apps get no encrypt call and never a seal of their own making); a NIP-59 unwrap that is answered only when the rumor is kind 4812 and the seal's signer is the rumor's `pubkey`, returning the seal's pubkey with it; and a NIP-44 decrypt that
+  is answered only when the plaintext has the vault-payload shape above. So a vault app gets vault
+  material and nothing else of the account's: no DMs, no other private data. A kind 5 is signed for them only when every target is a 4810, 4811 or 30811 of `g`, and Device policy judges it like any deletion.
+- **Handover between the extension and the desktop app** (core §4.6). Before step 1 the giving program
+  freezes vault writes (sites get `try-later:`), sends its queued contributions, publishes every vault
+  commit it holds and checks that the vaults' relays and Blossom servers have them; with core §4.6 step 1 it also passes, over native messaging, each device vault key's chain tip (`seq`, commit id), every commit it couldn't publish and its storage keys; the taking program publishes those as its own edits. At step 3 the giving program destroys its vault root, device
+  vault keys and storage keys with everything else. The taking program then makes its own device root, loads each vault,
+  writes a checkpoint that covers the giving program's device vault keys, and revokes the old root with
+  `keep` (the vaults spec, §8.5: an owner vault by the account's revocation, a shared one by a `revoke`
+  contribution). That revocation is stored as a durable pending task before core §4.6 step 3, and runs only once the new checkpoint covers each passed tip with no gap (it waits, "finishing sync…", while a relay or Blossom server is down, and after a day offers "Finish anyway", which revokes with what the checkpoint covers), so a crash
+  can't leave the old root a writer; core §4.6's leftover-copy path runs the same task. A leftover copy runs no vault code before core §4.6's host check, and a root revoked by a handover is never re-rooted automatically (the vaults spec's re-root on "own member key current" doesn't apply). Nothing is lost when the giving program is offline: its unpublished commits move with the handover.
+
 ## 4. Borrowed computers
 
 At the first connect (§3.3), the device asks once: **"Is this your computer?"** If not:
@@ -407,6 +453,11 @@ At the first connect (§3.3), the device asks once: **"Is this your computer?"**
   when they change.
 
 ## Changes
+
+- **Draft 20**, for the vaults spec (vaults.md §12.3): the extension's vault API (§3.7) with a per-vault
+  `vaults` scope, NIP-07 only; the member's own vault roots with `ksig`; the extension–desktop handover
+  publishing every commit first and revoking the old root; and guards so no door signs vault machinery kinds or releases invitations or keyring payloads to a site. Vault apps on the machine sign those kinds through the device API. Three red-team rounds (3, 2 and 2 high; no critical) are folded in.
+
 
 - **Draft 19**, from its eighteenth red team (0 critical, 0 high), its medium and lows:
   - an unreadable newer own event is ignored once a fetch is otherwise good, and events are recorded
