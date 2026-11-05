@@ -236,6 +236,13 @@ class KeykinService : Service() {
         override fun pushEndpoint(slot: String, instance: String, endpoint: String) = work.execute {
             try { val s = Memberships.signer(slot); s.onEndpoint(instance, endpoint); s.registerPush() } catch (e: Exception) { Log.w(TAG, "pushEndpoint: $e") }
         }
+        override fun pushEndpointKeys(slot: String, instance: String, endpoint: String, p256dh: String, auth: String) = work.execute {
+            try { val s = Memberships.signer(slot); s.onEndpoint(instance, endpoint, p256dh, auth); s.registerPush() } catch (e: Exception) { Log.w(TAG, "pushEndpointKeys: $e") }
+        }
+        override fun pushDecrypted(slot: String, instance: String, plaintext: ByteArray) = wakes.execute {
+            try { Memberships.signer(slot).onDecrypted(instance, plaintext) } catch (e: Exception) { Log.w(TAG, "pushDecrypted: $e") }
+            work.execute { publish(slot) }
+        }
         // A wake can wait on servers and sites: on its own thread, as the join is; the state follows.
         override fun pushMessage(slot: String, instance: String, body: ByteArray) = wakes.execute {
             try { Memberships.signer(slot).onMessage(instance, body) } catch (e: Exception) { Log.w(TAG, "pushMessage: $e") }

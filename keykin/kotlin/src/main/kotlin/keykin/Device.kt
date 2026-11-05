@@ -230,7 +230,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
 
     /** §8.1: one push address per server and wake class, each with its own RFC 8291 keys, so addresses can't
      *  be linked across servers or accounts. By address URL: the secret, the auth secret, the class. */
-    private val pushKeys = HashMap<String, JSONObject>()
+    internal val pushKeys = HashMap<String, JSONObject>()
     val members = Members()
     /** The account's grants (Doors §1–§2): this device's, signed by it, and every device's, for listing. */
     val grants = GrantStore(this).also { g -> g.helperLists = { sg -> helperReport?.optJSONArray("grants")?.let { a -> (0 until a.length()).any { a.getJSONObject(it).optString("signer") == sg } } == true } }
@@ -776,13 +776,26 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
     /** Register an address with every server for each wake class; `endpoint(server, cls)` gives the URL
      *  (on Android, a UnifiedPush endpoint per instance). Returns how many servers took them. */
-    fun registerPush(endpoint: (String, String) -> String): Int {
+    fun registerPush(endpoint: (String, String) -> String): Int = registerPushWith { server, cls -> PushAddress(endpoint(server, cls), null, null) }
+    /** A push address the app's UnifiedPush gave: the endpoint, and, when the app's connector decrypts Web Push itself
+     *  (UnifiedPush connector 3.x), that connector's keys (`p256dh` and `auth`, base64url) for the servers to encrypt to. */
+    data class PushAddress(val url: String, val p256dh: String?, val auth: String?)
+    /** As `registerPush`, with each address's keys: the connector's when it has them (its messages then reach
+     *  `onPushDecrypted`), else a key pair this device makes and keeps (its messages reach `onPush`). Either way the
+     *  payload is believed only under a seated server's host signature. */
+    fun registerPushWith(address: (String, String) -> PushAddress): Int {
         var n = 0
         for (s in servers()) {
             val addrs = JSONArray()
             for (cls in listOf("sign", "ask", "notice")) {
+                val a = address(s.key, cls)
+                val url = a.url
+                if (a.p256dh != null && a.auth != null) {
+                    synchronized(this) { pushKeys[url] = JSONObject().put("connector", true).put("vapid", s.raw.optString("vapid")).put("cls", cls) }
+                    addrs.put(JSONObject().put("cls", cls).put("url", url).put("p256dh", a.p256dh).put("auth", a.auth))
+                    continue
+                }
                 val (ksk, kpub) = Push.newKey(); val auth = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
-                val url = endpoint(s.key, cls)
                 synchronized(this) { pushKeys[url] = JSONObject().put("sk", hex(ksk)).put("auth", hex(auth)).put("vapid", s.raw.optString("vapid")).put("cls", cls) }
                 addrs.put(JSONObject().put("cls", cls).put("url", url).put("p256dh", b64u(kpub)).put("auth", b64u(auth)))
             }
@@ -795,7 +808,17 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
      *  at once. Returns the payload (`cls`, `id`), or null for anything not ours. The app then fetches. */
     fun onPush(url: String, body: ByteArray): JSONObject? {
         val k = synchronized(this) { pushKeys[url] } ?: return null
+        if (k.optBoolean("connector")) return null   // the connector holds this address's keys: `onPushDecrypted`
         val p = try { Push.read(Push.decrypt(body, unhex(k.getString("sk")), unhex(k.getString("auth"))), servers().mapNotNull { it.host }.toSet()) } catch (_: KeykinException) { return null }
+        p.optJSONObject("wrap")?.let { takeDelivery(it); applyAll() }
+        return p
+    }
+    /** A push the app's UnifiedPush connector already decrypted with its own keys (an address registered with them):
+     *  believed only under a seated server's host signature, as `onPush`. */
+    fun onPushDecrypted(url: String, plain: ByteArray): JSONObject? {
+        val k = synchronized(this) { pushKeys[url] } ?: return null
+        if (!k.optBoolean("connector")) return null
+        val p = try { Push.read(plain, servers().mapNotNull { it.host }.toSet()) } catch (_: KeykinException) { return null } catch (_: org.json.JSONException) { return null }
         p.optJSONObject("wrap")?.let { takeDelivery(it); applyAll() }
         return p
     }

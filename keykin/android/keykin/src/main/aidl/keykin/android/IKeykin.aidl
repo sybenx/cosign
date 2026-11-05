@@ -108,4 +108,11 @@ interface IKeykin {
     oneway void pushEndpoint(String slot, String instance, String endpoint);
     /** A UnifiedPush message for `instance`: decrypted and checked, a carried delivery taken, a wake. */
     oneway void pushMessage(String slot, String instance, in byte[] body);
+    /** UnifiedPush connector 3.x decrypts Web Push with its own keys: give the endpoint with the connector's keys
+     *  (`PushEndpoint.pubKeySet`: `pubKey` and `auth`, base64url) and the servers encrypt to them. Use this instead of
+     *  `pushEndpoint` with the connector's default key manager. */
+    oneway void pushEndpointKeys(String slot, String instance, String endpoint, String p256dh, String auth);
+    /** A message the connector already decrypted (`PushMessage.decrypted` true): checked under a seated server's host
+     *  signature, then as `pushMessage`. A message it couldn't decrypt goes to `pushMessage` as it came. */
+    oneway void pushDecrypted(String slot, String instance, in byte[] plaintext);
 }

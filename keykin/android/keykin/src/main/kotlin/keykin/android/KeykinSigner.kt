@@ -55,14 +55,23 @@ class KeykinSigner(private val context: Context, val name: String = "default") {
     }
 
     /** UnifiedPush gave the app `endpoint` for `instance` ("<server>:<cls>", one per server and wake class). */
-    fun onEndpoint(instance: String, endpoint: String) = extra.update { it.put("endpoints", (it.optJSONObject("endpoints") ?: JSONObject()).put(instance, endpoint)) }
+    fun onEndpoint(instance: String, endpoint: String) = onEndpoint(instance, endpoint, null, null)
+    /** With the UnifiedPush connector's keys (connector 3.x decrypts Web Push itself): the servers encrypt to them. */
+    fun onEndpoint(instance: String, endpoint: String, p256dh: String?, auth: String?) = extra.update {
+        it.put("endpoints", (it.optJSONObject("endpoints") ?: JSONObject()).put(instance, endpoint))
+        val keys = it.optJSONObject("endpointKeys") ?: JSONObject()
+        if (p256dh != null && auth != null) keys.put(instance, JSONObject().put("p256dh", p256dh).put("auth", auth)) else keys.remove(instance)
+        it.put("endpointKeys", keys)
+    }
     private fun endpoint(instance: String): String? = extra.get().optJSONObject("endpoints")?.optString(instance)?.ifEmpty { null }
+    private fun endpointKeys(instance: String): JSONObject? = extra.get().optJSONObject("endpointKeys")?.optJSONObject(instance)
     /** Register this device's push addresses with every server, once the app holds an endpoint for each instance
      *  (`instances()` says which to ask UnifiedPush for). Returns how many servers took them. */
     fun registerPush(): Int {
         val d = device ?: return 0
         if (instances().any { endpoint(it) == null }) return 0
-        return d.registerPush { server, cls -> endpoint("$server:$cls")!! }
+        return d.registerPushWith { server, cls -> val i = "$server:$cls"; val k = endpointKeys(i)
+            keykin.Device.PushAddress(endpoint(i)!!, k?.optString("p256dh"), k?.optString("auth")) }
     }
     fun instances(): List<String> = device?.servers()?.flatMap { s -> listOf("sign", "ask", "notice").map { "${s.key}:$it" } } ?: emptyList()
     /** A UnifiedPush message for `instance`: decrypted and checked, a carried delivery taken, then a fetch. */
@@ -71,6 +80,13 @@ class KeykinSigner(private val context: Context, val name: String = "default") {
         val p = d.onPush(endpoint(instance) ?: return null, body) ?: return null
         // A wake (an `ask` push for a site's request, a notice): a catch-up that also answers what the watching
         // server kept for the NIP-46 home.
+        if (!p.has("wrap")) d.nip46.wake()
+        return p
+    }
+    /** A UnifiedPush message the connector decrypted (`PushMessage.decrypted`): checked, then as `onMessage`. */
+    fun onDecrypted(instance: String, plain: ByteArray): JSONObject? {
+        val d = device ?: return null
+        val p = d.onPushDecrypted(endpoint(instance) ?: return null, plain) ?: return null
         if (!p.has("wrap")) d.nip46.wake()
         return p
     }
