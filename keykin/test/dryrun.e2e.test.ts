@@ -361,11 +361,16 @@ test('J: the phone makes a new paper (F7), approved with the old; the account is
     const s = await stack(17560, { testW: 20 });
     const phone = new Device(s, 'phone'); await phone.join();
     await phone.post('before the new paper');
+    // A new paper the person never types back is abandoned: nothing is committed, and the old paper stays.
+    assert.equal((await phone.cmd({ cmd: 'new_paper', words: s.words, read_back: false })).error, 'not_read_back');
+    assert.equal((await phone.cmd({ cmd: 'paper_is', words: s.words })).current, true);
     const made = await phone.cmd({ cmd: 'new_paper', words: s.words });
     assert.equal(made.error, undefined, JSON.stringify(made));
     const words: string = made.paper;
     assert.equal(words.split(' ').length, 24);
     assert.notEqual(words, s.words);
+    assert.equal((await phone.cmd({ cmd: 'paper_is', words })).current, true);
+    assert.equal((await phone.cmd({ cmd: 'paper_is', words: s.words })).current, false);
     // Then everything is lost, and only the new paper's words remain.
     const net = new RelayNet({ relays: s.devRelays, timeoutMs: 9000, resendMs: 1500 });
     await net.connect();

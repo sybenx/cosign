@@ -126,9 +126,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
      *  the backup seat's shares towards K with one server at the current state; seal the base and every seed this
      *  device holds (asking the other devices for any of the state it lacks) under the redeal's release seed, read
      *  them back with K; then co-sign the list with the paper change's pin, `state` and `seeds`, and send the material
-     *  with it. Returns K's secret: the app shows its 24 words once and has them typed back, then destroys it.
-     *  `approve` approves the placeholder list (the lock, a pair or the paper). */
-    fun newPaper(approve: (JSONArray) -> JSONObject): ByteArray {
+     *  with it. `approve` approves the placeholder list (the lock, a pair or the paper). `readBack` gets K's secret
+     *  before anything is committed: the app shows its 24 words and has the person type them back; false (or a
+     *  throw) abandons the new paper and the old one stays the account's (TS `duringF7`). Returns K's secret. */
+    fun newPaper(approve: (JSONArray) -> JSONObject, readBack: (ByteArray) -> Boolean = { true }): ByteArray {
         if (wiped) refuse("wiped")
         val Ksk = ByteArray(32).also { java.security.SecureRandom().nextBytes(it); it[0] = (it[0].toInt() and 0x7f).toByte() }
         val K = Keykin.secp.pub(Ksk)
@@ -157,6 +158,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             // Read back with K, as K will at a recovery: every listed seed must come out.
             val back = Material.openSeeds(seedIts, dealt.releaseSeed, Ksk, v.redeals.mapValues { it.value.r.getString("dk") })
             if (records.any { it.first !in back }) refuse("bad_material", "the seed items don't read back")
+            // The person writes it down and types it back before the commit: the old paper stays good until then.
+            if (!readBack(Ksk)) refuse("not_read_back", "the new paper wasn't typed back: the old paper stays")
             val paper = JSONObject().put("key", K).put("replaces", old).put("inner", Material.inner(base, seedIts))
                 .put("state", JSONArray(repairedAt)).put("seeds", JSONArray(records.map { it.first }.sorted()))
             Finish(JSONArray().put(JSONObject().put("paper", paper)).put(JSONObject().put("redeal", dealt.redeal)), base, seedIts)

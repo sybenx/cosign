@@ -128,8 +128,11 @@ fun main(args: Array<String>) {
                     }
                     // F7: a new paper, approved with the old one (its words); prints the new paper's words once.
                     "new_paper" -> { val old = Backup.readBackupWords(c.getString("words").trim().split(Regex("\\s+")))
-                        val K = try { d.newPaper { list -> d.approveWithPaper(list, old) } } finally { old.fill(0) }
+                        // `read_back: false`: the person never types the new words back, so nothing is committed.
+                        val K = try { d.newPaper(approve = { list -> d.approveWithPaper(list, old) }, readBack = { c.optBoolean("read_back", true) }) } finally { old.fill(0) }
                         try { JSONObject().put("paper", Backup.backupWords(K).joinToString(" ")).put("key", Keykin.secp.pub(K)) } finally { K.fill(0) } }
+                    // Whether `words` are this account's current paper (nothing leaves the device).
+                    "paper_is" -> { val sk = Backup.readBackupWords(c.getString("words").trim().split(Regex("\\s+"))); try { JSONObject().put("current", Keykin.secp.pub(sk) == d.view.backup) } finally { sk.fill(0) } }
                     "devices" -> JSONObject().put("devices", JSONArray(d.memberKeys())).put("wiped", d.wiped)
                     "quit" -> break
                     "seeds" -> JSONObject().put("records", d.seedRecords().size).put("held", JSONArray(d.seedOnlyHeld()))

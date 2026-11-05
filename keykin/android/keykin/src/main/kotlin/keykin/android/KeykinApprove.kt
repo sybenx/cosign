@@ -24,9 +24,9 @@ class KeykinApprove : FragmentActivity() {
     companion object {
         const val SLOT = "keykin.slot"; const val ACTION = "keykin.action"; const val KEY = "keykin.key"; const val ID = "keykin.id"; const val WITH = "keykin.with"
         const val RELAYS = "keykin.relays"; const val FRONTS = "keykin.fronts"
-        /** The actions: create an account (relays, fronts), report a device lost, check the paper, add the invited
-         *  device, approve a pair request, remove a device with a pair. */
-        val ACTIONS = setOf("create", "report_lost", "paper_check", "add_invited", "pair_approve", "pair_remove")
+        /** The actions: create an account (relays, fronts), report a device lost, check the paper, make a new paper,
+         *  add the invited device, approve a pair request, remove a device with a pair. */
+        val ACTIONS = setOf("create", "report_lost", "paper_check", "new_paper", "add_invited", "pair_approve", "pair_remove")
     }
     private lateinit var line: TextView
     private lateinit var col: LinearLayout
@@ -68,6 +68,7 @@ class KeykinApprove : FragmentActivity() {
                     val ok = try { PaperEntry.check(slot, w) } catch (e: Exception) { return@Thread done(false, (e as? KeykinException)?.code ?: "failed") }
                     done(true, if (ok) "this account's paper" else "not this account's paper") }.start() }
             }
+            "new_paper" -> return newPaper(s, d)
             "add_invited" -> {
                 val list = try { d.inviteAddList() } catch (e: KeykinException) { return done(false, e.code) }
                 line.text = "Add the new device to your account? Only if you just typed the number it shows."
@@ -124,6 +125,53 @@ class KeykinApprove : FragmentActivity() {
                 button("Not now") { done(true, "created; paper not checked yet", s.device?.pub) }
             }
         }.start()
+    }
+    /** F7, a new paper (Backup §2, core §6.7.6): approved with this phone's lock, or the current paper's words on a
+     *  lockless phone; its 24 words shown here only, and typed back before anything is committed, so the old paper
+     *  stays the account's until the new one is written down. */
+    private fun newPaper(s: KeykinSigner, d: Device) {
+        val lock = s.lock()
+        line.text = "Make a new paper? It replaces your current one: once you've written the new words down and typed them back, the old paper stops working." +
+            (if (lock == null) "\n\nThis phone has no lock: approve with your current paper's 24 words." else "")
+        val oldWords = if (lock == null) wordsField() else null
+        button("Make a new paper") {
+            val old = oldWords?.invoke()
+            if (lock == null && old?.size != 24) { line.text = "Type all 24 words of your current paper first."; return@button }
+            col.removeAllViews(); col.addView(line); line.text = "Making your new paper… (this takes a few seconds)"
+            Thread { finishWith {
+                val approve: (JSONArray) -> JSONObject = { list ->
+                    if (lock == null) { val sk = keykin.Backup.readBackupWords(old!!); try { d.approveWithPaper(list, sk) } finally { sk.fill(0) } }
+                    else {
+                        val f = java.util.concurrent.CompletableFuture<JSONObject?>()
+                        runOnUiThread { LockPrompt.approveList(this, d, lock, list, "Make a new paper", "Replace your paper") { a, _ -> f.complete(a) } }
+                        f.get(5, java.util.concurrent.TimeUnit.MINUTES) ?: throw KeykinException("not_approved")
+                    }
+                }
+                val K = d.newPaper(approve) { ksk -> readBack(keykin.Backup.backupWords(ksk)) }
+                K.fill(0); "new paper made and checked"
+            } }.start()
+        }
+        button("Cancel") { done(false, "cancelled") }
+    }
+    /** Show `words` (the new paper), and wait for the person to type them back: true once they match (3 tries), false
+     *  on Cancel or after 30 minutes. Called off the UI thread. */
+    private fun readBack(words: List<String>): Boolean {
+        val f = java.util.concurrent.CompletableFuture<Boolean>()
+        runOnUiThread {
+            col.removeAllViews(); col.addView(line)
+            line.text = "Your new paper: write these 24 words down, in order, and keep them safe. They are the only way back in if you lose every device.\n\n" +
+                words.chunked(6).joinToString("\n") { it.joinToString(" ") }
+            button("I've written it down") {
+                col.removeAllViews(); col.addView(line)
+                line.text = "Type the 24 words from your new paper, to check you wrote them right. Until you do, your old paper stays the one that works."
+                val typed = wordsField(); var tries = 0
+                button("Check and use the new paper") { val w = typed()
+                    if (w == words) f.complete(true) else if (++tries >= 3) f.complete(false) else line.text = "Those words don't match. Look at your new paper again and type all 24." }
+                button("Cancel") { f.complete(false) }
+            }
+            button("Cancel") { f.complete(false) }
+        }
+        return try { f.get(30, java.util.concurrent.TimeUnit.MINUTES) } catch (_: Exception) { false }
     }
     /** Approve `list` with this phone's lock (the prompt), or with the paper's words on a lockless phone; then `run`. */
     private fun approveWith(s: KeykinSigner, d: Device, label: String, list: JSONArray, run: (JSONArray, JSONObject) -> String) {
