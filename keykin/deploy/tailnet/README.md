@@ -19,7 +19,7 @@ Nothing was installed. No launchd job, login item or setting was added. Nothing 
 
 ## Start, stop, delete
 
-    ./start.sh mini.ghost-dragon.ts.net 100.106.68.2   # prints the servers' host keys
+    ./start.sh host.example.ts.net 100.64.0.10 # prints the servers' host keys
     ./stop.sh                                          # stops every process start.sh began
     ./stop.sh && cd ~ && rm -rf ~/keykin-dryrun        # removes it all
 
