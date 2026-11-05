@@ -8,6 +8,8 @@
 //   C  forget, then rejoin with a fresh invite; the same invite scanned twice adds one device only.
 //   D  a stale list: the tablet joins while the phone's Devices list is open (A's report runs from that list).
 //   E  a restart in the middle of a report-lost, relays 1-3 s slow, and clocks 30 s fast and slow.
+//   F  the extension's member (a TS device, device/join.ts) joins by invite over the relays; a Kotlin phone joins
+//      unseen; the extension reports the laptop lost from its stale list with the paper; both still post.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -16,6 +18,11 @@ import { createServer, connect, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
+import { RelayNet } from '../runtime/relay.ts';
+import { joinByCode } from '../device/join.ts';
+import { readBackupWords } from '../src/backup.ts';
+import { pubOf } from '../src/event.ts';
+import type { Change } from '../src/types.ts';
 
 const here = join(import.meta.dirname, '..');
 // DRYRUN_ROOT: another copy's CLI and servers (the pinned dry run's); DRYRUN_KT: its Kotlin device. This tree's by default.
@@ -180,4 +187,35 @@ test('E: a restart in the middle of a report-lost, slow relays, clocks 30 s off'
   assert.deepEqual((await phone.devices()).sort(), [phone.key, tablet.key].sort());
   assert.deepEqual((await tablet.devices()).sort(), [phone.key, tablet.key].sort());
   await phone.post('after the restart'); await tablet.post('the tablet too');
+});
+
+test('F: the extension\'s TS member joins by invite and reports the laptop lost from a stale list', { skip, timeout: 900_000 }, async () => {
+  const s = await stack(17480);
+  // The extension: a TS device on its own relay connection, joining with the laptop's code (the person types its digits).
+  const net = new RelayNet({ relays: s.devRelays, timeoutMs: 9000, resendMs: 1500 });
+  await net.connect();
+  try {
+    const inv = spawn(process.execPath, [join(root, 'cli/account.ts'), 'invite', '--dir', s.dir, '--app-relays', s.devRelays.join(',')], { stdio: ['pipe', 'pipe', 'ignore'] });
+    procs.push(inv);
+    const il = new Lines(createInterface({ input: inv.stdout! }));
+    const { invite } = await il.next(120_000, 'the invite');
+    const joined = joinByCode(net as any, invite, { onCheck: (digits) => inv.stdin!.write(digits + '\n'), name: 'extension' });
+    const added = await il.next(180_000, 'the laptop\'s add');
+    assert.equal(added.welcomed, true, JSON.stringify(added));
+    const ext = await joined;
+    assert.equal(ext.kp.pub, added.added);
+    assert.equal((await ext.sign({ kind: 1, content: 'gm from the extension', tags: [] })).pubkey, s.g);
+    const phone = new Device(s, 'phone'); await phone.join();                         // the extension hears nothing of it
+    assert.ok(!ext.memberKeys().includes(phone.key), 'the extension\'s list is stale');
+    await phone.post('gm from the phone');
+    // Report the laptop lost from that list, with the paper's words: the redeal must reach the phone.
+    const sk = readBackupWords(s.words.split(/\s+/));
+    const list: Change[] = [{ remove: s.laptop }, { redeal: { dealer: ext.kp.pub } }];
+    await ext.submit(list, await ext.approveWithPaper(list, { sk, pub: pubOf(sk) }));
+    assert.deepEqual(ext.memberKeys().sort(), [ext.kp.pub, phone.key].sort());
+    assert.deepEqual((await phone.devices()).sort(), [ext.kp.pub, phone.key].sort());
+    await phone.post('the phone still posts');
+    assert.equal((await ext.sign({ kind: 1, content: 'and the extension', tags: [] })).pubkey, s.g);
+    assert.equal(s.cli(['show']).status, 3, 'the laptop knows it was removed');
+  } finally { net.close(); }
 });

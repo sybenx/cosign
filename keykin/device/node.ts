@@ -90,7 +90,12 @@ export class DeviceNode implements Node {
   async approveWithPaper(list: Change[], paper: KeyPair): Promise<Approval> {
     if (paper.pub !== this.m!.backupKey) refuse('not_current_backup', 'this is not the current paper');
     const s = this.servers().find((x) => this.bus.alive(x.key)); if (!s) refuse('no_server');
-    const ch = await this.bus.send(paper, s!.key, msg('challenge', this.g, this.epochId, 'ask'));
+    // Over real relays the answer comes back to the paper's key, so it is hosted for this one exchange (as the Kotlin
+    // device's `net.host`); the in-memory bus answers directly.
+    const relay = (this.bus as any).hosted instanceof Map && !(this.bus as any).hosted.has(paper.pub) ? this.bus as any : null;
+    relay?.add({ kp: paper, handle: () => null });
+    let ch: any;
+    try { ch = await this.bus.send(paper, s!.key, msg('challenge', this.g, this.epochId, 'ask')); } finally { relay?.kill(paper.pub); }
     if (ch?.type !== 'challenge' || typeof ch.challenge !== 'string') refuse(ch?.code ?? 'no_challenge');
     return approvePaper(this.g, this.epochId, approvalListOf(list), this.now + 3600, this.kp, paper, ch.challenge, s!.host!);
   }

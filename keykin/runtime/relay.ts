@@ -202,15 +202,17 @@ export class RelayNet implements Transport {
       if (res) { this.pending.delete(k); delete body.__answer; res(body); }
       return null;
     }
-    const key = `${o.from}:${body.id}`;
-    const prev = h.answered.get(key);
+    // A request is answered once per id (re-sent requests get the same answer). A message without an id, such as a
+    // repair sigma (one per index from the same sender), is never a repeat of another: each is handled.
+    const key = body.id !== undefined ? `${o.from}:${body.id}` : null;
+    const prev = key ? h.answered.get(key) : undefined;
     if (prev) return prev.answer ? { from: h.node.kp, to: o.from, answer: prev.answer } : null;
-    h.answered.set(key, { at: Date.now(), answer: null });
+    if (key) h.answered.set(key, { at: Date.now(), answer: null });
     let ans;
     try { ans = await h.node.handle(o.from, body, o.sentAt, { pow: powBits(e.id), ...meta }); } catch (err) { ans = { type: 'error', code: 'internal', detail: String(err) }; }
     if (ans === undefined || ans === null) return null;
     const answer = { ...ans, re: body.id, __answer: true };
-    h.answered.set(key, { at: Date.now(), answer });
+    if (key) h.answered.set(key, { at: Date.now(), answer });
     for (const [k, v] of h.answered) if (Date.now() - v.at > 600_000) h.answered.delete(k);
     return { from: h.node.kp, to: o.from, answer };
   }
