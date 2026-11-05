@@ -1,7 +1,7 @@
 // Whole-account flows over the simulated bus: create (by import, §11.2), invite a device (§4),
 // fill a seat (§6.7.4), recover with the paper (§6.5, §4.4).
 
-import { bytesToHex, randomBytes, sha, refuse } from '../src/bytes.ts';
+import { bytesToHex, hexToBytes, randomBytes, sha, refuse } from '../src/bytes.ts';
 import { helperSeat, pickSalt, stateHash } from '../src/codes.ts';
 import { deal } from '../src/frost.ts';
 import { commitmentHex, xOnly, scalarHex } from '../src/curve.ts';
@@ -46,7 +46,7 @@ export async function create(o: { lockless?: boolean; net?: Net; relays?: string
   const rec: EpochContent = { v: 1, g, epoch: { n: 1, id: epochId }, prev: null, t: 4, commitment: commitmentHex(d.commitment), role: 'master', origin: 'import',
     relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: materialInner(base, []), seats: { servers: [4, 7, 8], backup: [5, 6], helper: helperSeat(g) } };
   const recEv = finalizeEvent({ kind: KIND_EPOCH, created_at: bus.now, tags: [['d', 'keykin'], ['v', '1'], ['epoch', '1']], content: JSON.stringify(rec) },
-    Uint8Array.from(Buffer.from(scalarHex(d.secret), 'hex'))) as NostrEvent;
+    hexToBytes(scalarHex(d.secret))) as NostrEvent;
   A.adopt(recEv, [], { ids: new Set(), C: d.commitment, shares: new Map([1, 2, 3].map((i) => [i, d.shares.get(i)!])) });
   A.seeds.set('base', baseSeed); A.base = base; A.baseDk = baseDk;
   if (!A.lock) A.keptSecret = paper;       // "Not now" on a lockless device keeps the backup sealed (§4.3 step 4)
@@ -231,7 +231,7 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net; hosts?: { 
   const dkgKeys: Record<number, string> = {};
   for (const k of addr.keys()) {
     const a = await bus.send(A.kp, at(k), { type: 'create' });
-    if (a?.type !== 'create_ok' || !schnorrVerify(a.host_sig, sha('keykin-dkg-key/1', Uint8Array.from(Buffer.from(a.dkg_key, 'hex'))), a.host)) refuse('create_failed');
+    if (a?.type !== 'create_ok' || !schnorrVerify(a.host_sig, sha('keykin-dkg-key/1', hexToBytes(a.dkg_key)), a.host)) refuse('create_failed');
     dkgKeys[sIdx[k]] = a.dkg_key;
   }
   // 2. Round 1, relayed by the device so everyone sees the same packages.

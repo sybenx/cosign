@@ -13,12 +13,13 @@
     "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
-    "nostr-tools": "^2.25.2",
     "@scure/base": "^2.0.0",
-    "@scure/bip39": "^2.0.0"
+    "@scure/bip39": "^2.0.0",
+    "nostr-tools": "^2.25.2"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
   }
 }

@@ -22,6 +22,10 @@
         <service android:name="keykin.android.VaultService" android:process=":signer" android:exported="true">
             <intent-filter><action android:name="keykin.android.VAULTS" /></intent-filter>
         </service>
+        <!-- The library's approval screen (report lost, paper check, add an invited device, pairs): in the signer
+             process, so the lock prompt and the paper's words never reach the app's main process. -->
+        <activity android:name="keykin.android.KeykinApprove" android:process=":signer" android:exported="false"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" android:excludeFromRecents="true" />
         <activity android:name="keykin.android.VaultGrantActivity" android:process=":signer" android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" android:excludeFromRecents="true" />
     </application>

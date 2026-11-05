@@ -141,7 +141,11 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   assert.ok(b.bunker, JSON.stringify(b));
   const link = String(b.bunker).replace(/10\.0\.2\.2/g, '127.0.0.1');
   const lineOf = (o: { out: string; err: string }) => { const l = o.out.trim().split('\n').find((x) => x.startsWith('{')); assert.ok(l, 'nak said: ' + o.out + o.err); return JSON.parse(l!); };
-  const posted = lineOf(await nak(['event', '--sec', link, '-k', '1', '-c', 'gm through the phone\'s home', relays[0]]));
+  // The home subscribes on its relays once the link is minted: a moment for that, and one retry, as a site retries.
+  await new Promise((r) => setTimeout(r, 3000));
+  let said = await nak(['event', '--sec', link, '-k', '1', '-c', 'gm through the phone\'s home', relays[0]]);
+  if (!said.out.includes('{')) said = await nak(['event', '--sec', link, '-k', '1', '-c', 'gm through the phone\'s home', relays[0]]);
+  const posted = lineOf(said);
   assert.ok(verifyEvent(posted) && posted.pubkey === A.g, 'the phone answered as the account');
   // Device policy on the phone (§2): the person's 12 follows, then the site cuts them to 1: a Confirm card, which
   // the person allows; only then does the site get its event.
@@ -194,5 +198,112 @@ test('on the emulator, the phone reports a device lost after another joined unse
   typeWords(words.replace(/^\S+/, 'zoo')); tap('Check the paper');
   assert.ok(await until(() => screenText().includes('not this account\'s paper')), 'a wrong word doesn\'t');
   sh('shell', 'input', 'keyevent', '4');
+  sh('uninstall', 'cc.aaro.keykin.demo');
+});
+
+// keykin-android's own screens and calls (the Marble hand-off's library side): the opening state after a restart; refresh
+// shows a device that joined unseen; an invite from the phone, which a Kotlin device joins, the add approved on the
+// library's KeykinApprove screen with the paper (the emulator is lockless); report lost and the paper check on that
+// screen; a pair request from the Kotlin device, approved on the phone with the digits.
+const ktBin = join(root, 'kotlin/build/install/keykin-kotlin/bin/keykin-kotlin');
+const frostLib = ['dylib', 'so'].map((x) => join(root, `frost/target/release/libkeykin_frost.${x}`)).find(existsSync);
+test('keykin-android: opening, refresh, invite from the phone, and the approval screen for report lost, the paper and a pair', { skip: (!serial && 'set KEYKIN_ANDROID_SERIAL to an emulator this test may use') || (!haveNak && 'nak not installed') || (!existsSync(apk) && 'build the demo') || ((!existsSync(ktBin) || !frostLib) && 'run `gradlew installDist` in kotlin/ and build frost'), timeout: 1_200_000 }, async () => {
+  ports = [17351, 17352]; serverBase = 18861;
+  relays = ports.map((p) => `ws://127.0.0.1:${p}`); appRelays = ports.map((p) => `ws://10.0.2.2:${p}`).join(',');
+  const { acc, A, next, n } = await joined();
+  const words = backupWords(acc.paper.sk).join(' ');
+  const until = async <T>(f: () => Promise<T | undefined> | T | undefined, ms = 120_000): Promise<T> => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 1000))) { const x = await f(); if (x !== undefined && x !== null && (x as any) !== false) return x as T; }
+    throw new Error('timed out');
+  };
+  const line = async (pred: (x: any) => boolean, ms = 180_000) => until(async () => { const x = await next().catch(() => undefined); return x && pred(x) ? x : undefined; }, ms);
+  const screen = () => { sh('shell', 'uiautomator', 'dump', '/sdcard/kk.xml'); const x = sh('shell', 'cat', '/sdcard/kk.xml').stdout; sh('shell', 'rm', '-f', '/sdcard/kk.xml'); return x; };
+  const tap = (text: string) => {
+    const node = screen().split('>').find((x) => x.toLowerCase().includes(`text="${text.toLowerCase()}"`) && x.includes('package="cc.aaro.keykin.demo"'));
+    const m = node && /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(node);
+    assert.ok(m, `no "${text}" on screen`);
+    sh('shell', 'input', 'tap', String((+m![1] + +m![3]) >> 1), String((+m![2] + +m![4]) >> 1));
+  };
+  const type = (hint: string, text: string) => { tap(hint); sh('shell', 'input', 'text', q(text.replace(/ /g, '%s'))); sh('shell', 'input', 'keyevent', '111'); };
+  const onScreen = (text: string) => until(() => screen().toLowerCase().includes(text.toLowerCase()) || undefined, 60_000);
+  const lastAction = (action: string) => line((x) => x.last_action?.action === action, 240_000).then((x) => x.last_action);
+
+  console.error('step: opening');
+  // After a restart the slot is never silent: it says it is opening (a slow open, as over Tailscale), or its full state
+  // comes at once (a quick one, as here).
+  sh('shell', 'am', 'force-stop', 'cc.aaro.keykin.demo');
+  run('open');
+  assert.ok(await line((x) => x.opening === true || x.device === n, 30_000), 'a state soon after the restart');
+  console.error('step: refresh');
+  // Refresh: a tablet joins while the phone isn't told; refresh lists it.
+  const C = await invite(acc, A, (l) => A.approveLock(l));
+  run('refresh');
+  const fresh = await line((x) => x.refreshed !== undefined);
+  assert.ok(fresh.refreshed.devices.some((x: any) => x.key === C.kp.pub), 'refresh shows the unseen tablet: ' + JSON.stringify(fresh));
+
+  console.error('step: invite');
+  // Invite from the phone: a Kotlin device joins with the code; the phone types its digits and approves the add.
+  run('invite', ['--es', 'invite_relays', relays.join(',')]);
+  const { invite: code } = await line((x) => x.invite !== undefined);
+  assert.ok(code, 'a code');
+  const kt = spawn(ktBin, [`join:${code}`, relays.join(','), '-'], { env: { ...process.env, JAVA_HOME: '/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home', JAVA_OPTS: `-Dkeykin.frostlib=${frostLib}` }, stdio: ['pipe', 'pipe', 'ignore'] });
+  procs.push(kt);
+  const ktLines: any[] = []; const ktWait: ((x: any) => void)[] = [];
+  createInterface({ input: kt.stdout! }).on('line', (l) => { let x: any; try { x = JSON.parse(l); } catch { return; } const w = ktWait.shift(); if (w) w(x); else ktLines.push(x); });
+  const ktNext = () => new Promise<any>((ok, no) => { const x = ktLines.shift(); if (x) return ok(x); ktWait.push(ok); setTimeout(() => no(new Error('no line from the Kotlin device')), 240_000); });
+  const ktCmd = (c: object) => { kt.stdin!.write(JSON.stringify(c) + '\n'); return ktNext(); };
+  console.error('step: kt check');
+  const { check } = await ktNext();
+  run('invite_typed', ['--es', 'digits', check]);
+  assert.equal((await line((x) => x.typed !== undefined)).typed, true, 'the digits match');
+  console.error('step: approve add');
+  run('approve', ['--es', 'action', 'add_invited']);
+  await onScreen('add the new device');
+  type('the paper\'s 24 words', words);
+  tap('Add device');
+  const added = await lastAction('add_invited');
+  assert.equal(added.ok, true, JSON.stringify(added));
+  const { device: K } = await ktNext();
+  assert.match(K, /^[0-9a-f]{64}$/);
+  assert.equal((await ktCmd({ cmd: 'sign', content: 'invited by the phone' })).pubkey, acc.g, 'the device the phone invited signs');
+
+  console.error('step: report lost');
+  // Report lost on the library screen: the laptop, with the paper.
+  run('approve', ['--es', 'action', 'report_lost', '--es', 'key', A.kp.pub]);
+  await onScreen(`report ${A.kp.pub.slice(0, 12)}`);
+  type('the paper\'s 24 words', words);
+  tap('Report lost');
+  const lost = await lastAction('report_lost');
+  assert.equal(lost.ok, true, JSON.stringify(lost));
+  await C.fetch();
+  assert.ok(C.m!.removed.has(A.kp.pub) && !C.wiped, 'the tablet followed the redeal');
+  assert.equal((await C.sign({ kind: 1, content: 'the tablet still posts', tags: [] })).pubkey, acc.g);
+
+  console.error('step: paper check');
+  // The paper check on the library screen, right and wrong.
+  for (const [w, want] of [[words, 'this account\'s paper'], [words.replace(/^\S+/, 'zoo'), 'not this account\'s paper']] as const) {
+    run('approve', ['--es', 'action', 'paper_check']);
+    await onScreen('type the 24 words');
+    type('the paper\'s 24 words', w);
+    tap('Check the paper');
+    assert.equal((await lastAction('paper_check')).detail, want);
+  }
+
+  console.error('step: pair');
+  // A pair: the Kotlin device asks the phone to approve removing the tablet; the phone types its code on the screen.
+  kt.stdin!.write(JSON.stringify({ cmd: 'pair_remove', key: C.kp.pub, with: n, seconds: 300 }) + '\n');
+  const { code: pc } = await ktNext();
+  assert.match(pc, /^\d{6}$/);
+  const id = await until(async () => { run('fetch'); run('pair_asks'); const a = await line((x) => x.pair_asks !== undefined, 30_000).catch(() => undefined); return a?.pair_asks?.[0]?.id; }, 120_000);
+  run('approve', ['--es', 'action', 'pair_approve', '--es', 'id', id]);
+  await onScreen('asks this phone to approve');
+  type('6 digits', pc);
+  tap('Approve');
+  assert.equal((await lastAction('pair_approve')).ok, true);
+  const removed = await ktNext();
+  assert.equal(removed.error, undefined, JSON.stringify(removed));
+  await C.fetch();
+  assert.ok(C.wiped, 'the tablet was removed with the pair');
+  kt.kill('SIGKILL');
   sh('uninstall', 'cc.aaro.keykin.demo');
 });

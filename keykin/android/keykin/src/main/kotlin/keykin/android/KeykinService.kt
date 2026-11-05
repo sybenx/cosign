@@ -33,11 +33,14 @@ class KeykinService : Service() {
     private val wakes = Executors.newSingleThreadExecutor { r -> Thread(r, "keykin-wake").also { it.isDaemon = true } }
     /** What the UI shows while a join runs, by slot (the check digits, an error). */
     private val joining = HashMap<String, JSONObject>()
+    /** An invite from this phone, by slot: "waiting" for the new device's digits, then "typed" or "mismatch". */
+    private val invites = HashMap<String, JSONObject>()
 
     override fun onCreate() {
         super.onCreate()
         Proc.signerOnly("KeykinService")
         Memberships.init(this)
+        Outcomes.onChange = { slot -> work.execute { if (Outcomes.get(slot)?.optString("action") == "add_invited") invites.remove(slot); publish(slot) } }
         work.execute { for (slot in slots()) open(slot) }
     }
     override fun onDestroy() { clients.kill(); work.shutdown(); joins.shutdown(); slow.shutdown(); wakes.shutdown(); out.shutdown(); super.onDestroy() }
@@ -50,9 +53,14 @@ class KeykinService : Service() {
     private fun stateOf(slot: String): JSONObject {
         val x = JSONObject().put("slot", slot)
         joining[slot]?.let { j -> for (k in j.keys()) x.put(k, j.get(k)) }
+        Outcomes.get(slot)?.let { x.put("last_action", it) }
+        invites[slot]?.let { x.put("invite", it) }
         Memberships.signer(slot)
         Memberships.openError(slot)?.let { x.put("open_error", it) }
         val d = Memberships.signer(slot).device ?: return x.put("joined", false)
+        // Once joined, a join's leftovers (an extra Join or scan's "already_joined", the check digits) aren't this
+        // membership's state (dry-run bug 5).
+        for (k in listOf("error", "check", "joining")) x.remove(k)
         val (self, asOf, keys) = d.members.devices()
         return x.put("joined", true).put("device", self).put("account", d.g).put("state", asOf).put("wiped", d.wiped)
             .put("devices", JSONArray(keys.map { JSONObject().put("key", it.key).put("flagged", it.flagged) }))
@@ -97,7 +105,32 @@ class KeykinService : Service() {
     private val binder = object : IKeykin.Stub() {
         override fun listen(client: IKeykinClient) {
             clients.register(client)
-            work.execute { val ss = slots(); send { it.slots(ss.toTypedArray()) }; for (s in ss) publish(s) }
+            // A slot still being opened (storage read, relays reached) says so at once, instead of nothing for a few
+            // seconds (dry-run bug 3); its full state follows once it is open.
+            val ss = slots()
+            send { it.slots(ss.toTypedArray()) }
+            for (s in ss) if (!Memberships.isOpen(s)) { val o = JSONObject().put("slot", s).put("opening", true).toString(); send { it.state(s, o) } }
+            work.execute { for (s in ss) publish(s) }
+        }
+        override fun refresh(slot: String): String? = try {
+            val d = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
+            // Off the membership queue: a fetch waits on servers.
+            slow.submit<String> { d.fetch(); onWork { stateOf(slot).also { s -> send { it.state(slot, s.toString()) } }.toString() } }.get(60, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: Exception) { errorJson(e) }
+        override fun invite(slot: String, relays: String): String? = try {
+            onWork {
+                val d = Memberships.signer(slot).device ?: throw KeykinException("no_membership")
+                val rs = csv(relays).ifEmpty { Memberships.relays(slot) ?: emptyList() }
+                val code = d.invite(rs)
+                invites[slot] = JSONObject().put("status", "waiting"); publish(slot)
+                JSONObject().put("invite", code).toString()
+            }
+        } catch (e: Exception) { errorJson(e) }
+        override fun inviteTyped(slot: String, digits: String): Boolean = onWork {
+            val d = Memberships.signer(slot).device ?: return@onWork false
+            val ok = try { d.inviter?.typed(digits.trim()) == true } catch (_: Exception) { false }
+            invites[slot] = JSONObject().put("status", if (ok) "typed" else "mismatch"); publish(slot)
+            ok
         }
         override fun add(): String = onWork {
             val slot = Memberships.addSlot(); val ss = slots(); send { it.slots(ss.toTypedArray()) }

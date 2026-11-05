@@ -23,6 +23,16 @@ interface IKeykin {
     String nip44Own(String slot, int kind, String text, boolean encrypt);
     /** Catch up with every server (changes, inbox); the state follows. */
     oneway void fetch(String slot);
+    /** Catch up and answer with the slot's fresh state (JSON, as the listener's), waiting up to a minute: what a
+     *  screen that lists or acts on the devices shows first. {"error": code} on failure. A slot still opening is sent
+     *  to listeners as {"slot", "opening": true} at once. */
+    String refresh(String slot);
+    /** Invite a device from this phone (core §4.1): {"invite": code} to show as a QR, over `relaysCsv` (empty: the
+     *  slot's relays). The slot's state carries "invite": {"status": "waiting" | "typed" | "mismatch"}. */
+    String invite(String slot, String relaysCsv);
+    /** The person typed the new device's 6 digits: true if they match. Then the app starts KeykinApprove with action
+     *  "add_invited" (KeykinClient.approve), where the person approves the add with the lock or the paper. */
+    boolean inviteTyped(String slot, String digits);
     /** The membership's end on this phone: its sealed state and key go. */
     oneway void forget(String slot);
 

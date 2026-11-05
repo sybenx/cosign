@@ -815,21 +815,29 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     fun invite(relays: List<String>): String = Inviter(g, pub, net.now).also { inviter = it }.invite(relays)
     /** §4.2 steps 2–4 for the invited device: its add (with its lock, approved by this device's lock), a
      *  repair of each of its indices by this device and one server, sealed to it, and the welcome. */
-    fun addInvited(): String {
+    fun addInvited(): String = addInvited(null)
+    /** The invited device's add as a list to approve, once the person typed its digits; null once the add is committed
+     *  (a retry after a failed repair or welcome). An app approves it with the lock or the paper (keykin-android's
+     *  KeykinApprove) and passes the approval to `addInvited`. */
+    fun inviteAddList(): JSONArray? {
         val inv = inviter ?: refuse("no_invite")
         val a = inv.accepted ?: refuse("no_hello")
         if (!inv.confirmed) refuse("not_confirmed", "the person has not typed the new device's number")
+        if (view.members.any { it.key == a.n && it.kind == "device" }) return null
+        val v = view
+        val seats = rec.getJSONObject("seats")
+        val taken = (v.members.flatMap { it.shares } + listOf("servers", "backup", "helper").flatMap { ints(seats.getJSONArray(it)) } +
+            (0 until rec.getJSONArray("members").length()).flatMap { member(rec.getJSONArray("members").getJSONObject(it)).shares }).toSet()
+        var salt = 0L
+        while (true) { val idx = Codes.deviceIndices(g, epochId, a.n, salt); if (idx.toSet().size == 3 && idx.none { it in taken }) break; salt++ }
+        return JSONArray().put(JSONObject().put("add", JSONObject().put("key", a.n).put("kind", "device").put("lock", a.lock ?: JSONObject.NULL).put("salt", salt)))
+    }
+    /** `approval`: for `inviteAddList()`'s list; null approves it with this device's lock (a soft lock in tests). */
+    fun addInvited(approval: JSONObject?): String {
+        val inv = inviter ?: refuse("no_invite")
+        val a = inv.accepted ?: refuse("no_hello")
         // The add, once: a retry after a failed repair or welcome finds it committed and goes on (review 14 M3).
-        if (view.members.none { it.key == a.n && it.kind == "device" }) {
-            val v = view
-            val seats = rec.getJSONObject("seats")
-            val taken = (v.members.flatMap { it.shares } + listOf("servers", "backup", "helper").flatMap { ints(seats.getJSONArray(it)) } +
-                (0 until rec.getJSONArray("members").length()).flatMap { member(rec.getJSONArray("members").getJSONObject(it)).shares }).toSet()
-            var salt = 0L
-            while (true) { val idx = Codes.deviceIndices(g, epochId, a.n, salt); if (idx.toSet().size == 3 && idx.none { it in taken }) break; salt++ }
-            val list = JSONArray().put(JSONObject().put("add", JSONObject().put("key", a.n).put("kind", "device").put("lock", a.lock ?: JSONObject.NULL).put("salt", salt)))
-            submit(list, approveLock(list))
-        }
+        inviteAddList()?.let { list -> submit(list, approval ?: approveLock(list)) }
         val indices = view.members.first { it.key == a.n }.shares
         // The repair: this device and one live server, each index sealed to the new device (§4.2 step 3). Any
         // fault in one server's answers moves on to the next.

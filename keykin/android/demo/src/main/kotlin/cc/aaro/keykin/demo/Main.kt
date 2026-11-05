@@ -53,6 +53,10 @@ class Main : Activity() {
                 // Device policy's cards and held events, each said once (the person's answer is a command).
                 state.optJSONArray("cards")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { c -> if (told.add("card:${c.getInt("id")}")) say(JSONObject().put("card", c)) } }
                 state.optJSONArray("held")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { h -> if (told.add("held:${h.getString("id")}")) say(JSONObject().put("held", h)) } }
+                // The library screens' outcomes, the opening state and an invite's progress, each said once.
+                state.optJSONObject("last_action")?.let { l -> if (told.add("last:${l.optLong("at")}:${l.optString("action")}:${l.optString("detail")}")) say(JSONObject().put("last_action", l)) }
+                if (state.optBoolean("opening") && told.add("opening:$slot")) say(JSONObject().put("opening", true))
+                state.optJSONObject("invite")?.let { v -> if (told.add("invite:${v.optString("status")}")) say(JSONObject().put("invite_status", v.optString("status"))) }
             }
         }) }
         lastSay = ::sayHere
@@ -66,7 +70,8 @@ class Main : Activity() {
         val cmd = i?.getStringExtra("cmd")?.takeIf { driven } ?: run { run(JSONObject().put("cmd", "open")); return }
         run(JSONObject().put("cmd", cmd).put("code", i.getStringExtra("code") ?: "").put("relays", i.getStringExtra("relays") ?: RELAYS)
             .put("content", i.getStringExtra("content") ?: "gm from the keykin-android demo").put("scopes", i.getStringExtra("scopes") ?: "sign-in,post")
-            .put("id", i.getStringExtra("id") ?: "").put("allow", i.getStringExtra("allow") == "true").put("signer", i.getStringExtra("signer") ?: "").put("scope", i.getStringExtra("scope") ?: ""))
+            .put("id", i.getStringExtra("id") ?: "").put("allow", i.getStringExtra("allow") == "true").put("signer", i.getStringExtra("signer") ?: "").put("scope", i.getStringExtra("scope") ?: "")
+            .put("action", i.getStringExtra("action") ?: "").put("key", i.getStringExtra("key") ?: "").put("with", i.getStringExtra("with") ?: "").put("digits", i.getStringExtra("digits") ?: "").put("invite_relays", i.getStringExtra("invite_relays") ?: ""))
     }
     private fun say(x: JSONObject) { (lastSay ?: ::sayHere)(x) }
     private fun sayHere(x: JSONObject) { val line = x.toString(); Log.i("KeykinDemo", line); runOnUiThread { out.append(line + "\n\n") } }
@@ -90,6 +95,13 @@ class Main : Activity() {
                 "bunker" -> say(JSONObject().put("bunker", k.bunker(slot(), c.getString("relays"), c.getString("scopes"))?.let(LinkLog::shown) ?: JSONObject.NULL))
                 "answer" -> { k.answerCard(slot(), c.getString("id").toInt(), c.getBoolean("allow")); say(JSONObject().put("answered", c.getString("id"))) }
                 "allow" -> { k.allowScope(slot(), c.getString("signer"), c.getString("scope")); say(JSONObject().put("allowed", c.getString("scope"))) }
+                // The library's own screens and calls (test harness): fresh state, an invite from this phone, and the
+                // approval screen, whose outcome comes back as the state's "last_action".
+                "refresh" -> say(JSONObject().put("refreshed", JSONObject(k.refresh(slot()) ?: "{}")))
+                "invite" -> say(JSONObject(k.invite(slot(), c.optString("invite_relays")) ?: "{}"))
+                "pair_asks" -> say(JSONObject().put("pair_asks", org.json.JSONArray(k.pairAsks(slot()) ?: "[]")))
+                "invite_typed" -> say(JSONObject().put("typed", k.inviteTyped(slot(), c.getString("digits"))))
+                "approve" -> { client.approve(slot(), c.getString("action"), c.optString("key").ifEmpty { null }, c.optString("id").ifEmpty { null }, c.optString("with").ifEmpty { null }); say(JSONObject().put("approving", c.getString("action"))) }
                 "forget" -> { k.forget(slot()); prefs.edit().remove("slot").apply(); say(JSONObject().put("forgotten", true)) }
                 else -> say(JSONObject().put("error", "unknown command"))
             }
