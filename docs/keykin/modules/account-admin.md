@@ -1,6 +1,6 @@
 # Keykin module: Account admin
 
-Draft 8 · 2026-11-03 · module of [Keykin Core](../core.md) draft 14.14 · not built
+Draft 9 · 2026-11-05 · module of [Keykin Core](../core.md) draft 14.25 · not built
 
 This module covers the account's life on screen: creating it (fresh, or by importing an nsec), adding and
 removing devices, a device leaving, deleting the account, and taking things out. It adds no power to any
@@ -145,6 +145,25 @@ Devices show only names signed by the device they name, always with the model ne
 flag two devices with the same name, so a stolen device can't pass itself off as another to trick the
 owner into reporting the wrong one. The `keykin-` guard (Doors and grants §2) keeps sites away.
 
+- **The event:** kind 30078, signed by `g`, tags `["d", "keykin-labels:" ‖ hex(first 16 bytes of
+  HMAC-SHA256(HKDF-SHA256(base data key, "keykin-labels-d/1"), member key))]` and `["state", <state
+  hash>]`. Content: `base64(24-byte nonce ‖ XChaCha20-Poly1305 ciphertext)` under
+  `HKDF-SHA256(salt = empty, ikm = dk(S), info = "keykin-labels/1", L = 32)`, with `aad = g ‖ d ‖ state
+  hash`.
+- **The label:** `JCS({name, model, at, sig})`. `name` is 1 to 64 Unicode code points, trimmed, with no
+  control characters; `model` is at most 64, read by the member app itself (on Android, in the signer
+  process: `MANUFACTURER MODEL`), never passed in by another app; `at` changes only when the name
+  changes. `sig` is the named device's BIP-340 signature over `SHA-256("keykin-label/1" ‖ g ‖ member key
+  ‖ SHA-256(JCS({name, model, at})))`.
+- **Reading:** of the events at a device's `d` whose label verifies under that member key, the one with
+  the highest `at` wins (any device can publish an account-signed event, so a stolen one could replay an
+  older, still-valid name; `created_at` breaks only ties). After a redeal, each device re-publishes its
+  label under the new state's data key at its next catch-up, as grants do. Two current devices whose
+  names match case-insensitively are both flagged.
+- **"Last seen"** is each device's own observation of when it last took a message from that device. It
+  is kept locally and never published, so relays learn no online times; neither the event's
+  `created_at` nor `at` moves when a device is merely online.
+
 ### 2.1 Adding a device
 
 The person picks **Add a device** on a member, or opens the app on the new device and picks **I already
@@ -275,6 +294,8 @@ This module's messages, sealed as core §9.1, with the core's lifetime classes (
 
 ## Changes
 
+- **Draft 9**, from the reference implementation: device names pinned (§2): the event, the label and its
+  signature, reading by highest `at`, re-publishing after a redeal, and "last seen" kept local.
 - **Draft 8**, from its sixth red team (0 critical, 0 high), its mediums and lows:
   - `kept_new` after an F7 on a lockless account (M1, core 14.9);
   - a delete's 7-day fallback needs at least one `deleted` (M2);
