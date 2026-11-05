@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.22 · 2026-11-05 · `draft` `optional` · not built
+Draft 14.23 · 2026-11-05 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -75,7 +75,7 @@ and the user cut them (decision log, 2026-11-02; reasoning in `simplification.md
   working when the enrolled faces or fingerprints change (§6.1). A passcode never counts.
 - **Approval**: what an account change needs: a lock, two devices with a typed code, a device with
   the paper, or a paper recovery (§6.2).
-- **Wait**: a delay, 3 days by default (`W`), that servers apply on their own clocks to exactly two
+- **Wait**: a delay, 3 days (`W`), a Core constant, so the same for every member of an account, which checks waited statements against it, that servers apply on their own clocks to exactly two
   things in the core: a paper recovery (§6.5) and a held mass deletion (§5.8). The Backup module adds an
   heir wait (§6.3).
 - **Release seeds**: random 32-byte keys held by devices and seated servers, never by helpers or
@@ -1168,11 +1168,10 @@ Further rules:
 A paper must always be able to find today's servers, even after every server printed on it has been
 replaced. Three routes, tried in order:
 
-1. **Ask the server lists.** The paper app takes the signed server lists it trusts (§6.7.7) and asks each listed server `seated? {H(key), challenge, sig}`, where the key is the backup key or, from a
+1. **Ask the server lists.** The paper app takes the signed server lists it trusts (§6.7.7) and asks each listed host `seated? {H(key), challenge, sig}`, with a `challenge` that host issued (the paper doesn't know the epoch id yet, so `seated?` and its challenge are answered at the host, which looks through every seat it holds), where the key is the backup key or, from a
    device, its member key, and `sig` is that key's signature over `SHA-256("keykin-seated-ask/1" ‖ H(key) ‖ challenge)` (a server answers only if it verifies). A server that holds a seat for an account where that key is the current backup
-   key or a current device answers with a reply sealed to the key, carrying its host signature outside
-   the seal, over `SHA-256("keykin-seated/1" ‖ H(key) ‖ challenge ‖ ciphertext)`, so the asker can check
-   it. This needs no relays and no published event. A server that holds an heir record (Backup module)
+   key or a current device answers with a reply sealed to the key: a list of entries, one per matching seat, each `{g, epoch, servers: [{key, host, https, relays}]}` (for each current seat server: its member key, host key, HTTPS endpoint and relays; an heir key gets the same without member keys), carrying its host signature outside the seal, over `SHA-256("keykin-seated/1" ‖ H(key) ‖ challenge ‖ ciphertext)`, so the asker can check
+   it. The answer is a hint: the asker trusts `g`, the epoch id and the servers only once two servers return matching epoch records and change sets (Backup module §2), and checks the servers against the change set. This needs no relays and no published event. A server that holds an heir record (Backup module)
    also answers `seated?` and `forward_get` signed by that record's heir key.
 2. **Follow the forwarding notes.** A retired server, after destroying everything else, keeps for the
    account only the group-signed change that retired it and the hashes of the keys allowed to ask for it
@@ -1190,8 +1189,7 @@ replaced. Three routes, tried in order:
    - It is published at creation, to the paper's printed relays and the current ones. Any device that
      learns of a seat or paper change it did not make, or finds the signpost missing or its device copy
      wrong, republishes it. Servers seated later learn the current signpost's event id from their welcome.
-   - Readers take the highest `n` whose decrypted copy matches `h`. (The paper carries the epoch id, so
-     the holder can check `h`.)
+   - Readers take the highest `n` whose decrypted copy matches `h`. A holder with only the 24 words checks `h` once it knows the epoch id: from the QR code or account card if it has one, else from the epoch record and change set that two servers the signpost names return matching. It tries the highest `n` first and never falls back to a lower `n` because the newer signpost's servers can't be reached; it retries instead.
    - **Guards.** A device MUST NOT sign, on a site's request, a kind 30078 with any of the account's
      signpost `d` values, or a kind 5 targeting one. Co-signers keep the current signpost's event id
      (one hash per backup key). They refuse every kind 5 that targets a signpost by `e` or `a`, from
@@ -1734,7 +1732,7 @@ before `"9"` in JCS, unlike a JavaScript object's own key order).
   state, which pairs only with pieces kept from that state (above). It starts no wait and releases
   nothing without first checking its peers, and after 7 days offline it stays passive, so a stolen paper
   can't use it to recover behind the account's back.
-- **Forwarding notes and `seated?` answers** tell anyone holding a backup key (current or former) which
+- **Forwarding notes and `seated?` answers** tell anyone holding the current backup key (forwarding notes: a current or former one) which
   hosts serve the account. That is addresses, not power.
 - **The signpost's device copy uses the base data key**, which never changes, so a removed device or an
   old paper can read today's server endpoints for ever. Servers never act on the signpost, so this leaks
@@ -2281,3 +2279,12 @@ A neutrality pass, with no change to what any check verifies:
 - **App lists (§5.9):** open to anyone in the same way. A domain goes only to apps every followed list naming it allows, and a hand-added list can only narrow a pinned one.
 - **"Keykin minimum"** (`minimum.md`) states the smallest set of MUSTs for a door, a member device or a
   server.
+
+## Changes in draft 14.23
+
+From the reference implementation's paper recovery over real relays:
+- `seated?` and its challenge are answered at the host, which looks through every seat it holds. The
+  sealed answer carries `g`, the epoch id, and each current seat server's member key, host key, HTTPS
+  endpoint and relays (§6.7.5 route 1).
+- A words-only holder checks the signpost's `h` once `seated?` has given it the epoch id (route 3).
+- The answer is a list of entries and a hint, trusted only once two servers return matching records; an heir gets no member keys. `W` is a Core constant (§1).
