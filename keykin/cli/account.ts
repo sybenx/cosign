@@ -110,7 +110,7 @@ async function main() {
     for (const i of indices)
       for (const w of await d.repairFor([{ key: d.kp.pub, indices: [...d.state!.shares.keys()] }, { key: s0.key, indices: s0.shares }], i, n, 'add'))
         await net.events.publishEvent(w);
-    const a = await net.send(d.kp, n, msg('welcome', d.g, d.epochId, 'member', { record: d.recEv, changes: d.changes, state: [...d.state!.ids], base_dk: d.baseDk, dk: d.seedRecords() }));
+    const a = await net.send(d.kp, n, msg('welcome', d.g, d.epochId, 'member', { record: d.recEv, changes: d.changes, state: [...d.state!.ids], base_dk: d.baseDk, dk: d.seedRecords(), seeds: [...d.seeds], items: d.items, base: d.base }));
     out({ added: n, welcomed: a?.type === 'ack', state: d.dataKeys.current().state });
     // The add is in the account either way: a device that never got its welcome is to be removed (Remove this device).
     if (a?.type !== 'ack') console.error(`the welcome wasn't answered: ${n} is a member that never joined; remove it before inviting again`);

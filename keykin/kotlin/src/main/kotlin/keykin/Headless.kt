@@ -76,7 +76,8 @@ fun main(args: Array<String>) {
                         .put("removed", JSONArray(d.members.removed(0).map { it.json() })) }
                     "datakey" -> d.dataKey().let { (st, k) -> JSONObject().put("state", st).put("key", hex(k)) }
                     // Core 14.21: an app's derived key at the current state, and how many seed-only items servers hold.
-                    "derive" -> d.currentState().let { (ids, st) -> JSONObject().put("state", st).put("ids", JSONArray(ids)).put("key", hex(d.derive(ids, c.getString("domain"), utf8(c.getString("bytes"))))) }
+                    "derive" -> d.currentState().let { (ids, st) -> MemberSig.register(c.getString("domain"))   // as a vault app registers at load
+ JSONObject().put("state", st).put("ids", JSONArray(ids)).put("key", hex(d.derive(ids, c.getString("domain"), utf8(c.getString("bytes"))))) }
                     "seeds" -> JSONObject().put("records", d.seedRecords().size).put("held", JSONArray(d.seedOnlyHeld()))
                     // Be a NIP-46 home (Doors §3.3): print a bunker:// link, then answer sites for `seconds`.
                     "bunker" -> { val home = d.nip46; println(JSONObject().put("bunker", home.mintBunker(args[1].split(","), "", c.optString("scopes", "sign-in,post").split(",").filter { it.isNotBlank() })).toString()); System.out.flush()

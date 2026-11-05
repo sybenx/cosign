@@ -6,7 +6,7 @@ package keykin
 object MemberSig {
     private val SHAPE = Regex("^[a-z0-9][a-z0-9.-]*(/[a-z0-9.-]+)*/(0|[1-9][0-9]*)$")
     const val MESSAGE_MAX = 65_536
-    private val registered = java.util.concurrent.ConcurrentHashMap.newKeySet<String>().apply { add("nostr-vault/ksig/1"); add("nostr-vault/owner/1"); add("nostr-vault/keyring/1") }
+    private val registered = java.util.concurrent.ConcurrentHashMap.newKeySet<String>().apply { add("nostr-vault/ksig/1") }
     /** Core 14.21 §5.9: domains the app list marks `open` (per domain): apps and the member share them by design. */
     val OPEN = setOf("nostr-vault/ksig/1", "nostr-vault/owner/1", "nostr-vault/keyring/1")
     /** Registered itself, or by its whole first segment (an entry like `nostr-vault`). */

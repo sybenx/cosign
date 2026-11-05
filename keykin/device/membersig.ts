@@ -20,7 +20,7 @@ const RESERVED = /^(keykin|cosign)/;
 /** Domains callers may sign under (and derive data keys under, core 14.21 §4.5). A library registers its own once, at
  *  load. An entry may be a whole first segment (`nostr-vault`), covering every domain whose first `/`-separated segment
  *  is exactly that (§5.9). */
-const registered = new Set<string>(['nostr-vault/ksig/1', 'nostr-vault/owner/1', 'nostr-vault/keyring/1']);
+const registered = new Set<string>(['nostr-vault/ksig/1']);
 /** Core 14.21 §5.9: domains the app list marks `open` (per domain, never a whole segment): apps and the member share
  *  them by design (Doors §3.7), so a hand grant may cover them. */
 export const OPEN_DOMAINS = new Set(['nostr-vault/ksig/1', 'nostr-vault/owner/1', 'nostr-vault/keyring/1']);

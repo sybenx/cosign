@@ -76,6 +76,8 @@ test('dataKeys.derive: a key derived from a real state\'s data key under a grant
   const { sha256 } = await import('@noble/hashes/sha2.js');
   const acc = await create();
   const A = acc.A; await redeal(A); await redeal(A);
+  const { registerDomain } = await import('../device/membersig.ts');
+  registerDomain('nostr-vault/keyring/1');                  // a vault app registers its domain at load
   const app = A.dataKeys.forApps();
   const { ids, state } = app.current();
   assert.equal(state, A.dataKeys.current().state);

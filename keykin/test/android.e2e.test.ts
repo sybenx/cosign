@@ -88,7 +88,7 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   for (const i of indices)
     for (const w of await A.repairFor([{ key: A.kp.pub, indices: [...A.state!.shares.keys()] }, { key: server0.key, indices: server0.shares }], i, n, 'add'))
       await net.events.publishEvent(w);
-  assert.equal((await net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.seedRecords() }))).type, 'ack');
+  assert.equal((await net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.seedRecords(), seeds: [...A.seeds], items: A.items, base: A.base }))).type, 'ack');
   const joined = await next();
   assert.equal(joined.device, n, JSON.stringify(joined));
 

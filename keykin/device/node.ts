@@ -289,6 +289,7 @@ export class DeviceNode implements Node {
     await this.checkReissues();
     await this.reissueMissing();
     await this.reissueSeeds();
+    await this.catchUpMaterial();
     // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
     if (this.bus.events && this.baseDk) try {
       await this.grants.fetch();
@@ -343,6 +344,26 @@ export class DeviceNode implements Node {
       try { const o = unwrap(this.kp.sk, a.wrap); if (o.from === d.key) this.takeSeedRecords(o.body.dk); } catch { /* not this one */ }
     }
   }
+  /** The current paper's material, once it matches the paper change's pin (core 14.21: devices keep every item). */
+  takeMaterial(base: unknown, seedIts: unknown): boolean {
+    const m = this.m, K = m?.backupKey; if (!m || !K) return false;
+    const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === K); if (!pc) return false;
+    const its = (Array.isArray(seedIts) ? seedIts : []) as Item[];
+    if (!base || typeof base !== 'object' || materialInner(base as Item, its) !== (pc.c.change as any).paper.inner) return false;
+    this.base = base as Item; this.items = [...this.items.filter((x) => x.kind !== 'seeds'), ...its]; this.persist();
+    return true;
+  }
+  /** A device that didn't print the current paper fetches its material, so the welcomes it sends carry it (L8). */
+  async catchUpMaterial() {
+    const m = this.m, K = m?.backupKey; if (!m || !K || this.role !== 'device') return;
+    const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === K); if (!pc) return;
+    const mine = this.items.filter((x) => x.kind === 'seeds' && x.to === K);
+    if (this.base && materialInner(this.base, mine) === (pc.c.change as any).paper.inner) return;
+    for (const s of this.servers()) {
+      const a = await this.bus.send(this.kp, s.key, msg('material_get', this.g, this.epochId, 'ask'));
+      if (a?.type === 'material' && this.takeMaterial(a.base, a.seed_items)) return;
+    }
+  }
   /** Seed-only re-issues sent, per backup key: item hash → servers that confirmed it (core 14.21 §4.5). */
   seedOnly = new Map<string, { ids: string[]; item: Item; held: string[] }[]>();
   /** Every seed this device holds goes to each new K as seed-only items (and each later seed), re-sent until two
@@ -365,6 +386,9 @@ export class DeviceNode implements Node {
     this.seedOnly.set(K, sent);
     const live = this.servers().filter((s) => this.bus.alive(s.key));
     const need = Math.min(2, Math.max(1, live.length));
+    // A server that left its seat no longer counts: re-sent to the servers there now (review 21 M2).
+    const seated = new Set(this.servers().map((s) => s.key));
+    for (const x of sent) x.held = x.held.filter((k) => seated.has(k));
     for (const x of sent) {
       if (x.held.length >= need) continue;
       for (const s of live) {
@@ -405,6 +429,8 @@ export class DeviceNode implements Node {
     // one per sender per redeal and bounded, so a stranger's never stands in for the dealer's (review 13 M1).
     const m = this.m!, r = m.redeals.get(o.body.redeal)?.r;
     if (r ? o.from !== r.dealer : !m.devices.has(o.from) || m.removed.has(o.from)) return 'junk';
+    // Core 14.21: the dealer's seeds are kept whatever becomes of its delta (an abandoned redeal's data stays readable).
+    if (r) this.#takeSeedsOf(r, o.body);
     if (r && (this.state!.ids.has(r.id) || m.abandoned.has(r.id))) return 'junk';
     const k = `${o.body.redeal}:${o.from}`;
     if (!this.pendingDeltas.has(k)) {
@@ -414,12 +440,19 @@ export class DeviceNode implements Node {
     this.pendingDeltas.set(k, { ...o.body, from: o.from, at: this.now });
     return 'kept';
   }
+  /** A delivery's data-key and release seeds, each kept only if its redeal's `dk` or `rs` names it. */
+  #takeSeedsOf(r: Redeal, body: any) {
+    if (typeof body?.dk === 'string' && /^[0-9a-f]{64}$/.test(body.dk) && shaHex(hexToBytes(body.dk)) === r.dk && !this.dkSeeds.includes(body.dk)) this.dkSeeds.push(body.dk);
+    if (typeof body?.release === 'string' && /^[0-9a-f]{64}$/.test(body.release) && shaHex(hexToBytes(body.release)) === r.rs && !this.seeds.has(r.id)) this.seeds.set(r.id, body.release);
+  }
   /** Apply every redeal we hold a delta for (§6.7.1), checking our rebuilt commitment each time. */
   applyAll() {
     const m = this.m!;
     // Deliveries for redeals applied or abandoned, or kept past an upload's life, go (review 13 M1, L5).
     for (const [k, d] of [...this.pendingDeltas]) {
       const id = k.split(':')[0];
+      // A delta that came before its redeal: its seeds, once the redeal names its dealer (core 14.21).
+      const rr = m.redeals.get(id)?.r; if (rr && d.from === rr.dealer) this.#takeSeedsOf(rr, d);
       if (this.state!.ids.has(id) || m.abandoned.has(id) || (d.at !== undefined && this.now - d.at > UPLOAD_TTL_S)) this.pendingDeltas.delete(k);
     }
     for (let again = true; again;) {
@@ -491,7 +524,7 @@ export class DeviceNode implements Node {
       if (o.dieAfterUpload) { dealt.destroy(); this.bus.kill?.(this.kp.pub); return []; }
     }
     let material: Item | undefined, seedIts: Item[] | undefined;
-    if (o.finish && dealt) { const f = await o.finish(dealt); full = f.full; material = f.material; seedIts = f.seedItems; }
+    if (o.finish && dealt) { try { const f = await o.finish(dealt); full = f.full; material = f.material; seedIts = f.seedItems; } catch (e) { dealt.destroy(); throw e; } }
     let signed: NostrEvent[];
     try {
       // Every event of the list in one request, each with its own nonces (§6.7.10, §5.2).
@@ -507,7 +540,7 @@ export class DeviceNode implements Node {
     if (material) { this.base = material; this.items = [...this.items.filter((x) => x.kind !== 'seeds'), ...(seedIts ?? [])]; }
     // Live devices get the list and their own delivery directly (21059); asleep ones fetch from inboxes.
     if (dealt) for (const x of postListView(m, list).values()) if (x.kind === 'device' && x.key !== this.kp.pub && this.bus.alive(x.key)) {
-      await this.bus.send(this.kp, x.key, { type: 'change', events: signed });
+      await this.bus.send(this.kp, x.key, { type: 'change', events: signed, ...(material ? { material, ...(seedIts ? { seed_items: seedIts } : {}) } : {}) });
       const w = (dealt as any).uploadItems?.find((it: any) => it.to === x.key)?.wrap;
       if (w) await this.bus.send(this.kp, x.key, { type: 'delta_push', wrap: w });
     }
@@ -564,7 +597,8 @@ export class DeviceNode implements Node {
       shares.clear();
       // Core 14.21: the paper carries every seed this device holds, abandoned and stranded ones included; any seed of
       // the state it lacks is asked of the other devices first, and each is checked against its redeal's `dk`.
-      if (repairedAt.some((id) => !this.seedRecords().some((x) => x.id === id))) await this.askSeeds({ list: approvalListOf(list), approval });
+      // Always: another device may hold seeds this one never had (abandoned, stranded), not only the state's (review 21 M3).
+      await this.askSeeds({ list: approvalListOf(list), approval });
       const records = this.seedRecords().map((x) => [x.id, x.seed] as [string, string]);
       if (repairedAt.some((id) => !records.some(([i]) => i === id))) refuse('missing_seed', 'a seed of this state is missing: the paper would lose data');
       const seedIts = seedItems(K, dealt.releaseSeed, records);
@@ -1296,7 +1330,7 @@ export class DeviceNode implements Node {
         case 'welcome_offer': return this.joiner!.onOffer(from, body, this.now).msg;
         case 'repair_start': return this.co!.repairStart(from, body, this.now);
         case 'repair_finish': return this.co!.repairFinish(from, body);
-        case 'change': this.takeChanges(body.events); return { type: 'ack' };
+        case 'change': this.takeChanges(body.events); if (body.material) this.takeMaterial(body.material, body.seed_items); return { type: 'ack' };
         case 'delta_push': this.takeDelivery(body.wrap); this.applyAll(); return { type: 'ack' };
         case 'pair_sign': this.#takePairSign(from, body); return { type: 'ack' };
         case 'helper_mint': {
@@ -1336,8 +1370,13 @@ export class DeviceNode implements Node {
           // paper isn't committed), is the printer gathering seeds: a quiet line, not "restored its pieces".
           const f7 = body.f7 && typeof body.f7 === 'object' ? body.f7 : null;
           const live = f7 && asker.kind === 'device' && Array.isArray(f7.list) && (() => {
-            const p = f7.list.find((c: any) => c?.paper && typeof c.paper.key === 'string');
-            if (!p || this.m!.accepted.some((x) => x.type === 'paper' && (x.c.change as any).paper.key === p.paper.key) || !(f7.approval?.expiry > this.now)) return false;
+            // Exactly [paper {key, replaces: the current backup key}, redeal], unexpired and at most a day ahead, its paper
+            // not yet committed (before step 3), approved by the asker itself (review 21 L1).
+            const p = f7.list[0];
+            if (f7.list.length !== 2 || !p?.paper || typeof p.paper.key !== 'string' || p.paper.replaces !== this.m!.backupKey || !('redeal' in (f7.list[1] ?? {}))) return false;
+            if (this.m!.members.has(p.paper.key) || this.m!.removed.has(p.paper.key)) return false;
+            if (this.m!.accepted.some((x) => x.type === 'paper' && (x.c.change as any).paper.key === p.paper.key)) return false;
+            if (!(f7.approval?.expiry > this.now) || f7.approval.expiry > this.now + 86400) return false;
             const { error, approvers } = checkApproval(this.m!.authority, f7.list, f7.approval);
             return !error && approvers.includes(from);
           })();
@@ -1399,9 +1438,14 @@ export class PaperHolder implements Node {
     const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === this.kp.pub);
     const pin = pc ? (pc.c.change as any).paper.inner : rec.backup;
     const baseSeed = pc ? seeds.get([...m.redeals.values()].find((x) => x.listHash === pc.listHash)!.r.id)! : seeds.get('base')!;
-    // Core 14.21: the pin covers the base and K's seed items.
-    const base = bs.map((b) => b.base as Item).find((b) => b && materialInner(b, items.filter((x) => x.kind === 'seeds' && x.to === this.kp.pub)) === pin)!;
-    const o = openMaterial({ g: this.g, backup: this.kp, pin, base, baseSeed, items, seeds,
+    // Core 14.21: the pin covers the base and K's seed items, taken from one bundle whose set matches it, each signed by
+    // K, so one server's junk can't block the recovery (review 21 H1); a pre-14.21 paper pins the base alone.
+    const signedByK = (x: Item) => { try { return x.kind === 'seeds' && x.to === this.kp.pub && schnorrVerify(x.sig!, sha(itemHash(x)), this.kp.pub); } catch { return false; } };
+    const pick = bs.map((b) => ({ base: b.base as Item, seedIts: ((b.items ?? []) as Item[]).filter(signedByK) }))
+      .find((x) => x.base && (materialInner(x.base, x.seedIts) === pin || (x.seedIts.length === 0 && itemHash(x.base) === pin)));
+    if (!pick) refuse('bad_material', 'no bundle\'s base and seed items match the pin');
+    const base = pick!.base;
+    const o = openMaterial({ g: this.g, backup: this.kp, pin, base, baseSeed, items, seeds, seedItems: pick!.seedIts,
       C0: commitmentFrom(rec.commitment), redeals: [...m.redeals.values()].map((x) => x.r), state });
     this.shares = o.shares; this.C = o.C;
     return { rec, recEv: bs[0].record as NostrEvent, changes, m, waited: bs.map((b) => b.waited as Waited), state, dk: o.dk, dkSeeds: o.dkSeeds, seeds, items, base };

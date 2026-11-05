@@ -160,10 +160,13 @@ export function openSeeds(items: Item[], paperReleaseSeed: string, backupSk: Uin
 /** The holder sums the base and the paper items of exactly the redeals in the servers' state and
  *  checks the result against `P_b^S`. `seeds` maps a redeal id (or 'base') to its release seed. */
 export function openMaterial(o: { g: string; backup: KeyPair; pin: string; base: Item; baseSeed: string; items: Item[]; seeds: Map<string, string>;
-  C0: Commitment; redeals: Redeal[]; state: Set<string> }) {
-  // Core 14.21: the pin covers the base and the paper's seed items together.
-  const seedIts = o.items.filter((x) => x.kind === 'seeds' && x.to === o.backup.pub);
-  if (materialInner(o.base, seedIts) !== o.pin) refuse('bad_material', 'the base and seed items do not match their pin');
+  C0: Commitment; redeals: Redeal[]; state: Set<string>; seedItems?: Item[] }) {
+  // Core 14.21: the pin covers the base and the paper's seed items together. Only seed items K signed count, and a set
+  // that matches the pin is taken (`seedItems` from one bundle), so one server's junk item can't block a recovery
+  // (review 21 H1). A paper made before 14.21 pins the base alone (review 21 L2).
+  const signedByK = (x: Item) => { try { return schnorrVerify(x.sig!, sha(itemHash(x)), o.backup.pub); } catch { return false; } };
+  const seedIts = (o.seedItems ?? o.items.filter((x) => x.kind === 'seeds')).filter((x) => x.kind === 'seeds' && x.to === o.backup.pub && signedByK(x));
+  if (materialInner(o.base, seedIts) !== o.pin && !(seedIts.length === 0 && itemHash(o.base) === o.pin)) refuse('bad_material', 'the base and seed items do not match their pin');
   if (!schnorrVerify(o.base.sig, sha(itemHash(o.base)), o.backup.pub)) refuse('bad_material', 'not signed by the backup key');
   const base = openItem(o.base, o.baseSeed, { backupSk: o.backup.sk });
   const shares = new Map<number, bigint>(base.shares.map(([i, s]: [number, string]) => [i, scalarFrom(s)]));

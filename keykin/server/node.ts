@@ -322,6 +322,14 @@ export class ServerNode implements Node {
       if (!it) continue;
       try { const b = unwrap(this.kp.sk, it.wrap as NostrEvent).body; this.co!.takeHeir(u.heirRecord as any, b.x, scalarFrom(b.piece)); } catch { /* not ours */ }
     }
+    // Core 14.21: the release seed of every co-signed redeal it was dealt one for, applied or not (an abandoned or
+    // stranded paper redeal's included), checked against the redeal's `rs`: the paper release seed is never lost.
+    for (const { r } of m.redeals.values()) {
+      if (this.seeds.has(r.id)) continue;
+      const mine = this.uploads.get(r.id)?.items.find((it) => it.to === this.kp.pub);
+      if (!mine) continue;
+      try { const b = unwrap(this.kp.sk, mine.wrap as NostrEvent).body; if (typeof b.release === 'string' && shaHex(hexToBytes(b.release)) === r.rs) this.seeds.set(r.id, b.release); } catch { /* not ours */ }
+    }
     // Apply every redeal we can, oldest base first.
     for (let again = true; again;) {
       again = false;
@@ -466,9 +474,11 @@ export class ServerNode implements Node {
     const paperRedeal = pc ? [...m.redeals.values()].find((x) => x.listHash === pc.listHash)?.r.id : null;
     const e = checkSeedOnly(m.g, it, K, paperRedeal, (k) => m.devices.has(k) || (peer && m.members.get(k)?.kind === 'device'));
     if (e) refuse(e);
-    const held = this.items.find((x) => x.kind === 'seed-only' && x.by === it.by && (x.redeal ?? null) === (it.redeal ?? null) && x.to === it.to);
+    // Each batch kept once (a device sends one per K and one per later seed, review 21 M1), at most 64 per device and K.
+    const mineK = this.items.filter((x) => x.kind === 'seed-only' && x.by === it.by && (x.redeal ?? null) === (it.redeal ?? null) && x.to === it.to);
+    const held = mineK.find((x) => itemHash(x) === itemHash(it));
     if (!held) {
-      if (this.items.filter((x) => x.kind === 'seed-only').length >= 10_000) refuse('full');
+      if (mineK.length >= 64 || this.items.filter((x) => x.kind === 'seed-only').length >= 10_000) refuse('full');
       this.items.push(it);
       for (const s of [...m.seats.values()].map((x) => x.holder).filter((x): x is NonNullable<typeof x> => !!x && x.kind === 'server').filter((x) => x.key !== this.kp.pub && x.key !== from))
         void Promise.resolve(this.bus.send(this.kp, s.key, msg('reissue_relay', m.g, m.epochId, 'member', { item: it }))).catch(() => {});
@@ -532,6 +542,11 @@ export class ServerNode implements Node {
         return { type: 'ack' };
       }
       case 'changes_get': return { type: 'changes', record: this.recEv, changes: this.co.changes };
+      // Core 14.21: the current paper's base and seed items, for a device that didn't print it (review 21 L8).
+      case 'material_get': {
+        if (!m.devices.has(from) || m.removed.has(from)) refuse('not_device');
+        return { type: 'material', base: this.base, seed_items: this.items.filter((x) => x.kind === 'seeds' && x.to === m.backupKey) };
+      }
       case 'seated?': {
         // §6.7.5 route 1: if `H(key)` is the current backup key or a current device, a reply sealed to
         // that key, with the host signature outside the seal over SHA-256("keykin-seated/1" ‖ H ‖ challenge ‖ ct).

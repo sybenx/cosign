@@ -112,7 +112,7 @@ export class DataKeys {
     return {
       derive: (ids: string[], domain: string, bytes: Uint8Array) => this.derive(ids, domain, bytes),
       current: () => { const ids = [...(this.d.state?.ids ?? [])].sort(); return { ids, state: stateHash(ids) }; },
-      states: () => [...this.history].reverse().map((ids) => ({ ids, state: stateHash(ids) })),
+      states: () => [...this.history].reverse().map((ids) => ({ ids: [...ids], state: stateHash(ids) })),
       onRotate: (cb: (x: { ids: string[]; state: string }) => void) => this.onRotate(() => { const ids = [...(this.d.state?.ids ?? [])].sort(); cb({ ids, state: stateHash(ids) }); }),
     };
   }

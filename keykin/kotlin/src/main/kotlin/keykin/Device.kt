@@ -64,6 +64,22 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val byHash = synchronized(this) { dkSeeds.toList() }.associateBy { hex(sha(unhex(it))) }
         return view.redeals.mapNotNull { (id, x) -> byHash[x.r.getString("dk")]?.let { id to it } }
     }
+    /** A welcome's release seeds (each checked against its redeal's `rs`; `base` as the creation seed) and the backup
+     *  material, so a joined device re-issues its seeds and passes the material on (review 21 M4). */
+    internal fun takeWelcomeExtras(w: JSONObject) = synchronized(this) {
+        w.optJSONArray("seeds")?.let { a -> for (i in 0 until a.length()) (a.opt(i) as? JSONArray)?.let { p ->
+            val k = p.optString(0); val x = p.optString(1)
+            if (!Regex("^[0-9a-f]{64}$").matches(x)) return@let
+            if (k == "base" || view.redeals[k]?.r?.optString("rs") == hex(sha(unhex(x)))) releaseSeeds[k] = x } }
+        w.optJSONArray("items")?.let { carried.put("items", it) }
+        w.optJSONObject("base")?.let { carried.put("base", it) }
+    }
+    /** A delivery's data-key and release seeds, each kept only if its redeal's `dk` or `rs` names it. */
+    private fun takeSeedsOf(id: String, r: JSONObject, body: JSONObject) = synchronized(this) {
+        val dk = body.optString("dk"); val rel = body.optString("release"); val hx = Regex("^[0-9a-f]{64}$")
+        if (hx.matches(dk) && hex(sha(unhex(dk))) == r.getString("dk") && dk !in dkSeeds) dkSeeds += dk
+        if (hx.matches(rel) && hex(sha(unhex(rel))) == r.getString("rs") && id !in releaseSeeds) releaseSeeds[id] = rel
+    }
     /** Seed-only items sent per backup key, with the servers that confirmed each (TS `seedOnly`). */
     private val seedOnly = LinkedHashMap<String, MutableList<JSONObject>>()
     /** Every seed this device holds goes to the current K as seed-only items (and each later seed), re-sent until two
@@ -80,13 +96,19 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val fresh = seedRecords().filter { it.first !in have }
         for (batch in fresh.chunked(Upkeep.SEED_RECORDS_MAX))
             sent += JSONObject().put("ids", JSONArray(batch.map { it.first })).put("item", Upkeep.seedOnlyItem(g, sk, K, paperRedeal, prs, batch)).put("held", JSONArray())
-        val need = minOf(2, maxOf(1, servers().size))
+        // Only servers seated now count (re-sent after a swap, review 21 M2); a server that answers at all is live, and
+        // two confirm, or every live one when fewer answer (review 21 L4).
+        val seated = servers().map { it.key }.toSet()
+        var live = 0; val answered = HashSet<String>()
         for (x in sent) {
-            val held = x.getJSONArray("held"); if (held.length() >= need) continue
+            val kept = x.getJSONArray("held").let { a -> (0 until a.length()).map { a.getString(it) }.filter { it in seated } }
+            val held = JSONArray(kept); x.put("held", held)
             val hash = Upkeep.itemHash(x.getJSONObject("item"))
             for (s in servers()) {
+                if (held.length() >= 2) break
                 if ((0 until held.length()).any { held.getString(it) == s.key }) continue
                 val a = try { net.send(sk, s.key, msg("paper_reissue", "member").put("item", x.getJSONObject("item"))) } catch (_: Exception) { continue }
+                if (a.optString("type").isNotEmpty() && answered.add(s.key)) live++
                 if (a.optString("type") == "seed_held" && a.optString("item") == hash) held.put(s.key)
             }
         }
@@ -229,6 +251,18 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     /** What other members send this device directly (§6.7.6: live devices get the list and their delivery). */
     private fun handle(from: String, body: JSONObject): JSONObject? = when (body.optString("type")) {
         "change" -> { val a = body.optJSONArray("events"); if (a != null) takeChanges((0 until minOf(a.length(), CHANGES_PER_MESSAGE)).mapNotNull { a.optJSONObject(it)?.let(Event::of) }); JSONObject().put("type", "ack") }
+        // §6.7.4 (core 14.21): seeds to a current device, as {id, seed}, with release seeds; to a seat server, release
+        // seeds only. Every answer is a notice ("restored its pieces"), as TS (review 21 L5).
+        "need_seeds" -> synchronized(this) {
+            val v = view; val m = v.members.firstOrNull { it.key == from }
+            if (m == null || from in v.removed || m.kind !in setOf("device", "server")) JSONObject().put("type", "error").put("code", "not_member")
+            else {
+                val b = JSONObject().put("type", "seeds").put("release", JSONArray(releaseSeeds.map { (k, x) -> JSONArray(listOf(k, x)) }))
+                if (m.kind == "device") b.put("dk", JSONArray(seedRecords().map { (id, sd) -> JSONObject().put("id", id).put("seed", sd) })).put("base_dk", baseDk)
+                notices += JSONObject().put("kind", "need_seeds").put("member", from)
+                JSONObject().put("type", "seeds").put("wrap", env.wrap(sk, from, b, net.now))
+            }
+        }
         "pair_sign" -> { takePairSign(from, body); JSONObject().put("type", "ack") }
         "join_hello" -> try { inviter?.onHello(from, body, net.now) } catch (_: KeykinException) { null }
         // §4.3 step 4: the kept backup secret goes once a lock change committed (review 14 M4), or comes anew after an F7.
@@ -312,6 +346,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         if (o.body.optString("type") != "delta" || id == null || !Regex("^[0-9a-f]{32}$").matches(id) || o.body.optJSONArray("deltas") == null) return "junk"
         val v = view; val r = v.redeals[id]?.r
         if (if (r != null) o.from != r.getString("dealer") else o.from !in v.devices || o.from in v.removed) return "junk"
+        // Core 14.21: the dealer's seeds are kept whatever becomes of its delta (review 21 H2).
+        if (r != null) takeSeedsOf(id, r, o.body)
         if (id in state.ids || id in v.abandoned) return "junk"
         val at = pending[id]
         if (at == null || o.from !in at) {
@@ -964,7 +1000,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             // The welcome carries the base data key and every data-key seed (core §4.2 step 4, §4.5).
             // As `{id, seed}` records (core 14.21) or bare seeds; a seed is used only where its redeal's `dk` names it.
             val seeds = w.optJSONArray("dk")?.let { a -> (0 until a.length()).mapNotNull { k -> (a.opt(k) as? String ?: (a.opt(k) as? JSONObject)?.opt("seed") as? String)?.takeIf { s -> Regex("^[0-9a-f]{64}$").matches(s) } } } ?: emptyList()
-            return Device(sk, r.recEv, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds).also { it.lock = lock }
+            return Device(sk, r.recEv, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds).also { it.lock = lock; it.takeWelcomeExtras(w) }
         }
     }
     /** The x coordinate of `x·P` for a peer's x-only key (core §5.5), from one server's checked answer. */

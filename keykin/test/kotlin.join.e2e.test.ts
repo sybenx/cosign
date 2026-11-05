@@ -48,7 +48,7 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   const code = A.inviter.invite(relays);
 
   const cmds = join(mkdtempSync(join(tmpdir(), 'kk-kj-')), 'cmds.json');
-  writeFileSync(cmds, JSON.stringify([{ cmd: 'sign', content: 'gm from a Kotlin device that joined' }, { cmd: 'datakey' }]));
+  writeFileSync(cmds, JSON.stringify([{ cmd: 'sign', content: 'gm from a Kotlin device that joined' }, { cmd: 'datakey' }, { cmd: 'fetch' }, { cmd: 'seeds' }]));
   // Gradle's own start, then the Kotlin process; its stdout read line by line as it goes.
   spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'classes'], { env: { ...process.env, JAVA_HOME: java } });
   const kt = spawn(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=join:${code} ${relays.join(',')} ${cmds}`], { env: { ...process.env, JAVA_HOME: java }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -67,7 +67,7 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   // Review 12 K1: `n` is public, so a stranger races a junk welcome; the Kotlin device ignores it.
   const stray = net.send(newKey(), n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: [], state: [] }));
   // The inviter's welcome overtakes the sigmas: the Kotlin device waits for them.
-  const welcomed = net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.seedRecords() }));
+  const welcomed = net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.seedRecords(), seeds: [...A.seeds], items: A.items, base: A.base }));
   assert.equal((await welcomed).type, 'ack');
   const server0 = A.servers()[0];
   for (const i of indices)
@@ -82,5 +82,10 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   assert.ok(verifyEvent(ev) && ev.pubkey === A.g, 'the joined Kotlin device signs as the account');
   assert.equal(A.m!.devices.size, 2);
   const dk = await next();
+  assert.ok(dk.key, JSON.stringify(dk));
   assert.equal(dk.key, Buffer.from(A.dataKeys.current().key).toString('hex'), 'the joined Kotlin device holds the account\'s data key');
+  // Core 14.21: with the release seeds its welcome carried, the joined device re-issues its seeds to the creation paper.
+  await next();                                             // the fetch
+  const seeds = await next();
+  assert.ok(seeds.records >= 1 && seeds.held.length >= 1 && seeds.held.every((x: number) => x >= 2), JSON.stringify(seeds));
 });

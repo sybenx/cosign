@@ -70,6 +70,7 @@ test('a Kotlin device applies a redeal it slept through, reports the removal and
   assert.ok(seeds.records >= 1 && seeds.held.length >= 1 && seeds.held.every((n: number) => n >= 2), JSON.stringify(seeds));
   void K;
   // An app's derived key is the same on a Kotlin and a TS device.
+  (await import('../device/membersig.ts')).registerDomain('nostr-vault/keyring/1');
   const app = A.dataKeys.forApps();
   assert.equal(derived.key, Buffer.from(app.derive(derived.ids, 'nostr-vault/keyring/1', new TextEncoder().encode('vault 1'))).toString('hex'));
 });
