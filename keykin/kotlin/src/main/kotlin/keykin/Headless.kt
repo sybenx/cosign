@@ -17,6 +17,7 @@ fun main(args: Array<String>) {
     // Tests only: a clock off by KEYKIN_CLOCK_SKEW seconds; a joined device's state kept in KEYKIN_STATE, so a test can
     // kill the process and start it again from that file.
     System.getenv("KEYKIN_CLOCK_SKEW")?.toLongOrNull()?.let { net.skew = it }
+    System.getenv("KEYKIN_TEST_W")?.toLongOrNull()?.let { Keykin.W = it }   // tests only, as the servers' own
     // KEYKIN_TRACE=1: the transport's and the NIP-46 home's timings on stderr (latency work).
     if (System.getenv("KEYKIN_TRACE") == "1") Keykin.trace = { line -> System.err.println("[trace ${System.currentTimeMillis() % 100000}] $line") }
     val stateFile = System.getenv("KEYKIN_STATE")?.let { File(it) }
@@ -26,6 +27,12 @@ fun main(args: Array<String>) {
         val d = if (args[0].startsWith("create:")) Create.byDkg(net, args[0].removePrefix("create:").split(","), args[1].split(",")).let { c ->
                 println(JSONObject().put("paper", c.words.joinToString(" ")).put("g", c.device.g).put("signpost", c.signpost).toString()); System.out.flush(); c.paperSk.fill(0)
                 c.device.also { dev -> stateFile?.let { f -> dev.persist = { f.writeText(it) }; dev.saveNow() } } }
+            // `recover:<front,front,…>`: recover with the paper (tests: its words in KEYKIN_PAPER, the lost devices in
+            // KEYKIN_LOST, the poll in KEYKIN_POLL_MS); prints when the wait should end, then the new device.
+            else if (args[0].startsWith("recover:")) Recover.recoverWithPaper(net, (System.getenv("KEYKIN_PAPER") ?: "").trim().split(Regex("\\s+")), args[0].removePrefix("recover:").split(",").filter { it.isNotBlank() },
+                    (System.getenv("KEYKIN_LOST") ?: "").split(",").filter { it.isNotBlank() }, (System.getenv("KEYKIN_POLL_MS") ?: "3000").toLong(), System.currentTimeMillis() + 300_000) { end ->
+                    println(JSONObject().put("waiting", true).put("ends_by", end ?: JSONObject.NULL).toString()); System.out.flush() }
+                .also { dev -> stateFile?.let { f -> dev.persist = { f.writeText(it) }; dev.saveNow() } }
             else if (args[0].startsWith("join:")) Device.join(args[0].removePrefix("join:"), net, { println(JSONObject().put("check", it).toString()); System.out.flush() })
                 .also { dev -> stateFile?.let { f -> dev.persist = { f.writeText(it) }; dev.saveNow() } }
             else Device.fromSnapshot(File(args[0]).readText(), net).also { dev -> dev.persist = { File(args[0]).writeText(it) } }
@@ -173,6 +180,8 @@ fun main(args: Array<String>) {
             } catch (e: KeykinException) { JSONObject().put("error", e.code).put("detail", e.message) } catch (e: Exception) { JSONObject().put("error", "internal").put("detail", e.toString()) }
             println(out.toString()); System.out.flush()
         }
-    } catch (e: KeykinException) { println("""{"error":"${e.code}"}""") } finally { net.close() }
+    } catch (e: KeykinException) { println(JSONObject().put("error", e.code).put("detail", e.message ?: "").toString()) }
+    catch (e: Exception) { println(JSONObject().put("error", "internal").put("detail", e.toString() + " at " + e.stackTrace.take(4).joinToString(" < ")).toString()) }
+    finally { net.close() }
     System.exit(0)
 }

@@ -118,7 +118,7 @@ async function stack(_base: number, o: { slow?: boolean; testW?: number; extra?:
   const made = cli(['create', '--relays', direct.join(','), '--fronts', fronts.join(',')]);
   assert.equal(made.status, 0, made.stderr);
   const created = JSON.parse(made.stdout.split('\n')[0]);
-  return { dir, cli, g: created.g as string, laptop: created.device as string, devRelays, fronts, spare, serverProcs, words: readFileSync(join(dir, 'paper.txt'), 'utf8').trim() };
+  return { dir, cli, g: created.g as string, laptop: created.device as string, devRelays, fronts, spare, serverProcs, testW: o.testW, words: readFileSync(join(dir, 'paper.txt'), 'utf8').trim() };
 }
 type Stack = Awaited<ReturnType<typeof stack>>;
 
@@ -137,11 +137,23 @@ class Device {
     this.key = device;
     return { g: made.g, words: made.paper };
   }
-  #start(first: string) {
+  #start(first: string, extra: Record<string, string> = {}) {
     this.p = spawn(kt, [first, this.s.devRelays.join(','), '-'], { env: { ...process.env, JAVA_HOME: java, JAVA_OPTS: `-Dkeykin.frostlib=${frost}`,
-      ...(this.o.skew ? { KEYKIN_CLOCK_SKEW: String(this.o.skew) } : {}), ...(this.o.state ? { KEYKIN_STATE: this.o.state } : {}) }, stdio: ['pipe', 'pipe', 'ignore'] });
+      ...(this.o.skew ? { KEYKIN_CLOCK_SKEW: String(this.o.skew) } : {}), ...(this.o.state ? { KEYKIN_STATE: this.o.state } : {}),
+      ...(this.s.testW ? { KEYKIN_TEST_W: String(this.s.testW) } : {}), ...extra }, stdio: ['pipe', 'pipe', 'ignore'] });
     procs.push(this.p);
     this.lines = new Lines(createInterface({ input: this.p.stdout! }));
+  }
+  /** Recover the account onto this new Kotlin device with the paper's words (core §6.5), reporting `lost`. */
+  async recover(words: string, lost: string[]): Promise<{ endsBy: number | null }> {
+    this.#start(`recover:${this.s.fronts.join(',')}`, { KEYKIN_PAPER: words, KEYKIN_LOST: lost.join(','), KEYKIN_POLL_MS: '3000' });
+    const w = await this.lines.next(240_000, `${this.name} waiting`);
+    assert.equal(w.waiting, true, JSON.stringify(w));
+    const got = await this.lines.next(400_000, `${this.name} recovered`);
+    const device: string = got.device;
+    assert.match(device ?? '', /^[0-9a-f]{64}$/, JSON.stringify(got));
+    this.key = device;
+    return { endsBy: w.ends_by };
   }
   async join() {
     const inv = spawn(process.execPath, [join(root, 'cli/account.ts'), 'invite', '--dir', this.s.dir, '--app-relays', this.s.devRelays.join(',')], { stdio: ['pipe', 'pipe', 'ignore'] });
@@ -444,4 +456,22 @@ test('L: a held event approved by two phones together (core 14.26), not the lock
   const signed = await phone.lines.next(120_000, 'the pair-approved event');
   assert.equal(signed.error, undefined, JSON.stringify(signed));
   assert.equal(signed.kind, 3); assert.equal(signed.pubkey, s.g); assert.equal(signed.id, asks[0].event_id);
+});
+
+test('M: the phone recovers the account with the paper alone (Kotlin, core §6.5), reporting the lost devices', { skip, timeout: 900_000 }, async () => {
+  setTestW(20);
+  try {
+    const s = await stack(17620, { testW: 20 });
+    const phone = new Device(s, 'phone'); await phone.join();
+    await phone.post('before everything was lost');
+    // Everything is lost; a new phone has only the paper's words.
+    const fresh = new Device(s, 'new phone');
+    const { endsBy } = await fresh.recover(s.words, [s.laptop, phone.key]);
+    assert.ok(endsBy === null || endsBy > 0, 'the wait\'s end, as the servers stated it');
+    assert.deepEqual(await fresh.devices(), [fresh.key], 'the lost devices were reported');
+    const ev = await fresh.post('back in with the paper, on a phone');
+    assert.equal(ev.pubkey, s.g);
+    const old = await phone.cmd({ cmd: 'sign', content: 'the lost phone' });
+    assert.ok(old.error, 'the old phone can\'t sign: ' + JSON.stringify(old));
+  } finally { setTestW(3 * 86400); }
 });

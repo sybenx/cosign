@@ -14,6 +14,9 @@ object Keykin {
     @Volatile var secp: Secp = Secp.Reference
     @Volatile var wire: Wire? = null
     @Volatile var allowSoftLock = false
+    /** Core's wait W (3 days), every member the same. Tests only may shorten it, for every member at once (as the TS
+     *  reference's setTestW; the dry-run servers read KEYKIN_TEST_W): never in an app. */
+    @Volatile var W: Long = 3 * 86400
     /** Diagnostics only: each request to another member, its type, answer and time (no content). Null, the default,
      *  traces nothing; a debuggable Android build's signer process sends it to logcat. */
     @Volatile var trace: ((String) -> Unit)? = null

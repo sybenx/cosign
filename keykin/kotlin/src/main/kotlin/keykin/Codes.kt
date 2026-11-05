@@ -46,5 +46,6 @@ object Codes {
     fun signpostH(epoch: String, serversJcs: String) = hex(sha(utf8("keykin-beacon/1"), unhex(epoch), utf8(serversJcs)))
     fun signpostDeviceKey(base: String) = hex(hkdf32(unhex(base), utf8("keykin-beacon/1")))
     fun seatedDigest(hKey: String, challenge: ByteArray, ct: ByteArray) = hex(sha(utf8("keykin-seated/1"), unhex(hKey), challenge, ct))
+    fun seatedAskDigest(hKey: String, challenge: String) = sha(utf8("keykin-seated-ask/1"), unhex(hKey), unhex(challenge))
     private fun cmp(a: ByteArray, b: ByteArray): Int { for (i in 0 until minOf(a.size, b.size)) { val d = (a[i].toInt() and 0xff) - (b[i].toInt() and 0xff); if (d != 0) return d }; return a.size - b.size }
 }

@@ -286,7 +286,7 @@ object Membership {
             accepted.filter { it.type == "lock" }.forEach { val l = it.change.getJSONObject("lock"); locks.getOrPut(l.getString("member")) { mutableListOf() }.add(l.getJSONObject("new")) }
             val backups = (listOfNotNull(recBackup) + accepted.filter { it.type == "paper" }.map { it.change.getJSONObject("paper").getString("key") }).toSet()
             val hosts = (recMembers.filter { it.kind == "server" }.mapNotNull { it.host } + accepted.filter { it.type == "seat" }.mapNotNull { it.change.getJSONObject("seat").optJSONObject("new")?.optString("host") }).toSet()
-            return Authority(g, epoch, devices, locks, backups, hosts, 3 * 86400)
+            return Authority(g, epoch, devices, locks, backups, hosts, Keykin.W)
         }
         var pending = parsed.toList(); var progress = true
         while (progress && pending.isNotEmpty()) {

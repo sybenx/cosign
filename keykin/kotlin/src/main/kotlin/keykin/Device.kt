@@ -207,7 +207,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val approval = approve(list)
         val f7 = JSONObject().put("list", Approvals.placeholder(list)).put("approval", approval)
         try { fetch() } catch (_: Exception) {}
-        submitOnce(list, approval) { dealt, st ->
+        submitOnce(list, approval, finish = { dealt, st ->
             val v = view
             val server = servers().firstOrNull() ?: refuse("no_server")
             val helpers = listOf(Signer(pub, st.shares.keys.sorted()), Signer(server.key, server.shares))
@@ -232,7 +232,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val paper = JSONObject().put("key", K).put("replaces", old).put("inner", Material.inner(base, seedIts))
                 .put("state", JSONArray(repairedAt)).put("seeds", JSONArray(records.map { it.first }.sorted()))
             Finish(JSONArray().put(JSONObject().put("paper", paper)).put(JSONObject().put("redeal", dealt.redeal)), base, seedIts)
-        }
+        })
         // A lockless account keeps the new key's secret as it kept the old one, and every lockless device gets it.
         if (carried.has("keptSecret")) {
             keepSecret(hex(Ksk))
@@ -911,18 +911,20 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     /** A list with a redeal is dealt to the account's current members, so the dealer first brings its membership up to
      *  date (a device that missed another's join would leave it out, and every server refuses that redeal as `missing`,
      *  core §6.7.3; dry-run result 6). If a server still says `missing`, it fetches and deals once more. */
-    fun submit(list: JSONArray, approval: JSONObject): List<JSONObject> {
+    /** `cosigner`: who co-signs the list instead of a server (a recovery's lists, co-signed by the paper's holder with
+     *  two servers in its session, core §4.4). */
+    fun submit(list: JSONArray, approval: JSONObject, cosigner: ((List<Unsigned>, JSONObject) -> List<JSONObject>)? = null): List<JSONObject> {
         val deals = (0 until list.length()).any { list.optJSONObject(it)?.has("redeal") == true }
-        if (deals) try { fetch() } catch (_: Exception) {}
-        return try { submitOnce(list, approval) } catch (e: KeykinException) {
-            if (!deals || e.code != "missing") throw e
+        if (deals && cosigner == null) try { fetch() } catch (_: Exception) {}
+        return try { submitOnce(list, approval, cosigner = cosigner) } catch (e: KeykinException) {
+            if (!deals || e.code != "missing" || cosigner != null) throw e
             fetch(); submitOnce(list, approval)
         }
     }
     /** What a list's dealer fills in after dealing, before the co-sign (F7): the full list (the paper change with its
      *  `inner`, `state` and `seeds`), and the paper's material, sent with the list. */
     class Finish(val full: JSONArray, val material: JSONObject? = null, val seedItems: List<JSONObject> = emptyList())
-    private fun submitOnce(list: JSONArray, approval: JSONObject, finish: ((Dealt, ShareState) -> Finish)? = null): List<JSONObject> {
+    private fun submitOnce(list: JSONArray, approval: JSONObject, finish: ((Dealt, ShareState) -> Finish)? = null, cosigner: ((List<Unsigned>, JSONObject) -> List<JSONObject>)? = null): List<JSONObject> {
         if (wiped) refuse("wiped")
         Approvals.shape(list)                                // one redeal at most, and a list the servers accept (review 14 L6)
         val (v, st) = synchronized(this) { view to state }
@@ -968,7 +970,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val now = net.now
             val evs = (0 until fullList.length()).map { k -> Unsigned(g, now, KIND_CHANGE, listOf(listOf("v", "1"), listOf("epoch", epochId)),
                 Jcs.of(JSONObject().put("v", 1).put("g", g).put("epoch", epochId).put("change", fullList.get(k)).put("list", ph).put("approval", approval))) }
-            val signed = coSign(st, evs, extra)
+            val signed = cosigner?.invoke(evs, extra) ?: coSign(st, evs, extra)
             // The list as one to every server, current and incoming; live devices get it and their delivery directly.
             val evArr = JSONArray(signed)
             fun changeMsg() = JSONObject().put("type", "change").put("events", evArr).also { m -> for (k in extra.keys()) m.put(k, extra.get(k)) }

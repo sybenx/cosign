@@ -140,7 +140,7 @@ class CoSigner(private val rec: JSONObject, changes: List<Event>, private val me
     private fun hold(from: String, msg: JSONObject): JSONObject {
         if (sender(from).kind != "device") refuse("not_device")
         val wait = Codes.holdWaitId(wire(msg).id)
-        val end = holds.getOrPut(wait) { now() + 3 * 86400 }
+        val end = holds.getOrPut(wait) { now() + Keykin.W }
         return JSONObject().put("v", 1).put("type", "notice").put("re", msg.getString("id")).put("kind", "hold").put("wait", wait).put("end", end)
     }
 }
