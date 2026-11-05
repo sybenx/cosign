@@ -442,8 +442,7 @@ Data names the state hash it was written under; devices keep older keys to read 
 - **Seed-only re-issue.** For every seed it holds, every device re-issues it to each new K (and each seed it receives later), whatever the paper's `seeds` says, so one faulty printer can't be the only copy, in **seed-only items**: up to 1,000 of the seed items' binary records each, NIP-44 to K from a fresh ephemeral key (its
   public key in the clear), signed by the device, wrapped under the release seed of the redeal that
   travelled with K's `paper` change (the creation release seed for a creation paper) and naming it. It
-  sends it to the servers (`paper_reissue`, signed as `detached("paper-reissue-seed", …)`), once per redeal and K, re-sending it until two servers (or every live server, when fewer than two are live) confirm it by hash (a server that hasn't yet seen the redeal refuses at first). A device sends one batch per K plus one per later seed, so the cost is a few kilobytes per device per paper, and it needs no bookkeeping: abandoned, stranded and late seeds are all covered. A device stops sending to a K once it is no longer current, and servers drop a K's seed-only items once it is in `removed`. The item says it is seed-only; servers accept one only for a co-signed redeal and the current K, from a current device, keep the first one
-  per device, redeal and K, keep it after that device is removed, and pass it to their peers and to
+  sends it to the servers (`paper_reissue`, signed as `detached("paper-reissue-seed", …)`), once per redeal and K, re-sending it until two servers (or every live server, when fewer than two are live) confirm it by hash (a server that hasn't yet seen the redeal refuses at first). A device sends one batch per K plus one per later seed, so the cost is a few kilobytes per device per paper, and it needs no bookkeeping: abandoned, stranded and late seeds are all covered. A device stops sending to a K once it is no longer current, and servers drop a K's seed-only items once it is in `removed`. The item says it is seed-only; servers accept one only for a co-signed redeal and the current K, from a current device, keep each distinct one from a device for that K, up to 64 per device and K (a device sends one batch per K plus one per later seed), keep them after that device is removed, and pass it to their peers and to
   incoming seat holders like other items (§7.1). Because every holder of a seed sends its own, one bad
   device can't be the only copy, and nobody needs to check them: the holder keeps any whose seed matches
   the change's `dk`.
@@ -1059,15 +1058,14 @@ They are changes of §3.2 (kind 24302, group-signed, valid in any order).
 **Approval lists.** Changes that belong together are approved together as one **list**: a seat change
 and its redeal, a remove and its redeal, a paper change and its redeal.
 
-- The list is a JSON array of changes in which the redeal is a placeholder and a paper change has no
-  `inner` and no `state`. Module fields of a change (such as Backup's `holders` and `heir`) are part of the
+- The list is a JSON array of changes in which the redeal is a placeholder and a paper change has no `inner`, no `state` and no `seeds`. Module fields of a change (such as Backup's `holders` and `heir`) are part of the
   approved list like any other field. Its hash, `SHA-256(JCS(list))`, is the "change hash" everywhere: the lock assertion's `what` is
   `"change" ‖ list hash ‖ epoch id ‖ expiry` (§6.1), and a pair code uses the same hash. The expiry is at
   most 24 hours away and checked by the co-signer.
 - In the list, the redeal appears only as `{"redeal": {"dealer": <device key>}}`: it binds **who** deals,
   not what. Only that device may deal it, and it may deal a fresh one after a failure until the approval
   expires.
-- A paper change appears without `inner`, because the material doesn't exist yet when the person
+- A paper change appears without `inner`, `state` or `seeds`, because the material doesn't exist yet when the person
   approves (§6.7.6 F7).
 - The changes of one list are co-signed together and delivered as one. A `remove` and its redeal never
   travel apart.
@@ -1245,8 +1243,7 @@ phone A (3), laptop B (3), servers S1–S3 (1 each), paper (2).
 - **F6, helper.** Add: the typed join check (§4.1), then `[seat helper→H, redeal]`; A plus one server
   repair the helper's seat. Remove: `[seat helper→null, redeal]`.
 - **F7, a new paper.**
-  1. A makes K. One approval covers `[paper {K, replaces}, redeal (paper_to K)]` (without `inner` and
-     `state`; it expires in 24 hours).
+  1. A makes K. One approval covers `[paper {K, replaces}, redeal (paper_to K)]` (without `inner`, `state` and `seeds`; it expires in 24 hours).
   2. A and one server repair the backup seat towards K under that approval. A checks the shares, wraps
      the base item and signs it with K. A is worth 5 points for this moment (§4.3).
   3. The person prints or writes the paper and reads it back. The screen says "Keep your old paper until
