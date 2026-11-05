@@ -46,7 +46,7 @@ a request needs by looking at what it is.
 | `lists` | the profile (0); follows, mutes and other lists (3, 10000, and the other list and set kinds Device policy §2 lists exactly); relay lists (10002, 10050); and decrypting the private items of those lists | the first time it tries |
 | `dms` | NIP-04/NIP-44 encrypt and decrypt **with other people's keys**, NIP-59 unwrap, the person's own sent NIP-17 copies (below), and NIP-55 `decrypt_zap_event` | the first time: "Let *site* read and send your messages?" |
 | `wallet` | NIP-60/61 wallet events (17375, 37375, 7375, 7376, 7374), payment targets (10019), and decrypting them | the first time: "Let *site* use your ecash wallet?" |
-| `private-data` | any other **decrypt** of something encrypted to the account's own key (notes, private app data) | the first time: "Let *site* read your private notes and app data?" |
+| `private-data` | any other **decrypt** of something encrypted to the account's own key (notes, private app data): the shared to-self pool, never app-private records kept under derived keys (core §4.5) | the first time: "Let *site* read your private notes and app data, from any app?" |
 | `vaults` | the extension's vault API (§3.7), per vault: `read`, or `write` (put in the account's own vaults, contribute to shared ones); NIP-07 only | through the `list()` picker only (§3.7), naming the vaults: "Let *site* read *Family photos*?" |
 
 - **Which scope a decrypt needs.** The device parses the peer key as a 32-byte x-coordinate and compares

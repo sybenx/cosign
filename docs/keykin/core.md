@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.24 · 2026-11-05 · `draft` `optional` · not built
+Draft 14.25 · 2026-11-05 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -467,10 +467,48 @@ Data names the state hash it was written under; devices keep older keys to read 
   seed-only item for K.
 - **Apps never see `dk(S)`.** The device API gives an app `dataKeys.derive(ids, info)`, which returns
   `HKDF-SHA256(salt = empty, ikm = dk(S), info, L = 32)` for the state `S` named by the sorted redeal-id
-  list `ids`, any list whose seeds this device holds (not only states it was in); it refuses if it lacks a seed (core's own catch-up fetches missing seeds, once per gap), and refuses a list that isn't a state: every id must be a co-signed redeal whose `base` is inside the list, and no id may sit beside a redeal that abandons it. It never sends `need_seeds` for an app. `info` is `utf8(domain) ‖ 0x00 ‖ the app's bytes`, with
-  `domain` granted to the app exactly as for member-key signatures (§5.9), so no app can derive a key Core or a module uses (theirs all start with `keykin`), except the `open` vault domains, which apps and the member share by design (Doors and grants §3.7). Also `dataKeys.current()` (`{ids, state}`),
+  list `ids`, any list whose seeds this device holds (not only states it was in); it refuses if it lacks a seed (core's own catch-up fetches missing seeds, once per gap), and refuses a list that isn't a state: every id must be a co-signed redeal whose `base` is inside the list, and no id may sit beside a redeal that abandons it. It never sends `need_seeds` for an app. `info` is `utf8(domain) ‖ 0x00 ‖ the app's bytes`, with `domain` an identity, listed or open domain for that app (app-private data, below; §5.9), so no app can derive a key Core or a module uses (theirs all start with `keykin`), except the `open` vault domains, which apps and the member share by design (Doors and grants §3.7). Also `dataKeys.current()` (`{ids, state}`),
   `dataKeys.states()` (every state this device has held, newest first) and `dataKeys.onRotate(cb)`
   (called once a redeal has applied here).
+- **App-private data.** NIP-44 to the account's own key is a shared pool: any site or app granted
+  `private-data` (Doors and grants) reads all of it, as with a pasted nsec, and other apps rely on that
+  pool to interoperate. An app that wants records other apps can't read keeps them under a key from
+  `dataKeys.derive` on its own domain instead (as Keykin's own grant events, device names and policy
+  history already do with `keykin-…` keys). Those records are not to-self ciphertexts, so no door, scope
+  or decrypt opens them.
+  - **Who can read them:** an app granted that domain, and the account's member devices themselves (any
+    current device, a paper recovery, and a removed device for records sealed before its removal). After
+    a removal, records stay out of the removed device's reach only once they are re-sealed after the
+    redeal. The open `nostr-vault/…` domains (§5.9) are shared by every vault app and isolate nothing.
+  - **Rotation.** The app names the state in each record, re-seals when `onRotate` fires and, since that
+    only fires while it runs, compares `dataKeys.current()` at every start. Every device derives the same
+    key for a state, so two devices re-sealing at once write equivalent records; the newest version wins as
+    for any record.
+  - **Which domain.** An app whose identity the OS proves owns, silently and with no list or question, its **identity domain**:
+    a first segment of exactly `id-<lowercase hex SHA-256 of utf8(identity)>`, for derivation only, never
+    signatures. The identity is `android:<package>:<original signing-certificate SHA-256>` (the first
+    certificate of a v3 rotation lineage; the device checks the package is among the calling uid's
+    packages) or `apple:<team id>:<signing identifier>`, only when the caller's audit token satisfies the code
+    requirement `anchor apple generic and certificate leaf[subject.OU] = "<team id>" and identifier
+    "<signing identifier>"` (Developer ID or Mac App Store signing) and the build runs with the hardened
+    runtime and without `get-task-allow`, `allow-dyld-environment-variables` or
+    `disable-library-validation`. On a desktop this keeps an app's records from sites and from other apps' grants, not
+    from local software running as the person, which can already read the app's storage or drive it
+    (§10); an app that runs code from outside its signature (an Electron app with its run-as-node and
+    inspect fuses on, a plugin host) can't keep even that. An APK signed by several certificates gets none. A rotated-out Android key keeps access
+    to its records, as it would to the app itself. Browser extensions get no identity domain and may derive only under open domains (§5.9), since an extension's id differs across browsers and copies by its manifest key; Linux and Windows programs get none, since the OS can't prove them; both use the pool or open domains. Records are readable by that build on every device of
+    that platform; builds signed differently (a store build and an F-Droid build) are different apps.
+    To share records across platforms, an app uses a domain an app list gives to all its builds.
+    `dataKeys.derive` is allowed only under the app's identity domain, a domain a followed list gives it,
+    or an open domain; never under a domain granted by hand otherwise. Programs the OS can't identify (a
+    per-grant secret on Linux or Windows) get no identity domain and use the pool.
+  - **Where it works.** The device API is reached on Android through the member app's bound service
+    (the caller's signing certificate identifies it), on desktops through native messaging or a local
+    socket, and in browsers through extension messaging (§5.9). iOS apps other than the member app, and
+    websites, have no device API: they reach the account only through a door, and use the pool. So does
+    any app on a signer that isn't Keykin.
+  - **Leaving.** Before an account leaves Keykin (§6.8) or the app moves to another signer, the app copies
+    the records it wants to keep into the pool, or loses them.
 
 ### 4.6 One member per machine
 
@@ -757,8 +795,7 @@ be read as one Core makes, and no Core flow can be made to produce one.
   `nostr-vault/ksig/1`); the `0x00` ends it. `message` is the app's bytes, at most 65,536. A member key
   belongs to one account (§4.6), so `g` is not in the digest. The device hashes the message itself; it
   never signs a digest an app hands it (§5.4). The vectors are `vectors/membersig.json`.
-- **Reserved, and how Core signs.** A domain that starts with `keykin` or `cosign` belongs to Core, its
-  modules and Cosign 0.12, and a device refuses it for an app. Every member-key signature Core and its modules make for themselves is a Nostr event id (a seal, §9.1, whose preimage starts with `[`) or `SHA-256` over a `keykin-…/1` tag followed by fixed fields: `detached(type, body)` (§6.2),
+- **Reserved, and how Core signs.** A domain that starts with `keykin` or `cosign` belongs to Core, its modules and Cosign 0.12, and a device refuses it for an app. A domain whose first segment starts with `id-` is an identity domain (§4.5): a device allows it, for `dataKeys.derive` only, to the app whose identity it hashes, refuses any malformed one, and no list or hand grant can give it. A browser extension may derive only under open domains, whatever a list says. Every member-key signature Core and its modules make for themselves is a Nostr event id (a seal, §9.1, whose preimage starts with `[`) or `SHA-256` over a `keykin-…/1` tag followed by fixed fields: `detached(type, body)` (§6.2),
   `keykin-self/1` (§6.4), Doors' `keykin-grant/1` and `keykin-grant-set/1`, and the three challenge
   signatures (`keykin-retire/1`, §4.6; `keykin-seated-ask/1` and `keykin-forward-ask/1`, §6.7.5). The
   other items "signed by a member key" are `detached` with these types, hyphens and all, over the item as sent without its signature: `paper-reissue` and `paper-reissue-seed` (§6.7.6, §4.5), `policy-snapshot` (Device policy) and `label` (Account admin's device names). A member key never signs raw bytes a server, site or app chose. When the member itself acts as an app (Doors' vaults, §3.7), it signs under the app's domain like any app, and the app lists it follows name it for those domains. The reserved prefixes are the guarantee: every Core preimage starts with `keykin` or `[`, which no app domain may, and the `0x00` that ends a domain keeps two apps' preimages apart.
@@ -769,9 +806,8 @@ be read as one Core makes, and no Core flow can be made to produce one.
   app that **every** followed list naming that domain allows, and is `open` only if every such list marks
   it open. A list the person added may not name a domain or segment that a pinned list names; such entries
   are ignored. So adding a list can only narrow, never widen, what a pinned list allows. An entry may name a whole first segment (`nostr-vault`), covering every domain whose first `/`-separated segment is exactly that, for signatures (§5.9) and data-key derivation (§4.5) alike. A device signs only for a listed app on its own machine, under the device API, and
-  checks the identity the way the OS can prove it: an Android signing-certificate digest, an Apple team id
-  from the caller's audit token, a browser's own extension id. A person may also grant an app a domain by
-  hand, with one question naming the app and the domain ("Let Notes sign for `notes.example/sig/1`?"),
+  checks the identity the way the OS can prove it: an Android signing-certificate digest, an Apple team id checked against the caller's audit token with the code requirement and hardened-runtime rule of §4.5, a browser's own extension id. A person may also grant an app a domain by
+  hand, for signatures only (`dataKeys.derive` needs an identity domain, a domain a followed list gives that app, or an open domain, §4.5), with one question naming the app and the domain ("Let Notes sign for `notes.example/sig/1`?"),
   but **never a domain a followed list names**, unless it is `open` (above) (lists for vault apps mark `nostr-vault/ksig/1`, `nostr-vault/owner/1` and `nostr-vault/keyring/1`; `open` is per domain, never for a whole segment; a hand grant of an open domain covers both signatures and `dataKeys.derive` under it, and the question says so): an open domain may be granted by hand to any app, with the lists' wording for the question ("Let *Notes* use all your vaults, in every app, on this device?"). Other listed domains go only to the apps allowed above, and the device checks the current lists on every call, so a hand grant ends once a followed list names its domain. Where the OS can't prove
   the caller (native messaging and local sockets on Linux or Windows), the grant comes with a per-grant
   secret the app keeps in its own storage and presents on every call. Never through a door (NIP-07,
@@ -2308,3 +2344,7 @@ protect whichever side showed the code. The side that scanned shows them, and th
 the side that showed the code. In the join-code direction the new device confirms with `join_confirm`
 before the inviter adds it. Before, someone who saw a new device's code could answer first and make the
 device join their own account. A second offer for the same code stops the join.
+
+## Changes in draft 14.25
+
+App-private data (§4.5): NIP-44 to self stays a shared pool that `private-data` opens. An app that wants isolation keeps its records under `dataKeys.derive` on its own domain, which no door can open. Each OS-identified app owns an identity domain silently, so no binding has to be synced; derivation is only under identity, listed or open domains, and cross-platform sharing takes an app-list entry. The text says where the device API exists (Android, desktop, browsers; not other iOS apps or websites), who else can read the records, how to re-seal, and what to do before leaving. Six red-team rounds (2, 3, 1, 2 and 2 high, then clean; no critical) are folded in; on desktops the isolation is stated as being from sites and other granted apps, not from local software (§10).
