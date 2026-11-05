@@ -68,6 +68,17 @@ class Lines {
   }
 }
 
+/** Retry `f` until it stops throwing, every few seconds, for at most `ms` (slow relays, a loaded machine): the last
+ *  failure is the one reported. Never a fixed sleep standing in for a condition. */
+async function eventually<T>(f: () => Promise<T>, ms: number, what: string): Promise<T> {
+  const end = Date.now() + ms; let last: unknown;
+  for (;;) {
+    try { return await f(); } catch (e) { last = e; }
+    if (Date.now() > end) throw new Error(`${what}: still failing after ${ms / 1000} s: ${(last as Error)?.message ?? last}`);
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
 /** A relay port that holds every chunk for 1-3 s each way (slow relays, scenario E). */
 function slowProxy(port: number, to: number): Promise<void> {
   const s = createServer((c) => {
@@ -218,16 +229,20 @@ test('E: a restart in the middle of a report-lost, slow relays, clocks 30 s off'
   const s = await stack(17460, { slow: true });
   const phone = new Device(s, 'phone', { skew: 30, state: join(mkdtempSync(join(tmpdir(), 'kk-dr-p-')), 'device.json') }); await phone.join();
   const tablet = new Device(s, 'tablet', { skew: -30 }); await tablet.join();
-  await phone.post('a fast clock'); await tablet.post('a slow clock');
+  await eventually(() => phone.post('a fast clock'), 180_000, 'the phone posts');
+  await eventually(() => tablet.post('a slow clock'), 180_000, 'the tablet posts');
   // The app is killed a moment after Report lost: started again, it reports the laptop lost (again, if it got through).
   phone.p.stdin!.write(JSON.stringify({ cmd: 'report_lost', key: s.laptop, words: s.words }) + '\n');
   await wait(1500);
   await phone.restart();
   const now = await phone.devices();
   if (now.includes(s.laptop)) { const r = await phone.cmd({ cmd: 'report_lost', key: s.laptop, words: s.words }); assert.equal(r.error, undefined, JSON.stringify(r)); }
-  assert.deepEqual((await phone.devices()).sort(), [phone.key, tablet.key].sort());
-  assert.deepEqual((await tablet.devices()).sort(), [phone.key, tablet.key].sort());
-  await phone.post('after the restart'); await tablet.post('the tablet too');
+  // Slow relays (1–3 s a hop each way) and a loaded machine: each device converges, checked by polling, not on the first look.
+  const both = [phone.key, tablet.key].sort();
+  await eventually(async () => assert.deepEqual((await phone.devices()).sort(), both), 300_000, 'the phone sees the laptop gone');
+  await eventually(async () => assert.deepEqual((await tablet.devices()).sort(), both), 300_000, 'the tablet sees the laptop gone');
+  await eventually(() => phone.post('after the restart'), 300_000, 'the phone posts after');
+  await eventually(() => tablet.post('the tablet too'), 300_000, 'the tablet posts after');
 });
 
 test('F: the extension\'s TS member joins by invite and reports the laptop lost from a stale list', { skip, timeout: 900_000 }, async () => {
