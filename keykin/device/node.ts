@@ -24,6 +24,7 @@ const sameUndo = (a: any, b: any) => a.addr === b.addr;
 import { destructive, isReplaceable, type Ev } from '../src/destructive.ts';
 import { DataKeys } from './datakey.ts';
 import { VaultCalls } from './vaultcalls.ts';
+import { DoorRequests } from './doors-request.ts';
 import { memberSign } from './membersig.ts';
 import { Members } from './members.ts';
 import { extract } from '@noble/hashes/hkdf.js';
@@ -31,7 +32,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { cbc } from '@noble/ciphers/aes.js';
 import { base64 } from '@scure/base';
 import { enrollReply } from '../src/serverprofile.ts';
-import { makeHeir, pieceAckDigest } from '../src/backup.ts';
+import { makeHeir, pieceAckDigest, readBackupWords } from '../src/backup.ts';
 import { backupPieces } from '../src/slip39.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
 import { checkDelivery, checkItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
@@ -74,6 +75,10 @@ export class DeviceNode implements Node {
   joiner: Joiner | null = null; inviter: Inviter | null = null;
   pendingSigmas: { from: string; index: number; sigma: string; state: string }[] = [];
   wiped = false;
+  /** Called once, the moment this device learns it is no longer a member: `removed` (a change removing it was
+   *  adopted, from any approval), or `deleted` (the account was deleted, by this device or proven by a server). The
+   *  device is already wiped when it is called; a device restored as wiped doesn't call it (read `wiped`). */
+  onRemoved: ((why: 'removed' | 'deleted') => void) | null = null;
   /** Core §4.3 step 4: on a lockless account, the backup secret kept sealed (5 points), approving what a
    *  paper would, until any device has a lock or a paper is read back. */
   keptSecret: KeyPair | null = null;
@@ -85,12 +90,23 @@ export class DeviceNode implements Node {
     const host = [...this.m!.members.values()].find((x) => x.key === s.key)!.host!;
     return approvePaper(this.g, this.epochId, approvalListOf(list), this.now + 3600, this.kp, this.keptSecret!, ch.challenge, host);
   }
+  /** The paper check (Backup): whether `words` (24) are this account's current paper. Nothing leaves the device. */
+  checkPaper(words: string[]): boolean {
+    let sk: Uint8Array;
+    try { sk = readBackupWords(words); } catch { return false; }
+    try { return pubOf(sk) === this.m?.backupKey; } finally { sk.fill(0); }
+  }
   /** A `paper` approval from the paper itself (its secret, read from its 24 words or QR), with a challenge the
    *  server bound to the backup key (§6.2). */
   async approveWithPaper(list: Change[], paper: KeyPair): Promise<Approval> {
     if (paper.pub !== this.m!.backupKey) refuse('not_current_backup', 'this is not the current paper');
     const s = this.servers().find((x) => this.bus.alive(x.key)); if (!s) refuse('no_server');
-    const ch = await this.bus.send(paper, s!.key, msg('challenge', this.g, this.epochId, 'ask'));
+    // Over real relays the answer comes back to the paper's key, so it is hosted for this one exchange (as the Kotlin
+    // device's `net.host`); the in-memory bus answers directly.
+    const relay = (this.bus as any).hosted instanceof Map && !(this.bus as any).hosted.has(paper.pub) ? this.bus as any : null;
+    relay?.add({ kp: paper, handle: () => null });
+    let ch: any;
+    try { ch = await this.bus.send(paper, s!.key, msg('challenge', this.g, this.epochId, 'ask')); } finally { relay?.kill(paper.pub); }
     if (ch?.type !== 'challenge' || typeof ch.challenge !== 'string') refuse(ch?.code ?? 'no_challenge');
     return approvePaper(this.g, this.epochId, approvalListOf(list), this.now + 3600, this.kp, paper, ch.challenge, s!.host!);
   }
@@ -179,7 +195,7 @@ export class DeviceNode implements Node {
   recompute() {
     this.m = computeMembership(this.rec!, this.changes);
     this.co = new CoSigner({ me: this.kp, kind: this.role, now: () => this.now, record: this.rec!, changes: this.changes, state: this.state!, policy: (e, f) => this.policy(e, f) });
-    if (this.m.removed.has(this.kp.pub)) this.wipe();
+    if (this.m.removed.has(this.kp.pub)) this.wipe('removed');
     this.members.update();
     // The helper ends every grant whose asking device left (Helper module §2).
     if (this.role === 'helper' && !this.wiped) void this.nip46.helperPrune().catch(() => {});
@@ -187,13 +203,15 @@ export class DeviceNode implements Node {
   }
   /** A removed or wiped member destroys everything it holds (core §7.3), the backup secret, push keys and
    *  watches included (review 9 H2). */
-  wipe() {
+  wipe(why: 'removed' | 'deleted' = 'removed') {
+    const was = this.wiped;
     this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() };
-    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.meta?.clear(); this.history?.clear(); this.guard?.clear(); this.vault?.clear(); this.undoOutbox = [];
+    this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.meta?.clear(); this.history?.clear(); this.guard?.clear(); this.vault?.clear(); this.doors?.clear(); this.undoOutbox = [];
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.reissued.clear(); this.reissueEphs.clear(); this.blamed.clear(); this.forceReissue.clear();
     this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
     this.nip46?.sleep(); this.nip46 = new Nip46Home(this);   // signer keys go with everything else (core §7.3)
+    if (!was) queueMicrotask(() => { try { this.onRemoved?.(why); } catch { /* the app's */ } });
   }
   /** Account admin §3: after a delete, only the request, the first `deleted` and the servers' endpoints,
    *  kept so the device can go on sending until each server answers. */
@@ -212,7 +230,7 @@ export class DeviceNode implements Node {
     const { id: _id, ...event } = siteEvent({ created_at: this.now, kind: 1, ...ev }, this.g);
     let lastErr = 'no_server';
     // A refusal that says what the event needs wins over a server that didn't answer (review 12 H4).
-    const telling = new Set(['needs_approval', 'hold_not_passed', 'declined', 'dated_ahead', 'machinery', 'wrong_pubkey']);
+    const telling = new Set(['needs_approval', 'hold_not_passed', 'declined', 'dated_ahead', 'machinery', 'wrong_pubkey', 'removed']);
     const note = (code: string) => { if (!telling.has(lastErr)) lastErr = code; };
     // Device policy §2: how many servers demanded an approval (two, or the device's own check, make it Held).
     let demands = 0;
@@ -245,6 +263,9 @@ export class DeviceNode implements Node {
         return signed;
       }
     }
+    // A server that says this device was removed is believed only through the change itself: fetch it now, so a
+    // removed device wipes (and `onRemoved` fires) at its first refused request, not at its next fetch.
+    if (lastErr === 'removed' && !this.wiped) await this.fetch().catch(() => {});
     throw Object.assign(new KeykinError(lastErr, this.lastDetail), { demands });
   }
 
@@ -495,7 +516,19 @@ export class DeviceNode implements Node {
 
   /** Make, co-sign and deliver a list (§6.7.6: one approval, the dealer uploads, one server co-signs,
    *  the dealer destroys δ, everyone applies). `extraView` adds incoming members for the deltas. */
-  async submit(list: Change[], approval: Approval, o: { cosigner?: (evs: Unsigned[], extra: object) => Promise<NostrEvent[]>; dieAfterUpload?: boolean; deliverTo?: string[];
+  /** A list with a redeal is dealt to the account's current members, so the dealer first brings its membership up to
+   *  date: a device that missed another's join would otherwise leave it out, and every server refuses that redeal as
+   *  `missing` (core §6.7.3; dry-run result 6). If a server still says `missing`, it fetches and deals once more. */
+  async submit(list: Change[], approval: Approval, o: Parameters<DeviceNode['submitOnce']>[2] = {}): Promise<NostrEvent[]> {
+    const deals = list.some((c) => 'redeal' in c) && !o.cosigner && !o.dieAfterUpload && !o.tamper;
+    if (deals) await this.fetch().catch(() => {});
+    try { return await this.submitOnce(list, approval, o); } catch (e) {
+      if (!deals || (e as KeykinError).code !== 'missing') throw e;
+      await this.fetch();
+      return this.submitOnce(list, approval, o);
+    }
+  }
+  async submitOnce(list: Change[], approval: Approval, o: { cosigner?: (evs: Unsigned[], extra: object) => Promise<NostrEvent[]>; dieAfterUpload?: boolean; deliverTo?: string[];
     tamper?: (dealt: Dealt, items: { type: string; to: string; release: boolean; wrap: NostrEvent; paper_eph?: boolean; dk_seed?: boolean }[]) => void;
     /** After dealing, before the co-sign: fill in the list (F7's paper `inner`/`state`) and the material. */
     finish?: (dealt: Dealt) => Promise<{ full: Change[]; material?: Item; seedItems?: Item[] }> } = {}): Promise<NostrEvent[]> {
@@ -565,6 +598,8 @@ export class DeviceNode implements Node {
       content: signpostContent(m.backupKey!, this.baseDk, signpostServers(m)) });
     for (const s of this.servers()) await this.bus.send(this.kp, s.key, { type: 'signpost_id', id: ev.id, event: ev });
     (this.bus as any).published?.push(ev);
+    // Over real relays, published there (§6.7.5: to the paper's relays and the current ones).
+    await this.bus.events?.publishEvent(ev).catch(() => {});
     return ev;
   }
 
@@ -725,7 +760,7 @@ export class DeviceNode implements Node {
     }
     if (n >= 2) {
       const endpoints = this.servers().map((s) => ({ key: s.key, host: s.host!, https: s.https }));
-      this.wipe();
+      this.wipe('deleted');
       this.deleted = { request: req, first, endpoints };
     }
     return n;
@@ -772,7 +807,7 @@ export class DeviceNode implements Node {
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       reissued: [...this.reissued], reissueEphs: [...this.reissueEphs], blamed: [...this.blamed], forceReissue: [...this.forceReissue],
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox, seedOnly: [...this.seedOnly], vaultApps: this.vault.dump(),
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox, seedOnly: [...this.seedOnly], vaultApps: this.vault.dump(), doors: this.doors.dump(),
       helperReport: this.helperReport, unnamed: [...this.unnamed], report: { key: this.reportKey, at: this.reportAt, seq: this.reportSeq } });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
@@ -798,7 +833,7 @@ export class DeviceNode implements Node {
     d.dataKeys.load(x.dkHistory);
     d.members.load(x.members);
     d.#lists = new Map(x.lists ?? []);
-    d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? []; d.seedOnly = new Map(x.seedOnly ?? []); d.vault.load(x.vaultApps);
+    d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? []; d.seedOnly = new Map(x.seedOnly ?? []); d.vault.load(x.vaultApps); d.doors.load(x.doors);
     d.helperReport = x.helperReport ?? null; d.unnamed = new Map(x.unnamed ?? []);
     d.reportKey = x.report?.key ?? ''; d.reportAt = x.report?.at ?? 0; d.reportSeq = x.report?.seq ?? 0;
     if (x.recEv && x.state) {
@@ -893,6 +928,15 @@ export class DeviceNode implements Node {
   #protect(id: string) { this.protectedIds.add(id); if (this.protectedIds.size > 50_000) this.protectedIds.delete(this.protectedIds.values().next().value!); }
   /** When this device last caught up with the servers (Doors §2: no site is answered on older news). */
   lastFetchAt = 0;
+  /** Doors §2's catch-up before a site's request, bounded: wait for a fetch at most `waitMs`, and let it finish in the
+   *  background. A full fetch asks every server in turn and takes 10–15 s over a slow link, and a site gives up on its
+   *  request at about 30 s; one fetch is shared by requests that arrive meanwhile. */
+  async catchUp(waitMs = 5000) {
+    if (this.now - this.lastFetchAt <= 30) return;
+    this.#catching ??= this.fetch().catch(() => {}).finally(() => { this.#catching = null; });
+    await Promise.race([this.#catching, new Promise((ok) => unrefTimer(setTimeout(ok, waitMs)))]);
+  }
+  #catching: Promise<unknown> | null = null;
   #grantTimer: ReturnType<typeof setTimeout> | null = null;
   /** Publish this device's grants soon (a change to them: a bind, a widen, an end), at most once a second. */
   publishGrantsSoon() {
@@ -1094,6 +1138,8 @@ export class DeviceNode implements Node {
   nip46 = new Nip46Home(this);
   /** The device calls for vault apps on this machine (Doors 20 §3.7). */
   vault = new VaultCalls(this);
+  /** A site's requests, whatever the door (Doors §1–§2): the NIP-46 home's, and the extension's NIP-07. */
+  doors = new DoorRequests(this);
   /** The account's grants (Doors §1–§2): this device's, signed by it, and every other device's, for listing. */
   grants = ((dev: DeviceNode) => new GrantStore({
     get g() { return dev.g; }, get kp() { return dev.kp; }, get baseDk() { return dev.baseDk; }, get now() { return dev.now; },
@@ -1288,7 +1334,7 @@ export class DeviceNode implements Node {
       const a = await this.bus.send(this.kp, s.key, msg('state_get', this.g, this.epochId, 'ask'));
       if (a?.type === 'state') w.saw(s.host, 'serving', this.now);
       else if (a?.type === 'deleted') {
-        if (verifyDeleted(this.m!, this.g, a)) { this.wipe(); return null; }
+        if (verifyDeleted(this.m!, this.g, a)) { this.wipe('deleted'); return null; }
         w.saw(s.host, 'denied', this.now);
       } else if (a?.code === 'unknown_account') w.saw(s.host, 'denied', this.now);
       else w.saw(s.host, 'silent', this.now);
@@ -1405,15 +1451,18 @@ export class PaperHolder implements Node {
   shares: Map<number, bigint> | null = null; C: Commitment | null = null;
   r = rid();
   bundles = new Map<string, any>();
+  /** What each server answered the release request: its wait, or why not (for the person, and for tests). */
+  started = new Map<string, string>();
   constructor(bus: Transport, kp: KeyPair, g: string, epochId: string, serverHints: string[]) { this.kp = kp; this.bus = bus; this.g = g; this.epochId = epochId; this.serverHints = serverHints; }
   handle(): any { return { type: 'error', code: 'unsupported' }; }
   /** §6.5 steps 1–2 at each server. */
   async start(servers: string[]) {
     for (const s of servers) {
       const ch = await this.bus.send(this.kp, s, msg('challenge', this.g, this.epochId, 'ask'));
-      if (ch?.type !== 'challenge') continue;
-      await this.bus.send(this.kp, s, msg('release_request', this.g, this.epochId, 'member', { r: this.r, challenge: ch.challenge,
+      if (ch?.type !== 'challenge') { this.started.set(s, ch?.code ?? 'no_challenge'); continue; }
+      const a = await this.bus.send(this.kp, s, msg('release_request', this.g, this.epochId, 'member', { r: this.r, challenge: ch.challenge,
         sig: schnorrSign(detachedDigest('release_request', this.g, { r: this.r, challenge: ch.challenge }), this.kp.sk) }));
+      this.started.set(s, a?.type === 'notice' ? `waiting until ${a.end}` : a?.code ?? a?.type ?? 'no_answer');
     }
   }
   /** §6.5 steps 3–4: collect releases, open the material, check against `P_b^S`. */

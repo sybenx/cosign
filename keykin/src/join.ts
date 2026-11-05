@@ -42,6 +42,10 @@ export class Inviter {
   /** Join-code direction: the `n` from the scanned code; the only key that may be added. */
   expectN: string | null;
   accepted: { n: string; lock: LockPub | null; t: string } | null = null;
+  /** The person matched the digits: typed here (invite direction), or confirmed by the new device (join-code). */
+  confirmed = false;
+  /** A second hello for this code before the check (core 14.24): someone else has it; make a new invite. */
+  contested = false;
   constructor(o: { g: string; m: string; now: number; scanned?: Hello; s?: string }) {
     this.g = o.g; this.m = o.m;
     if (o.scanned) {
@@ -54,7 +58,10 @@ export class Inviter {
   offer() { if (!this.expectN) refuse('no_code'); return { to: this.expectN!, msg: { type: 'welcome_offer', g: this.g, m: this.m, s: this.s } }; }
   /** A `join_hello` arrives, sealed by `from`. Returns the `join_nonce` to send, or throws (drop). */
   onHello(from: string, hello: any, now: number) {
-    if (this.accepted) refuse('already_accepted');
+    if (this.accepted) {
+      if (!this.confirmed && hello?.s === this.s && from !== this.accepted.n) this.contested = true;
+      refuse('already_accepted');
+    }
     if (now > this.x) refuse('expired');
     if (hello?.s !== this.s) refuse('bad_secret');
     if (hello.n !== from) refuse('not_sealed_by_n');
@@ -63,8 +70,23 @@ export class Inviter {
     this.accepted = { n: from, lock: hello.lock ?? null, t };
     return { to: from, msg: { type: 'join_nonce', t } };
   }
-  /** The person typed the number shown on the new device. Only a match goes on. */
-  typed(code: string): boolean { return !!this.accepted && joinCheck(this.g, this.m, this.accepted.n, this.s, this.accepted.t) === code; }
+  /** Invite direction: the person typed the number shown on the new device. Only a match goes on. */
+  typed(code: string): boolean {
+    if (this.expectN || this.contested || !this.accepted) return false;
+    const want = joinCheck(this.g, this.m, this.accepted.n, this.s, this.accepted.t);
+    let x = want.length ^ String(code).length; for (let i = 0; i < want.length; i++) x |= want.charCodeAt(i) ^ String(code).charCodeAt(i);
+    if (x !== 0) return false;
+    return this.confirmed = true;
+  }
+  /** Join-code direction (core 14.24): the 6 digits this device shows, typed on the new device. */
+  get check() { if (!this.expectN || !this.accepted) refuse('no_hello'); return joinCheck(this.g, this.m, this.accepted!.n, this.s, this.accepted!.t); }
+  /** Join-code direction: the new device's `join_confirm {s, t}`, sealed by `from`: the person typed this device's
+   *  digits there. Only then does the add start. */
+  onConfirm(from: string, body: any): boolean {
+    if (!this.expectN || !this.accepted || this.contested) return false;
+    if (from !== this.accepted.n || body?.s !== this.s || body?.t !== this.accepted.t) return false;
+    return this.confirmed = true;
+  }
 }
 
 /** The new device's side. */
@@ -109,6 +131,8 @@ export class Joiner {
   }): { membership: Membership; shares: Map<number, bigint>; C: Commitment } {
     const sealer = o.recovery ? o.recovery.backup : this.m;
     if (o.from !== sealer) refuse('not_sealed_by_m', 'a welcome from a stranger');
+    // Never before the digits were shown: a welcome without the nonce skips the person's check (red team 23).
+    if (!o.recovery && !this.t) refuse('no_nonce', 'a welcome before the 6 digits');
     const rec = checkEpochRecord(o.welcome.record, { g: this.g! });
     const mem = computeMembership(rec, o.welcome.changes);
     if (mem.invariantError) refuse('invariant', mem.invariantError);

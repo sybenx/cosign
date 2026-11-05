@@ -55,9 +55,14 @@ function lockDir(dir: string) {
 }
 const out = (x: object) => console.log(JSON.stringify(x));
 
+/** A device another device reported lost wipes itself (core §6.4): say so, instead of failing on its empty state. */
+const REMOVED = 'This laptop was removed from the account (another device reported it lost), so it can\'t invite, sign or show any more. Recover with the paper, or create a new account in another --dir.';
+function removed(): never { console.error(REMOVED); process.exit(3); }
+
 async function open(dir: string) {
   const conf = JSON.parse(readFileSync(join(dir, 'account.json'), 'utf8'));
   testOnly(conf.relays);
+  if (JSON.parse(readFileSync(join(dir, 'device.json'), 'utf8')).wiped) removed();
   lockDir(dir);
   const net = new RelayNet({ relays: conf.relays, timeoutMs: 9000, resendMs: 1500 });
   await net.connect();
@@ -92,7 +97,7 @@ async function main() {
   }
   if (cmd === 'invite') {
     const { conf, net, d } = await open(dir);
-    await d.fetch();
+    await d.fetch(); if (d.wiped) removed();
     const appRelays = arg('app-relays', false) ? list(arg('app-relays')) : conf.relays;
     testOnly(appRelays);
     d.inviter = new Inviter({ g: d.g, m: d.kp.pub, now: net.now });
@@ -128,7 +133,7 @@ async function main() {
   }
   if (cmd === 'show') {
     const { net, d } = await open(dir);
-    await d.fetch().catch(() => {});
+    await d.fetch().catch(() => {}); if (d.wiped) removed();
     out({ account: nip19.npubEncode(d.g), device: d.kp.pub, devices: d.memberKeys(), servers: d.servers().map((s) => s.host), state: d.dataKeys.current().state, grants: d.grants.all().length });
     net.close(); process.exit(0);
   }

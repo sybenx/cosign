@@ -5,10 +5,11 @@
 // again from the enrol secret, and a seat is written to sealed storage only once it holds something
 // (an account, an upload or a tombstone). Nonces and a DKG in flight are never written (§5.2).
 
-import { newKey, pubOf, type KeyPair } from '../src/event.ts';
+import { newKey, pubOf, schnorrVerify, type KeyPair } from '../src/event.ts';
+import { seatedAskDigest } from '../src/codes.ts';
 import { bytesToHex, hexToBytes, randomBytes, strictJson, refuse } from '../src/bytes.ts';
 import { enrolSecretAlive, enrollReply, deriveMemberSk, deriveVapidSk } from '../src/serverprofile.ts';
-import { ServerNode } from './node.ts';
+import { ServerNode, sealSeated } from './node.ts';
 import { Limits } from './limits.ts';
 import type { Node, Transport } from '../runtime/net.ts';
 
@@ -24,13 +25,18 @@ export interface Meta { ip?: string; pow?: number }
 const SESSION_S = 3600, SESSIONS_MAX = 1000;
 const PENDING_S = 30 * 86400, PENDING_MAX = 10_000;      // a reply is unexpired for 30 days (Server profile §4)
 const FLOOD_PER_MINUTE = 60, POW_DEFAULT = 16;
-const FRONT = new Set(['create', 'dkg_1', 'dkg_2', 'dkg_3', 'enroll']);
+/** The front door's messages: creation, and §6.7.5 route 1's `challenge` and `seated?`. Seats answer `challenge`
+ *  and `seated?` too; the creation ones only at the front door (review 10 L3). */
+const CREATION = new Set(['create', 'dkg_1', 'dkg_2', 'dkg_3', 'enroll']);
+const FRONT = new Set([...CREATION, 'challenge', 'seated?']);
 const month = (t: number) => new Date(t * 1000).toISOString().slice(0, 7);
 
 export class Host {
   key: KeyPair;
   secrets: { id: string; secret: string; made: number }[] = [];
   nodes = new Map<string, ServerNode>();                          // member key → seat
+  /** Challenges issued at the front door for `seated?` (§6.7.5 route 1), by challenge: the asker and when. */
+  #asks = new Map<string, { from: string; at: number }>();
   /** Issued replies not yet seated: public data only, the keys derived again when needed. */
   pending = new Map<string, { reply: any; at: number }>();
   #sessions = new Map<string, { node: ServerNode; at: number }>(); // device key → creation in flight
@@ -81,7 +87,7 @@ export class Host {
       get kp() { return n.kp; },
       async handle(from: string, body: any, sentAt: number, meta?: Meta) {
         // The front door's messages only at the front door (review 10 L3).
-        if (FRONT.has(body?.type) && n.co) return { type: 'error', re: body?.id, code: 'unsupported' };
+        if (CREATION.has(body?.type) && n.co) return { type: 'error', re: body?.id, code: 'unsupported' };
         const m = n.co?.m;
         const known = !!m && (m.members.has(from) || m.backupKey === from) && !m.removed.has(from);
         const ok = known ? host.limits.member(from, body?.type, host.now, m!.backupKey === from) : host.#newcomer(meta);
@@ -152,6 +158,28 @@ export class Host {
       const ok = body.type === 'create' && meta?.ip !== undefined ? this.limits.creation(this.now, meta.ip) : this.#newcomer(meta);
       if (ok !== true) return ok === 'pow' ? this.#powAsk(body) : this.#limited(body);
       if (body.type === 'create' && !this.limits.creation(this.now)) return this.#limited(body);
+      // §6.7.5 route 1 at the host (the public list names hosts): a challenge for the asker, then `seated?` answered by
+      // whichever seat here holds an account for that key; anything else learns nothing (`not_seated`).
+      if (body.type === 'challenge') {
+        for (const [k, at] of this.#asks) if (this.now - at.at > 120 || at.from === from) this.#asks.delete(k);   // one per asker (red team 23b)
+        if (this.#asks.size >= 4096) return this.#limited(body);
+        const challenge = bytesToHex(randomBytes(16)); this.#asks.set(challenge, { from, at: this.now });
+        return { type: 'challenge', re: body?.id, challenge };
+      }
+      if (body.type === 'seated?') {
+        const a = typeof body.challenge === 'string' ? this.#asks.get(body.challenge) : undefined;
+        if (!a || a.from !== from || this.now - a.at > 120) return { type: 'error', re: body?.id, code: 'not_seated' };
+        this.#asks.delete(body.challenge);
+        // Every seat here that holds an account for that key (core 14.23: two accounts can share a paper key, I7).
+        let key: string | null = null; const entries: any[] = [];
+        for (const n of this.nodes.values()) {
+          const k = n.seatedKey(body.h);
+          if (!k || (key && k !== key) || !schnorrVerify(body.sig, seatedAskDigest(body.h, body.challenge), k)) continue;
+          key = k; entries.push(n.seatedEntry(k));
+        }
+        if (!key) return { type: 'error', re: body?.id, code: 'not_seated' };
+        return { ...sealSeated(this.key, body.h, body.challenge, key, entries), re: body?.id };
+      }
       for (const [k, x] of this.#sessions) if (this.now - x.at > SESSION_S) { this.#sessions.delete(k); if (!x.node.co) this.hosting.kill?.(x.node.kp.pub); }
       const s = this.#sessions.get(from);
       if (body.type === 'enroll' && !s?.node.dkg) return this.#enroll(body);

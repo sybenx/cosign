@@ -106,3 +106,22 @@ test('§3 recovery contacts: F7 hands out 2-of-3 SLIP-39 pieces; two friends rec
   const { D } = await recover(acc, [acc.A], { sk, pub: K.pub });
   assert.ok(verifyEvent(await D.sign({ content: 'recovered through two friends' })));
 });
+
+test('core 14.24: the heir key asks seated? itself, and the answer names hosts but no member keys', async () => {
+  const { create } = await import('../sim/account.ts');
+  const { msg } = await import('../sim/nodes.ts');
+  const { seatedAskDigest } = await import('../src/codes.ts');
+  const { schnorrSign } = await import('../src/event.ts');
+  const nip44 = await import('nostr-tools/nip44');
+  const acc = await create();
+  const heir = newKey();
+  await acc.A.newPaper((l) => acc.A.approveLock(l), { heir: heir.pub });
+  const s = acc.servers[0];
+  const h = bytesToHex(sha(Uint8Array.from(Buffer.from(heir.pub, 'hex'))));
+  const ch = await acc.bus.send(heir, s.kp.pub, msg('challenge', acc.g, acc.epochId, 'ask'));
+  const r = await acc.bus.send(heir, s.kp.pub, { type: 'seated?', h, challenge: ch.challenge, sig: schnorrSign(seatedAskDigest(h, ch.challenge), heir.sk) });
+  assert.equal(r.type, 'seated', JSON.stringify(r));
+  const [entry] = JSON.parse(nip44.v2.decrypt(r.ct, nip44.v2.utils.getConversationKey(heir.sk, r.host)));
+  assert.equal(entry.g, acc.g);
+  assert.ok(entry.servers.length >= 2 && entry.servers.every((x: any) => x.host && !('key' in x)), 'hosts, no member keys');
+});

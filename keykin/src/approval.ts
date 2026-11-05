@@ -8,7 +8,13 @@ import { checkAssertion, type LockPub, type Lock } from './lock.ts';
 import { schnorrSign, schnorrVerify, type KeyPair } from './event.ts';
 import { changeType, type Approval, type Change, type Waited } from './types.ts';
 
-export const W_DEFAULT = 3 * 86400;
+/** The recovery and hold wait W (core §6.3): three days. Tests alone shorten it, for every member at once
+ *  (`setTestW`; a server reads KEYKIN_TEST_W), so a recovery's waited proofs check everywhere in a test stack. */
+export let W_DEFAULT = 3 * 86400;
+export function setTestW(seconds: number) {
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 3 * 86400) throw new Error('setTestW: 1 s to 3 days');
+  W_DEFAULT = seconds;
+}
 export const MAX_EXPIRY_S = 86400;
 
 /** What every member knows about who may approve (§3.2): devices of the membership (never a

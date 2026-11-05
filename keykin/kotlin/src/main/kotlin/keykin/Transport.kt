@@ -14,6 +14,9 @@ object Keykin {
     @Volatile var secp: Secp = Secp.Reference
     @Volatile var wire: Wire? = null
     @Volatile var allowSoftLock = false
+    /** Diagnostics only: each request to another member, its type, answer and time (no content). Null, the default,
+     *  traces nothing; a debuggable Android build's signer process sends it to logcat. */
+    @Volatile var trace: ((String) -> Unit)? = null
 }
 
 /** Secret-key operations. `Reference` is plain BigInteger arithmetic, not constant-time: tests and the

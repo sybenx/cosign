@@ -31,6 +31,10 @@ object Memberships {
     @Synchronized fun relays(slot: String): List<String>? = store.get().optJSONObject("relays")?.optJSONArray(slot)?.let { a -> (0 until a.length()).map { a.getString(it) } }
     @Synchronized fun setRelays(slot: String, rs: List<String>) = store.update { it.put("relays", (it.optJSONObject("relays") ?: JSONObject()).put(slot, JSONArray(rs))) }
     @Synchronized fun openError(slot: String): String? = failed[slot]
+    /** Whether the slot's membership has been opened in this process yet (opening reads storage and reaches the relays).
+     *  Not under this object's lock, which an opening holds for seconds. */
+    fun isOpen(slot: String): Boolean = slot in opened
+    private val opened = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** The slot's membership, opened from its sealed state on first use; a failure is kept, and shown. */
     @Synchronized fun signer(slot: String): KeykinSigner {
         checkSlot(slot)
@@ -38,14 +42,17 @@ object Memberships {
             KeykinSigner(app, slot).also { s ->
                 s.onRemoved = { synchronized(this) { failed[slot] = "removed" } }
                 relays(slot)?.let { r -> try { s.open(r) } catch (e: KeykinException) { failed[slot] = e.code } catch (_: Exception) { failed[slot] = "open_failed" } }
+                opened += slot
             }
         }
     }
     @Synchronized fun joined(slot: String) { failed.remove(slot) }
+    /** After a create on the library's screen: the slot's relays kept, and the membership counted as open. */
+    @Synchronized fun created(slot: String, relays: List<String>) { setRelays(slot, relays); failed.remove(slot); opened += slot }
     @Synchronized fun forget(slot: String) {
         checkSlot(slot)
         (signers.remove(slot) ?: KeykinSigner(app, slot)).forget()
-        failed.remove(slot)
+        failed.remove(slot); opened -= slot
         store.update { d ->
             d.put("slots", JSONArray(slots() - slot)); d.optJSONObject("relays")?.remove(slot)
         }

@@ -53,6 +53,8 @@ class Joiner(val n: String, val lock: JSONObject?, now: Long, scanned: Code?) {
      *  this lock, and each share from exactly the inviter's sigma and one server's. */
     fun finish(from: String, welcome: JSONObject, sigmas: List<JSONObject>): Joined {
         if (from != m) refuse("not_sealed_by_m", "a welcome from a stranger")
+        // Never before the digits were shown (red team 23, as TS).
+        if (t == null) refuse("no_nonce", "a welcome before the 6 digits")
         val recEv = Event.of(welcome.getJSONObject("record"))
         val rec = Record.check(recEv, g!!)
         val ch = welcome.getJSONArray("changes"); val changes = (0 until ch.length()).map { Event.of(ch.getJSONObject(it)) }
@@ -78,34 +80,62 @@ class Joiner(val n: String, val lock: JSONObject?, now: Long, scanned: Code?) {
     }
 }
 
-/** The inviting device's side (§4.1), invite direction, as TS `Inviter`: the code, the hello checked, the
- *  nonce, and the 6 digits the person types from the new device's screen. */
-class Inviter(val g: String, val m: String, now: Long) {
-    val s: String = hex(ByteArray(16).also { SecureRandom().nextBytes(it) })
-    val x: Long = now + CODE_TTL_S
+/** The inviting device's side (§4.1), either direction, as TS `Inviter`: the code (or the new device's scanned
+ *  hello code and the offer sealed to it), the hello checked, the nonce, and the 6 digits the person types from the new
+ *  device's screen. */
+class Inviter(val g: String, val m: String, now: Long, scanned: Code? = null) {
+    val s: String
+    val x: Long
+    /** Join-code direction: the `n` of the scanned hello code, the only key that may be added. */
+    val expectN: String?
+    init {
+        if (scanned != null) {
+            if (scanned.kind != "hello") refuse("bad_code")
+            if (scanned.x < now) refuse("expired")
+            s = scanned.s; x = scanned.x; expectN = scanned.n
+        } else { s = hex(ByteArray(16).also { SecureRandom().nextBytes(it) }); x = now + CODE_TTL_S; expectN = null }
+    }
+    /** Join-code direction: the offer, sealed to the scanned code's `n`. */
+    fun offer(): Pair<String, JSONObject> = (expectN ?: refuse("no_code")) to JSONObject().put("type", "welcome_offer").put("g", g).put("m", m).put("s", s)
     data class Accepted(val n: String, val lock: JSONObject?, val t: String)
     @Volatile var accepted: Accepted? = null; private set
     @Volatile var confirmed = false; private set
+    /** A second hello for this code before the check (core 14.24): someone else has it; make a new invite. */
+    @Volatile var contested = false; private set
+    /** Called once the join-code direction's new device confirmed the digits (its `join_confirm`). */
+    @Volatile var onConfirmed: (() -> Unit)? = null
     fun invite(relays: List<String>): String {
         fun e(v: String) = java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20")
         return "keykin:join?g=$g&m=$m&s=${b64u(unhex(s))}&x=$x" + relays.joinToString("") { "&r=${e(it)}" }
     }
     /** A `join_hello`, sealed by `from`: the `join_nonce` to answer, or a refusal (drop it). */
     @Synchronized fun onHello(from: String, hello: JSONObject, now: Long): JSONObject {
-        if (accepted != null) refuse("already_accepted")
+        accepted?.let { a -> if (!confirmed && hello.optString("s") == s && from != a.n) contested = true; refuse("already_accepted") }
         if (now > x) refuse("expired")
         if (hello.optString("s") != s) refuse("bad_secret")
         if (hello.optString("n") != from) refuse("not_sealed_by_n")
+        if (expectN != null && from != expectN) refuse("not_sealed_by_n", "the join-code direction adds only the scanned n")
         val lock = hello.opt("lock") as? JSONObject
         val t = hex(ByteArray(16).also { SecureRandom().nextBytes(it) })
         accepted = Accepted(from, lock, t)
         return JSONObject().put("type", "join_nonce").put("t", t)
     }
-    /** The person typed the number shown on the new device. Only a match goes on. */
+    /** Invite direction: the person typed the number shown on the new device. Only a match goes on. */
     @Synchronized fun typed(code: String): Boolean {
+        if (expectN != null || contested) return false
         val a = accepted ?: return false
         val ok = java.security.MessageDigest.isEqual(utf8(Codes.joinCheck(g, m, a.n, s, a.t)), utf8(code))
         if (ok) confirmed = true
         return ok
+    }
+    /** Join-code direction (core 14.24): the 6 digits this device shows, typed on the new device. */
+    val check: String get() { val a = accepted ?: refuse("no_hello"); if (expectN == null) refuse("no_code"); return Codes.joinCheck(g, m, a.n, s, a.t) }
+    /** Join-code direction: the new device's `join_confirm {s, t}`, sealed by `from`: the person typed this device's
+     *  digits there. Only then does the add start. */
+    @Synchronized fun onConfirm(from: String, body: JSONObject): Boolean {
+        val a = accepted ?: return false
+        if (expectN == null || contested || from != a.n || body.optString("s") != s || body.optString("t") != a.t) return false
+        if (!confirmed) { confirmed = true; onConfirmed?.invoke() }
+        return true
     }
 }

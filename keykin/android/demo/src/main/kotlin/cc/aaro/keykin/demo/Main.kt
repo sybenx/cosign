@@ -45,7 +45,8 @@ class Main : Activity() {
         // listener per process: an activity recreated between intents must not hear (and say) things twice.
         if (!listening) { listening = true; client.listen(object : KeykinClient.Listener {
             override fun state(slot: String, state: JSONObject) {
-                if (slot != prefs.getString("slot", null)) return
+                // Another slot (a test account): only its outcomes are said, with the slot.
+                if (slot != prefs.getString("slot", null)) { state.optJSONObject("last_action")?.let { l -> if (told.add("last:$slot:${l.optLong("at")}")) say(JSONObject().put("slot", slot).put("last_action", l).put("device", state.optString("device")).put("account", state.optString("account"))) }; return }
                 state.optString("check").takeIf { it.isNotEmpty() && told.add("check:$it") }?.let { say(JSONObject().put("check", it)) }
                 if (state.optBoolean("joined") && told.add("joined:$slot")) say(JSONObject().put("device", state.getString("device")).put("state", state.getString("state")))
                 state.optString("error").takeIf { it.isNotEmpty() && told.add("error:$it") }?.let { say(JSONObject().put("error", it)) }
@@ -53,6 +54,10 @@ class Main : Activity() {
                 // Device policy's cards and held events, each said once (the person's answer is a command).
                 state.optJSONArray("cards")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { c -> if (told.add("card:${c.getInt("id")}")) say(JSONObject().put("card", c)) } }
                 state.optJSONArray("held")?.let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { h -> if (told.add("held:${h.getString("id")}")) say(JSONObject().put("held", h)) } }
+                // The library screens' outcomes, the opening state and an invite's progress, each said once.
+                state.optJSONObject("last_action")?.let { l -> if (told.add("last:${l.optLong("at")}:${l.optString("action")}:${l.optString("detail")}")) say(JSONObject().put("last_action", l)) }
+                if (state.optBoolean("opening") && told.add("opening:$slot")) say(JSONObject().put("opening", true))
+                state.optJSONObject("invite")?.let { v -> if (told.add("invite:${v.optString("status")}")) say(JSONObject().put("invite_status", v.optString("status"))) }
             }
         }) }
         lastSay = ::sayHere
@@ -66,7 +71,8 @@ class Main : Activity() {
         val cmd = i?.getStringExtra("cmd")?.takeIf { driven } ?: run { run(JSONObject().put("cmd", "open")); return }
         run(JSONObject().put("cmd", cmd).put("code", i.getStringExtra("code") ?: "").put("relays", i.getStringExtra("relays") ?: RELAYS)
             .put("content", i.getStringExtra("content") ?: "gm from the keykin-android demo").put("scopes", i.getStringExtra("scopes") ?: "sign-in,post")
-            .put("id", i.getStringExtra("id") ?: "").put("allow", i.getStringExtra("allow") == "true").put("signer", i.getStringExtra("signer") ?: "").put("scope", i.getStringExtra("scope") ?: ""))
+            .put("id", i.getStringExtra("id") ?: "").put("allow", i.getStringExtra("allow") == "true").put("signer", i.getStringExtra("signer") ?: "").put("scope", i.getStringExtra("scope") ?: "")
+            .put("action", i.getStringExtra("action") ?: "").put("key", i.getStringExtra("key") ?: "").put("with", i.getStringExtra("with") ?: "").put("digits", i.getStringExtra("digits") ?: "").put("invite_relays", i.getStringExtra("invite_relays") ?: "").put("code", i.getStringExtra("code") ?: "").put("fronts", i.getStringExtra("fronts") ?: "").put("slot_id", i.getStringExtra("slot_id") ?: ""))
     }
     private fun say(x: JSONObject) { (lastSay ?: ::sayHere)(x) }
     private fun sayHere(x: JSONObject) { val line = x.toString(); Log.i("KeykinDemo", line); runOnUiThread { out.append(line + "\n\n") } }
@@ -90,6 +96,17 @@ class Main : Activity() {
                 "bunker" -> say(JSONObject().put("bunker", k.bunker(slot(), c.getString("relays"), c.getString("scopes"))?.let(LinkLog::shown) ?: JSONObject.NULL))
                 "answer" -> { k.answerCard(slot(), c.getString("id").toInt(), c.getBoolean("allow")); say(JSONObject().put("answered", c.getString("id"))) }
                 "allow" -> { k.allowScope(slot(), c.getString("signer"), c.getString("scope")); say(JSONObject().put("allowed", c.getString("scope"))) }
+                // The library's own screens and calls (test harness): fresh state, an invite from this phone, and the
+                // approval screen, whose outcome comes back as the state's "last_action".
+                "refresh" -> say(JSONObject().put("refreshed", JSONObject(k.refresh(slot()) ?: "{}")))
+                "invite" -> say(JSONObject(k.invite(slot(), c.optString("invite_relays")) ?: "{}"))
+                "invite_scanned" -> say(JSONObject(k.inviteScanned(slot(), c.getString("code")) ?: "{}").put("scanned", true))
+                // A new account in a second slot (test harness): the demo's own slot is left as it is.
+                "create" -> { val s2 = k.add(); client.create(s2, c.getString("relays").split(","), c.getString("fronts").split(",")); say(JSONObject().put("creating", s2)) }
+                "forget_slot" -> { k.forget(c.getString("slot_id")); say(JSONObject().put("forgot", c.getString("slot_id"))) }
+                "pair_asks" -> say(JSONObject().put("pair_asks", org.json.JSONArray(k.pairAsks(slot()) ?: "[]")))
+                "invite_typed" -> say(JSONObject().put("typed", k.inviteTyped(slot(), c.getString("digits"))))
+                "approve" -> { client.approve(slot(), c.getString("action"), c.optString("key").ifEmpty { null }, c.optString("id").ifEmpty { null }, c.optString("with").ifEmpty { null }); say(JSONObject().put("approving", c.getString("action"))) }
                 "forget" -> { k.forget(slot()); prefs.edit().remove("slot").apply(); say(JSONObject().put("forgotten", true)) }
                 else -> say(JSONObject().put("error", "unknown command"))
             }

@@ -22,6 +22,8 @@ import { serveHttp } from './http.ts';
 const env = process.env;
 const list = (v?: string) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const relays = list(env.KEYKIN_RELAYS);
+// Tests only: a short recovery and hold wait, for a local test stack whose members all use the same.
+if (env.KEYKIN_TEST_W) { (await import('../src/approval.ts')).setTestW(Number(env.KEYKIN_TEST_W)); console.error(JSON.stringify({ test_w: Number(env.KEYKIN_TEST_W) })); }
 if (!relays.length) { console.error('KEYKIN_RELAYS is required: the server has no relays of its own.'); process.exit(2); }
 for (const r of relays) if (!/^wss?:\/\//.test(r)) { console.error(`not a relay URL: ${r}`); process.exit(2); }
 
