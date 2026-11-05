@@ -1,7 +1,9 @@
 // What an app checks member-key signatures against (core 14.19 §5.9, "What a verifier needs"):
 //
-//   members.devices()       {self, asOf, keys: [{key, added_by, flagged}]}: the current device member keys
-//                           in this device's view, at state `asOf`
+//   members.devices()       {self, asOf, keys: [{key, added_by, flagged, name, model, same_name, last_seen}]}: the
+//                           current device member keys in this device's view, at state `asOf`; `name` and `model`
+//                           as each device named itself (Account admin §2: show the model next to the name, and warn
+//                           on `same_name`), `last_seen` when this device last heard from it (null for itself or never)
 //   members.removed(since)  a durable log, for the account's life, of {seq, key, why, change, state}
 //   members.onRemoved(cb)   each new or updated entry, and each newly flagged key
 //   members.keep(key)       the person keeps a flagged key: it stops being flagged
@@ -16,7 +18,7 @@ import { stateHash } from '../src/codes.ts';
 import type { DeviceNode } from './node.ts';
 
 export interface RemovedEntry { seq: number; key: string; why: 'remove' | 'self' | 'void'; change: string | null; state: string | null }
-export interface DeviceKey { key: string; added_by: string | null; flagged: boolean }
+export interface DeviceKey { key: string; added_by: string | null; flagged: boolean; name: string | null; model: string | null; same_name: boolean; last_seen: number | null }
 export type MembersEvent = { removed: RemovedEntry } | { flagged: string };
 
 export class Members {
@@ -46,7 +48,13 @@ export class Members {
     const removed = m?.removed ?? new Set<string>();
     const keys = m ? [...m.devices].filter((k) => !removed.has(k)).sort() : [];
     return { self: this.d.kp.pub, asOf: stateHash(this.d.state?.ids ?? []),
-      keys: keys.map((key) => { const a = by.get(key) ?? null; return { key, added_by: a, flagged: !!a && removed.has(a) && !this.kept.has(key) }; }) };
+      keys: keys.map((key) => {
+        const a = by.get(key) ?? null, l = this.d.labels.get(key);
+        // Two devices with the same name are both flagged: a stolen device can't pass itself off as another (§2).
+        const same = !!l && keys.some((k) => k !== key && this.d.labels.get(k)?.name.toLowerCase() === l.name.toLowerCase());
+        return { key, added_by: a, flagged: !!a && removed.has(a) && !this.kept.has(key), name: l?.name ?? null, model: l?.model ?? null, same_name: same,
+          last_seen: key === this.d.kp.pub ? null : this.d.lastSeen.get(key) ?? null };
+      }) };
   }
   removed(since = 0): RemovedEntry[] { return this.log.filter((e) => e.seq > since).map((e) => ({ ...e })); }
   onRemoved(cb: (e: MembersEvent) => void): () => void { this.#listeners.add(cb); return () => void this.#listeners.delete(cb); }

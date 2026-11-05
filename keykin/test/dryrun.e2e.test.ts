@@ -284,6 +284,14 @@ test('G: the extension shows its hello code, the phone scans it and adds it', { 
     assert.equal((await ext.sign({ kind: 1, content: 'gm from the extension, joined by its own QR', tags: [] })).pubkey, s.g);
     assert.ok(ext.checkPaper(s.words.split(/\s+/)), 'the paper check');
     assert.ok(!ext.checkPaper(s.words.replace(/^\S+/, 'zoo').split(/\s+/)));
+    // Account admin §2: each names itself, and each reads the other's name (TS writes, Kotlin reads, and back).
+    await ext.setLabel('Chrome on MacBook', 'Chrome');
+    assert.equal((await phone.cmd({ cmd: 'set_label', name: 'onn tablet', model: 'onn 11 Pro' })).error, undefined);
+    const names = (await phone.cmd({ cmd: 'labels' })).labels;
+    assert.equal(names[ext.kp.pub].name, 'Chrome on MacBook'); assert.equal(names[ext.kp.pub].model, 'Chrome');
+    await ext.fetchLabels();
+    const phoneKey = ext.members.devices().keys.find((k) => k.name === 'onn tablet');
+    assert.ok(phoneKey && phoneKey.model === 'onn 11 Pro' && !phoneKey.same_name, JSON.stringify(ext.members.devices().keys));
     assert.deepEqual((await phone.devices()).sort(), [s.laptop, phone.key, ext.kp.pub].sort());
   } finally { net.close(); }
 });

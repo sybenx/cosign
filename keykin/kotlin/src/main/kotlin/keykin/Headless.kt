@@ -116,6 +116,9 @@ fun main(args: Array<String>) {
                     // The other join direction: scan a new device's hello code, type its digits, approve the add with this
                     // device's lock or, lockless, the paper's words.
                     "invite_scanned" -> JSONObject().put("offered", true).put("check", d.inviteScanned(c.getString("code")))
+                    // Account admin §2: name this device; read every device's name.
+                    "set_label" -> JSONObject().put("event", d.setLabel(c.getString("name"), c.optString("model")).getString("id"))
+                    "labels" -> { d.fetchLabels(); JSONObject().put("labels", JSONObject().also { o -> for (k in d.memberKeys()) o.put(k, d.nameOf(k)) }) }
                     "invite_state" -> d.inviter.let { i -> JSONObject().put("confirmed", i?.confirmed == true).put("contested", i?.contested == true) }
                     "invite_typed" -> JSONObject().put("typed", d.inviter?.typed(c.getString("digits")) == true)
                     "add_invited" -> {

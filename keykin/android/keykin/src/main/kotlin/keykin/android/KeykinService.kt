@@ -65,7 +65,7 @@ class KeykinService : Service() {
         for (k in listOf("error", "check", "joining")) x.remove(k)
         val (self, asOf, keys) = d.members.devices()
         return x.put("joined", true).put("device", self).put("account", d.g).put("state", asOf).put("wiped", d.wiped)
-            .put("devices", JSONArray(keys.map { JSONObject().put("key", it.key).put("flagged", it.flagged) }))
+            .put("devices", JSONArray(keys.map { k -> d.nameOf(k.key).put("key", k.key).put("flagged", k.flagged) }))
             .put("removed", JSONArray(d.members.removed(0).map { it.json() })).put("notices", JSONArray(d.notices.toList()))
             .also { o -> hooked(slot, d); val v = d.guard.view { owner -> d.grants.own[owner.substringAfter(':')]?.optString("says") }
                 o.put("cards", v.getJSONArray("cards")).put("undos", v.getJSONArray("undos")).put("held", d.nip46.heldList())
@@ -232,6 +232,12 @@ class KeykinService : Service() {
         }
 
         // --- UnifiedPush -----------------------------------------------------------------------------------------
+        override fun setLabel(slot: String, name: String): String = try {
+            val d = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
+            // The model is this phone's own, read here: a stolen phone can rename itself, never pass for another model.
+            val model = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
+            slow.submit<String> { d.setLabel(name, model); onWork { publish(slot) }; JSONObject().put("ok", true).toString() }.get(60, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.ExecutionException) { errorJson((e.cause as? Exception) ?: e) } catch (e: Exception) { errorJson(e) }
         override fun pushInstances(slot: String): String = onWork { JSONArray(Memberships.signer(slot).instances()).toString() }
         override fun pushEndpoint(slot: String, instance: String, endpoint: String) = work.execute {
             try { val s = Memberships.signer(slot); s.onEndpoint(instance, endpoint); s.registerPush() } catch (e: Exception) { Log.w(TAG, "pushEndpoint: $e") }

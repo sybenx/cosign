@@ -286,7 +286,50 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         Upkeep.checkOwnShares(g, shares, C, true)
         state = ShareState(ids.toSet(), C, shares)
         afterState()
-        net.host(sk, pub) { from, body, _ -> handle(from, body) }
+        net.host(sk, pub) { from, body, _ -> sawDevice(from); handle(from, body) }
+    }
+    // --- names (Account admin §2, Labels.kt) ------------------------------------------------------------------
+    /** This device's own name and model, as the person set them on it; null until named. */
+    @Volatile var label: Labels.Label? = null; private set
+    @Volatile private var labelState = ""
+    /** Every current device's name, as read from the relays (only names signed by the device they name). */
+    val labels = java.util.concurrent.ConcurrentHashMap<String, Labels.Label>()
+    /** When this device last took a message from each other device: its own observation, never published. */
+    val lastSeen = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private fun sawDevice(from: String) { if (from != pub && from in view.devices && from !in view.removed) lastSeen[from] = net.now }
+    /** Name this device (typed by the person on it; `model` is this device's own, e.g. "Pixel 9a"). */
+    fun setLabel(name: String, model: String): JSONObject {
+        val (n, m) = Labels.clean(name, model)
+        label = Labels.Label(n, m, net.now).also { labels[pub] = it }
+        save()
+        return publishLabel()
+    }
+    private fun publishLabel(): JSONObject {
+        val l = label ?: refuse("no_label")
+        if (baseDk.isEmpty()) refuse("no_data_key")
+        val (state, dk) = dataKey()
+        val u = Labels.event(g, sk, baseDk, state, dk, l, net.now)
+        val signed = sign(u.kind, u.content, u.tags, u.createdAt)
+        protect(signed.getString("id"))
+        net.publishEventTo(signed, recordRelays())
+        labelState = state; save()
+        return signed
+    }
+    /** Read every current device's name from the relays (at most 3 seconds). */
+    fun fetchLabels() {
+        if (baseDk.isEmpty()) return
+        val devices = view.devices.filter { it !in view.removed }
+        val evs = net.query(JSONObject().put("kinds", JSONArray(listOf(Labels.KIND))).put("authors", JSONArray(listOf(g))).put("#d", JSONArray(devices.map { Labels.d(baseDk, it) })), 3000)
+        for (e in evs) protect(e.id)
+        for (k in devices) Labels.read(g, k, baseDk, ::dataKeyFor, evs)?.let { l -> if ((labels[k]?.at ?: -1) <= l.at) labels[k] = l }
+        labels.keys.retainAll(devices.toSet())
+    }
+    /** A device's name fields for a list (Account admin §2: the model always next to the name; `same_name` warns). */
+    fun nameOf(key: String): JSONObject {
+        val l = labels[key]
+        val same = l != null && view.devices.any { k -> k != key && k !in view.removed && labels[k]?.name?.equals(l.name, ignoreCase = true) == true }
+        return JSONObject().put("name", l?.name ?: JSONObject.NULL).put("model", l?.model ?: JSONObject.NULL).put("same_name", same)
+            .put("last_seen", if (key == pub) JSONObject.NULL else lastSeen[key] ?: JSONObject.NULL)
     }
     /** What other members send this device directly (§6.7.6: live devices get the list and their delivery). */
     private fun handle(from: String, body: JSONObject): JSONObject? = when (body.optString("type")) {
@@ -357,6 +400,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         wiped = true; state = ShareState(emptySet(), state.C, emptyMap())
         baseDk = ""; dkSeeds.clear(); releaseSeeds.clear(); pending.clear(); kept.clear(); paperVerified.clear(); dkHistory.clear()
         notices.clear(); onSiteRequest = null; carried = JSONObject(); pushKeys.clear(); inviter = null
+        label = null; labels.clear(); lastSeen.clear()
         reissued.clear(); reissueEphs.clear(); blamed.clear(); forceReissue.clear(); grants.clear(); meta.clear(); history.clear(); guard.clear(); synchronized(undoOutbox) { undoOutbox.clear() }; synchronized(xCache) { xCache.clear() }
         for (cb in gone) try { cb() } catch (_: Exception) {}
         save()
@@ -463,6 +507,10 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         x.optJSONArray("blamed")?.let { a -> for (k in 0 until a.length()) blamed += a.getString(k) }
         x.optJSONArray("forceReissue")?.let { a -> for (k in 0 until a.length()) forceReissue += a.getString(k) }
         members.load(x.optJSONObject("members"))
+        (x.opt("label") as? JSONObject)?.let { l -> label = Labels.Label(l.optString("name"), l.optString("model"), l.optLong("at")) }
+        labelState = x.optString("labelState")
+        x.optJSONArray("labels")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> p.optJSONObject(1)?.let { l -> labels[p.getString(0)] = Labels.Label(l.optString("name"), l.optString("model"), l.optLong("at")) } } }
+        x.optJSONArray("lastSeen")?.let { a -> for (k in 0 until a.length()) a.optJSONArray(k)?.let { p -> lastSeen[p.getString(0)] = p.getLong(1) } }
         grants.load(x.optJSONObject("grants"))
         meta.load(x.optJSONObject("meta"))
         history.load(x.optJSONObject("history")); guard.load(x.optJSONObject("guard"))
@@ -603,6 +651,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("kept", ja(kept.map { (k, v) -> ja(listOf(k, v)) })).put("paperVerified", ja(paperVerified.map { (k, v) -> ja(listOf(k, v)) }))
             .put("pendingDeltas", ja(pending.flatMap { (id, m) -> m.map { (from, b) -> ja(listOf("$id:$from", b)) } })).put("notices", ja(notices.toList()))
             .put("dkHistory", ja(dkHistory.map { ja(it) })).put("members", members.dump())
+            .put("label", label?.json() ?: JSONObject.NULL).put("labelState", labelState)
+            .put("labels", ja(labels.map { (k, l) -> ja(listOf(k, l.json())) })).put("lastSeen", ja(lastSeen.map { (k, t) -> ja(listOf(k, t)) }))
             .put("pushKeys", ja(pushKeys.map { (u, k) -> ja(listOf(u, k)) }))
             .put("reissued", ja(reissued.map { (k, h) -> ja(listOf(k, h)) })).put("reissueEphs", ja(reissueEphs.map { (k, e) -> ja(listOf(k, e)) }))
             .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted())).put("grants", grants.dump())
@@ -664,6 +714,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val tg = System.currentTimeMillis()
             val evs = grants.fetch(net)
             Keykin.trace?.invoke("fetch: grants ${System.currentTimeMillis() - tg} ms")
+            // Account admin §2: every device's name; this device's own re-sent under the current state's data key.
+            try { fetchLabels(); if (label != null && labelState != dataKey().first) publishLabel() } catch (_: Exception) {}
             // An own helper grant unused for 90 days by the helper's report expires: the helper is told (review 19 H5).
             for (e in grants.own.values.toList()) if (e.optBoolean("helper") && Grants.expired(e, net.now, grants.lastUsedOf(e.getString("id")))) grants.end(pub, e.getString("id"))
             if (grants.helperEnds.isNotEmpty()) publishEnds(emptyMap())

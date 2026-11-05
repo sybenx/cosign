@@ -25,6 +25,7 @@ import { destructive, isReplaceable, type Ev } from '../src/destructive.ts';
 import { DataKeys } from './datakey.ts';
 import { VaultCalls } from './vaultcalls.ts';
 import { DoorRequests } from './doors-request.ts';
+import { cleanLabel, labelD, labelEvent, readLabel, KIND_LABELS, type Label } from './labels.ts';
 import { memberSign } from './membersig.ts';
 import { Members } from './members.ts';
 import { extract } from '@noble/hashes/hkdf.js';
@@ -209,7 +210,7 @@ export class DeviceNode implements Node {
     this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.meta?.clear(); this.history?.clear(); this.guard?.clear(); this.vault?.clear(); this.doors?.clear(); this.undoOutbox = [];
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.reissued.clear(); this.reissueEphs.clear(); this.blamed.clear(); this.forceReissue.clear();
-    this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
+    this.pushKeys.clear(); this.notices = []; this.label = null; this.labels.clear(); this.lastSeen.clear(); this.#f1 = null; this.signWatch = new SignWatch();
     this.nip46?.sleep(); this.nip46 = new Nip46Home(this);   // signer keys go with everything else (core §7.3)
     if (!was) queueMicrotask(() => { try { this.onRemoved?.(why); } catch { /* the app's */ } });
   }
@@ -333,6 +334,11 @@ export class DeviceNode implements Node {
       else await this.grants.upkeep();
       for (const e of (await this.bus.events.query({ kinds: [KIND_GRANTS], authors: [this.g] })).events)
         if ((e.tags.find((t: string[]) => t[0] === 'd')?.[1] ?? '').startsWith('keykin-')) this.#protect(e.id);
+    } catch { /* relays out of reach: next time */ }
+    // Account admin §2: every device's name; this device's own re-sent under the current state's data key.
+    if (this.bus.events && this.baseDk) try {
+      await this.fetchLabels();
+      if (this.label && this.labelState !== this.dataKeys.current().state) await this.#publishLabel();
     } catch { /* relays out of reach: next time */ }
     // Device policy §1: every device's records, read with each catch-up; this device's own published at most
     // every 10 minutes.
@@ -815,7 +821,7 @@ export class DeviceNode implements Node {
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       reissued: [...this.reissued], reissueEphs: [...this.reissueEphs], blamed: [...this.blamed], forceReissue: [...this.forceReissue],
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox, seedOnly: [...this.seedOnly], vaultApps: this.vault.dump(), doors: this.doors.dump(),
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), label: this.label, labelState: this.labelState, labels: [...this.labels], lastSeen: [...this.lastSeen], lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox, seedOnly: [...this.seedOnly], vaultApps: this.vault.dump(), doors: this.doors.dump(),
       helperReport: this.helperReport, unnamed: [...this.unnamed], report: { key: this.reportKey, at: this.reportAt, seq: this.reportSeq } });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
@@ -840,6 +846,7 @@ export class DeviceNode implements Node {
     d.nip46.load(x.nip46); d.grants.load(x.grants); d.meta.load(x.meta); d.protectedIds = new Set(x.protectedIds ?? []);
     d.dataKeys.load(x.dkHistory);
     d.members.load(x.members);
+    d.label = x.label ?? null; d.labelState = x.labelState ?? ''; d.labels = new Map(x.labels ?? []); d.lastSeen = new Map(x.lastSeen ?? []);
     d.#lists = new Map(x.lists ?? []);
     d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? []; d.seedOnly = new Map(x.seedOnly ?? []); d.vault.load(x.vaultApps); d.doors.load(x.doors);
     d.helperReport = x.helperReport ?? null; d.unnamed = new Map(x.unnamed ?? []);
@@ -931,6 +938,44 @@ export class DeviceNode implements Node {
   }))(this);
   /** Doors §1's evidence for a decrypt to the account itself: every current device's records. */
   get evidence(): Evidence { return this.meta.evidence(); }
+  // --- names (Account admin §2, device/labels.ts) -------------------------------------------------------------
+  /** This device's own name and model, as the person set them; null until named. */
+  label: Label | null = null;
+  /** The state whose data key this device's label was last published under. */
+  labelState = '';
+  /** Every current device's name, as read from the relays (only names signed by the device they name). */
+  labels = new Map<string, Label>();
+  /** When this device last took a message from each other device: its own observation, never published. */
+  lastSeen = new Map<string, number>();
+  /** Name this device (the person typed it on this device; `model` is the device's own, e.g. "Pixel 9a"). */
+  async setLabel(name: string, model: string): Promise<NostrEvent> {
+    const c = cleanLabel(name, model);
+    this.label = { ...c, at: this.now };
+    this.labels.set(this.kp.pub, this.label);
+    this.persist();
+    return this.#publishLabel();
+  }
+  async #publishLabel(): Promise<NostrEvent> {
+    if (!this.label || !this.baseDk) refuse('no_label');
+    const dk = this.dataKeys.current();
+    const signed = await this.sign(labelEvent(this.g, this.kp, this.baseDk, dk, this.label!, this.now));
+    this.#protect(signed.id);
+    await this.bus.events?.publishEvent(signed);
+    this.labelState = dk.state; this.persist();
+    return signed;
+  }
+  /** Read every current device's name from the relays. */
+  async fetchLabels(): Promise<void> {
+    if (!this.bus.events || !this.baseDk || !this.m) return;
+    const devices = [...this.m.devices].filter((k) => !this.m!.removed.has(k));
+    const evs = (await this.bus.events.query({ kinds: [KIND_LABELS], authors: [this.g], '#d': devices.map((k) => labelD(this.baseDk, k)) })).events as NostrEvent[];
+    for (const e of evs) this.#protect(e.id);
+    for (const k of devices) {
+      const l = readLabel(this.g, k, this.baseDk, (st) => this.dataKeys.forState(st), evs);
+      if (l && (!this.labels.get(k) || l.at >= this.labels.get(k)!.at)) this.labels.set(k, { name: l.name, model: l.model, at: l.at });
+    }
+    for (const k of [...this.labels.keys()]) if (!devices.includes(k)) this.labels.delete(k);
+  }
   protectedIds = new Set<string>();
   /** The account's keykin- events (every device's grants and metadata): no site deletes one by id (M6). */
   #protect(id: string) { this.protectedIds.add(id); if (this.protectedIds.size > 50_000) this.protectedIds.delete(this.protectedIds.values().next().value!); }
@@ -1374,6 +1419,8 @@ export class DeviceNode implements Node {
   }
 
   async handle(from: string, body: any, sentAt: number): Promise<any> {
+    // "Last seen" (Account admin §2): this device's own observation of another device, never published.
+    if (from !== this.kp.pub && this.m?.devices.has(from) && !this.m.removed.has(from)) this.lastSeen.set(from, this.now);
     const a = await this.handleMsg(from, body, sentAt);
     this.persist();
     return a;

@@ -45,6 +45,11 @@ interface IKeykin {
      *  the status to "confirmed" (core 14.24). Then the add is approved on KeykinApprove ("add_invited") as for an
      *  invite. {"error": code} on failure. */
     String inviteScanned(String slot, String helloCode);
+    /** Name this phone (Account admin §2), as the person typed it; its model is read in the signer process. Every
+     *  device's entry in the state's "devices" then carries "name", "model", "same_name" (two devices with one name:
+     *  show a warning) and "last_seen" (unix s, this phone's own observation; null for itself or never). Names are
+     *  read with each catch-up. {"ok": true} or {"error": code}. */
+    String setLabel(String slot, String name);
     /** The membership's end on this phone: its sealed state and key go. */
     oneway void forget(String slot);
 
