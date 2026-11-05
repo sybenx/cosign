@@ -1,6 +1,7 @@
 // Upkeep's server-side rules and proofs (core §6.7.3–§6.7.4, §6.5 step 4, §7.2). Pure.
 
-import { sha, shaHex, bytesToHex, randomBytes, hexToBytes, refuse, u32be, utf8Strict, strictJson } from './bytes.ts';
+import { sha, shaHex, bytesToHex, randomBytes, hexToBytes, refuse, u32be, utf8Strict, strictJson, jcs } from './bytes.ts';
+import { base64 as b64 } from '@scure/base';
 import { type Commitment, derivePoint, deriveDelta, mul, mod, compBytes, compHex, pointFrom, scalarFrom, scalarHex, G } from './curve.ts';
 import { checkApproval, approvalHash, type Authority } from './approval.ts';
 import { itemHash, openItem, sealItem, commitmentAt, wrapUnder, unwrapUnder, type Item } from './redeal.ts';
@@ -101,11 +102,68 @@ export function baseItem(backup: KeyPair, releaseSeed: string, shares: Map<numbe
   return { ...item, sig: schnorrSign(sha(itemHash(item)), backup.sk) };
 }
 
+// --- core 14.21: every data-key seed reaches the paper (§4.5, §7.2) ---------------------------------------
+/** At most this many `id ‖ seed` records in one seed or seed-only item. */
+export const SEED_RECORDS_MAX = 1000;
+/** Records as base64 of binary `id (16 bytes) ‖ seed (32 bytes)`, sorted by id. */
+export function packSeeds(records: [string, string][]): string {
+  const sorted = [...records].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  const out = new Uint8Array(sorted.length * 48);
+  sorted.forEach(([id, seed], k) => { out.set(hexToBytes(id), 48 * k); out.set(hexToBytes(seed), 48 * k + 16); });
+  return b64.encode(out);
+}
+export function unpackSeeds(text: unknown): [string, string][] {
+  if (typeof text !== 'string') refuse('bad_item', 'seed records');
+  const b = b64.decode(text as string);
+  if (b.length % 48 !== 0 || b.length / 48 > SEED_RECORDS_MAX) refuse('bad_item', 'seed records');
+  return Array.from({ length: b.length / 48 }, (_, k) => [bytesToHex(b.slice(48 * k, 48 * k + 16)), bytesToHex(b.slice(48 * k + 16, 48 * k + 48))] as [string, string]);
+}
+/** A paper's seed items: every seed the printer holds, at most 1,000 per item, NIP-44 to K, signed by K, under the
+ *  paper release seed (the release seed of the redeal dealt with the paper change). */
+export function seedItems(K: KeyPair, paperReleaseSeed: string, records: [string, string][]): Item[] {
+  const sorted = [...records].sort((a, b) => (a[0] < b[0] ? -1 : 1)), out: Item[] = [];
+  for (let k = 0; k < sorted.length; k += SEED_RECORDS_MAX) {
+    const { item } = sealItem('seeds', null, K.pub, paperReleaseSeed, packSeeds(sorted.slice(k, k + SEED_RECORDS_MAX)));
+    out.push({ ...item, sig: schnorrSign(sha(itemHash(item)), K.sk) });
+  }
+  return out;
+}
+/** The pin (`inner`): SHA-256 over the JCS of the base item's hash then the seed items' hashes. */
+export const materialInner = (base: Item, seeds: Item[]) => shaHex(jcs([itemHash(base), ...seeds.map(itemHash)]));
+/** A device's seed-only item for backup key K (§4.5): seeds it holds, NIP-44 to K from a fresh ephemeral key, under the
+ *  paper release seed, naming the paper's redeal, signed `detached("paper-reissue-seed", …)` by the device. */
+export function seedOnlyItem(g: string, by: KeyPair, K: string, paperRedeal: string, paperReleaseSeed: string, records: [string, string][]): Item {
+  const { item } = sealItem('seed-only', paperRedeal, K, paperReleaseSeed, packSeeds(records));
+  const full = { ...item, by: by.pub };
+  return { ...full, sig: schnorrSign(seedOnlyDigest(g, full), by.sk) };
+}
+export const seedOnlyDigest = (g: string, it: Item) => detachedDigest('paper-reissue-seed', g, { ...it, sig: undefined });
+/** What a server checks of a seed-only item: for the current K, naming the paper's redeal, by a current device. */
+/** `paperRedeal`: the redeal dealt with K's paper change, null for a creation paper, undefined while not yet seen. */
+export function checkSeedOnly(g: string, it: Item, K: string | null, paperRedeal: string | null | undefined, isDevice: (k: string) => boolean): string | null {
+  if (it?.kind !== 'seed-only' || typeof it.box !== 'string' || typeof it.eph !== 'string') return 'bad_item';
+  if (!K || it.to !== K) return 'not_current_backup';
+  if (paperRedeal === undefined || (it.redeal ?? null) !== paperRedeal) return 'unknown_redeal';
+  if (!it.by || !isDevice(it.by)) return 'not_device';
+  try { if (!schnorrVerify(it.sig!, seedOnlyDigest(g, it), it.by)) return 'bad_signature'; } catch { return 'bad_signature'; }
+  return null;
+}
+/** Open seed or seed-only items with K: their seeds, each kept only if it matches a co-signed redeal's `dk`. */
+export function openSeeds(items: Item[], paperReleaseSeed: string, backupSk: Uint8Array, redeals: Redeal[]): Map<string, string> {
+  const dkOf = new Map(redeals.map((r) => [r.id, r.dk])), out = new Map<string, string>();
+  for (const it of items) try {
+    for (const [id, seed] of unpackSeeds(openItem(it, paperReleaseSeed, { backupSk }))) if (dkOf.get(id) === shaHex(hexToBytes(seed))) out.set(id, seed);
+  } catch { /* an item that doesn't open costs only itself */ }
+  return out;
+}
+
 /** The holder sums the base and the paper items of exactly the redeals in the servers' state and
  *  checks the result against `P_b^S`. `seeds` maps a redeal id (or 'base') to its release seed. */
 export function openMaterial(o: { g: string; backup: KeyPair; pin: string; base: Item; baseSeed: string; items: Item[]; seeds: Map<string, string>;
   C0: Commitment; redeals: Redeal[]; state: Set<string> }) {
-  if (itemHash(o.base) !== o.pin) refuse('bad_material', 'the base does not match its pin');
+  // Core 14.21: the pin covers the base and the paper's seed items together.
+  const seedIts = o.items.filter((x) => x.kind === 'seeds' && x.to === o.backup.pub);
+  if (materialInner(o.base, seedIts) !== o.pin) refuse('bad_material', 'the base and seed items do not match their pin');
   if (!schnorrVerify(o.base.sig, sha(itemHash(o.base)), o.backup.pub)) refuse('bad_material', 'not signed by the backup key');
   const base = openItem(o.base, o.baseSeed, { backupSk: o.backup.sk });
   const shares = new Map<number, bigint>(base.shares.map(([i, s]: [number, string]) => [i, scalarFrom(s)]));
@@ -139,6 +197,10 @@ export function openMaterial(o: { g: string; backup: KeyPair; pin: string; base:
   }
   const C = commitmentAt(o.C0, o.redeals.filter((r) => o.state.has(r.id)));
   for (const [i, s] of shares) if (!mul(s).equals(derivePoint(C, BigInt(i)))) refuse('bad_material', `the sum misses P_${i}`);
+  // F11 step 4: every seed of the seed items and every seed-only item it can open, stranded and abandoned ones
+  // included, each checked against its change's `dk` (core 14.21).
+  for (const seed of openSeeds([...seedIts, ...o.items.filter((x) => x.kind === 'seed-only' && x.to === o.backup.pub)], o.baseSeed, o.backup.sk, o.redeals).values())
+    if (!dkSeeds.includes(seed)) dkSeeds.push(seed);
   return { shares, C, dk: base.dk as string, dkSeeds };
 }
 export { G, detachedDigest };

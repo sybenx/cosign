@@ -9,7 +9,7 @@ import { finalizeEvent } from 'nostr-tools/pure';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { takenIndices } from '../src/membership.ts';
 import { itemHash } from '../src/redeal.ts';
-import { baseItem } from '../src/upkeep.ts';
+import { baseItem, materialInner } from '../src/upkeep.ts';
 import { unwrap, wrap } from '../src/transport.ts';
 import { softLock } from '../src/lock.ts';
 import { newKey, type KeyPair, type NostrEvent } from '../src/event.ts';
@@ -43,7 +43,7 @@ export async function create(o: { lockless?: boolean; net?: Net; relays?: string
     { key: paper.pub, kind: 'backup', shares: [5, 6] },
   ];
   const rec: EpochContent = { v: 1, g, epoch: { n: 1, id: epochId }, prev: null, t: 4, commitment: commitmentHex(d.commitment), role: 'master', origin: 'import',
-    relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: itemHash(base), seats: { servers: [4, 7, 8], backup: [5, 6], helper: helperSeat(g) } };
+    relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: materialInner(base, []), seats: { servers: [4, 7, 8], backup: [5, 6], helper: helperSeat(g) } };
   const recEv = finalizeEvent({ kind: KIND_EPOCH, created_at: bus.now, tags: [['d', 'keykin'], ['v', '1'], ['epoch', '1']], content: JSON.stringify(rec) },
     Uint8Array.from(Buffer.from(scalarHex(d.secret), 'hex'))) as NostrEvent;
   A.adopt(recEv, [], { ids: new Set(), C: d.commitment, shares: new Map([1, 2, 3].map((i) => [i, d.shares.get(i)!])) });
@@ -273,7 +273,7 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net; hosts?: { 
     { key: A.kp.pub, kind: 'device', shares: [1, 2, 3], ...(A.lock ? { lock: A.lock.pub } : {}) },
     ...replies.map((r, k) => entryFromReply(r, sIdx[k])), { key: paper.pub, kind: 'backup', shares: [5, 6] }];
   const rec: EpochContent = { v: 1, g, epoch: { n: 1, id: epochId }, prev: null, t: 4, commitment: commitmentHex(C), role: 'master', origin: 'dkg',
-    relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: itemHash(base), seats: { servers: sIdx, backup: [5, 6], helper: helperSeat(g) } };
+    relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: materialInner(base, []), seats: { servers: sIdx, backup: [5, 6], helper: helperSeat(g) } };
   // 7. The device signs the record alone with four of its five points (no co-signer knows the account yet).
   const unsigned = { pubkey: g, created_at: bus.now, kind: KIND_EPOCH, tags: [['d', 'keykin'], ['v', '1'], ['epoch', '1']], content: JSON.stringify(rec) };
   const id = eventId(unsigned);

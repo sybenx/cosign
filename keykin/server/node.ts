@@ -14,7 +14,7 @@ import { makeHeir, pieceAckDigest } from '../src/backup.ts';
 import { backupPieces } from '../src/slip39.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
 import { checkDelivery, checkItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
-import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, type Upload } from '../src/upkeep.ts';
+import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, materialInner, checkSeedOnly, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
 import { Inbox, PushRegistry, pushPayload, readPush } from '../src/inbox.ts';
@@ -454,6 +454,27 @@ export class ServerNode implements Node {
     const n = signNotice(this.rec!.g, this.host, { ...this.notice, member: this.kp.pub });
     for (const mem of this.m.members.values()) if (mem.kind === 'device' && !this.m.removed.has(mem.key)) await this.bus.send(this.kp, mem.key, n);
   }
+  /** Core 14.21 §4.5: a seed-only item, from the device itself or passed on by a seated peer: for the current K and
+   *  the redeal dealt with its paper change (or none, for a creation paper), by a current device; the first per device,
+   *  redeal and K is kept, never replaced, kept after that device is removed, and passed on. Nobody verifies its
+   *  contents: the holder keeps any seed whose hash its redeal names. */
+  takeSeedOnly(from: string, body: any) {
+    const m = this.m, peer = body.type === 'reissue_relay', it: Item = body.item;
+    if (peer ? m.members.get(from)?.kind !== 'server' || m.removed.has(from) : !m.devices.has(from) || m.removed.has(from) || it?.by !== from) refuse(peer ? 'not_peer' : 'not_device');
+    const K = m.backupKey;
+    const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === K);
+    const paperRedeal = pc ? [...m.redeals.values()].find((x) => x.listHash === pc.listHash)?.r.id : null;
+    const e = checkSeedOnly(m.g, it, K, paperRedeal, (k) => m.devices.has(k) || (peer && m.members.get(k)?.kind === 'device'));
+    if (e) refuse(e);
+    const held = this.items.find((x) => x.kind === 'seed-only' && x.by === it.by && (x.redeal ?? null) === (it.redeal ?? null) && x.to === it.to);
+    if (!held) {
+      if (this.items.filter((x) => x.kind === 'seed-only').length >= 10_000) refuse('full');
+      this.items.push(it);
+      for (const s of [...m.seats.values()].map((x) => x.holder).filter((x): x is NonNullable<typeof x> => !!x && x.kind === 'server').filter((x) => x.key !== this.kp.pub && x.key !== from))
+        void Promise.resolve(this.bus.send(this.kp, s.key, msg('reissue_relay', m.g, m.epochId, 'member', { item: it }))).catch(() => {});
+    }
+    return { type: 'seed_held', item: itemHash(held ?? it) };
+  }
   /** The re-issued item this server keeps from `by` for a redeal and backup key (§6.7.6): the first one. */
   heldReissue(by: string, redeal: string, K: string): Item | undefined {
     return this.items.find((x) => x.kind === 'reissue' && x.redeal === redeal && x.by === by && x.to === K);
@@ -501,8 +522,13 @@ export class ServerNode implements Node {
     switch (body.type) {
       case 'change': {
         this.takeChanges(body.events);
-        // A committed paper change's base item (F7 step 4) replaces the material base.
-        if (body.material && this.m.accepted.some((p) => p.type === 'paper' && (p.c.change as any).paper.inner === itemHash(body.material) && (p.c.change as any).paper.key === this.m.backupKey)) this.base = body.material;
+        // A committed paper change's base item and seed items (F7 step 4, core 14.21) replace the material base and the
+        // old paper's seed items; a replaced key's seed-only items go too.
+        const seedIts: Item[] = Array.isArray(body.seed_items) ? body.seed_items : [];
+        if (body.material && this.m.accepted.some((p) => p.type === 'paper' && (p.c.change as any).paper.inner === materialInner(body.material, seedIts) && (p.c.change as any).paper.key === this.m.backupKey)) {
+          this.base = body.material;
+          this.items = [...this.items.filter((x) => (x.kind !== 'seeds' && x.kind !== 'seed-only') || x.to === this.m.backupKey).filter((x) => x.kind !== 'seeds'), ...seedIts];
+        }
         return { type: 'ack' };
       }
       case 'changes_get': return { type: 'changes', record: this.recEv, changes: this.co.changes };
@@ -532,6 +558,7 @@ export class ServerNode implements Node {
         return { type: 'ack' };
       case 'paper_reissue':
       case 'reissue_relay': {
+        if (body.item?.kind === 'seed-only') return this.takeSeedOnly(from, body);
         // §6.7.6 (core 14.20): from the re-issuing device itself, or passed on by a seated peer.
         const peer = body.type === 'reissue_relay';
         const r = m.redeals.get(body.item?.redeal)?.r;

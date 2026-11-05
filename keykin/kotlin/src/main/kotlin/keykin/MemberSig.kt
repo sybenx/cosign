@@ -6,17 +6,25 @@ package keykin
 object MemberSig {
     private val SHAPE = Regex("^[a-z0-9][a-z0-9.-]*(/[a-z0-9.-]+)*/(0|[1-9][0-9]*)$")
     const val MESSAGE_MAX = 65_536
-    private val registered = java.util.concurrent.ConcurrentHashMap.newKeySet<String>().apply { add("nostr-vault/ksig/1") }
+    private val registered = java.util.concurrent.ConcurrentHashMap.newKeySet<String>().apply { add("nostr-vault/ksig/1"); add("nostr-vault/owner/1"); add("nostr-vault/keyring/1") }
+    /** Core 14.21 §5.9: domains the app list marks `open` (per domain): apps and the member share them by design. */
+    val OPEN = setOf("nostr-vault/ksig/1", "nostr-vault/owner/1", "nostr-vault/keyring/1")
+    /** Registered itself, or by its whole first segment (an entry like `nostr-vault`). */
+    fun registered(domain: String) = domain in registered || domain.substringBefore('/') in registered
     fun fault(domain: String): String? = when {
         domain.length > 128 -> "a domain is a short string"
         domain.startsWith("keykin") || domain.startsWith("cosign") -> "keykin and cosign domains are Keykin Core's own"
         !SHAPE.matches(domain) -> "a domain is lowercase segments ending in a version, like nostr-vault/ksig/1"
         else -> null
     }
-    fun register(domain: String) { fault(domain)?.let { refuse("bad_domain", it) }; registered += domain }
+    fun register(domain: String) {
+        val segment = Regex("^[a-z0-9][a-z0-9.-]*$").matches(domain) && !domain.startsWith("keykin") && !domain.startsWith("cosign")
+        if (!segment) fault(domain)?.let { refuse("bad_domain", it) }
+        registered += domain
+    }
     fun digest(domain: String, message: ByteArray): ByteArray {
         fault(domain)?.let { refuse("bad_domain", it) }
-        if (domain !in registered) refuse("bad_domain", "$domain is not registered")
+        if (!registered(domain)) refuse("bad_domain", "$domain is not registered")
         if (message.size > MESSAGE_MAX) refuse("too_large", "a message is at most 65,536 bytes")
         return sha(utf8(domain), byteArrayOf(0), message)
     }

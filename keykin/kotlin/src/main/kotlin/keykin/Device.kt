@@ -58,6 +58,42 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
      *  current K, once per redeal and K; the item to every server, `reissue_eph` to the other devices; the bit
      *  once two servers (or every live one, if fewer) confirm they hold it by hash. It waits while another
      *  device's `reissue_eph` for that redeal and K is pending. Returns how many it re-issued now. */
+    // --- core 14.21 §4.5: every data-key seed reaches the paper ----------------------------------------------------
+    /** Every seed this device holds, by the co-signed redeal whose `dk` it matches. */
+    fun seedRecords(): List<Pair<String, String>> {
+        val byHash = synchronized(this) { dkSeeds.toList() }.associateBy { hex(sha(unhex(it))) }
+        return view.redeals.mapNotNull { (id, x) -> byHash[x.r.getString("dk")]?.let { id to it } }
+    }
+    /** Seed-only items sent per backup key, with the servers that confirmed each (TS `seedOnly`). */
+    private val seedOnly = LinkedHashMap<String, MutableList<JSONObject>>()
+    /** Every seed this device holds goes to the current K as seed-only items (and each later seed), re-sent until two
+     *  servers (or every live one, if fewer) confirm it by hash; nothing goes to a K that isn't current. */
+    fun reissueSeeds() {
+        val v = view; val K = v.backup ?: return
+        if (wiped) return
+        val pc = v.papers.firstOrNull { it.key == K }
+        val paperRedeal = pc?.let { p -> v.redeals.entries.firstOrNull { it.value.listHash == p.listHash }?.key }
+        if (pc != null && paperRedeal == null) return
+        val prs = synchronized(this) { if (paperRedeal != null) releaseSeeds[paperRedeal] else releaseSeeds["base"] } ?: return
+        val sent = synchronized(this) { seedOnly.keys.filter { it != K }.forEach { seedOnly.remove(it) }; seedOnly.getOrPut(K) { ArrayList() } }
+        val have = sent.flatMap { x -> x.getJSONArray("ids").let { a -> (0 until a.length()).map { a.getString(it) } } }.toSet()
+        val fresh = seedRecords().filter { it.first !in have }
+        for (batch in fresh.chunked(Upkeep.SEED_RECORDS_MAX))
+            sent += JSONObject().put("ids", JSONArray(batch.map { it.first })).put("item", Upkeep.seedOnlyItem(g, sk, K, paperRedeal, prs, batch)).put("held", JSONArray())
+        val need = minOf(2, maxOf(1, servers().size))
+        for (x in sent) {
+            val held = x.getJSONArray("held"); if (held.length() >= need) continue
+            val hash = Upkeep.itemHash(x.getJSONObject("item"))
+            for (s in servers()) {
+                if ((0 until held.length()).any { held.getString(it) == s.key }) continue
+                val a = try { net.send(sk, s.key, msg("paper_reissue", "member").put("item", x.getJSONObject("item"))) } catch (_: Exception) { continue }
+                if (a.optString("type") == "seed_held" && a.optString("item") == hash) held.put(s.key)
+            }
+        }
+        save()
+    }
+    /** For each seed-only item sent to the current K, how many servers confirmed it. */
+    fun seedOnlyHeld(): List<Int> = synchronized(this) { seedOnly[view.backup]?.map { it.getJSONArray("held").length() } ?: emptyList() }
     fun reissueMissing(): Int = synchronized(reissuing) {
         val v = view; val K = v.backup ?: return 0
         val pc = v.papers.firstOrNull { it.key == K }
@@ -353,6 +389,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         grants.load(x.optJSONObject("grants"))
         meta.load(x.optJSONObject("meta"))
         history.load(x.optJSONObject("history")); guard.load(x.optJSONObject("guard"))
+        x.optJSONArray("seedOnly")?.let { a -> for (i in 0 until a.length()) a.optJSONArray(i)?.let { p -> val l = p.optJSONArray(1) ?: return@let
+            seedOnly[p.getString(0)] = (0 until l.length()).mapNotNull { l.optJSONObject(it) }.toMutableList() } }
         x.optJSONArray("undoOutbox")?.let { a -> synchronized(undoOutbox) { undoOutbox.clear(); for (k in 0 until a.length()) a.optJSONObject(k)?.let { undoOutbox += it } } }
         x.optJSONArray("protectedIds")?.let { a -> for (k in 0 until a.length()) protectedIds += a.getString(k) }
         afterState()
@@ -493,6 +531,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             .put("blamed", ja(blamed.sorted())).put("forceReissue", ja(forceReissue.sorted())).put("grants", grants.dump())
             .put("meta", meta.dump()).put("protectedIds", ja(synchronized(protectedIds) { protectedIds.toList() }))
             .put("history", history.dump()).put("guard", guard.dump())
+            .put("seedOnly", JSONArray(synchronized(this) { seedOnly.map { (k, v) -> JSONArray(listOf(k, JSONArray(v))) } }))
         for ((k, f) in snapshotParts) try { x.put(k, f()) } catch (_: Exception) {}
         x.put("undoOutbox", ja(synchronized(undoOutbox) { undoOutbox.toList() }))
         if (!x.has("name")) x.put("name", "kotlin")
@@ -533,6 +572,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         // §6.7.6 (core 14.20): check others' re-issued items before destroying anything, then re-issue what's left.
         checkReissues()
         reissueMissing()
+        reissueSeeds()
         // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
         if (baseDk.isNotEmpty()) try {
             // Doors §2: from the counted relays, a majority of them (and of the last publish's set) for a good fetch.
@@ -755,7 +795,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         for (w in sigmas) net.publishEvent(w)
         // §4.2 step 4: the welcome, with what a device holds of the account.
         val w = msg("welcome", "member").put("record", recEv.json()).put("changes", JSONArray(changes.map { it.json() })).put("state", JSONArray(st.ids.sorted()))
-            .put("base_dk", baseDk).put("dk", JSONArray(dkSeeds)).put("seeds", JSONArray(releaseSeeds.map { (k, x) -> JSONArray(listOf(k, x)) }))
+            .put("base_dk", baseDk).put("dk", JSONArray(seedRecords().map { (id, seed) -> JSONObject().put("id", id).put("seed", seed) })).put("seeds", JSONArray(releaseSeeds.map { (k, x) -> JSONArray(listOf(k, x)) }))
         carried.opt("items")?.let { w.put("items", it) }; carried.opt("base")?.let { w.put("base", it) }
         val ack = net.send(sk, a.n, w)
         if (ack.optString("type") != "ack") refuse(ack.optString("code").ifEmpty { "welcome_failed" })
@@ -831,6 +871,25 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
     /** The data key (core §4.5), as device/datakey.ts gives it in TS: the key new data is written under,
      *  and the state hash it names. `dk(S) = HKDF("keykin-dk/1", base ‖ seeds of S, sorted)`. */
+    /** Core 14.21 §4.5, for apps: `HKDF-SHA256(empty salt, dk(S), utf8(domain) ‖ 0x00 ‖ bytes, 32)` for the state named
+     *  by the sorted redeal ids `ids` (every id a co-signed redeal whose `base` is in the list, none beside one that
+     *  abandons it), under a granted domain; never dk(S) itself, and never a `need_seeds` on an app's behalf. */
+    @Synchronized fun derive(ids: List<String>, domain: String, bytes: ByteArray): ByteArray {
+        MemberSig.fault(domain)?.let { refuse("bad_domain", it) }
+        if (!MemberSig.registered(domain)) refuse("bad_domain", "$domain is not granted")
+        if ((1 until ids.size).any { ids[it] <= ids[it - 1] }) refuse("not_a_state", "sorted redeal ids, once each")
+        val v = view; val set = ids.toSet()
+        for (id in ids) {
+            val r = v.redeals[id]?.r ?: refuse("not_a_state", "$id is no co-signed redeal")
+            fun arr(n: String) = r.optJSONArray(n)?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+            if (arr("base").any { it !in set }) refuse("not_a_state", "$id's base isn't in the list")
+            if (arr("abandons").any { it in set }) refuse("not_a_state", "$id abandons a redeal in the list")
+        }
+        val dk = derive(ids) ?: refuse("missing_seed", "this device lacks a seed of that state")
+        return hkdf32(dk, utf8(domain) + byteArrayOf(0) + bytes)
+    }
+    /** The app's view of the current state: its ids and hash, never a key. */
+    @Synchronized fun currentState(): Pair<List<String>, String> = state.ids.sorted().let { it to Codes.stateHash(it) }
     @Synchronized fun dataKey(): Pair<String, ByteArray> {
         val key = derive(state.ids) ?: refuse("no_data_key", if (wiped) "this device was removed or wiped" else "this device holds no data key (a seed still missing)")
         return state.hash to key
@@ -903,7 +962,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             sigmas.clear()
             for (k in listOf(from) + r.view.members.filter { it.kind == "server" }.map { it.key }) net.tell(sk, k, JSONObject().put("type", "ack"))
             // The welcome carries the base data key and every data-key seed (core §4.2 step 4, §4.5).
-            val seeds = w.optJSONArray("dk")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? String)?.takeIf { s -> Regex("^[0-9a-f]{64}$").matches(s) } } } ?: emptyList()
+            // As `{id, seed}` records (core 14.21) or bare seeds; a seed is used only where its redeal's `dk` names it.
+            val seeds = w.optJSONArray("dk")?.let { a -> (0 until a.length()).mapNotNull { k -> (a.opt(k) as? String ?: (a.opt(k) as? JSONObject)?.opt("seed") as? String)?.takeIf { s -> Regex("^[0-9a-f]{64}$").matches(s) } } } ?: emptyList()
             return Device(sk, r.recEv, r.rec, r.changes, r.ids, r.shares, net, w.optString("base_dk"), seeds).also { it.lock = lock }
         }
     }

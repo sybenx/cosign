@@ -15,8 +15,8 @@ import { checkApproval, approvalType, approvalHash, placeholderList, changeKey, 
 import { computeMembership, parseChange, adopt, type Membership } from './membership.ts';
 import { pointFrom, commitmentFrom, scalarHex, type Commitment } from './curve.ts';
 import { stateOf, commitmentAt, type State } from './redeal.ts';
-import { verifyRerepair, redealMissing, postListView, postListBackup, type Upload } from './upkeep.ts';
-import { itemHash } from './redeal.ts';
+import { verifyRerepair, redealMissing, postListView, postListBackup, materialInner, type Upload } from './upkeep.ts';
+import { itemHash, type Item } from './redeal.ts';
 import { RepairHelper } from './repair.ts';
 import { requestApprovers } from './requests.ts';
 import { checkEnroll } from './serverprofile.ts';
@@ -600,9 +600,13 @@ export class CoSigner {
         case 'paper': {
           if (ch.paper.replaces !== this.m.backupKey) refuse('not_current_backup');
           if (this.m.members.has(ch.paper.key) || this.m.removed.has(ch.paper.key)) refuse('invariant', 'a paper key is a fresh key');
-          // The base material item travels with the request: its hash is `inner`, signed by K (§6.7.10).
-          const it = msg.material;
-          if (!it || itemHash(it) !== ch.paper.inner || it.to !== ch.paper.key || !schnorrVerify(it.sig, sha(itemHash(it)), ch.paper.key)) refuse('bad_material');
+          // The base item and the seed items travel with the request: together they hash to `inner`, each signed by
+          // K (§6.7.10, core 14.21 §7.2); and `seeds` lists every redeal in `state`.
+          const it = msg.material, seedItems: Item[] = Array.isArray(msg.seed_items) ? msg.seed_items : [];
+          if (!it || it.kind !== 'base' || seedItems.some((x) => x?.kind !== 'seeds') || materialInner(it, seedItems) !== ch.paper.inner) refuse('bad_material');
+          for (const x of [it, ...seedItems]) if (x.to !== ch.paper.key || !schnorrVerify(x.sig, sha(itemHash(x)), ch.paper.key)) refuse('bad_material');
+          const seeds = new Set<string>(Array.isArray(ch.paper.seeds) ? ch.paper.seeds : []);
+          if (!ch.paper.state.every((id: string) => seeds.has(id))) refuse('bad_material', 'the paper\'s seeds miss a redeal of its state');
           break;
         }
         case 'redeal': {

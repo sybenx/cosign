@@ -83,6 +83,21 @@ object Upkeep {
     }
 
     /** §7.2: an item's hash, over the item without its `sig`. */
+    // --- core 14.21 §4.5: seed-only re-issues -------------------------------------------------------------------
+    const val SEED_RECORDS_MAX = 1000
+    /** Records as base64 of binary `id (16) ‖ seed (32)`, sorted by id, as TS `packSeeds`. */
+    fun packSeeds(records: List<Pair<String, String>>): String {
+        val sorted = records.sortedBy { it.first }; val out = ByteArray(48 * sorted.size)
+        sorted.forEachIndexed { k, (id, seed) -> System.arraycopy(unhex(id), 0, out, 48 * k, 16); System.arraycopy(unhex(seed), 0, out, 48 * k + 16, 32) }
+        return java.util.Base64.getEncoder().encodeToString(out)
+    }
+    /** A device's seed-only item for backup key K: NIP-44 to K from a fresh key, under the paper release seed, naming the
+     *  paper's redeal (null for a creation paper), signed `detached("paper-reissue-seed", item without sig)`. */
+    fun seedOnlyItem(g: String, sk: ByteArray, K: String, paperRedeal: String?, paperReleaseSeed: String, records: List<Pair<String, String>>): JSONObject {
+        val (item, _) = Deal.sealItem("seed-only", paperRedeal, K, paperReleaseSeed, packSeeds(records))
+        item.put("by", Keykin.secp.pub(sk))
+        return item.put("sig", Keykin.secp.schnorrSign(Approvals.detached("paper-reissue-seed", g, Json.obj(Jcs.of(item))), sk, ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }))
+    }
     fun itemHash(item: JSONObject): String = hex(sha(utf8(Jcs.of(JSONObject(item.toString()).also { it.remove("sig") }))))
     /** Open an item under its release seed, with the conversation key derived from its ephemeral secret
      *  towards its `to` (core 14.20: never a key taken from the sender), or from K's secret towards its `eph`. */

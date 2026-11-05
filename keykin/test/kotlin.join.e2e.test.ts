@@ -67,7 +67,7 @@ test('a Kotlin device joins by invite code, checked both ways, and signs', { ski
   // Review 12 K1: `n` is public, so a stranger races a junk welcome; the Kotlin device ignores it.
   const stray = net.send(newKey(), n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: [], state: [] }));
   // The inviter's welcome overtakes the sigmas: the Kotlin device waits for them.
-  const welcomed = net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.dkSeeds }));
+  const welcomed = net.send(A.kp, n, msg('welcome', A.g, A.epochId, 'member', { record: A.recEv, changes: A.changes, state: [...A.state!.ids], base_dk: A.baseDk, dk: A.seedRecords() }));
   assert.equal((await welcomed).type, 'ack');
   const server0 = A.servers()[0];
   for (const i of indices)

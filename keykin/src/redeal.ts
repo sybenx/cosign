@@ -27,7 +27,8 @@ export function unwrapUnder(seed: string, hex: string): Uint8Array {
 }
 
 /** One material item (§7.2): sealed to the backup key K, then wrapped under a release seed. */
-export interface Item { kind: 'base' | 'paper' | 'reissue'; redeal: string | null; to: string; eph: string; box: string; clear?: string[]; by?: string; sig?: string }
+/** `seeds`: a paper's seed item; `seed-only`: a device's seed-only re-issue (core 14.21 §4.5, §7.2). */
+export interface Item { kind: 'base' | 'paper' | 'reissue' | 'seeds' | 'seed-only'; redeal: string | null; to: string; eph: string; box: string; clear?: string[]; by?: string; sig?: string }
 export const itemHash = (it: Item) => shaHex(jcs({ ...it, sig: undefined }));
 
 /** Returns the item and its ephemeral secret (`eph`), which devices get as `paper_eph` / `reissue_eph`

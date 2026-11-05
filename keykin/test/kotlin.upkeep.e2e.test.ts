@@ -46,20 +46,30 @@ test('a Kotlin device applies a redeal it slept through, reports the removal and
   net.kill(B.kp.pub);
   const list: Change[] = [{ remove: C.kp.pub }, { redeal: { dealer: A.kp.pub } }];
   await A.submit(list, A.approveLock(list));
+  const removedAt = stateOf(A.state!);
+  // Core 14.21: a new paper while B sleeps; B, waking, re-issues every seed it holds to the new K as seed-only items.
+  const K = await A.newPaper((l) => A.approveLock(l));
   const after = stateOf(A.state!);
 
   const cmds = join(dirname(snap), 'cmds.json');
-  writeFileSync(cmds, JSON.stringify([{ cmd: 'fetch' }, { cmd: 'members' }, { cmd: 'datakey' }, { cmd: 'sign', content: 'gm from Kotlin after the redeal' }]));
+  writeFileSync(cmds, JSON.stringify([{ cmd: 'fetch' }, { cmd: 'members' }, { cmd: 'datakey' }, { cmd: 'sign', content: 'gm from Kotlin after the redeal' },
+    { cmd: 'seeds' }, { cmd: 'derive', domain: 'nostr-vault/keyring/1', bytes: 'vault 1' }]));
   const r = spawnSync(join(root, 'kotlin/gradlew'), ['-q', '-p', join(root, 'kotlin'), 'run', `--args=${snap} ${relays.join(',')} ${cmds}`], { env: { ...process.env, JAVA_HOME: java }, encoding: 'utf8', timeout: 300_000 });
   const all = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
   assert.equal(all[0]?.device, B.kp.pub, r.stdout + r.stderr.slice(-800));
-  const [fetched, members, dk, ev] = all.slice(1);
+  const [fetched, members, dk, ev, seeds, derived] = all.slice(1);
   assert.equal(fetched.state, after, `the Kotlin device reached A's state: ${JSON.stringify(fetched)}`);
   assert.deepEqual(members.keys.map((k: any) => k.key).sort(), [A.kp.pub, B.kp.pub].sort());
   assert.equal(members.removed.length, 1);
-  assert.deepEqual([members.removed[0].key, members.removed[0].why, members.removed[0].state], [C.kp.pub, 'remove', after], 'the removal, with the post-redeal state');
+  assert.deepEqual([members.removed[0].key, members.removed[0].why, members.removed[0].state], [C.kp.pub, 'remove', removedAt], 'the removal, with the post-redeal state');
   const ts = A.dataKeys.current();
   assert.deepEqual([dk.state, dk.key], [ts.state, Buffer.from(ts.key).toString('hex')], 'the same data key at the new state');
   assert.equal(ev.error, undefined, JSON.stringify(ev));
   assert.ok(verifyEvent(ev) && ev.pubkey === A.g, 'signed as the account at the new state');
+  // The TS servers took the Kotlin device's seed-only items for K (they check the signature), two of them each.
+  assert.ok(seeds.records >= 1 && seeds.held.length >= 1 && seeds.held.every((n: number) => n >= 2), JSON.stringify(seeds));
+  void K;
+  // An app's derived key is the same on a Kotlin and a TS device.
+  const app = A.dataKeys.forApps();
+  assert.equal(derived.key, Buffer.from(app.derive(derived.ids, 'nostr-vault/keyring/1', new TextEncoder().encode('vault 1'))).toString('hex'));
 });

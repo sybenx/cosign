@@ -94,7 +94,7 @@ object Deal {
     /** One material item (§7.2): sealed to the backup key K (NIP-44 from a fresh key), wrapped under a release seed. */
     /** Returns the item and its ephemeral secret (hex): devices get it as `paper_eph` / `reissue_eph` and derive
      *  the conversation key themselves, exactly as K will from its side (core 14.20). */
-    fun sealItem(kind: String, redeal: String?, K: String, releaseSeed: String, body: JSONObject): Pair<JSONObject, String> {
+    fun sealItem(kind: String, redeal: String?, K: String, releaseSeed: String, body: Any): Pair<JSONObject, String> {
         val eph = ByteArray(32).also { rnd.nextBytes(it); it[0] = (it[0].toInt() and 0x7f).toByte() }
         val ck = Nip44.conversationKey(Keykin.secp, eph, K)
         val inner = Nip44.encrypt(Jcs.of(body), ck)

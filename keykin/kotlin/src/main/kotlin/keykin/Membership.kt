@@ -93,9 +93,9 @@ object Approvals {
         val c = list.getJSONObject(k)
         when {
             c.has("redeal") -> JSONObject().put("redeal", JSONObject().put("dealer", c.getJSONObject("redeal").getString("dealer")))
-            // A paper is approved without `inner` and `state`; every other field stays (§6.7.2).
+            // A paper is approved without `inner`, `state` and `seeds` (core 14.21); every other field stays (§6.7.2).
             c.opt("paper") is JSONObject -> { val p = c.getJSONObject("paper"); val o = JSONObject()
-                for (k in p.keyList()) if (k != "inner" && k != "state") o.put(k, p.get(k)); JSONObject().put("paper", o) }
+                for (k in p.keyList()) if (k != "inner" && k != "state" && k != "seeds") o.put(k, p.get(k)); JSONObject().put("paper", o) }
             else -> c
         }
     })
@@ -224,7 +224,10 @@ object Membership {
                 else need(st.has("new"), "bad_change")
                 need(st.has("replaces") && (st.isNull("replaces") || st.get("replaces") is String), "bad_change", "replaces") }
             "paper" -> { val p = ch.getJSONObject("paper"); k32(p.opt("key")); k32(p.opt("replaces")); k32(p.opt("inner"))
-                val state = p.opt("state") as? JSONArray ?: refuse("bad_change", "a committed paper change names its state"); (0 until state.length()).forEach { h16(state.opt(it)) } }
+                val state = p.opt("state") as? JSONArray ?: refuse("bad_change", "a committed paper change names its state"); (0 until state.length()).forEach { h16(state.opt(it)) }
+                // Core 14.21: the ids of every redeal whose seed its seed items carry, sorted, once each.
+                if (p.has("seeds")) { val sd = p.opt("seeds") as? JSONArray ?: refuse("bad_change", "seeds"); (0 until sd.length()).forEach { h16(sd.opt(it)) }
+                    need((1 until sd.length()).all { sd.getString(it) > sd.getString(it - 1) }, "bad_change", "seeds sorted, once each") } }
             "redeal" -> { val r = ch.getJSONObject("redeal"); h16(r.opt("id")); for (f in listOf("dealer", "paper_to", "paper_item", "dk", "rs")) k32(r.opt(f))
                 val D = r.optJSONArray("D"); need(D != null && D.length() == 3, "bad_change", "D is [D1, D2, D3]"); (0 until 3).forEach { point(D!!.getString(it)) }
                 for (f in listOf("base", "abandons")) { val a = r.optJSONArray(f) ?: refuse("malformed"); (0 until a.length()).forEach { h16(a.opt(it)) } }

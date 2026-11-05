@@ -13,7 +13,10 @@
 // app keeps in storage that is never backed up or synced (Android `noBackupFilesDir` and a Keystore key
 // that needs no unlock; iPhone "this device only", never iCloud Keychain). Never published, never sent.
 
-import { bytesToHex, hexToBytes, shaHex, KeykinError } from '../src/bytes.ts';
+import { bytesToHex, hexToBytes, shaHex, KeykinError, utf8ToBytes, concatBytes } from '../src/bytes.ts';
+import { hkdf } from '@noble/hashes/hkdf.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { domainFault, isRegistered } from './membersig.ts';
 import { dataKey, stateHash } from '../src/codes.ts';
 import type { DeviceNode } from './node.ts';
 
@@ -82,6 +85,36 @@ export class DataKeys {
     this.history.push(ids);
     const k = this.#derive(ids);
     if (k) for (const cb of this.#listeners) { try { cb({ state: stateHash(ids), key: k }); } catch { /* a listener never wedges the device */ } }
+  }
+  // --- core 14.21 §4.5: what an app gets. Never dk(S): keys derived from it under a granted domain, for a real state.
+  /** `HKDF-SHA256(salt = empty, ikm = dk(S), info = utf8(domain) ‖ 0x00 ‖ bytes, L = 32)` for the state named by the
+   *  sorted redeal ids `ids`, any state whose seeds this device holds. Refuses a list that isn't a state (every id a
+   *  co-signed redeal whose `base` is inside the list, none beside a redeal that abandons it) and a missing seed; it
+   *  never asks other devices for one on an app's behalf. */
+  derive(ids: string[], domain: string, bytes: Uint8Array): Uint8Array {
+    const f = domainFault(domain); if (f) throw new KeykinError('bad_domain', f);
+    if (!isRegistered(domain)) throw new KeykinError('bad_domain', `${domain} is not granted`);
+    if (!Array.isArray(ids) || ids.some((x, k) => typeof x !== 'string' || (k > 0 && x <= ids[k - 1]))) throw new KeykinError('not_a_state', 'sorted redeal ids, once each');
+    const reds = this.d.m?.redeals;
+    const set = new Set(ids);
+    for (const id of ids) {
+      const r = reds?.get(id)?.r;
+      if (!r) throw new KeykinError('not_a_state', `${id} is no co-signed redeal`);
+      if ((r.base ?? []).some((b: string) => !set.has(b))) throw new KeykinError('not_a_state', `${id}'s base isn't in the list`);
+      if ((r.abandons ?? []).some((a: string) => set.has(a))) throw new KeykinError('not_a_state', `${id} abandons a redeal in the list`);
+    }
+    const dk = this.#derive([...ids]);
+    if (!dk) throw new KeykinError('missing_seed', 'this device lacks a seed of that state');
+    return hkdf(sha256, dk, new Uint8Array(0), concatBytes(utf8ToBytes(domain), new Uint8Array([0]), bytes), 32);
+  }
+  /** The app's view: the device's current state (its ids and hash), never a key. */
+  forApps() {
+    return {
+      derive: (ids: string[], domain: string, bytes: Uint8Array) => this.derive(ids, domain, bytes),
+      current: () => { const ids = [...(this.d.state?.ids ?? [])].sort(); return { ids, state: stateHash(ids) }; },
+      states: () => [...this.history].reverse().map((ids) => ({ ids, state: stateHash(ids) })),
+      onRotate: (cb: (x: { ids: string[]; state: string }) => void) => this.onRotate(() => { const ids = [...(this.d.state?.ids ?? [])].sort(); cb({ ids, state: stateHash(ids) }); }),
+    };
   }
   dump() { return this.history; }
   load(x: unknown) { this.history = Array.isArray(x) ? (x as string[][]) : []; }

@@ -34,7 +34,7 @@ import { makeHeir, pieceAckDigest } from '../src/backup.ts';
 import { backupPieces } from '../src/slip39.ts';
 import { dkg1, dkg2, dkg3 } from '../src/dkg.ts';
 import { checkDelivery, checkItem, reissueItem, checkReissue, deal as dealRedeal, applyRedeal, applicable, commitmentAt, stateOf, itemHash, type State, type Item, type Dealt } from '../src/redeal.ts';
-import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, UPLOAD_TTL_S, type Upload } from '../src/upkeep.ts';
+import { signpostContent, acceptUpload, redealMissing, postListView, postListBackup, rerepairProof, verifyRerepair, needRepairAllowed, baseItem, openMaterial, seedItems, materialInner, seedOnlyItem, openSeeds, SEED_RECORDS_MAX, UPLOAD_TTL_S, type Upload } from '../src/upkeep.ts';
 import { RepairHelper } from '../src/repair.ts';
 import { repairShare } from '../src/frost.ts';
 import { Inbox, PushRegistry, pushPayload, readPush } from '../src/inbox.ts';
@@ -42,7 +42,7 @@ import { encryptPush, decryptPush, vapidHeader, checkVapid } from '../src/webpus
 import { p256 } from '@noble/curves/nist.js';
 import { wrap, unwrap } from '../src/transport.ts';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
-import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList, pairDigest, approvalHash, allowedApprovals } from '../src/approval.ts';
+import { approveRecovery, approveLock, approvePaper, approvePaperRequest, placeholderList, pairDigest, approvalHash, allowedApprovals, checkApproval } from '../src/approval.ts';
 import { deletedDigest, verifyDeleted } from '../src/requests.ts';
 import { F1Watch, SignWatch, signNotice, signAnswer } from '../src/f1.ts';
 import { commitmentFrom, scalarHex, scalarFrom, liftX, type Commitment } from '../src/curve.ts';
@@ -248,7 +248,7 @@ export class DeviceNode implements Node {
   }
 
   /** A whole list with the first live server that answers (§6.7.10). */
-  async signList(evs: Unsigned[], extra: { material?: Item } = {}): Promise<NostrEvent[]> {
+  async signList(evs: Unsigned[], extra: { material?: Item; seed_items?: Item[] } = {}): Promise<NostrEvent[]> {
     let lastErr = 'no_server';
     for (const s of this.servers()) {
       if (!this.bus.alive(s.key)) { lastErr = 'unreachable'; continue; }
@@ -288,6 +288,7 @@ export class DeviceNode implements Node {
     // §6.7.6 (core 14.20): check others' re-issued items before destroying anything, then re-issue what's left.
     await this.checkReissues();
     await this.reissueMissing();
+    await this.reissueSeeds();
     // Doors §2: every device's grants, for listing and signing out; ends made elsewhere applied here.
     if (this.bus.events && this.baseDk) try {
       await this.grants.fetch();
@@ -313,6 +314,66 @@ export class DeviceNode implements Node {
     if (this.role === 'helper') { await this.nip46.helperPrune().catch(() => {}); await this.helperReportNow().catch(() => {}); }
     // Sites' requests kept for this home are answered only now, after the grants' ends (review 16 M5).
     for (const e of nipQueue) try { await this.nip46.handle(e); } catch { /* one never wedges the rest */ }
+  }
+  // --- core 14.21: every data-key seed reaches the paper (§4.5) -------------------------------------------------
+  /** Every seed this device holds, as `{id, seed}` for the co-signed redeal whose `dk` it matches (welcomes,
+   *  handovers, `need_seeds` and the paper carry these). */
+  seedRecords(): { id: string; seed: string }[] {
+    const byHash = new Map(this.dkSeeds.map((x) => [shaHex(hexToBytes(x)), x]));
+    return [...(this.m?.redeals ?? new Map()).entries()].flatMap(([id, x]: [string, any]) => { const seed = byHash.get(x.r.dk); return seed ? [{ id, seed }] : []; });
+  }
+  /** Seeds that arrived (a welcome, `need_seeds`): `{id, seed}` records, or bare seeds as before 14.21; each kept only if
+   *  it matches its redeal's `dk`, and never dropped (core 14.21: every seed for the account's life). */
+  takeSeedRecords(x: unknown) {
+    const dks = new Set([...(this.m?.redeals.values() ?? [])].map((r: any) => r.r.dk));
+    for (const it of Array.isArray(x) ? x.slice(0, 100_000) : []) {
+      const seed = typeof it === 'string' ? it : it && typeof it === 'object' ? (it as any).seed : null;
+      if (typeof seed !== 'string' || !/^[0-9a-f]{64}$/.test(seed)) continue;
+      const id = typeof it === 'object' ? (it as any).id : null;
+      const h = shaHex(hexToBytes(seed));
+      if (id ? this.m?.redeals.get(id)?.r.dk !== h : !dks.has(h)) continue;
+      if (!this.dkSeeds.includes(seed)) this.dkSeeds.push(seed);
+    }
+  }
+  /** F7 step 2: ask every other current device for seeds this one lacks (`need_seeds`), at most an hour in real life. */
+  async askSeeds(f7?: { list: Change[]; approval: Approval }) {
+    for (const d of [...this.m!.members.values()].filter((x) => x.kind === 'device' && x.key !== this.kp.pub && !this.m!.removed.has(x.key))) {
+      const a = await this.bus.send(this.kp, d.key, msg('need_seeds', this.g, this.epochId, 'ask', f7 ? { f7 } : {}));
+      if (a?.type !== 'seeds') continue;
+      try { const o = unwrap(this.kp.sk, a.wrap); if (o.from === d.key) this.takeSeedRecords(o.body.dk); } catch { /* not this one */ }
+    }
+  }
+  /** Seed-only re-issues sent, per backup key: item hash → servers that confirmed it (core 14.21 §4.5). */
+  seedOnly = new Map<string, { ids: string[]; item: Item; held: string[] }[]>();
+  /** Every seed this device holds goes to each new K as seed-only items (and each later seed), re-sent until two
+   *  servers (or every live one, if fewer) confirm it; nothing is sent to a K that isn't current. */
+  async reissueSeeds() {
+    const m = this.m, K = m?.backupKey; if (!m || !K || this.wiped || this.role !== 'device') return;
+    for (const k of [...this.seedOnly.keys()]) if (k !== K) this.seedOnly.delete(k);
+    // The paper release seed: the release seed of the redeal dealt with K's paper change, or the creation one.
+    const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === K);
+    const paperRedeal = pc ? [...m.redeals.values()].find((x) => x.listHash === pc.listHash)?.r.id ?? null : null;
+    const prs = paperRedeal ? this.seeds.get(paperRedeal) : this.seeds.get('base');
+    if (!prs || (pc && !paperRedeal)) return;
+    const sent = this.seedOnly.get(K) ?? [];
+    const have = new Set(sent.flatMap((x) => x.ids));
+    const fresh = this.seedRecords().filter((x) => !have.has(x.id));
+    for (let k = 0; k < fresh.length; k += SEED_RECORDS_MAX) {
+      const batch = fresh.slice(k, k + SEED_RECORDS_MAX);
+      sent.push({ ids: batch.map((x) => x.id), item: seedOnlyItem(this.g, this.kp, K, paperRedeal ?? (null as any), prs, batch.map((x) => [x.id, x.seed])), held: [] });
+    }
+    this.seedOnly.set(K, sent);
+    const live = this.servers().filter((s) => this.bus.alive(s.key));
+    const need = Math.min(2, Math.max(1, live.length));
+    for (const x of sent) {
+      if (x.held.length >= need) continue;
+      for (const s of live) {
+        if (x.held.includes(s.key)) continue;
+        const a = await this.bus.send(this.kp, s.key, msg('paper_reissue', this.g, this.epochId, 'member', { item: x.item }));
+        if (a?.type === 'seed_held' && a.item === itemHash(x.item)) x.held.push(s.key);
+      }
+    }
+    this.persist();
   }
   pendingDeltas = new Map<string, any>();
   pendingHeir: ReturnType<typeof makeHeir> | null = null;
@@ -403,7 +464,7 @@ export class DeviceNode implements Node {
   async submit(list: Change[], approval: Approval, o: { cosigner?: (evs: Unsigned[], extra: object) => Promise<NostrEvent[]>; dieAfterUpload?: boolean; deliverTo?: string[];
     tamper?: (dealt: Dealt, items: { type: string; to: string; release: boolean; wrap: NostrEvent; paper_eph?: boolean; dk_seed?: boolean }[]) => void;
     /** After dealing, before the co-sign: fill in the list (F7's paper `inner`/`state`) and the material. */
-    finish?: (dealt: Dealt) => Promise<{ full: Change[]; material?: Item }> } = {}): Promise<NostrEvent[]> {
+    finish?: (dealt: Dealt) => Promise<{ full: Change[]; material?: Item; seedItems?: Item[] }> } = {}): Promise<NostrEvent[]> {
     const m = this.m!;
     let dealt: Dealt | null = null;
     let full = list;
@@ -429,19 +490,21 @@ export class DeviceNode implements Node {
       full = list.map((c) => ('redeal' in c ? { redeal: dealt!.redeal } : c));
       if (o.dieAfterUpload) { dealt.destroy(); this.bus.kill?.(this.kp.pub); return []; }
     }
-    let material: Item | undefined;
-    if (o.finish && dealt) { const f = await o.finish(dealt); full = f.full; material = f.material; }
+    let material: Item | undefined, seedIts: Item[] | undefined;
+    if (o.finish && dealt) { const f = await o.finish(dealt); full = f.full; material = f.material; seedIts = f.seedItems; }
     let signed: NostrEvent[];
     try {
       // Every event of the list in one request, each with its own nonces (§6.7.10, §5.2).
       const evs: Unsigned[] = full.map((c) => ({ pubkey: this.g, created_at: this.now, kind: KIND_CHANGE, tags: [['v', '1'], ['epoch', this.epochId]],
         content: JSON.stringify({ v: 1, g: this.g, epoch: this.epochId, change: c, list: approvalListOf(list), approval }) }));
-      const extra = material ? { material } : {};
+      const extra = material ? { material, ...(seedIts ? { seed_items: seedIts } : {}) } : {};
       signed = o.cosigner ? await o.cosigner(evs, extra) : evs.length === 1 ? [await this.sign(evs[0], extra as any)] : await this.signList(evs, extra);
     } catch (e) { dealt?.destroy(); throw e; }
     // Deliver the list as one to every server (and live device); then apply our own delta and destroy δ.
     const targets = o.deliverTo ?? [...m.members.values(), ...postListView(m, list).values()].filter((x) => x.kind === 'server').map((x) => x.key);
-    for (const t of new Set(targets)) await this.bus.send(this.kp, t, { type: 'change', events: signed, ...(material ? { material } : {}) });
+    for (const t of new Set(targets)) await this.bus.send(this.kp, t, { type: 'change', events: signed, ...(material ? { material, ...(seedIts ? { seed_items: seedIts } : {}) } : {}) });
+    // This device's own copy of the paper's material (it keeps every item, §7.2).
+    if (material) { this.base = material; this.items = [...this.items.filter((x) => x.kind !== 'seeds'), ...(seedIts ?? [])]; }
     // Live devices get the list and their own delivery directly (21059); asleep ones fetch from inboxes.
     if (dealt) for (const x of postListView(m, list).values()) if (x.kind === 'device' && x.key !== this.kp.pub && this.bus.alive(x.key)) {
       await this.bus.send(this.kp, x.key, { type: 'change', events: signed });
@@ -499,6 +562,15 @@ export class DeviceNode implements Node {
       const repairedAt = [...this.state!.ids].sort();
       const base = baseItem(K, dealt.releaseSeed, shares, this.baseDk, repairedAt);
       shares.clear();
+      // Core 14.21: the paper carries every seed this device holds, abandoned and stranded ones included; any seed of
+      // the state it lacks is asked of the other devices first, and each is checked against its redeal's `dk`.
+      if (repairedAt.some((id) => !this.seedRecords().some((x) => x.id === id))) await this.askSeeds({ list: approvalListOf(list), approval });
+      const records = this.seedRecords().map((x) => [x.id, x.seed] as [string, string]);
+      if (repairedAt.some((id) => !records.some(([i]) => i === id))) refuse('missing_seed', 'a seed of this state is missing: the paper would lose data');
+      const seedIts = seedItems(K, dealt.releaseSeed, records);
+      // Read back with K, as K will at a recovery: every listed seed must come out.
+      const back = openSeeds(seedIts, dealt.releaseSeed, K.sk, [...this.m!.redeals.values()].map((x) => x.r));
+      if (records.some(([id]) => !back.has(id))) refuse('bad_material', 'the seed items don\'t read back');
       await o.duringF7?.();                                  // the person prints and reads back; others go on
       // Backup §1.1 step 3: hand every friend its SLIP-39 piece (2 of 3) with the account card, live,
       // sealed to its pinned holder key; commit only once enough pieces are acknowledged (step 4).
@@ -511,7 +583,7 @@ export class DeviceNode implements Node {
         }
         if (acked < 2) refuse('set_not_recoverable', 'fewer than two pieces acknowledged');
       }                                        // the device keeps K only until the read-back
-      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: itemHash(base), state: repairedAt, ...(heir ? { heir: heir.recordHash } : {}), ...(holders ? { holders } : {}) } }, { redeal: dealt.redeal }], material: base };
+      return { full: [{ paper: { key: K.pub, replaces: this.m!.backupKey!, inner: materialInner(base, seedIts), state: repairedAt, seeds: records.map(([id]) => id).sort(), ...(heir ? { heir: heir.recordHash } : {}), ...(holders ? { holders } : {}) } }, { redeal: dealt.redeal }], material: base, seedItems: seedIts };
     } });
     await this.reissueMissing();
     if (this.keptSecret) {
@@ -665,7 +737,7 @@ export class DeviceNode implements Node {
       pendingDeltas: [...this.pendingDeltas], notices: this.notices,
       reissued: [...this.reissued], reissueEphs: [...this.reissueEphs], blamed: [...this.blamed], forceReissue: [...this.forceReissue],
       pushKeys: [...this.pushKeys].map(([u, k]) => [u, { ...k, sk: bytesToHex(k.sk), auth: bytesToHex(k.auth) }]),
-      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox,
+      f1: this.#f1?.dump() ?? null, signWatch: this.signWatch.dump(), nip46: this.nip46.dump(), grants: this.grants.dump(), meta: this.meta.dump(), protectedIds: [...this.protectedIds], dkHistory: this.dataKeys.dump(), members: this.members.dump(), lists: [...this.#lists], history: this.history.dump(), guard: this.guard.dump(), undoOutbox: this.undoOutbox, seedOnly: [...this.seedOnly],
       helperReport: this.helperReport, unnamed: [...this.unnamed], report: { key: this.reportKey, at: this.reportAt, seq: this.reportSeq } });
   }
   /** A device restarted from storage, checked as core §4.4's handover step 2 says: the record and changes
@@ -691,7 +763,7 @@ export class DeviceNode implements Node {
     d.dataKeys.load(x.dkHistory);
     d.members.load(x.members);
     d.#lists = new Map(x.lists ?? []);
-    d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? [];
+    d.history.load(x.history); d.guard.load(x.guard); d.undoOutbox = x.undoOutbox ?? []; d.seedOnly = new Map(x.seedOnly ?? []);
     d.helperReport = x.helperReport ?? null; d.unnamed = new Map(x.unnamed ?? []);
     d.reportKey = x.report?.key ?? ''; d.reportAt = x.report?.at ?? 0; d.reportSeq = x.report?.seq ?? 0;
     if (x.recEv && x.state) {
@@ -1259,8 +1331,17 @@ export class DeviceNode implements Node {
           // ("*Laptop* caught up", with Report lost, §1.1 item 8).
           const asker = this.m!.members.get(from);
           if (!asker || this.m!.removed.has(from) || !['device', 'server'].includes(asker.kind)) return { type: 'error', code: 'not_member' };
-          const seeds = { release: [...this.seeds], ...(asker.kind === 'device' ? { dk: this.dkSeeds, base_dk: this.baseDk } : {}) };
-          this.notices.push({ kind: 'need_seeds', member: from });
+          const seeds = { release: [...this.seeds], ...(asker.kind === 'device' ? { dk: this.seedRecords(), base_dk: this.baseDk } : {}) };
+          // Core 14.21 §6.7.4: one carrying the asker's own live, unexpired F7 approval, before that F7's step 3 (its
+          // paper isn't committed), is the printer gathering seeds: a quiet line, not "restored its pieces".
+          const f7 = body.f7 && typeof body.f7 === 'object' ? body.f7 : null;
+          const live = f7 && asker.kind === 'device' && Array.isArray(f7.list) && (() => {
+            const p = f7.list.find((c: any) => c?.paper && typeof c.paper.key === 'string');
+            if (!p || this.m!.accepted.some((x) => x.type === 'paper' && (x.c.change as any).paper.key === p.paper.key) || !(f7.approval?.expiry > this.now)) return false;
+            const { error, approvers } = checkApproval(this.m!.authority, f7.list, f7.approval);
+            return !error && approvers.includes(from);
+          })();
+          this.notices.push(live ? { kind: 'making_paper', member: from, dismissable: true } : { kind: 'need_seeds', member: from });
           return { type: 'seeds', wrap: wrap(this.kp.sk, from, { type: 'seeds', ...seeds }) };
         }
         default: return this.co!.handle(from, body, sentAt);
@@ -1318,7 +1399,8 @@ export class PaperHolder implements Node {
     const pc = m.accepted.find((p) => p.type === 'paper' && (p.c.change as any).paper.key === this.kp.pub);
     const pin = pc ? (pc.c.change as any).paper.inner : rec.backup;
     const baseSeed = pc ? seeds.get([...m.redeals.values()].find((x) => x.listHash === pc.listHash)!.r.id)! : seeds.get('base')!;
-    const base = bs.map((b) => b.base as Item).find((b) => itemHash(b) === pin)!;
+    // Core 14.21: the pin covers the base and K's seed items.
+    const base = bs.map((b) => b.base as Item).find((b) => b && materialInner(b, items.filter((x) => x.kind === 'seeds' && x.to === this.kp.pub)) === pin)!;
     const o = openMaterial({ g: this.g, backup: this.kp, pin, base, baseSeed, items, seeds,
       C0: commitmentFrom(rec.commitment), redeals: [...m.redeals.values()].map((x) => x.r), state });
     this.shares = o.shares; this.C = o.C;

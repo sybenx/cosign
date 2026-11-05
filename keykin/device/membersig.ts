@@ -17,8 +17,16 @@ const SHAPE = /^[a-z0-9][a-z0-9.-]*(\/[a-z0-9.-]+)*\/(0|[1-9][0-9]*)$/;
 export const MESSAGE_MAX = 65_536;
 const RESERVED = /^(keykin|cosign)/;
 
-/** Domains callers may sign under. A library registers its own once, at load. */
-const registered = new Set<string>(['nostr-vault/ksig/1']);
+/** Domains callers may sign under (and derive data keys under, core 14.21 §4.5). A library registers its own once, at
+ *  load. An entry may be a whole first segment (`nostr-vault`), covering every domain whose first `/`-separated segment
+ *  is exactly that (§5.9). */
+const registered = new Set<string>(['nostr-vault/ksig/1', 'nostr-vault/owner/1', 'nostr-vault/keyring/1']);
+/** Core 14.21 §5.9: domains the app list marks `open` (per domain, never a whole segment): apps and the member share
+ *  them by design (Doors §3.7), so a hand grant may cover them. */
+export const OPEN_DOMAINS = new Set(['nostr-vault/ksig/1', 'nostr-vault/owner/1', 'nostr-vault/keyring/1']);
+const SEGMENT = /^[a-z0-9][a-z0-9.-]*$/;
+/** Whether `domain` is registered, itself or by its first segment. */
+export const isRegistered = (domain: string) => registered.has(domain) || registered.has(domain.split('/')[0]);
 
 /** Why `domain` can't be used, or null. */
 export function domainFault(domain: unknown): string | null {
@@ -28,7 +36,8 @@ export function domainFault(domain: unknown): string | null {
   return null;
 }
 export function registerDomain(domain: string) {
-  const f = domainFault(domain); if (f) refuse('bad_domain', f);
+  // A bare first segment covers its whole tree; otherwise a full, versioned domain.
+  const f = SEGMENT.test(domain) && !RESERVED.test(domain) ? null : domainFault(domain); if (f) refuse('bad_domain', f);
   registered.add(domain);
 }
 export const registeredDomains = () => [...registered].sort();
@@ -36,7 +45,7 @@ export const registeredDomains = () => [...registered].sort();
 /** The digest a member key signs for `domain` and `message`. */
 export function memberDigest(domain: string, message: Bytes): Bytes {
   const f = domainFault(domain); if (f) refuse('bad_domain', f);
-  if (!registered.has(domain)) refuse('bad_domain', `${domain} is not registered`);
+  if (!isRegistered(domain)) refuse('bad_domain', `${domain} is not registered`);
   if (message.length > MESSAGE_MAX) refuse('too_large', 'a message is at most 65,536 bytes');
   return sha(concatBytes(utf8ToBytes(domain), new Uint8Array([0]), message));
 }

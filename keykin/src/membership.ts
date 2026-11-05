@@ -76,6 +76,12 @@ export function parseChange(rec: EpochContent, ev: NostrEvent, signed = true): P
       k32(p.inner, 'inner');
       if (!Array.isArray(p.state)) refuse('bad_change', 'a committed paper change names its state');
       p.state.forEach((i: unknown) => hexN(i, 16, 'state id'));
+      // Core 14.21: the ids of every redeal whose seed its seed items carry, sorted, in the clear.
+      if (p.seeds !== undefined) {
+        if (!Array.isArray(p.seeds)) refuse('bad_change', 'seeds');
+        p.seeds.forEach((i: unknown) => hexN(i, 16, 'seed id'));
+        if (p.seeds.some((x: string, k: number) => k > 0 && x <= p.seeds[k - 1])) refuse('bad_change', 'seeds sorted, once each');
+      }
       break;
     }
     case 'redeal': {
