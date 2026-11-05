@@ -1,6 +1,6 @@
 # Keykin Core
 
-Draft 14.25 · 2026-11-05 · `draft` `optional` · not built
+Draft 14.26 · 2026-11-05 · `draft` `optional` · not built
 
 Keykin keeps one Nostr key for life without any single device, server or company holding it.
 The key is split with FROST into weighted shares: each of the user's devices holds 3, each server
@@ -748,9 +748,13 @@ policy module) and refuses when that says to; it never prompts, because nobody m
 ### 5.8 The stateless destructive rule
 
 Servers keep no history, so they cannot tell that a follow list shrank. They can recognise a few events
-that are destructive on their face, and for these a server MUST require **either** an `approval` (a lock
-assertion from the coordinating device over `"sign" ‖ event id`, §6.1, valid for that event at any
-co-signer and any retry), **or** a passed hold:
+that are destructive on their face, and for these a server MUST require **either** an `approval`, **or** a passed hold. The approval is a lock assertion
+from the coordinating device over `"sign" ‖ event id` (§6.1), or a `pair` approval (§6.2) over the same
+`what = "sign" ‖ event id`: two current devices, each after asking its person, the second after the
+typed code and after its own destructive policy (Device policy) agrees. Either is valid for that event at
+any co-signer and any retry. Two devices are 6 points and could sign without any server, so the pair
+form adds nothing an attacker with two devices lacks; it spares a lockless person the wait. The rule
+covers:
 
 - every request to vanish (kind 62);
 - a **mass deletion**: a kind 5 with 5 or more `e`/`a` targets, or a kind 5 that would take this account
@@ -2348,3 +2352,8 @@ device join their own account. A second offer for the same code stops the join.
 ## Changes in draft 14.25
 
 App-private data (§4.5): NIP-44 to self stays a shared pool that `private-data` opens. An app that wants isolation keeps its records under `dataKeys.derive` on its own domain, which no door can open. Each OS-identified app owns an identity domain silently, so no binding has to be synced; derivation is only under identity, listed or open domains, and cross-platform sharing takes an app-list entry. The text says where the device API exists (Android, desktop, browsers; not other iOS apps or websites), who else can read the records, how to re-seal, and what to do before leaving. Six red-team rounds (2, 3, 1, 2 and 2 high, then clean; no critical) are folded in; on desktops the isolation is stated as being from sites and other granted apps, not from local software (§10).
+
+## Changes in draft 14.26
+
+A held event (§5.8) may also be approved by a `pair` (two devices and the typed code) over
+`"sign" ‖ event id`, not only by a lock or a passed hold.
