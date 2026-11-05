@@ -1,6 +1,7 @@
 // Push payloads and the server inbox (core §8.1–§8.2). Pure.
 
 import { sha, jcsBytes, refuse, utf8ToBytes, utf8Strict, strictJson, fromB64u } from './bytes.ts';
+import { p256 } from '@noble/curves/nist.js';
 import { schnorrSign, schnorrVerify, tag, type KeyPair, type NostrEvent } from './event.ts';
 import { LIFETIME_S, type Cls } from './lifetimes.ts';
 
@@ -28,7 +29,9 @@ export function readPush(bytes: Uint8Array, hostKeys: Set<string>): any {
   return p;
 }
 
-export interface InboxItem { iid: string; at: number; to: string; from: string; wrap: NostrEvent; kind: 'delivery' | 'wait' | 'notice' | 'message'; cls: Cls; bytes: number }
+/** `group`: items counted together instead of per sender (a watching server's items per site). */
+export interface InboxItem { iid: string; at: number; to: string; from: string; wrap: NostrEvent; kind: 'delivery' | 'wait' | 'notice' | 'message'; cls: Cls; bytes: number; group?: string }
+export const PER_GROUP = 8;
 
 export const INBOX_ITEMS = 512, INBOX_BYTES = 4 * 1024 * 1024, PER_PAIR = 32;
 
@@ -37,17 +40,18 @@ export const INBOX_ITEMS = 512, INBOX_BYTES = 4 * 1024 * 1024, PER_PAIR = 32;
 export class Inbox {
   items: InboxItem[] = [];
   #n = 0;
-  deliver(o: { from: string; to: string; wrap: NostrEvent; kind: InboxItem['kind']; cls: Cls; at: number; isMember: (k: string) => boolean; isRemoved: (k: string) => boolean; isBackup: (k: string) => boolean }): string {
+  deliver(o: { from: string; to: string; wrap: NostrEvent; kind: InboxItem['kind']; cls: Cls; at: number; group?: string; isMember: (k: string) => boolean; isRemoved: (k: string) => boolean; isBackup: (k: string) => boolean }): string {
     if (o.isRemoved(o.from)) refuse('removed', 'deliver from a removed member');
     if (!o.isMember(o.from)) refuse('not_member', 'deliver only from a current member');
     if (!o.isMember(o.to)) refuse('not_member', '`to` must be a current member');
     if (o.isBackup(o.to)) refuse('backup_never_fetches');
     if (tag(o.wrap, 'p') !== o.to) refuse('bad_p', 'the wrap\'s p tag must be `to`');
-    const waiting = this.items.filter((x) => x.from === o.from && x.to === o.to).length;
-    if (waiting >= PER_PAIR) refuse('inbox_full');
+    this.cap(o.at);
+    if (o.group) { if (this.items.filter((x) => x.group === o.group && x.to === o.to).length >= PER_GROUP) refuse('inbox_full'); }
+    else if (this.items.filter((x) => x.from === o.from && x.to === o.to && !x.group).length >= PER_PAIR) refuse('inbox_full');
     const bytes = JSON.stringify(o.wrap).length;
     const iid = (++this.#n).toString(16).padStart(8, '0') + Math.random().toString(16).slice(2, 10);
-    this.items.push({ iid, at: o.at, to: o.to, from: o.from, wrap: o.wrap, kind: o.kind, cls: o.cls, bytes });
+    this.items.push({ iid, at: o.at, to: o.to, from: o.from, wrap: o.wrap, kind: o.kind, cls: o.cls, bytes, ...(o.group ? { group: o.group } : {}) });
     this.cap(o.at);
     if (!this.items.some((x) => x.iid === iid)) refuse('inbox_full');
     return iid;
@@ -76,7 +80,7 @@ export interface PushAddress { cls: 'sign' | 'ask' | 'notice'; url: string; p256
 
 /** §8.1's `addresses`, checked: one per wake class, an https URL, a 65-byte P-256 point and a 16-byte auth
  *  secret, both base64url. */
-export function parseAddresses(v: unknown): PushAddress[] {
+export function parseAddresses(v: unknown, o: { allowHttp?: boolean } = {}): PushAddress[] {
   if (!Array.isArray(v) || v.length > 3) refuse('malformed', 'addresses');
   const seen = new Set<string>();
   return (v as unknown[]).map((a: any) => {
@@ -84,9 +88,11 @@ export function parseAddresses(v: unknown): PushAddress[] {
     seen.add(a.cls);
     let url: URL;
     try { url = new URL(a.url); } catch { return refuse('malformed', 'url'); }
-    if (url.protocol !== 'https:' || typeof a.url !== 'string') refuse('malformed', 'an https url');
+    if (!(url.protocol === 'https:' || (o.allowHttp && url.protocol === 'http:')) || typeof a.url !== 'string') refuse('malformed', 'an https url');
     const k = fromB64u(a.p256dh), auth = fromB64u(a.auth);
     if (k.length !== 65 || k[0] !== 4 || auth.length !== 16) refuse('malformed', 'p256dh and auth');
+    // A point on the curve, or every later push to it would fail (review 9 M2).
+    try { p256.Point.fromBytes(k).assertValidity(); } catch { refuse('malformed', 'p256dh is not a P-256 point'); }
     return { cls: a.cls, url: a.url, p256dh: a.p256dh, auth: a.auth };
   });
 }
@@ -95,8 +101,8 @@ export function parseAddresses(v: unknown): PushAddress[] {
  *  never copied to another server. */
 export class PushRegistry {
   #by = new Map<string, { at: number; addrs: PushAddress[] }>();
-  register(member: string, at: number, addrs: unknown) {
-    const parsed = parseAddresses(addrs);
+  register(member: string, at: number, addrs: unknown, o: { allowHttp?: boolean } = {}) {
+    const parsed = parseAddresses(addrs, o);
     const cur = this.#by.get(member);
     if (cur && cur.at > at) return false;
     this.#by.set(member, { at, addrs: parsed }); return true;

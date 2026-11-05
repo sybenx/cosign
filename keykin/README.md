@@ -28,6 +28,16 @@ npx tsc -p .      # typecheck
 `destructive.ts` (§5.7 item 4, §5.8), `lifetimes.ts` (§5.3, §5.6), `join.ts` and `repair.ts`
 (§4), `redeal.ts` and `upkeep.ts` (§6.7, §7.2), `transport.ts` (§9), `inbox.ts` (§8).
 
+## Tests
+
+```bash
+npm test            # unit and simulation tests, in parallel
+npm run test:e2e    # end to end, one at a time: local nak relays, server processes, Docker, Kotlin
+```
+
+The end-to-end tests skip themselves when `nak`, Docker, the JNI library or JDK 21 is missing. Run in
+parallel, they compete for relays, Gradle and Docker and time out.
+
 ## Kotlin
 
 `kotlin/` is the second implementation, a JVM project (Gradle, JDK 21). It passes `vectors.json` and
@@ -38,6 +48,10 @@ through the same Rust crate over JNI:
 (cd frost && cargo build --release --features jni)
 cd kotlin && JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 ```
+
+`--features jni` matters: a plain `cargo build --release` gives a library without the `Java_` symbols.
+The Gradle test task checks for them first and stops with the command above rather than an
+`UnsatisfiedLinkError`.
 
 ## Rebuilding the wasm
 
@@ -57,6 +71,7 @@ made here are interim and marked in the code where they appear.
 
 ## Not done
 
-Helper resumes by paper, Web Push
-encryption (RFC 8291) and gateways, durable storage (`CoSigner.snapshot()`/`restore()` covers what
-§5.6 requires a server to keep across restarts, but nothing writes it to disk yet), and the Kotlin port beyond records, membership, approvals, locks and FROST.
+Durable *device* state (servers write theirs, `ServerNode.snapshot()`/`restore()` with `runtime/store.ts`),
+a live server transfer (which must carry each seat's shutdown notice and seq), sim devices feeding
+`SignWatch` (core §6.7.9) from their rounds, and the Kotlin port beyond records, membership, approvals,
+locks, FROST, SLIP-39 and the one-call co-signer.

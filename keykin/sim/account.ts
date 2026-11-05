@@ -9,13 +9,14 @@ import { finalizeEvent } from 'nostr-tools/pure';
 import { Inviter, Joiner, parseCode } from '../src/join.ts';
 import { takenIndices } from '../src/membership.ts';
 import { itemHash } from '../src/redeal.ts';
-import { baseItem } from '../src/upkeep.ts';
+import { baseItem, materialInner } from '../src/upkeep.ts';
 import { unwrap, wrap } from '../src/transport.ts';
 import { softLock } from '../src/lock.ts';
 import { newKey, type KeyPair, type NostrEvent } from '../src/event.ts';
 import { KIND_EPOCH, type Approval, type Change, type EpochContent, type MemberEntry } from '../src/types.ts';
 import { Bus, type Transport } from './bus.ts';
 import { DeviceNode, ServerNode, PaperHolder } from './nodes.ts';
+import { entryFromReply } from '../server/node.ts';
 
 let seq = 0;
 export interface Net extends Transport { add(n: any): any }
@@ -23,15 +24,17 @@ export interface Account { bus: Bus; A: DeviceNode; servers: ServerNode[]; paper
 
 /** §11.2 import: the device deals an nsec it holds into shares, signs the epoch record with it, welcomes
  *  the servers and the paper, then forgets the nsec. */
-export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise<Account> {
+/** `relays`: the record's relays (and the servers'), real ones when the account runs over relays (Doors §2 counts them). */
+export async function create(o: { lockless?: boolean; net?: Net; relays?: string[]; nsec?: string } = {}): Promise<Account> {
   const bus = (o.net ?? new Bus()) as Bus;
   const A = bus.add(new DeviceNode(bus, 'A', o.lockless ? null : softLock())) as DeviceNode;
   const paper = newKey();
-  const nsec = BigInt('0x' + bytesToHex(randomBytes(32)));
+  // `nsec`: an imported key (test vectors); otherwise a fresh one.
+  const nsec = BigInt('0x' + (o.nsec ?? bytesToHex(randomBytes(32))));
   const d = deal(nsec, [1, 2, 3, 4, 7, 8, 5, 6]);
   const g = xOnly(d.commitment[0]);
   // Pick and enrol the servers (Account admin §1.2 step 3, Server profile §4).
-  const servers = [4, 7, 8].map((_, k) => { const s = new ServerNode(bus, `S${k + 1}`); s.enroll(g, bus.now); return bus.add(s) as ServerNode; });
+  const servers = [4, 7, 8].map((_, k) => { const s = new ServerNode(bus, `S${k + 1}`); if (o.relays) s.profile.relays = [...o.relays]; s.enroll(g, bus.now); return bus.add(s) as ServerNode; });
   const epochId = bytesToHex(randomBytes(16));
   const baseSeed = bytesToHex(randomBytes(32)), baseDk = bytesToHex(randomBytes(32));
   const base = baseItem(paper, baseSeed, new Map([[5, d.shares.get(5)!], [6, d.shares.get(6)!]]), baseDk, []);
@@ -41,7 +44,7 @@ export async function create(o: { lockless?: boolean; net?: Net } = {}): Promise
     { key: paper.pub, kind: 'backup', shares: [5, 6] },
   ];
   const rec: EpochContent = { v: 1, g, epoch: { n: 1, id: epochId }, prev: null, t: 4, commitment: commitmentHex(d.commitment), role: 'master', origin: 'import',
-    relays: ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: itemHash(base), seats: { servers: [4, 7, 8], backup: [5, 6], helper: helperSeat(g) } };
+    relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: materialInner(base, []), seats: { servers: [4, 7, 8], backup: [5, 6], helper: helperSeat(g) } };
   const recEv = finalizeEvent({ kind: KIND_EPOCH, created_at: bus.now, tags: [['d', 'keykin'], ['v', '1'], ['epoch', '1']], content: JSON.stringify(rec) },
     Uint8Array.from(Buffer.from(scalarHex(d.secret), 'hex'))) as NostrEvent;
   A.adopt(recEv, [], { ids: new Set(), C: d.commitment, shares: new Map([1, 2, 3].map((i) => [i, d.shares.get(i)!])) });
@@ -210,10 +213,15 @@ export async function addHelper(acc: Account, dev: DeviceNode, approve: (list: C
 /** Account admin §1.1: a fresh account by DKG. The device runs indices 1, 2, 3 and the backup seat's
  *  5, 6; three servers run 4, 7, 8 under throwaway DKG keys. The device signs the epoch record alone with
  *  its five points, every server adopts it provisionally, and the device's confirmation makes it live. */
-export async function createByDkg(o: { lockless?: boolean; net?: Net } = {}): Promise<Account> {
+export async function createByDkg(o: { lockless?: boolean; net?: Net; hosts?: { key: KeyPair; nodes: Map<string, ServerNode> }[]; fronts?: string[]; relays?: string[] } = {}): Promise<Account> {
   const bus = (o.net ?? new Bus()) as Bus;
   const A = bus.add(new DeviceNode(bus, 'A', o.lockless ? null : softLock())) as DeviceNode;
-  const servers = [1, 2, 3].map((k) => bus.add(new ServerNode(bus, `S${k}`)) as ServerNode);
+  // Through real host front doors (server/host.ts) when given; otherwise bare seat nodes.
+  // Or at front-door keys only (servers in other processes), with no server objects at all.
+  let servers = o.hosts || o.fronts ? [] as ServerNode[] : [1, 2, 3].map((k) => bus.add(new ServerNode(bus, `S${k}`)) as ServerNode);
+  const addr = o.fronts ? [...o.fronts] : o.hosts ? o.hosts.map((h) => h.key.pub) : servers.map((s) => s.kp.pub);
+  const replies: any[] = [];
+  const at = (k: number) => addr[k];
   const { dkg1, dkg2, dkg3, dkgCommitment } = await import('../src/dkg.ts');
   const { schnorrVerify } = await import('../src/event.ts');
   const { commit, signShare, aggregate, hedge } = await import('../src/frost.ts');
@@ -221,36 +229,42 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net } = {}): Pr
   const sIdx = [4, 7, 8], mine = [1, 2, 3, 5, 6], all = [...mine, ...sIdx].sort((a, b) => a - b);
   // 1. create: each server's throwaway DKG key, signed by its host key.
   const dkgKeys: Record<number, string> = {};
-  for (const [k, s] of servers.entries()) {
-    const a = await bus.send(A.kp, s.kp.pub, { type: 'create' });
+  for (const k of addr.keys()) {
+    const a = await bus.send(A.kp, at(k), { type: 'create' });
     if (a?.type !== 'create_ok' || !schnorrVerify(a.host_sig, sha('keykin-dkg-key/1', Uint8Array.from(Buffer.from(a.dkg_key, 'hex'))), a.host)) refuse('create_failed');
     dkgKeys[sIdx[k]] = a.dkg_key;
   }
   // 2. Round 1, relayed by the device so everyone sees the same packages.
   const r1 = new Map<number, string>(), secrets = new Map<number, string>();
   for (const i of mine) { const r = dkg1(i, all.length, randomBytes(32)); r1.set(i, r.package); secrets.set(i, r.secret); }
-  for (const [k, s] of servers.entries()) r1.set(sIdx[k], (await bus.send(A.kp, s.kp.pub, { type: 'dkg_1', index: sIdx[k], max: all.length })).package);
+  for (const k of addr.keys()) r1.set(sIdx[k], (await bus.send(A.kp, at(k), { type: 'dkg_1', index: sIdx[k], max: all.length })).package);
   const others = (i: number) => [...r1].filter(([j]) => j !== i);
   // 3. Round 2: packages to each holder (server-to-server ones sealed to the recipient's DKG key).
   const r2 = new Map<number, Map<number, any>>(all.map((i) => [i, new Map()]));
   const s2 = new Map<number, string>();
   for (const i of mine) { const r = dkg2(secrets.get(i)!, new Map(others(i))); s2.set(i, r.secret); for (const [j, p] of r.packages) r2.get(j)!.set(i, p); }
   secrets.clear();
-  for (const [k, s] of servers.entries()) {
-    const a = await bus.send(A.kp, s.kp.pub, { type: 'dkg_2', round1: others(sIdx[k]), dkg_keys: dkgKeys });
+  for (const k of addr.keys()) {
+    const a = await bus.send(A.kp, at(k), { type: 'dkg_2', round1: others(sIdx[k]), dkg_keys: dkgKeys });
     for (const [j, p] of a.packages as [number, any][]) r2.get(j)!.set(sIdx[k], p);
   }
   // 4. Round 3.
   const shares = new Map<number, bigint>(); let g = '', points = new Map<number, string>();
   for (const i of mine) { const r = dkg3(s2.get(i)!, new Map(others(i)), r2.get(i)!); shares.set(i, r.share); g = r.g; points = r.points; }
   s2.clear();
-  for (const [k, s] of servers.entries()) {
-    const a = await bus.send(A.kp, s.kp.pub, { type: 'dkg_3', round1: others(sIdx[k]), round2: [...r2.get(sIdx[k])!] });
+  for (const k of addr.keys()) {
+    const a = await bus.send(A.kp, at(k), { type: 'dkg_3', round1: others(sIdx[k]), round2: [...r2.get(sIdx[k])!] });
     if (a.g !== g) refuse('dkg', 'servers disagree on the group key');
   }
   const C = dkgCommitment(g, points);
   // 5. Enrol, now that g exists (Server profile §4).
-  for (const s of servers) { const a = await bus.send(A.kp, s.kp.pub, { type: 'enroll', g }); if (a?.type !== 'enroll_reply') refuse('enroll_failed'); }
+  for (const k of addr.keys()) {
+    const a = await bus.send(A.kp, at(k), { type: 'enroll', g });
+    if (a?.type !== 'enroll_reply') refuse('enroll_failed');
+    // From here on the seat is reached at its member key.
+    addr[k] = a.reply.member_key; replies[k] = a.reply;
+    if (o.hosts) servers.push(o.hosts[k].nodes.get(a.reply.member_key)!);
+  }
   // 6. The backup: base item of the backup seat's shares, under the creation release seed.
   const paper = newKey();
   const baseSeed = bytesToHex(randomBytes(32)), baseDk = bytesToHex(randomBytes(32));
@@ -258,9 +272,9 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net } = {}): Pr
   const epochId = bytesToHex(randomBytes(16));
   const members: MemberEntry[] = [
     { key: A.kp.pub, kind: 'device', shares: [1, 2, 3], ...(A.lock ? { lock: A.lock.pub } : {}) },
-    ...servers.map((s, k) => s.entry(sIdx[k])), { key: paper.pub, kind: 'backup', shares: [5, 6] }];
+    ...replies.map((r, k) => entryFromReply(r, sIdx[k])), { key: paper.pub, kind: 'backup', shares: [5, 6] }];
   const rec: EpochContent = { v: 1, g, epoch: { n: 1, id: epochId }, prev: null, t: 4, commitment: commitmentHex(C), role: 'master', origin: 'dkg',
-    relays: ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: itemHash(base), seats: { servers: sIdx, backup: [5, 6], helper: helperSeat(g) } };
+    relays: o.relays ?? ['wss://r1.test', 'wss://r2.test', 'wss://r3.test'], members, removed: [], backup: materialInner(base, []), seats: { servers: sIdx, backup: [5, 6], helper: helperSeat(g) } };
   // 7. The device signs the record alone with four of its five points (no co-signer knows the account yet).
   const unsigned = { pubkey: g, created_at: bus.now, kind: KIND_EPOCH, tags: [['d', 'keykin'], ['v', '1'], ['epoch', '1']], content: JSON.stringify(rec) };
   const id = eventId(unsigned);
@@ -270,14 +284,14 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net } = {}): Pr
   const sig = aggregate(C, id, commits, cs.map((c) => ({ i: c.commit.i, z: signShare(C, c.commit.i, shares.get(c.commit.i)!, c.nonces, id, commits) })));
   const recEv = { ...unsigned, id, sig } as NostrEvent;
   // 8. Welcome every server, provisionally; then confirm once all adopted.
-  for (const s of servers) {
-    const a = await bus.send(A.kp, s.kp.pub, { type: 'seat_welcome', w: { recEv, changes: [], state: [], seeds: [['base', baseSeed]], items: [], base, provisional: true } });
+  for (const k of addr.keys()) {
+    const a = await bus.send(A.kp, at(k), { type: 'seat_welcome', w: { recEv, changes: [], state: [], seeds: [['base', baseSeed]], items: [], base, provisional: true } });
     if (a?.type !== 'ack') refuse(a?.code ?? 'welcome_failed', a?.detail);
   }
   A.adopt(recEv, [], { ids: new Set(), C, shares: new Map([1, 2, 3].map((i) => [i, shares.get(i)!])) });
   A.seeds.set('base', baseSeed); A.base = base; A.baseDk = baseDk;
   if (!A.lock) A.keptSecret = paper;
-  for (const s of servers) { const a = await bus.send(A.kp, s.kp.pub, { type: 'confirm', epoch: epochId }); if (a?.type !== 'ack') refuse(a?.code ?? 'confirm_failed'); }
+  for (const k of addr.keys()) { const a = await bus.send(A.kp, at(k), { type: 'confirm', epoch: epochId }); if (a?.type !== 'ack') refuse(a?.code ?? 'confirm_failed'); }
   // The backup seat's shares were only ever in this device (5 points until "Write it down" or "Not now").
   shares.clear();
   return { bus, A, servers, paper, g, epochId };
@@ -293,4 +307,15 @@ export function restartServer(acc: Account, i: number, store: { save(k: string, 
   (acc.bus as Bus).nodes.set(n.kp.pub, n);
   acc.servers[i] = n;
   return n;
+}
+
+/** Restart a device from what it wrote to storage: a new process with the same member key, lock and
+ *  shares, checked as a handover is (core §4.4); every round, join or repair in flight is lost. */
+export function restartDevice(acc: Account, dev: DeviceNode, store: { save(k: string, t: string): void; load(k: string): string | null }): DeviceNode {
+  const key = `device-${dev.kp.pub.slice(0, 16)}`;
+  store.save(key, dev.snapshot());
+  const d = DeviceNode.restore(acc.bus, store.load(key)!);
+  (acc.bus as Bus).nodes.set(d.kp.pub, d);
+  if (acc.A === dev) acc.A = d;
+  return d;
 }

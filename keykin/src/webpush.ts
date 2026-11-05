@@ -8,7 +8,7 @@ import { p256 } from '@noble/curves/nist.js';
 import { gcm } from '@noble/ciphers/aes.js';
 import { extract, expand } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { concatBytes, utf8ToBytes, randomBytes, b64u, fromB64u, strictJson, utf8Strict, KeykinError, type Bytes } from './bytes.ts';
+import { concatBytes, utf8ToBytes, randomBytes, b64u, fromB64u, strictJson, utf8Strict, KeykinError, type Bytes, bytesToHex } from './bytes.ts';
 
 const RS = 4096;
 const info = (s: string, ...rest: Bytes[]) => concatBytes(utf8ToBytes(s), new Uint8Array([0]), ...rest);
@@ -26,7 +26,7 @@ function keys(ecdh: Bytes, auth: Bytes, uaPub: Bytes, asPub: Bytes, salt: Bytes)
 export function encryptPush(plain: Bytes, to: { p256dh: string; auth: string }, o: { asSk?: Bytes; salt?: Bytes } = {}): Bytes {
   const uaPub = fromB64u(to.p256dh), auth = fromB64u(to.auth);
   if (uaPub.length !== 65 || uaPub[0] !== 4 || auth.length !== 16) no('address keys');
-  if (plain.length + 17 > RS) no('one record only');
+  if (plain.length + 17 >= RS) no('one record only');      // RFC 8291 §4: rs must exceed the record
   const asSk = o.asSk ?? p256.utils.randomSecretKey(), asPub = p256.getPublicKey(asSk, false), salt = o.salt ?? randomBytes(16);
   const ecdh = p256.getSharedSecret(asSk, uaPub, true).slice(1);
   const { cek, nonce } = keys(ecdh, auth, uaPub, asPub, salt);
@@ -42,7 +42,7 @@ export function decryptPush(body: Bytes, uaSk: Bytes, auth: Bytes): Bytes {
   const salt = body.slice(0, 16), rs = new DataView(body.buffer, body.byteOffset).getUint32(16), idlen = body[20];
   if (idlen !== 65 || rs < 18) no('header');
   const asPub = body.slice(21, 86), ct = body.slice(86);
-  if (ct.length > rs) no('one record only');
+  if (ct.length >= rs) no('one record only');
   const uaPub = p256.getPublicKey(uaSk, false);
   let ecdh: Bytes;
   try { ecdh = p256.getSharedSecret(uaSk, asPub, true).slice(1); } catch { return no('sender key'); }
@@ -76,7 +76,7 @@ export function checkVapid(header: string, url: string, pinnedVapidHex: string, 
   if (!m) return 'vapid_header';
   try {
     const k = fromB64u(m[4]);
-    if (Buffer.from(k).toString('hex') !== pinnedVapidHex) return 'vapid_key';
+    if (bytesToHex(k) !== pinnedVapidHex) return 'vapid_key';
     const head = strictJson(utf8Strict(fromB64u(m[1]))), claims = strictJson(utf8Strict(fromB64u(m[2])));
     if (head?.alg !== 'ES256' || head?.typ !== 'JWT') return 'vapid_alg';
     if (claims?.aud !== new URL(url).origin) return 'vapid_aud';

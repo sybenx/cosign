@@ -2,12 +2,11 @@
 // import uses (§11.2; DKG is the Account admin module's). Indices are numbers here and 32-byte
 // identifiers on the wasm side (§3.2). Nonces stay in this process's memory (§5.2).
 
-import { createRequire } from 'node:module';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { randomBytes, sha, hexToBytes, bytesToHex, refuse } from './bytes.ts';
+import { W } from './wasm.ts';
 import { type Commitment, commitmentHex, idHex, mod, mul, N, scalarHex, compHex, G, Point } from './curve.ts';
 
-const W: any = createRequire(import.meta.url)('../frost-wasm/keykin_frost.js');
 
 /** A signing commitment as it travels (§5.1). */
 export interface SignCommit { i: number; D: string; E: string }

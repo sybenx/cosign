@@ -36,7 +36,7 @@ object Rules {
         "challenge" to setOf("ask"), "hold" to setOf("member"), "release_request" to setOf("member"), "deliver" to setOf("member"))
     private val repeated = setOf("cancel", "withdraw", "upload", "upload_held", "push_register", "push_unregister", "notify_register", "paper_reissue",
         "helper_stop", "helper_resume", "account_delete", "deleted", "heir_request", "heir_remove",
-        "delta", "paper_ck", "dk_seed", "release_seed", "paper_item", "welcome", "repair_sigma", "change", "ack")
+        "delta", "paper_eph", "reissue_eph", "dk_seed", "release_seed", "paper_item", "welcome", "repair_sigma", "change", "ack")
     /** §5.6: null when fresh, else the refusal code. */
     fun lifetime(type: String, cls: String, age: Long): String? {
         // Core 13.12: types outside the table are `member` if a sender repeats them until answered, else `ask`.
@@ -59,7 +59,7 @@ object Jcs {
             is Int, is Long -> Json.num(v)
             is String -> Json.str(v)
             is JSONArray -> (0 until v.length()).joinToString(",", "[", "]") { of(v.get(it), depth + 1) }
-            is JSONObject -> v.keySet().sorted().joinToString(",", "{", "}") { Json.str(it) + ":" + of(v.get(it), depth + 1) }
+            is JSONObject -> v.keyList().sorted().joinToString(",", "{", "}") { Json.str(it) + ":" + of(v.get(it), depth + 1) }
             else -> refuse("malformed", "JCS: ${v::class.simpleName}")
         }
     }

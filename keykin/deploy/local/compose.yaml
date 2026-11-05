@@ -1,0 +1,57 @@
+# A local Keykin stack, for tests only: three Keykin servers, two strfry relays and a push-gateway stub.
+# The servers sit on an internal network with no way out to the internet; only the relays are also
+# published to this machine (127.0.0.1), so a test process can reach them. No public relay, no live
+# host: test/deploy.test.ts fails if anything here names one.
+#   docker compose -f deploy/local/compose.yaml -p keykin-local up -d --build
+name: keykin-local
+x-server: &server
+  build: ../..
+  image: keykin-server:local
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [inner]
+  depends_on: [relay1, relay2, pushstub]
+x-env: &env
+  KEYKIN_RELAYS: ws://relay1:7777,ws://relay2:7777
+  KEYKIN_PUSH_HOSTS: pushstub:8080
+  # Test-only: the stub gateway speaks plain http inside the stack. Never set this in a deployment.
+  KEYKIN_PUSH_HTTP: "1"
+services:
+  relay1: &relay
+    # Pinned by digest (review 10 L8): the image deploy/test also uses, as pulled on 2026-11-03.
+    image: ghcr.io/hoytech/strfry@sha256:36f1886d185a88ca57c66ebe52e6e9e8428dac2486eea0a5d50ff934f18b60c3
+    entrypoint: ["sh", "-c", "sed -e 's/bind = \"127.0.0.1\"/bind = \"0.0.0.0\"/' -e 's/nofiles = 524288/nofiles = 0/' /app/strfry.conf > /tmp/strfry.conf && exec /app/strfry --config /tmp/strfry.conf relay"]
+    networks: [inner, outside]
+    ports: ["127.0.0.1:17771:7777"]
+  relay2:
+    <<: *relay
+    ports: ["127.0.0.1:17772:7777"]
+  pushstub:
+    image: node:24.15.0-alpine
+    command: ["node", "-e", "require('http').createServer((q,s)=>{let n=0;q.on('data',c=>n+=c.length);q.on('end',()=>{console.log(JSON.stringify({push:q.url,bytes:n}));s.writeHead(201);s.end()})}).listen(8080)"]
+    networks: [inner]
+  s1:
+    <<: *server
+    environment: { <<: *env, KEYKIN_NAME: s1, KEYKIN_HTTPS: "https://s1.test" }
+    volumes: [s1-data:/data, s1-keys:/keys]
+  s2:
+    <<: *server
+    environment: { <<: *env, KEYKIN_NAME: s2, KEYKIN_HTTPS: "https://s2.test" }
+    volumes: [s2-data:/data, s2-keys:/keys]
+  s3:
+    <<: *server
+    environment: { <<: *env, KEYKIN_NAME: s3, KEYKIN_HTTPS: "https://s3.test" }
+    volumes: [s3-data:/data, s3-keys:/keys]
+networks:
+  inner:
+    internal: true
+  outside: {}
+volumes:
+  s1-data: {}
+  s1-keys: {}
+  s2-data: {}
+  s2-keys: {}
+  s3-data: {}
+  s3-keys: {}

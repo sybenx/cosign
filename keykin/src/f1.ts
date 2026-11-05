@@ -51,7 +51,8 @@ export class F1Watch {
   /** A seated server: its host and the member key of its seat. Being seated is not serving (review 8 M3). */
   seat(host: string, seatKey: string, now: number) {
     const w = this.#s.get(host);
-    if (w) { w.seat = seatKey; return; }
+    // A new member key for the host is a new seat: an answer kept for the old one no longer counts (review 9 L1).
+    if (w) { if (w.seat !== seatKey) { w.seat = seatKey; w.kept = null; w.asking = null; } return; }
     this.#s.set(host, { seatedAt: now, lastHeard: now, lastServing: null, deniedSince: null, seat: seatKey, kept: null, asking: null, askedAt: null });
   }
   forget(host: string) { this.#s.delete(host); }
@@ -95,6 +96,9 @@ export class F1Watch {
   }
   /** What the device shows on Backup for this seat: a closing date, if the latest answer has one. */
   closing(host: string) { return this.#s.get(host)?.kept?.at ?? null; }
+
+  dump() { return [...this.#s].map(([h, w]) => [h, { ...w, asking: null }]); }
+  load(x: [string, Watch][]) { this.#s = new Map(x); }
 
   /** Why `host` counts as dead at `now`, or null. */
   dead(host: string, now: number): 'quiet' | 'shutdown' | 'denied' | null {
@@ -145,6 +149,8 @@ export class SignWatch {
     // It goes away once the server gives a valid partial on two days.
     if (days.size >= 2) this.#misses.delete(host);
   }
+  dump() { return { misses: [...this.#misses].map(([h, m]) => [h, [...m]]), helped: [...this.#helped].map(([h, d]) => [h, [...d]]), hidden: [...this.#hidden] }; }
+  load(x: any) { this.#misses = new Map(x.misses.map(([h, m]: any) => [h, new Map(m)])); this.#helped = new Map(x.helped.map(([h, d]: any) => [h, new Set(d)])); this.#hidden = new Map(x.hidden); }
   /** The person hides the line for a week. */
   hide(host: string, now: number) { this.#hidden.set(host, now + HELP_WINDOW_S); }
   /** Whether Backup shows the line for `host` now. */

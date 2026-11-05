@@ -14,8 +14,8 @@ const ALLOWED: Record<string, Cls[]> = {
   challenge: ['ask'], pair_request: ['ask'], pair_sign: ['ask'],
   hold: ['member'], release_request: ['member'], deliver: ['member'],
 };
-const MEMBER = ['heir_request', 'heir_remove', 'account_delete', 'deleted', 'helper_stop', 'helper_resume', 'cancel', 'withdraw', 'upload', 'upload_held', 'push_register', 'push_unregister', 'notify_register', 'paper_reissue',
-  'delta', 'paper_ck', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack'];
+const MEMBER = ['heir_request', 'heir_remove', 'account_delete', 'deleted', 'helper_stop', 'helper_resume', 'cancel', 'withdraw', 'upload', 'upload_held', 'push_register', 'push_unregister', 'notify_register', 'paper_reissue', 'reissue_relay',
+  'delta', 'paper_eph', 'reissue_eph', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack'];
 export const allowedClasses = (type: string): Cls[] => (Object.hasOwn(ALLOWED, type) ? ALLOWED[type] : MEMBER.includes(type) ? ['member'] : ['ask']);
 
 /** Null when fresh; otherwise the refusal code. `sentAt` is the rumor's `created_at`; `inboxAge`

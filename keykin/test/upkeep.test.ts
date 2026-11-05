@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture } from './helpers.ts';
 import { deal, applyRedeal, sealItem, itemHash } from '../src/redeal.ts';
-import { acceptUpload, baseItem, openMaterial } from '../src/upkeep.ts';
+import { acceptUpload, baseItem, openMaterial, materialInner } from '../src/upkeep.ts';
 import { computeMembership } from '../src/membership.ts';
 import { approveLock } from '../src/approval.ts';
 import { bytesToHex, randomBytes } from '../src/bytes.ts';
@@ -45,7 +45,7 @@ test('backup material: the base must match its pin and the sum must land on P_b'
   const F = fixture();
   const seed = bytesToHex(randomBytes(32));
   const base = baseItem(F.backup.kp, seed, F.backup.shares, bytesToHex(randomBytes(32)), []);
-  const args = { g: F.g, backup: F.backup.kp, pin: itemHash(base), base, baseSeed: seed, items: [], seeds: new Map(), C0: F.commitment, redeals: [], state: new Set<string>() };
+  const args = { g: F.g, backup: F.backup.kp, pin: materialInner(base, []), base, baseSeed: seed, items: [], seeds: new Map(), C0: F.commitment, redeals: [], state: new Set<string>() };
   assert.equal(code(() => openMaterial(args)), 'ok');
   assert.equal(code(() => openMaterial({ ...args, pin: '00'.repeat(32) })), 'bad_material');
   const wrong = baseItem(F.backup.kp, seed, new Map([[5, 1n], [6, 2n]]), '00'.repeat(32), []);

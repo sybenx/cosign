@@ -26,7 +26,7 @@ export class OneCall {
   #ctx: RoundContext;
   #co: Signer;
   readonly event: Unsigned;
-  constructor(ctx: RoundContext, me: { indices: number[]; shares: Map<number, bigint> }, co: Signer, event: Unsigned, extra: { approval?: Approval; hold?: string; cls?: Cls; list_events?: NostrEvent[]; material?: unknown } = {}) {
+  constructor(ctx: RoundContext, me: { indices: number[]; shares: Map<number, bigint> }, co: Signer, event: Unsigned, extra: { approval?: Approval; hold?: string; cls?: Cls; list_events?: NostrEvent[]; material?: unknown; seed_items?: unknown } = {}) {
     if (event.pubkey !== ctx.g) refuse('wrong_pubkey');
     this.#ctx = ctx; this.#co = co; this.#shares = me.shares; this.event = event;
     this.eventId = eventId(event);
@@ -35,7 +35,7 @@ export class OneCall {
     const cs = me.indices.map((i) => commit(ctx.C, i, me.shares.get(i)!, hedge(me.shares.get(i)!, context)));
     this.#nonces = cs.map((c) => c.nonces);
     this.request = { v: 1, type: 'sign', g: ctx.g, epoch: ctx.epochId, id: this.id, cls: extra.cls ?? 'sign', state: ctx.state, event: wireEvent(event),
-      signers, commitments: cs.map((c) => c.commit), ...(extra.approval ? { approval: extra.approval } : {}), ...(extra.hold ? { hold: extra.hold } : {}), ...(extra.list_events ? { list_events: extra.list_events } : {}), ...(extra.material ? { material: extra.material } : {}) };
+      signers, commitments: cs.map((c) => c.commit), ...(extra.approval ? { approval: extra.approval } : {}), ...(extra.hold ? { hold: extra.hold } : {}), ...(extra.list_events ? { list_events: extra.list_events } : {}), ...(extra.material ? { material: extra.material } : {}), ...(extra.seed_items ? { seed_items: extra.seed_items } : {}) };
   }
   /** Finish with the co-signer's `partial`: the signed event, or a refusal naming the member. */
   finish(partial: any): NostrEvent {
@@ -59,7 +59,7 @@ export class ListCall {
   readonly request: any;
   readonly events: Unsigned[];
   #ids: string[]; #nonces: Nonces[][]; #shares: Map<number, bigint>; #ctx: RoundContext; #co: Signer;
-  constructor(ctx: RoundContext, me: { indices: number[]; shares: Map<number, bigint> }, co: Signer, events: Unsigned[], extra: { material?: unknown; cls?: Cls } = {}) {
+  constructor(ctx: RoundContext, me: { indices: number[]; shares: Map<number, bigint> }, co: Signer, events: Unsigned[], extra: { material?: unknown; seed_items?: unknown; cls?: Cls } = {}) {
     if (events.some((e) => e.pubkey !== ctx.g)) refuse('wrong_pubkey');
     this.#ctx = ctx; this.#co = co; this.#shares = me.shares; this.events = events;
     this.#ids = events.map(eventId);
@@ -68,7 +68,7 @@ export class ListCall {
       hedge(me.shares.get(i)!, concatBytes(hexToBytes(evId), u32s(signers), hexToBytes(this.id), hexToBytes(co.key))))));
     this.#nonces = cs.map((x) => x.map((c) => c.nonces));
     this.request = { v: 1, type: 'sign', g: ctx.g, epoch: ctx.epochId, id: this.id, cls: extra.cls ?? 'ask', state: ctx.state, signers,
-      list_events: events.map((event, e) => ({ event: wireEvent(event), commitments: cs[e].map((c) => c.commit) })), ...(extra.material ? { material: extra.material } : {}) };
+      list_events: events.map((event, e) => ({ event: wireEvent(event), commitments: cs[e].map((c) => c.commit) })), ...(extra.material ? { material: extra.material } : {}), ...(extra.seed_items ? { seed_items: extra.seed_items } : {}) };
   }
   finish(partial: any): NostrEvent[] {
     if (partial?.type !== 'partial' || !Array.isArray(partial.events) || partial.events.length !== this.events.length)

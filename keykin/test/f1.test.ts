@@ -164,3 +164,25 @@ test('core §6.7.9: the quiet "hasn\'t helped sign this week" line, never a trig
   u.partial('s', 'other2', 5 * D);
   assert.equal(u.line('s', 5 * D + 1), false, 'two days clear it');
 });
+
+test('core §6.7.9 in the simulation: a server that swallows sign requests gets the quiet line; errors never do', async () => {
+  const acc = await create();
+  const first = acc.A.servers()[0];
+  const S = acc.servers.find((x) => x.kp.pub === first.key)!;
+  const real = S.handle.bind(S);
+  let mode: 'drop' | 'error' | 'ok' = 'drop';
+  S.handle = async (from: string, body: any, at: number) => body.type !== 'sign' || mode === 'ok' ? real(from, body, at)
+    : mode === 'drop' ? null : { type: 'error', re: body.id, code: 'declined' };
+  for (const d of [0, 0, 1]) { acc.bus.advance(d * 86400 + 60); assert.ok(verifyEvent(await acc.A.sign({ content: `day ${d}` })), 'another server signs'); }
+  assert.deepEqual(acc.A.notHelping(), [S.host.pub]);
+  assert.deepEqual(await acc.A.checkServers(), [], 'it answers, so it is never dead for F1');
+  // Errors never count.
+  const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));
+  mode = 'error';
+  for (const d of [0, 1, 1]) { acc.bus.advance(d * 86400 + 60); await B.sign({ content: `refused ${d}` }); }
+  assert.deepEqual(B.notHelping(), []);
+  // Back to helping on two days: A's line goes away.
+  mode = 'ok';
+  for (const d of [1, 1]) { acc.bus.advance(d * 86400); await acc.A.sign({ content: 'helping' }); }
+  assert.deepEqual(acc.A.notHelping(), []);
+});

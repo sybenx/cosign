@@ -75,6 +75,10 @@ export const signpostH = (epochId: string, servers: unknown[]) => shaHex('keykin
 export const signpostDeviceKey = (base: string) => bytesToHex(hkdf32(k32(base, 'base data key'), 'keykin-beacon/1'));
 
 /** §6.7.5: what a `seated` reply's host signature covers. */
+/** Core 14.19: the challenge signatures, each tagged (a raw challenge could be chosen to equal an app's digest). */
+export const seatedAskDigest = (hKey: string, challenge: string) => sha('keykin-seated-ask/1', k32(hKey, 'H(key)'), b16(challenge, 'challenge'));
+export const forwardAskDigest = (hKey: string, challenge: string) => sha('keykin-forward-ask/1', k32(hKey, 'H(key)'), b16(challenge, 'challenge'));
+export const retireDigest = (g: string, challenge: string) => sha('keykin-retire/1', k32(g, 'g'), b16(challenge, 'challenge'));
 export const seatedDigest = (hKey: string, challenge: Bytes, ciphertext: Bytes) => sha('keykin-seated/1', k32(hKey, 'H(key)'), challenge, ciphertext);
 
 /** §6.2: the digest a detached approval signature covers: `SHA-256("keykin-<type>/1" ‖ g ‖ JCS(body))`. */

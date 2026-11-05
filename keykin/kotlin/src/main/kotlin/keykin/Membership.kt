@@ -88,14 +88,14 @@ class Authority(val g: String, val epochId: String, val devices: Set<String>, va
 object Approvals {
     private val KNOWN = setOf("add", "remove", "lock", "seat", "paper", "redeal")
     /** The change's one type key; anything else (two keys, or an unknown one) is "unknown". */
-    fun type(c: JSONObject): String { val ks = c.keySet().filter { it != "to" }; return if (ks.size == 1 && ks[0] in KNOWN && (!c.has("to") || ks[0] == "remove")) ks[0] else "unknown" }
+    fun type(c: JSONObject): String { val ks = c.keyList().filter { it != "to" }; return if (ks.size == 1 && ks[0] in KNOWN && (!c.has("to") || ks[0] == "remove")) ks[0] else "unknown" }
     fun placeholder(list: JSONArray): JSONArray = JSONArray((0 until list.length()).map { k ->
         val c = list.getJSONObject(k)
         when {
             c.has("redeal") -> JSONObject().put("redeal", JSONObject().put("dealer", c.getJSONObject("redeal").getString("dealer")))
-            // A paper is approved without `inner` and `state`; every other field stays (§6.7.2).
+            // A paper is approved without `inner`, `state` and `seeds` (core 14.21); every other field stays (§6.7.2).
             c.opt("paper") is JSONObject -> { val p = c.getJSONObject("paper"); val o = JSONObject()
-                for (k in p.keySet()) if (k != "inner" && k != "state") o.put(k, p.get(k)); JSONObject().put("paper", o) }
+                for (k in p.keyList()) if (k != "inner" && k != "state" && k != "seeds") o.put(k, p.get(k)); JSONObject().put("paper", o) }
             else -> c
         }
     })
@@ -172,12 +172,23 @@ object Approvals {
 }
 
 /** `members`: every current member with its indices, devices with their current lock (core §3.2). */
-data class MembershipView(val devices: List<String>, val removed: List<String>, val seats: Map<String, String?>, val backup: String?, val refused: List<String>, val invariant: Boolean, val locks: Map<String, String?>, val members: List<Member> = emptyList())
+/** A redeal of the change set (§6.7.1), with its list and the change event that carries it. */
+data class RedealInfo(val r: JSONObject, val listHash: String, val changeId: String)
+/** A remove (`self` when approved by the removed device itself) or an add, with who approved it. */
+data class RemoveInfo(val key: String, val changeId: String, val listHash: String, val self: Boolean)
+data class AddInfo(val key: String, val changeId: String, val approver: String?, val hasLock: Boolean = false)
+/** A paper change (§4.3, F7): its new key, the state its base item was made at, its list. */
+data class PaperInfo(val key: String, val state: Set<String>, val listHash: String)
+data class MembershipView(val devices: List<String>, val removed: List<String>, val seats: Map<String, String?>, val backup: String?, val refused: List<String>, val invariant: Boolean, val locks: Map<String, String?>, val members: List<Member> = emptyList(),
+                          val redeals: Map<String, RedealInfo> = emptyMap(), val abandoned: Set<String> = emptySet(), val removes: List<RemoveInfo> = emptyList(), val adds: List<AddInfo> = emptyList(), val recordDevices: List<String> = emptyList(),
+                          val papers: List<PaperInfo> = emptyList(), val lockChanges: Set<String> = emptySet())
 
 /** §3.2, §6.7.2: the membership as a function of the record and the *set* of changes. */
 object Membership {
     private class Parsed(val ev: Event, val c: JSONObject, val change: JSONObject, val type: String, val listHash: String, val list: JSONArray)
 
+    /** Whether `ev` is a change of this account, signed by its group key (approval not yet checked). */
+    fun parses(rec: JSONObject, ev: Event): Boolean = try { parse(rec, ev); true } catch (_: Exception) { false }
     private fun parse(rec: JSONObject, ev: Event): Parsed {
         need(ev.kind == 24302, "not_a_change", "kind")
         val c = try { Json.obj(ev.content) } catch (_: Exception) { refuse("not_a_change", "content") }
@@ -213,11 +224,14 @@ object Membership {
                 else need(st.has("new"), "bad_change")
                 need(st.has("replaces") && (st.isNull("replaces") || st.get("replaces") is String), "bad_change", "replaces") }
             "paper" -> { val p = ch.getJSONObject("paper"); k32(p.opt("key")); k32(p.opt("replaces")); k32(p.opt("inner"))
-                val state = p.opt("state") as? JSONArray ?: refuse("bad_change", "a committed paper change names its state"); (0 until state.length()).forEach { h16(state.opt(it)) } }
+                val state = p.opt("state") as? JSONArray ?: refuse("bad_change", "a committed paper change names its state"); (0 until state.length()).forEach { h16(state.opt(it)) }
+                // Core 14.21: the ids of every redeal whose seed its seed items carry, sorted, once each.
+                if (p.has("seeds")) { val sd = p.opt("seeds") as? JSONArray ?: refuse("bad_change", "seeds"); (0 until sd.length()).forEach { h16(sd.opt(it)) }
+                    need((1 until sd.length()).all { sd.getString(it) > sd.getString(it - 1) }, "bad_change", "seeds sorted, once each") } }
             "redeal" -> { val r = ch.getJSONObject("redeal"); h16(r.opt("id")); for (f in listOf("dealer", "paper_to", "paper_item", "dk", "rs")) k32(r.opt(f))
                 val D = r.optJSONArray("D"); need(D != null && D.length() == 3, "bad_change", "D is [D1, D2, D3]"); (0 until 3).forEach { point(D!!.getString(it)) }
                 for (f in listOf("base", "abandons")) { val a = r.optJSONArray(f) ?: refuse("malformed"); (0 until a.length()).forEach { h16(a.opt(it)) } }
-                val body = JSONObject(r.toMap().filterKeys { it != "sig" })
+                val body = JSONObject().also { b -> for (k in r.keyList()) if (k != "sig") b.put(k, r.get(k)) }
                 need(schnorrVerify(r.optString("sig"), Approvals.detached("redeal", rec.getString("g"), Json.obj(Jcs.of(body))), r.getString("dealer")), "bad_signature", "dealer") }
         }
         return Parsed(ev, c, ch, type, Approvals.hash(list), list)
@@ -337,8 +351,21 @@ object Membership {
         var invariant = false
         try { Record.invariants(g, entries, rec.getJSONObject("seats"), removed) } catch (_: KeykinException) { invariant = true }
         if (entries.map { it.key }.toSet().size != entries.size) invariant = true
+        // Upkeep's inputs (§6.7.1): every redeal by id (the first carrying it), the ids abandoned, and the
+        // removes and adds with who approved each (core 14.19 §5.9's members log and F5 flags).
+        val redeals = LinkedHashMap<String, RedealInfo>()
+        for (p in accepted.filter { it.type == "redeal" }) { val r = p.change.getJSONObject("redeal"); redeals.putIfAbsent(r.getString("id"), RedealInfo(r, p.listHash, p.ev.id)) }
+        val abandoned = redeals.values.flatMap { strs(it.r.getJSONArray("abandons")) }.toSet()
+        fun approver(p: Parsed): String? { val a = p.c.optJSONObject("approval") ?: return null
+            return a.optJSONObject("lock")?.optString("member")?.ifEmpty { null } ?: a.optJSONArray("pair")?.optJSONObject(0)?.optString("member")?.ifEmpty { null }
+                ?: a.optJSONObject("paper")?.optString("member")?.ifEmpty { null } ?: a.optJSONObject("self")?.optString("member")?.ifEmpty { null }
+                ?: a.optJSONObject("recovery")?.optString("backup")?.ifEmpty { null } }
+        val removes = accepted.filter { it.type == "remove" }.map { RemoveInfo(it.change.getString("remove"), it.ev.id, it.listHash, it.c.optJSONObject("approval")?.has("self") == true) }
+        val addInfos = accepted.filter { it.type == "add" }.map { val a = it.change.getJSONObject("add"); AddInfo(a.getString("key"), it.ev.id, approver(it), !a.isNull("lock")) }
+        val lockChanges = accepted.filter { it.type == "lock" }.map { it.ev.id }.toSet()
+        val papers = accepted.filter { it.type == "paper" }.map { val p = it.change.getJSONObject("paper"); PaperInfo(p.getString("key"), strs(p.optJSONArray("state")).toSet(), it.listHash) }
         return MembershipView(entries.filter { it.kind == "device" }.map { it.key }.distinct().sorted(), removed.sorted(),
             seats.mapValues { (_, v) -> if (v != null && v in removed) null else v }, backupKey, refused.sorted(), invariant, locks,
-            entries.map { if (it.kind == "device") it.copy(lock = lockObjs[it.key]) else it })
+            entries.map { if (it.kind == "device") it.copy(lock = lockObjs[it.key]) else it }, redeals, abandoned, removes, addInfos, recDevices.map { it.key }, papers, lockChanges)
     }
 }

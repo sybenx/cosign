@@ -2,7 +2,7 @@
 // transport-free state machines. A joining member trusts only what it scanned, the group key and
 // the check both screens show (live finding #17).
 
-import { bytesToHex, randomBytes, hexN, refuse } from './bytes.ts';
+import { bytesToHex, randomBytes, hexN, refuse, fromB64u, b64u, hexToBytes } from './bytes.ts';
 import { joinCheck, stateHash } from './codes.ts';
 import { checkEpochRecord } from './record.ts';
 import { computeMembership, type Membership } from './membership.ts';
@@ -28,13 +28,13 @@ export function parseCode(code: string): ({ kind: 'join' } & Invite) | ({ kind: 
   const q = new URLSearchParams(m![3]);
   const s = q.get('s') ?? '', x = Number(q.get('x')), r = q.getAll('r');
   if (!Number.isSafeInteger(x)) refuse('bad_code', 'x');
-  const sHex = bytesToHex(new Uint8Array(Buffer.from(s, 'base64url')));
+  const sHex = bytesToHex(fromB64u(s));
   hexN(sHex, 16, 's');
   if (m![2] === 'join') { const g = q.get('g')!, mm = q.get('m')!; hexN(g, 32, 'g'); hexN(mm, 32, 'm'); return { kind: 'join', g, m: mm, s: sHex, x, r }; }
   const n = q.get('n')!; hexN(n, 32, 'n');
   return { kind: 'hello', n, s: sHex, x, r };
 }
-export const sOnWire = (sHex: string) => Buffer.from(sHex, 'hex').toString('base64url');
+export const sOnWire = (sHex: string) => b64u(hexToBytes(sHex));
 
 /** The inviting device's side, either direction. */
 export class Inviter {

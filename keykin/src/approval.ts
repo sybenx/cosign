@@ -4,7 +4,7 @@
 
 import { bytesToHex, refuse, jcs } from './bytes.ts';
 import { what, listHash, detachedDigest, selfDigest, waitedDigest, recoveryWaitId } from './codes.ts';
-import { checkAssertion, type LockPub, type SoftLock } from './lock.ts';
+import { checkAssertion, type LockPub, type Lock } from './lock.ts';
 import { schnorrSign, schnorrVerify, type KeyPair } from './event.ts';
 import { changeType, type Approval, type Change, type Waited } from './types.ts';
 
@@ -57,13 +57,14 @@ export function checkListShape(list: Change[]): void {
   if (self.length && (self.length !== 1 || list.length !== 2 || !types.includes('redeal'))) refuse('bad_list', 'a self remove is exactly [remove, redeal]');
 }
 
-/** The list as approved: redeals as `{dealer}` placeholders, papers without `inner` and `state`. */
+/** The list as approved: redeals as `{dealer}` placeholders, papers without `inner`, `state` and `seeds` (core 14.21:
+ *  `seeds` is known only after F7 step 2, like `inner`). */
 export function placeholderList(list: Change[]): Change[] {
   return list.map((c) => {
     if ('redeal' in c) return { redeal: { dealer: c.redeal.dealer } };
     // A paper change is approved without `inner` and `state`; every other field, Backup's `holders` and
     // `heir` and any module's, stays in the approved list (§6.7.2).
-    if ('paper' in c && c.paper && typeof c.paper === 'object') { const { inner: _i, state: _s, ...rest } = c.paper as Record<string, unknown>; return { paper: rest } as Change; }
+    if ('paper' in c && c.paper && typeof c.paper === 'object') { const { inner: _i, state: _s, seeds: _d, ...rest } = c.paper as Record<string, unknown>; return { paper: rest } as Change; }
     return c;
   });
 }
@@ -76,10 +77,12 @@ export const approvalHash = (list: Change[]) => listHash(placeholderList(list));
 export const changeWhat = (g: string, epochId: string, list: Change[], expiry: number) => what.change(approvalHash(list), epochId, expiry);
 
 const pairBody = (w: Uint8Array, r: string) => ({ what: bytesToHex(w), r });
+/** §6.2 `pair`: the digest both devices sign (`sig` and `code_sig`). */
+export const pairDigest = (g: string, epochId: string, list: Change[], expiry: number, r: string) => detachedDigest('pair', g, pairBody(changeWhat(g, epochId, list, expiry), r));
 
 // --- builders (devices) ----------------------------------------------------------------
 
-export const approveLock = (g: string, epochId: string, list: Change[], expiry: number, member: string, lock: SoftLock): Approval =>
+export const approveLock = (g: string, epochId: string, list: Change[], expiry: number, member: string, lock: Lock): Approval =>
   ({ expiry, lock: { member, assertion: lock.assert(g, changeWhat(g, epochId, list, expiry)) } });
 
 export function approvePair(g: string, epochId: string, list: Change[], expiry: number, first: KeyPair, second: KeyPair, r: string): Approval {

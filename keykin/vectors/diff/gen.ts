@@ -207,7 +207,7 @@ D('kind 10002 "r" without a URL', 10002, '', [['r']]);
 }
 
 // ---------------- lifetimes ----------------
-for (const t of ['delta', 'paper_ck', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack', 'pair_request', 'cancel', 'unknown_x'])
+for (const t of ['delta', 'paper_eph', 'reissue_eph', 'dk_seed', 'release_seed', 'paper_item', 'welcome', 'repair_sigma', 'change', 'ack', 'pair_request', 'cancel', 'unknown_x'])
   for (const c of ['member', 'ask']) P('lifetime', `${t}/${c}`, { type: t, cls: c, age: 10 }, checkLifetime(t, c, 1000, 1010));
 P('lifetime', 'proto/ask', { type: '__proto__', cls: 'ask', age: 10 }, checkLifetime('__proto__', 'ask', 1000, 1010));
 
@@ -359,6 +359,76 @@ M('one server seat with host ""', seatEvs('server:4', F.servers[0].kp.pub, srvEn
   B('backup: a 16-byte value', [s16[0], s16[1]]);
   const t3 = generate(1, [[3, 3]], secret, '', 1, det)[0];
   B('backup: 3 of 3', t3);
+}
+
+// The envelope for the Kotlin device side (core §9.1): NIP-44 v2, BIP-340 signing, NIP-59 unwrap.
+{
+  const nip44 = await import('nostr-tools/nip44');
+  const { wrap, unwrap } = await import(`${K}/src/transport.ts`);
+  const { nip44Open } = await import(`${K}/src/nip44.ts`);
+  const { schnorr } = await import(`${K}/node_modules/@noble/curves/secp256k1.js`);
+  const det = (seed: number, n = 32) => new Uint8Array(n).map((_, i) => (i * 37 + seed * 11 + 1) & 0xff);
+  const sk = (seed: number) => { const b = det(seed); b[0] = 0x11; return b; };
+  const pub = (b: Uint8Array) => bytesToHex(schnorr.getPublicKey(b));
+  const a = sk(1), b = sk(2), c = sk(3);
+  // Conversation keys, both ways.
+  P('nip44_ck', 'a to b', { sk: bytesToHex(a), pub: pub(b) }, bytesToHex(nip44.v2.utils.getConversationKey(a, pub(b))));
+  P('nip44_ck', 'b to a', { sk: bytesToHex(b), pub: pub(a) }, bytesToHex(nip44.v2.utils.getConversationKey(b, pub(a))));
+  const ck = nip44.v2.utils.getConversationKey(a, pub(b));
+  for (const [n, t] of Object.entries({ short: 'x', utf8: 'é😀 ', thirty_three: 'a'.repeat(33), long: 'z'.repeat(1000), boundary_256: 'q'.repeat(256), boundary_257: 'q'.repeat(257), large: 'w'.repeat(40000) }))
+    P('nip44_enc', n, { plain: t, ck: bytesToHex(ck), nonce: bytesToHex(det(9)) }, nip44.v2.encrypt(t, ck, det(9)));
+  const good = nip44.v2.encrypt('{"a":1}', ck, det(4));
+  const D = (name: string, payload: string) => P('nip44_dec', name, { payload, ck: bytesToHex(ck) }, res(() => nip44Open(payload, ck)));
+  D('good', good);
+  { const x = Buffer.from(good, 'base64'); x[50] ^= 1; D('flipped ciphertext', x.toString('base64')); }
+  { const x = Buffer.from(good, 'base64'); x[x.length - 1] ^= 1; D('flipped mac', x.toString('base64')); }
+  { const x = Buffer.from(good, 'base64'); x[0] = 1; D('version 1', x.toString('base64')); }
+  D('unpadded base64', good.replace(/=+$/, ''));
+  D('too short', good.slice(0, 100));
+  { const ck2 = nip44.v2.utils.getConversationKey(c, pub(b)); D('another key', nip44.v2.encrypt('hi', ck2, det(5))); }
+  // BIP-340 with fixed aux randomness: the same signature on both sides.
+  for (const k of [1, 2, 3]) P('bip340_sign', `key ${k}`, { msg: bytesToHex(det(20 + k)), sk: bytesToHex(sk(k)), aux: bytesToHex(det(30 + k)) }, bytesToHex(schnorr.sign(det(20 + k), sk(k), det(30 + k))));
+  // Unwrap TS-made wraps, good and tampered.
+  const U = (name: string, to: Uint8Array, w: any) => P('unwrap', name, { sk: bytesToHex(to), wrap: w }, res(() => { const o = unwrap(to, w); return { from: o.from, body: jcs(o.body), sentAt: o.sentAt }; }));
+  const body = { v: 1, type: 'state_get', g: 'ab'.repeat(32), epoch: 'cd'.repeat(16), id: 'ef'.repeat(16), cls: 'ask' };
+  const w1 = wrap(a, pub(b), body, { at: 1_800_000_000 });
+  U('a to b', b, w1);
+  U('a to b, opened by c', c, w1);
+  U('a stored wrap', b, wrap(a, pub(b), { ...body, type: 'inbox_get' }, { at: 1_800_000_000, stored: true }));
+  U('kind 1 instead of a wrap', b, { ...w1, kind: 1 });
+  U('wrap content changed', b, { ...w1, content: w1.content.slice(0, -8) + 'AAAAAAA=' });
+  U('a body with a unicode string', b, wrap(a, pub(b), { ...body, note: 'é\u2028😀' }, { at: 1_800_000_001 }));
+  // A wrap whose rumor's pubkey isn't the seal's (a forged sender).
+  {
+    const { finalizeEvent } = await import('nostr-tools/pure');
+    const rumor = { pubkey: pub(c), created_at: 1_800_000_000, kind: 24301, tags: [], content: JSON.stringify(body) };
+    const r = { ...rumor, id: (await import(`${K}/src/event.ts`)).eventId(rumor) };
+    const seal = finalizeEvent({ kind: 13, created_at: 1_800_000_000, tags: [], content: nip44.v2.encrypt(JSON.stringify(r), nip44.v2.utils.getConversationKey(a, pub(b)), det(6)) }, a);
+    const eph = det(7);
+    const fw = finalizeEvent({ kind: 21059, created_at: 1_800_000_000, tags: [['p', pub(b)]], content: nip44.v2.encrypt(JSON.stringify(seal), nip44.v2.utils.getConversationKey(eph, pub(b)), det(8)) }, eph);
+    U('rumor pubkey is not the seal\'s', b, fw);
+    const r2 = { ...r, pubkey: pub(a), extra: 1 };
+    const seal2 = finalizeEvent({ kind: 13, created_at: 1_800_000_000, tags: [], content: nip44.v2.encrypt(JSON.stringify(r2), nip44.v2.utils.getConversationKey(a, pub(b)), det(6)) }, a);
+    U('rumor with an extra field', b, finalizeEvent({ kind: 21059, created_at: 1_800_000_000, tags: [['p', pub(b)]], content: nip44.v2.encrypt(JSON.stringify(seal2), nip44.v2.utils.getConversationKey(eph, pub(b)), det(8)) }, eph));
+  }
+}
+
+// Parts (core §9.1): the same sequence of parts through both reassemblers.
+{
+  const { split, Reassembler } = await import(`${K}/src/transport.ts`);
+  const R = (name: string, seq: any[]) => P('parts', name, seq, res(() => { const r = new Reassembler(); let last: any = 'pending'; for (const b of seq) { const x = r.take('aa'.repeat(32), b, 1_800_000_000); last = x === null ? 'pending' : jcs(x); } return last; }));
+  const big = { v: 1, type: 'welcome', cls: 'member', blob: 'x'.repeat(60_000), note: 'é😀' };
+  const ps = split(big);
+  R('three parts in order', ps);
+  R('three parts reversed', [...ps].reverse());
+  R('a part twice', [ps[0], ps[0], ps[1], ps[2]]);
+  R('one part missing', [ps[0], ps[2]]);
+  R('k equals m', [{ ...ps[0], k: 3 }]);
+  R('m changes', [ps[0], { ...ps[1], m: 4 }]);
+  R('bad base64', [{ ...ps[0], data: ps[0].data.slice(0, -1) }]);
+  R('a part too large', [{ ...ps[0], data: Buffer.alloc(24_001).toString('base64') }]);
+  R('five open from one sender', [0, 1, 2, 3, 4].map((k) => ({ ...ps[0], of: `of${k}` })));
+  R('not a part', [{ v: 1, type: 'ping' }]);
 }
 
 console.log(JSON.stringify(out, null, 1));

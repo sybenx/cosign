@@ -1,13 +1,13 @@
 // Weighted decryption answers with a DLEQ proof (core §5.5). Pure.
 
-import { sha, u32be, randomBytes, hexToBytes, refuse, type Bytes } from './bytes.ts';
+import { sha, u32be, randomBytes, hexToBytes, refuse, type Bytes, bytesToHex } from './bytes.ts';
 import { type Commitment, derivePoint, lagrange, mul, mod, pointFrom, compBytes, compHex, scalarFrom, scalarHex, G } from './curve.ts';
 
 export interface DleqContext { g: string; epochId: string; state: string; signers: number[] }
 /** One index's answer for one `Q`. */
 export interface EcdhAnswer { i: number; Y: string; R1: string; R2: string; z: string }
 
-const big = (b: Bytes) => mod(BigInt('0x' + Buffer.from(b).toString('hex')));
+const big = (b: Bytes) => mod(BigInt('0x' + bytesToHex(b)));
 
 function challenge(ctx: DleqContext, i: number, W: Bytes, Q: Bytes, Y: Bytes, R1: Bytes, R2: Bytes): bigint {
   return big(sha('keykin/ecdh-dleq/1', hexToBytes(ctx.g), hexToBytes(ctx.epochId), hexToBytes(ctx.state), u32be(i), W, Q, Y, R1, R2));

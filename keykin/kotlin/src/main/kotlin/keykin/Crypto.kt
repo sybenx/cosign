@@ -13,7 +13,10 @@ import java.security.spec.ECPoint
 import java.security.spec.ECPublicKeySpec
 import java.util.Base64
 
-class KeykinException(val code: String, msg: String? = null) : Exception(if (msg == null) code else "$code: $msg")
+class KeykinException(val code: String, msg: String? = null) : Exception(if (msg == null) code else "$code: $msg") {
+    /** For a signing that failed: how many servers demanded an approval (Device policy §2). */
+    var demands = 0
+}
 fun refuse(code: String, msg: String? = null): Nothing = throw KeykinException(code, msg)
 
 /** NIP-01's serialization with §9.5's strings: what the profile refuses is refused, never escaped. */
@@ -29,6 +32,8 @@ fun jsJson(v: Any?): String = when (v) {
 
 data class Event(val id: String, val pubkey: String, val createdAt: Long, val kind: Int, val tags: List<List<String>>, val content: String, val sig: String) {
     fun tag(name: String) = tags.firstOrNull { it.isNotEmpty() && it[0] == name }?.getOrNull(1)
+    fun json(): JSONObject = JSONObject().put("id", id).put("pubkey", pubkey).put("created_at", createdAt).put("kind", kind)
+        .put("tags", JSONArray(tags.map { JSONArray(it) })).put("content", content).put("sig", sig)
     companion object {
         private val NONE = Event("", "", -1, -1, emptyList(), "", "")
         /** A signed event; one that breaks §9.5's shape becomes an event no id or signature can match. */
@@ -38,7 +43,7 @@ data class Event(val id: String, val pubkey: String, val createdAt: Long, val ki
         /** §9.5's event shape: exactly the NIP-01 fields (`rumor` and `cosign`: without `sig`), typed, hex lowercase. */
         fun shape(o: JSONObject, form: String): Event {
             val want = FIELDS[if (form == "signed") "signed" else "rumor"]!!
-            for (k in o.keySet()) if (k !in want) refuse("malformed", "the event has a field \"$k\"")
+            for (k in o.keyList()) if (k !in want) refuse("malformed", "the event has a field \"$k\"")
             for (k in want) if (!o.has(k)) refuse("malformed", "the event has no \"$k\"")
             val id = o.get("id") as? String ?: ""; val pk = o.get("pubkey") as? String ?: ""
             if (!HEX64.matches(id)) refuse("malformed", "id: 64 lowercase hex")

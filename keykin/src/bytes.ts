@@ -3,6 +3,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { bytesToHex, hexToBytes, concatBytes, utf8ToBytes, randomBytes } from '@noble/hashes/utils.js';
+import { base64, base64urlnopad } from '@scure/base';
 
 export { bytesToHex, hexToBytes, concatBytes, utf8ToBytes, randomBytes };
 export type Bytes = Uint8Array;
@@ -25,22 +26,25 @@ export function u64be(n: number): Bytes {
   const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n)); return b;
 }
 
-export const b64u = (b: Bytes) => Buffer.from(b).toString('base64url');
+// @scure/base, not Buffer: the same code runs in a browser (the extension).
+export const b64u = (b: Bytes) => base64urlnopad.encode(b);
 /** Strict base64url (§9.5): the URL alphabet only, no padding or spaces, a length that is not 1 mod 4 and
  *  zero unused bits; checked by re-encoding, since Buffer alone would take anything. */
 export function fromB64u(s: string): Bytes {
   if (typeof s !== 'string' || !/^[A-Za-z0-9_-]*$/.test(s)) throw new KeykinError('malformed', 'base64url');
-  const b = Buffer.from(s, 'base64url');
-  if (b.toString('base64url') !== s) throw new KeykinError('malformed', 'base64url: unused bits or length');
-  return new Uint8Array(b);
+  let b: Bytes;
+  try { b = base64urlnopad.decode(s); } catch { throw new KeykinError('malformed', 'base64url: unused bits or length'); }
+  if (base64urlnopad.encode(b) !== s) throw new KeykinError('malformed', 'base64url: unused bits or length');
+  return b;
 }
 /** Strict standard base64 with padding (§9.5: a part's `data`, NIP-44 payloads): length 0 mod 4, at most
  *  two `=` and only at the end, zero unused bits. */
 export function fromB64(s: string): Bytes {
   if (typeof s !== 'string' || s.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) throw new KeykinError('malformed', 'base64');
-  const b = Buffer.from(s, 'base64');
-  if (b.toString('base64') !== s) throw new KeykinError('malformed', 'base64: unused bits');
-  return new Uint8Array(b);
+  let b: Bytes;
+  try { b = base64.decode(s); } catch { throw new KeykinError('malformed', 'base64: unused bits'); }
+  if (base64.encode(b) !== s) throw new KeykinError('malformed', 'base64: unused bits');
+  return b;
 }
 
 /** HKDF-SHA256 with an empty salt (core §4.5). */

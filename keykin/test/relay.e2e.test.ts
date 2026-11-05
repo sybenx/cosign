@@ -23,7 +23,7 @@ before(async () => {
 after(() => { net?.close(); relays.forEach((r) => r.kill()); });
 
 test('over relays: create, sign, add a device, report it lost, replace a dead server', { skip: !haveNak && 'nak not installed', timeout: 180_000 }, async () => {
-  const acc = await create({ net: net as any });
+  const acc = await create({ net: net as any, relays: ports.map((p) => `ws://127.0.0.1:${p}`) });
   const e = await acc.A.sign({ content: 'gm over relays' });
   assert.ok(verifyEvent(e));
   const B = await invite(acc, acc.A, (l) => acc.A.approveLock(l));

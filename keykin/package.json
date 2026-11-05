@@ -5,8 +5,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node --test test/*.test.ts",
-    "typecheck": "tsc"
+    "test": "node --test $(ls test/*.test.ts | grep -v '\\.e2e\\.')",
+    "typecheck": "tsc",
+    "test:e2e": "node --test --test-concurrency=1 test/*.e2e.test.ts"
   },
   "dependencies": {
     "@noble/ciphers": "^2.1.1",
