@@ -215,6 +215,15 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     private fun protect(id: String) = synchronized(protectedIds) { protectedIds += id; if (protectedIds.size > 50_000) protectedIds.remove(protectedIds.first()) }
     /** When this device last caught up with the servers (Doors §2: no site is answered on older news). */
     @Volatile var lastFetchAt = 0L
+    /** Doors §2's catch-up before a site's request, bounded: wait for a fetch at most `waitMs`, and let it finish in
+     *  the background. A full fetch asks every server in turn and takes 10–15 s over a slow link, and a site (nak, a
+     *  client) gives up on its request at about 30 s; one fetch is shared by requests that arrive meanwhile. */
+    fun catchUp(waitMs: Long = 5000) {
+        if (net.now - lastFetchAt <= 30) return
+        val f = synchronized(this) { catching?.takeIf { !it.isDone } ?: java.util.concurrent.CompletableFuture.runAsync { try { fetch() } catch (_: Exception) {} }.also { catching = it } }
+        try { f.get(waitMs, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: Exception) {}
+    }
+    @Volatile private var catching: java.util.concurrent.CompletableFuture<Void>? = null
     private val grantPublisher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "keykin-grants").also { it.isDaemon = true } }
     @Volatile private var grantPublishPending = false
     /** Publish this device's grants soon (a bind, a widen, an end), at most once a second; stored first (M6). */

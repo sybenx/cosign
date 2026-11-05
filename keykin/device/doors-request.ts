@@ -13,8 +13,6 @@ import type { DeviceNode } from './node.ts';
 import { siteGuard, vaultPlaintext } from './doors.ts';
 import { scopesForEvent, scopeForDecrypt, expired, type Scope } from './grants.ts';
 
-/** A home that hasn't caught up within this long does first (Doors §2: never on old news). */
-const FRESH_S = 30;
 const HELD_PER_GRANT = 8, HELD_MAX = 64, HELD_TTL_S = 7 * 86400;
 const SELF_ENCRYPTS_PER_HOUR = 300;
 /** A replaceable or addressable event's list: kind, and `d` for addressable kinds. */
@@ -101,8 +99,8 @@ export class DoorRequests {
     const now = this.d.now;
     const ask = (scope: Scope) => ({ error: `permission: ${scope} needs your OK on your phone` });
     // Doors §2: never on old news. A device that hasn't caught up within 30 seconds does first (a site signed out
-    // elsewhere is then refused here).
-    if (this.d.now - this.d.lastFetchAt > FRESH_S) { try { await this.d.fetch(); } catch { /* answers what needs no round */ } }
+    // elsewhere is then refused here), waiting at most 5 seconds for it: a site gives up on its request at about 30.
+    await this.d.catchUp();
     // A grant ended on another device (a tombstone, a removal) ends here too.
     if (c.entry && !c.helper && !this.d.grants.own.has(c.entry)) { await c.ended?.(); return { error: 'revoked: this site was disconnected' }; }
     if (!c.entry && !c.helper) return { error: 'not-connected: connect first' };

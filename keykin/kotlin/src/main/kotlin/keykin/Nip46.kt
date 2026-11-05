@@ -113,7 +113,10 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         return g
     }
     fun listen() {
-        stop?.invoke()
+        // The new subscription first, then the old one closed (below): NIP-46 requests are ephemeral, and a site sends
+        // its next request the moment `connect` is acknowledged, which re-subscribes here; closing first left a moment
+        // in which that request was lost. A request seen twice is answered once (`seen`).
+        val old = stop
         // A link never used goes once it expires; an ended grant 30 days after its end, its `revoked:` said (M12).
         val live = synchronized(this) {
             grants.entries.removeIf { (_, g) -> (g.client == null && g.linkExpires != null && net.now > g.linkExpires!!) || (g.endedAt != null && net.now - g.endedAt!! > 30 * 86400) }
@@ -122,6 +125,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         // Off the relay's listener thread: answering signs, and the co-signer's answer arrives on that thread.
         // On the grants' own relays too, dialled when not yet (review 11 H3).
         stop = if (live.isEmpty()) null else net.watch(JSONObject().put("kinds", JSONArray(listOf(24133))).put("#p", JSONArray(live.map { it.signer })), { e -> worker.execute { try { handle(e) } catch (_: Exception) {} } }, live.flatMap { it.relays }.distinct())
+        old?.invoke()
     }
     fun sleep() { stop?.invoke(); stop = null }
 
@@ -159,7 +163,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         }
         if (from != g.client) return err("not-connected: connect first")
         // Doors §2: never on old news. A home that hasn't caught up within 30 seconds does first.
-        if (method != "ping" && net.now - d.lastFetchAt > 30) try { d.fetch() } catch (_: Exception) {}
+        if (method != "ping") d.catchUp()
         // A grant ended on another device (a tombstone, a removal) ends here too.
         if (g.entry != null && d.grants.own[g.entry!!] == null) { end(g); return err("revoked: this site was disconnected") }
         return try {
@@ -266,7 +270,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
     /** A held event of a live grant, after a catch-up (a site signed out elsewhere, an expiry, a newer version of its
      *  list all drop it: review 20 M8, Device policy §4). */
     private fun heldLive(id: String): Held {
-        if (net.now - d.lastFetchAt > 30) try { d.fetch() } catch (_: Exception) {}
+        d.catchUp()
         val h = synchronized(this) { held[id] } ?: refuse("unknown_held")
         val g = grant(h.signer)
         val e = g?.entry?.let { d.grants.own[it] }

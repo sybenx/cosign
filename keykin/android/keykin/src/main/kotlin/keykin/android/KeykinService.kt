@@ -40,6 +40,8 @@ class KeykinService : Service() {
         super.onCreate()
         Proc.signerOnly("KeykinService")
         Memberships.init(this)
+        // Diagnostics in a debuggable build only: each request to a member, timed, to logcat (tag KeykinTrace).
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) keykin.Keykin.trace = { Log.d("KeykinTrace", it) }
         Outcomes.onChange = { slot -> work.execute { if (Outcomes.get(slot)?.optString("action") == "add_invited") invites.remove(slot); publish(slot) } }
         work.execute { for (slot in slots()) open(slot) }
     }

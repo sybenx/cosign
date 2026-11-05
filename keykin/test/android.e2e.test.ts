@@ -141,7 +141,8 @@ test('the keykin-android demo joins by invite code on an emulator, checked both 
   assert.ok(b.bunker, JSON.stringify(b));
   const link = String(b.bunker).replace(/10\.0\.2\.2/g, '127.0.0.1');
   const lineOf = (o: { out: string; err: string }) => { const l = o.out.trim().split('\n').find((x) => x.startsWith('{')); assert.ok(l, 'nak said: ' + o.out + o.err); return JSON.parse(l!); };
-  // The home subscribes on its relays once the link is minted: a moment for that, and one retry, as a site retries.
+  // The home subscribes on its relays once the link is minted: a moment for that, and one retry, as a site retries
+  // (the root causes, a gap while re-subscribing and an unbounded catch-up before answering, are fixed in the homes).
   await new Promise((r) => setTimeout(r, 3000));
   let said = await nak(['event', '--sec', link, '-k', '1', '-c', 'gm through the phone\'s home', relays[0]]);
   if (!said.out.includes('{')) said = await nak(['event', '--sec', link, '-k', '1', '-c', 'gm through the phone\'s home', relays[0]]);

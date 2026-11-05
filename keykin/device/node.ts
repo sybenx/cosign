@@ -917,6 +917,15 @@ export class DeviceNode implements Node {
   #protect(id: string) { this.protectedIds.add(id); if (this.protectedIds.size > 50_000) this.protectedIds.delete(this.protectedIds.values().next().value!); }
   /** When this device last caught up with the servers (Doors §2: no site is answered on older news). */
   lastFetchAt = 0;
+  /** Doors §2's catch-up before a site's request, bounded: wait for a fetch at most `waitMs`, and let it finish in the
+   *  background. A full fetch asks every server in turn and takes 10–15 s over a slow link, and a site gives up on its
+   *  request at about 30 s; one fetch is shared by requests that arrive meanwhile. */
+  async catchUp(waitMs = 5000) {
+    if (this.now - this.lastFetchAt <= 30) return;
+    this.#catching ??= this.fetch().catch(() => {}).finally(() => { this.#catching = null; });
+    await Promise.race([this.#catching, new Promise((ok) => unrefTimer(setTimeout(ok, waitMs)))]);
+  }
+  #catching: Promise<unknown> | null = null;
   #grantTimer: ReturnType<typeof setTimeout> | null = null;
   /** Publish this device's grants soon (a change to them: a bind, a widen, an end), at most once a second. */
   publishGrantsSoon() {

@@ -195,12 +195,15 @@ class RelayNet(private val relays: List<String>, private val env: Envelope = Env
         val f = CompletableFuture<JSONObject>()
         waiting["$to:$id"] = f
         val start = System.currentTimeMillis()
+        var sends = 0
+        val done = { a: JSONObject -> Keykin.trace?.invoke("send ${body.optString("type")} → ${to.take(8)}: ${a.optString("type")}${a.optString("code").let { if (it.isEmpty()) "" else " $it" }} in ${System.currentTimeMillis() - start} ms, $sends sent"); a }
         while (!f.isDone && System.currentTimeMillis() - start < timeoutMs) {
             for (part in Parts.split(body)) publish(env.wrap(sk, to, part, now))
-            try { return f.get(resendMs, TimeUnit.MILLISECONDS) } catch (_: java.util.concurrent.TimeoutException) {}
+            sends++
+            try { return done(f.get(resendMs, TimeUnit.MILLISECONDS)) } catch (_: java.util.concurrent.TimeoutException) {}
         }
         waiting.remove("$to:$id")
-        return if (f.isDone) f.get() else JSONObject().put("type", "error").put("code", "unreachable")
+        return done(if (f.isDone) f.get() else JSONObject().put("type", "error").put("code", "unreachable"))
     }
     fun close() { for (c in conns) { c.closed = true; try { c.sock?.close() } catch (_: Exception) {} }; redial.shutdownNow() }
 }

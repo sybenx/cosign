@@ -117,12 +117,16 @@ export class Nip46Home {
 
   /** Answer sites while awake: subscribed to every grant's requests. */
   listen() {
-    this.#listening?.close();
     // An ended grant answers `revoked:` for 30 days, then it and its key are forgotten (review 11 L3).
     for (const [k, g] of this.grants) if (g.endedAt && this.d.now - g.endedAt >= ENDED_KEEP_S) this.grants.delete(k);
     const live = [...this.grants.values()];
     const relays = [...new Set(live.flatMap((g) => g.relays))];
+    // The new subscription first, then the old one closed: NIP-46 requests are ephemeral (relays keep none), and a
+    // site sends its next request the moment `connect` is acknowledged, which re-subscribes here; a close before the
+    // new REQ left a moment in which that request was lost. A request seen twice is answered once (`#seen`).
+    const old = this.#listening;
     this.#listening = live.length ? this.#events.watch({ kinds: [KIND_NIP46], '#p': live.map((g) => g.signer) }, (e) => { this.handle(e).catch(() => {}); }, relays) : null;
+    old?.close();
   }
   sleep() { this.#listening?.close(); this.#listening = null; }
 
