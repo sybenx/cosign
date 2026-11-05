@@ -22,6 +22,10 @@ import type { DeviceNode } from './node.ts';
 
 export interface DataKey { state: string; key: Uint8Array }
 
+/** `HKDF-SHA256(salt = empty, ikm = dk, info = utf8(domain) ‖ 0x00 ‖ bytes, L = 32)` (core 14.21 §4.5). */
+export const deriveFrom = (dk: Uint8Array, domain: string, bytes: Uint8Array) =>
+  hkdf(sha256, dk, new Uint8Array(0), concatBytes(utf8ToBytes(domain), new Uint8Array([0]), bytes), 32);
+
 export class DataKeys {
   readonly d: DeviceNode;
   /** The id sets of every state this device has held, oldest first (core §4.5: older keys read older data). */
@@ -105,7 +109,7 @@ export class DataKeys {
     }
     const dk = this.#derive([...ids]);
     if (!dk) throw new KeykinError('missing_seed', 'this device lacks a seed of that state');
-    return hkdf(sha256, dk, new Uint8Array(0), concatBytes(utf8ToBytes(domain), new Uint8Array([0]), bytes), 32);
+    return deriveFrom(dk, domain, bytes);
   }
   /** The app's view: the device's current state (its ids and hash), never a key. */
   forApps() {

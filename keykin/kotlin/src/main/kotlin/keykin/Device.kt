@@ -926,6 +926,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
     /** The app's view of the current state: its ids and hash, never a key. */
     @Synchronized fun currentState(): Pair<List<String>, String> = state.ids.sorted().let { it to Codes.stateHash(it) }
+    /** The states this device has held, newest first: ids and hash, never a key (core 14.21 §4.5 `states()`). */
+    @Synchronized fun dataStates(): List<Pair<List<String>, String>> = dkHistory.reversed().map { it to Codes.stateHash(it) }
     @Synchronized fun dataKey(): Pair<String, ByteArray> {
         val key = derive(state.ids) ?: refuse("no_data_key", if (wiped) "this device was removed or wiped" else "this device holds no data key (a seed still missing)")
         return state.hash to key
@@ -1071,6 +1073,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     internal fun carriedPart(name: String): JSONObject? = carried.optJSONObject(name)
     /** This device's NIP-46 home (Doors §3.3): its sites, their signer keys, held events, the watching server. */
     val nip46: Nip46Home by lazy { Nip46Home(this, net) }
+    /** The device calls for vault apps on this machine (Doors 20 §3.7). */
+    val vault: VaultCalls by lazy { VaultCalls(this) }
     /** The account's relays from its record, for publishing what sites asked for (held events, Undo). */
     fun recordRelays(): List<String> = rec.optJSONArray("relays")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
     internal fun send(to: String, body: JSONObject): JSONObject = net.send(sk, to, body)

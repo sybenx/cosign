@@ -25,11 +25,12 @@ export interface Account { bus: Bus; A: DeviceNode; servers: ServerNode[]; paper
 /** §11.2 import: the device deals an nsec it holds into shares, signs the epoch record with it, welcomes
  *  the servers and the paper, then forgets the nsec. */
 /** `relays`: the record's relays (and the servers'), real ones when the account runs over relays (Doors §2 counts them). */
-export async function create(o: { lockless?: boolean; net?: Net; relays?: string[] } = {}): Promise<Account> {
+export async function create(o: { lockless?: boolean; net?: Net; relays?: string[]; nsec?: string } = {}): Promise<Account> {
   const bus = (o.net ?? new Bus()) as Bus;
   const A = bus.add(new DeviceNode(bus, 'A', o.lockless ? null : softLock())) as DeviceNode;
   const paper = newKey();
-  const nsec = BigInt('0x' + bytesToHex(randomBytes(32)));
+  // `nsec`: an imported key (test vectors); otherwise a fresh one.
+  const nsec = BigInt('0x' + (o.nsec ?? bytesToHex(randomBytes(32))));
   const d = deal(nsec, [1, 2, 3, 4, 7, 8, 5, 6]);
   const g = xOnly(d.commitment[0]);
   // Pick and enrol the servers (Account admin §1.2 step 3, Server profile §4).

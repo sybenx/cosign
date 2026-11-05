@@ -78,6 +78,14 @@ fun main(args: Array<String>) {
                     // Core 14.21: an app's derived key at the current state, and how many seed-only items servers hold.
                     "derive" -> d.currentState().let { (ids, st) -> MemberSig.register(c.getString("domain"))   // as a vault app registers at load
  JSONObject().put("state", st).put("ids", JSONArray(ids)).put("key", hex(d.derive(ids, c.getString("domain"), utf8(c.getString("bytes"))))) }
+                    // Doors 20 §3.7: the vault-app device calls, for app `app` (granted first by "vault_allow").
+                    "vault_allow" -> { d.vault.allow(c.getString("app")); JSONObject().put("allowed", JSONArray(d.vault.allowed())) }
+                    "vault_ksig" -> d.vault.ksig(c.getString("app"), unhex(c.getString("root"))).let { (mk, sig) -> JSONObject().put("mk", mk).put("ksig", sig) }
+                    "vault_derive" -> d.vault.current(c.getString("app")).let { (ids, st) -> JSONObject().put("state", st).put("ids", JSONArray(ids)).put("key", hex(d.vault.derive(c.getString("app"), ids, c.getString("domain"), unhex(c.getString("bytes"))))) }
+                    "vault_sign" -> d.vault.sign(c.getString("app"), c.getInt("kind"), c.optString("content"), c.optJSONArray("tags")?.let { a -> (0 until a.length()).map { k -> a.getJSONArray(k).let { t -> (0 until t.length()).map { t.getString(it) } } } } ?: emptyList())
+                    "vault_invite" -> d.vault.invite(c.getString("app"), c.getJSONObject("rumor").put("pubkey", d.g).put("created_at", d.now), c.getString("to"))
+                    "vault_unwrap" -> d.vault.unwrap(c.getString("app"), c.getJSONObject("wrap")).let { (r, seal) -> JSONObject().put("rumor", r).put("seal", seal) }
+                    "vault_decrypt" -> JSONObject().put("plain", d.vault.decrypt(c.getString("app"), c.getString("peer"), c.getString("payload")))
                     "seeds" -> JSONObject().put("records", d.seedRecords().size).put("held", JSONArray(d.seedOnlyHeld()))
                     // Be a NIP-46 home (Doors §3.3): print a bunker:// link, then answer sites for `seconds`.
                     "bunker" -> { val home = d.nip46; println(JSONObject().put("bunker", home.mintBunker(args[1].split(","), "", c.optString("scopes", "sign-in,post").split(",").filter { it.isNotBlank() })).toString()); System.out.flush()

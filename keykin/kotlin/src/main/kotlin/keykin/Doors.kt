@@ -18,6 +18,8 @@ object Doors {
     private object Unreadable
     private fun parse(t: String): Any? = try { Json.parse(t) } catch (_: Exception) { if (t.contains("\"vault\"") || Regex("\"kind\"\\s*:\\s*4812\\b").containsMatchIn(t)) Unreadable else null }
     private fun vaultShape(x: Any?) = x is JSONObject && x.has("vault") && VAULT_SECRETS.any { x.has(it) }
+    /** A vault payload itself (not a rumor): what a vault app's decrypt answers (Doors 20 §3.7). Strictly parsed only. */
+    fun vaultPayload(text: String?): Boolean = text != null && (try { Json.parse(text) } catch (_: Exception) { null }).let { vaultShape(it) }
     /** A plaintext no site may get or have encrypted: a kind-4812 rumor, or an object with `vault` and a secret field,
      *  at the top level or in a rumor's content (as TS `vaultPlaintext`). */
     fun vaultPlaintext(text: String?): Boolean {
