@@ -294,6 +294,8 @@ export async function createByDkg(o: { lockless?: boolean; net?: Net; hosts?: { 
   for (const k of addr.keys()) { const a = await bus.send(A.kp, at(k), { type: 'confirm', epoch: epochId }); if (a?.type !== 'ack') refuse(a?.code ?? 'confirm_failed'); }
   // The backup seat's shares were only ever in this device (5 points until "Write it down" or "Not now").
   shares.clear();
+  // The signpost, published at creation (§6.7.5 route 3), where the account runs over relays.
+  if (bus.events) await A.publishSignpost().catch(() => {});
   return { bus, A, servers, paper, g, epochId };
 }
 

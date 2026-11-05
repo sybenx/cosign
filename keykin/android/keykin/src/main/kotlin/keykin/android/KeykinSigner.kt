@@ -45,6 +45,15 @@ class KeykinSigner(private val context: Context, val name: String = "default") {
         catch (e: Exception) { if (lock != null) KeystoreLock.destroy(lockAlias); throw e }
     }
 
+    /** Create a new account on this phone by DKG with three servers (Account admin §1.1), with a Keystore lock when a
+     *  strong biometric is enrolled. Returns the paper's secret and words, for the library's screen only. Blocks. */
+    fun create(relays: List<String>, fronts: List<String>, withLock: Boolean = true): keykin.Create.Created {
+        if (device != null || store.exists()) throw KeykinException("already_joined", "this slot holds a membership")
+        val lock = if (withLock) try { KeystoreLock.open(lockAlias) } catch (_: Exception) { null } else null
+        return try { keykin.Create.byDkg(netFor(relays), fronts, relays, lock).also { adopt(it.device) } }
+        catch (e: Exception) { if (lock != null) KeystoreLock.destroy(lockAlias); throw e }
+    }
+
     /** UnifiedPush gave the app `endpoint` for `instance` ("<server>:<cls>", one per server and wake class). */
     fun onEndpoint(instance: String, endpoint: String) = extra.update { it.put("endpoints", (it.optJSONObject("endpoints") ?: JSONObject()).put(instance, endpoint)) }
     private fun endpoint(instance: String): String? = extra.get().optJSONObject("endpoints")?.optString(instance)?.ifEmpty { null }

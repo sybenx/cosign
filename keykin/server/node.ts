@@ -36,6 +36,13 @@ import { msg, rid } from '../src/msg.ts';
 export const entryFromReply = (reply: any, idx: number): MemberEntry => ({ key: reply.member_key, kind: 'server', shares: [idx], host: reply.host, operator: reply.operator,
   own: false, https: reply.https, relays: reply.relays, vapid: reply.vapid, enroll: reply });
 
+/** The `seated` reply (core 14.23): a list of entries, sealed to `key`, with the host signature outside the seal over
+ *  SHA-256("keykin-seated/1" ‖ H ‖ challenge ‖ ct). */
+export function sealSeated(host: KeyPair, h: string, challenge: string, key: string, entries: unknown[]) {
+  const ct = nip44.v2.encrypt(JSON.stringify(entries), nip44.v2.utils.getConversationKey(host.sk, key));
+  return { type: 'seated', ct, host: host.pub, sig: schnorrSign(seatedDigest(h, hexToBytes(challenge), new TextEncoder().encode(ct)), host.sk) };
+}
+
 export class ServerNode implements Node {
   kp = newKey(); host = newKey();
   co: CoSigner | null = null;
@@ -503,6 +510,25 @@ export class ServerNode implements Node {
       return true;
     } catch { return false; }
   }
+  /** §6.7.5 route 1: the key whose hash is `h`, if it is this seat's account's current backup key, a current device, or
+   *  the heir key of an heir record this server holds (core 14.24). */
+  seatedKey(h: unknown): string | null {
+    const m = this.co && !this.retired && !this.tombstone ? this.m : null;
+    if (!m) return null;
+    const keys = [m.backupKey, ...m.devices].filter((k) => k && !m.removed.has(k)) as string[];
+    return [...keys, ...this.#heirKeys()].find((k) => bytesToHex(sha(hexToBytes(k))) === h) ?? null;
+  }
+  #heirKeys(): string[] { return [...(this.co?.heirs.values() ?? [])].filter((x) => !x.removed).map((x) => x.record.H); }
+  /** One entry of the `seated` reply (core 14.23): this seat's account, its epoch, and today's seated servers with the
+   *  member keys a paper holder addresses. Only a hint: the asker believes it once two servers agree (Backup §2). */
+  seatedEntry(key?: string) {
+    const m = this.m;
+    // An heir key gets the same without member keys (core 14.24): it addresses hosts, not seats.
+    const heir = key !== undefined && this.#heirKeys().includes(key) && key !== m.backupKey && !m.devices.has(key);
+    const servers = [...m.seats.values()].filter((x) => x.holder?.kind === 'server')
+      .map((x) => ({ ...(heir ? {} : { key: x.holder!.key }), host: x.holder!.host, https: x.holder!.https, relays: x.holder!.relays ?? [] }));
+    return { g: m.g, epoch: m.epochId, servers };
+  }
   private async dispatch(from: string, body: any, sentAt: number): Promise<any> {
     if (this.lastActive && this.now - this.lastActive > 7 * 86400) this.passive = true;
     this.lastActive = this.now;
@@ -548,17 +574,12 @@ export class ServerNode implements Node {
         return { type: 'material', base: this.base, seed_items: this.items.filter((x) => x.kind === 'seeds' && x.to === m.backupKey) };
       }
       case 'seated?': {
-        // §6.7.5 route 1: if `H(key)` is the current backup key or a current device, a reply sealed to
-        // that key, with the host signature outside the seal over SHA-256("keykin-seated/1" ‖ H ‖ challenge ‖ ct).
-        const key = [m.backupKey, ...m.devices].find((k) => k && bytesToHex(sha(hexToBytes(k))) === body.h);
-        if (!key) return { type: 'error', code: 'not_seated' };
         // Server profile §3 "seated? is verified" (core 14.19): a challenge this server issued to the asker,
         // signed by the key asked about under its tag. Anything else learns nothing.
-        if (typeof body.challenge !== 'string' || !schnorrVerify(body.sig, seatedAskDigest(body.h, body.challenge), key) || !this.co.takeChallenge(body.challenge, from, this.now))
+        const key = this.seatedKey(body.h);
+        if (!key || typeof body.challenge !== 'string' || !schnorrVerify(body.sig, seatedAskDigest(body.h, body.challenge), key) || !this.co.takeChallenge(body.challenge, from, this.now))
           return { type: 'error', code: 'not_seated' };
-        const servers = [...m.seats.values()].filter((x) => x.holder?.kind === 'server').map((x) => ({ host: x.holder!.host, https: x.holder!.https, relays: x.holder!.relays ?? [] }));
-        const ct = nip44.v2.encrypt(JSON.stringify({ g: m.g, epoch: m.epochId, servers }), nip44.v2.utils.getConversationKey(this.host.sk, key));
-        return { type: 'seated', ct, host: this.host.pub, sig: schnorrSign(seatedDigest(body.h, hexToBytes(body.challenge), new TextEncoder().encode(ct)), this.host.sk) };
+        return sealSeated(this.host, body.h, body.challenge, key, [this.seatedEntry(key)]);
       }
       case 'upload': {
         if (this.retired) refuse('retired');

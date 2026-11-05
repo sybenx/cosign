@@ -36,7 +36,15 @@ function join(direction: 'invite' | 'hello') {
     const nonce = inv.onHello(nk.pub, h.msg, now);
     jn.onNonce(A.kp.pub, nonce.msg);
   }
-  assert.ok(inv.typed(jn.check), 'the typed check matches');
+  if (direction === 'invite') assert.ok(inv.typed(jn.check), 'the typed check matches');
+  else {
+    // Core 14.24: the scanning side shows the digits and the new device confirms; nothing is typed on the inviter.
+    assert.equal(inv.typed(jn.check), false);
+    assert.equal(inv.check, jn.check, 'both screens agree');
+    assert.equal(inv.onConfirm(newKey().pub, { s: inv.s, t: jn.t }), false, 'only n confirms');
+    assert.ok(inv.onConfirm(nk.pub, { s: inv.s, t: jn.t }));
+  }
+  assert.ok(inv.confirmed);
   // The add, approved by A's lock, group-signed; the repair by A (3) and S1 (1).
   const m0 = computeMembership(F.rec, []);
   const { salt, indices } = pickSalt(F.g, F.epochId, nk.pub, takenIndices(m0));
@@ -134,4 +142,16 @@ test('join-code direction: an attacker answering the shown code wins nothing', (
   assert.equal(code(() => jn.finish({ from: E.kp.pub, welcome: { record: F.recEv, changes: [], state: [] }, sigmas: [] })), 'wrong_group');
   // A second key of the attacker cannot answer the nonce either: only the key the hello went to.
   assert.equal(code(() => jn.onNonce(newKey().pub, { t: '33'.repeat(16) })), 'wrong_sender');
+});
+
+test('core 14.24, invite direction: a second hello for the same code before the check marks it contested', () => {
+  const F = fixture(), A = F.devices[0];
+  const inv = new Inviter({ g: F.g, m: A.kp.pub, now });
+  const sc = parseCode(inv.invite([])) as any;
+  const one = new Joiner({ n: newKey().pub, now, scanned: sc }), two = new Joiner({ n: newKey().pub, now, scanned: sc });
+  const n1 = inv.onHello(one.n, one.hello().msg, now);
+  one.onNonce(A.kp.pub, n1.msg);
+  assert.equal(code(() => inv.onHello(two.n, two.hello().msg, now)), 'already_accepted');
+  assert.ok(inv.contested);
+  assert.equal(inv.typed(one.check), false, 'nothing goes on: make a new invite');
 });

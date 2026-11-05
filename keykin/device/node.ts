@@ -75,6 +75,10 @@ export class DeviceNode implements Node {
   joiner: Joiner | null = null; inviter: Inviter | null = null;
   pendingSigmas: { from: string; index: number; sigma: string; state: string }[] = [];
   wiped = false;
+  /** Called once, the moment this device learns it is no longer a member: `removed` (a change removing it was
+   *  adopted, from any approval), or `deleted` (the account was deleted, by this device or proven by a server). The
+   *  device is already wiped when it is called; a device restored as wiped doesn't call it (read `wiped`). */
+  onRemoved: ((why: 'removed' | 'deleted') => void) | null = null;
   /** Core §4.3 step 4: on a lockless account, the backup secret kept sealed (5 points), approving what a
    *  paper would, until any device has a lock or a paper is read back. */
   keptSecret: KeyPair | null = null;
@@ -191,7 +195,7 @@ export class DeviceNode implements Node {
   recompute() {
     this.m = computeMembership(this.rec!, this.changes);
     this.co = new CoSigner({ me: this.kp, kind: this.role, now: () => this.now, record: this.rec!, changes: this.changes, state: this.state!, policy: (e, f) => this.policy(e, f) });
-    if (this.m.removed.has(this.kp.pub)) this.wipe();
+    if (this.m.removed.has(this.kp.pub)) this.wipe('removed');
     this.members.update();
     // The helper ends every grant whose asking device left (Helper module §2).
     if (this.role === 'helper' && !this.wiped) void this.nip46.helperPrune().catch(() => {});
@@ -199,13 +203,15 @@ export class DeviceNode implements Node {
   }
   /** A removed or wiped member destroys everything it holds (core §7.3), the backup secret, push keys and
    *  watches included (review 9 H2). */
-  wipe() {
+  wipe(why: 'removed' | 'deleted' = 'removed') {
+    const was = this.wiped;
     this.wiped = true; this.state = { ids: new Set(), C: this.state!.C, shares: new Map() };
     this.seeds.clear(); this.items = []; this.base = null; this.baseDk = ''; this.dkSeeds = []; this.dataKeys?.clear(); this.grants?.clear(); this.forgetX?.(); this.meta?.clear(); this.history?.clear(); this.guard?.clear(); this.vault?.clear(); this.doors?.clear(); this.undoOutbox = [];
     this.keptSecret = null; this.kept.clear(); this.pendingDeltas.clear(); this.paperVerified.clear(); this.pendingHeir = null;
     this.reissued.clear(); this.reissueEphs.clear(); this.blamed.clear(); this.forceReissue.clear();
     this.pushKeys.clear(); this.notices = []; this.#f1 = null; this.signWatch = new SignWatch();
     this.nip46?.sleep(); this.nip46 = new Nip46Home(this);   // signer keys go with everything else (core §7.3)
+    if (!was) queueMicrotask(() => { try { this.onRemoved?.(why); } catch { /* the app's */ } });
   }
   /** Account admin §3: after a delete, only the request, the first `deleted` and the servers' endpoints,
    *  kept so the device can go on sending until each server answers. */
@@ -224,7 +230,7 @@ export class DeviceNode implements Node {
     const { id: _id, ...event } = siteEvent({ created_at: this.now, kind: 1, ...ev }, this.g);
     let lastErr = 'no_server';
     // A refusal that says what the event needs wins over a server that didn't answer (review 12 H4).
-    const telling = new Set(['needs_approval', 'hold_not_passed', 'declined', 'dated_ahead', 'machinery', 'wrong_pubkey']);
+    const telling = new Set(['needs_approval', 'hold_not_passed', 'declined', 'dated_ahead', 'machinery', 'wrong_pubkey', 'removed']);
     const note = (code: string) => { if (!telling.has(lastErr)) lastErr = code; };
     // Device policy §2: how many servers demanded an approval (two, or the device's own check, make it Held).
     let demands = 0;
@@ -257,6 +263,9 @@ export class DeviceNode implements Node {
         return signed;
       }
     }
+    // A server that says this device was removed is believed only through the change itself: fetch it now, so a
+    // removed device wipes (and `onRemoved` fires) at its first refused request, not at its next fetch.
+    if (lastErr === 'removed' && !this.wiped) await this.fetch().catch(() => {});
     throw Object.assign(new KeykinError(lastErr, this.lastDetail), { demands });
   }
 
@@ -589,6 +598,8 @@ export class DeviceNode implements Node {
       content: signpostContent(m.backupKey!, this.baseDk, signpostServers(m)) });
     for (const s of this.servers()) await this.bus.send(this.kp, s.key, { type: 'signpost_id', id: ev.id, event: ev });
     (this.bus as any).published?.push(ev);
+    // Over real relays, published there (§6.7.5: to the paper's relays and the current ones).
+    await this.bus.events?.publishEvent(ev).catch(() => {});
     return ev;
   }
 
@@ -749,7 +760,7 @@ export class DeviceNode implements Node {
     }
     if (n >= 2) {
       const endpoints = this.servers().map((s) => ({ key: s.key, host: s.host!, https: s.https }));
-      this.wipe();
+      this.wipe('deleted');
       this.deleted = { request: req, first, endpoints };
     }
     return n;
@@ -1323,7 +1334,7 @@ export class DeviceNode implements Node {
       const a = await this.bus.send(this.kp, s.key, msg('state_get', this.g, this.epochId, 'ask'));
       if (a?.type === 'state') w.saw(s.host, 'serving', this.now);
       else if (a?.type === 'deleted') {
-        if (verifyDeleted(this.m!, this.g, a)) { this.wipe(); return null; }
+        if (verifyDeleted(this.m!, this.g, a)) { this.wipe('deleted'); return null; }
         w.saw(s.host, 'denied', this.now);
       } else if (a?.code === 'unknown_account') w.saw(s.host, 'denied', this.now);
       else w.saw(s.host, 'silent', this.now);
@@ -1440,15 +1451,18 @@ export class PaperHolder implements Node {
   shares: Map<number, bigint> | null = null; C: Commitment | null = null;
   r = rid();
   bundles = new Map<string, any>();
+  /** What each server answered the release request: its wait, or why not (for the person, and for tests). */
+  started = new Map<string, string>();
   constructor(bus: Transport, kp: KeyPair, g: string, epochId: string, serverHints: string[]) { this.kp = kp; this.bus = bus; this.g = g; this.epochId = epochId; this.serverHints = serverHints; }
   handle(): any { return { type: 'error', code: 'unsupported' }; }
   /** §6.5 steps 1–2 at each server. */
   async start(servers: string[]) {
     for (const s of servers) {
       const ch = await this.bus.send(this.kp, s, msg('challenge', this.g, this.epochId, 'ask'));
-      if (ch?.type !== 'challenge') continue;
-      await this.bus.send(this.kp, s, msg('release_request', this.g, this.epochId, 'member', { r: this.r, challenge: ch.challenge,
+      if (ch?.type !== 'challenge') { this.started.set(s, ch?.code ?? 'no_challenge'); continue; }
+      const a = await this.bus.send(this.kp, s, msg('release_request', this.g, this.epochId, 'member', { r: this.r, challenge: ch.challenge,
         sig: schnorrSign(detachedDigest('release_request', this.g, { r: this.r, challenge: ch.challenge }), this.kp.sk) }));
+      this.started.set(s, a?.type === 'notice' ? `waiting until ${a.end}` : a?.code ?? a?.type ?? 'no_answer');
     }
   }
   /** §6.5 steps 3–4: collect releases, open the material, check against `P_b^S`. */

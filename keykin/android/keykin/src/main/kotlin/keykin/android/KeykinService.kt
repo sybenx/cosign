@@ -131,14 +131,17 @@ class KeykinService : Service() {
         override fun inviteScanned(slot: String, helloCode: String): String? = try {
             val d = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
             // Off the membership queue: the offer and the hello wait on the relays.
-            slow.submit<Unit> { d.inviteScanned(helloCode) }.get(60, java.util.concurrent.TimeUnit.SECONDS)
-            onWork { invites[slot] = JSONObject().put("status", "waiting"); publish(slot) }
-            JSONObject().put("ok", true).toString()
+            // Core 14.24: this phone shows the digits; the new device's confirm moves the invite on.
+            val check = slow.submit<String> { d.inviteScanned(helloCode) { work.execute { invites[slot] = JSONObject().put("status", "confirmed"); publish(slot) } } }.get(60, java.util.concurrent.TimeUnit.SECONDS)
+            onWork { if (invites[slot]?.optString("status") != "confirmed") invites[slot] = JSONObject().put("status", "show").put("check", check); publish(slot) }
+            JSONObject().put("ok", true).put("check", check).toString()
         } catch (e: java.util.concurrent.ExecutionException) { errorJson((e.cause as? Exception) ?: e) } catch (e: Exception) { errorJson(e) }
         override fun inviteTyped(slot: String, digits: String): Boolean = onWork {
             val d = Memberships.signer(slot).device ?: return@onWork false
             val ok = try { d.inviter?.typed(digits.trim()) == true } catch (_: Exception) { false }
-            invites[slot] = JSONObject().put("status", if (ok) "typed" else "mismatch"); publish(slot)
+            // The join-code direction types nothing here (core 14.24): its status stays the confirm's.
+            if (d.inviter?.expectN != null) return@onWork false
+            invites[slot] = JSONObject().put("status", if (ok) "typed" else if (d.inviter?.contested == true) "contested" else "mismatch"); publish(slot)
             ok
         }
         override fun add(): String = onWork {
@@ -169,6 +172,12 @@ class KeykinService : Service() {
             if (!Doors.ownMay(kind, ownKinds)) return@onWork null
             try { Memberships.signer(slot).device?.let { d -> d.nip44(d.g, text, encrypt) } } catch (_: Exception) { null }
         }
+        override fun latest(slot: String, kind: Int, d: String?, maxAgeS: Long): String = try {
+            val dev = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
+            // Off the membership queue: an ask waits on the relays.
+            if (maxAgeS < 0) dev.latest(kind, d, -1).toString()
+            else slow.submit<String> { dev.latest(kind, d, maxAgeS).toString() }.get(15, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.ExecutionException) { errorJson((e.cause as? Exception) ?: e) } catch (e: Exception) { errorJson(e) }
         override fun fetch(slot: String) = work.execute { try { Memberships.signer(slot).device?.fetch() } catch (e: Exception) { Log.w(TAG, "fetch: $e") }; publish(slot) }
         override fun grants(slot: String): String = onWork {
             val d = Memberships.signer(slot).device ?: return@onWork "[]"

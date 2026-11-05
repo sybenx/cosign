@@ -228,7 +228,8 @@ test('§6.7.5: after every printed server is replaced, the paper finds today\'s 
   assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge, sig: schnorrSign(hb(challenge.padEnd(64, '0')), acc.paper.sk) })).code, 'not_seated');
   const r = await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge, sig });
   assert.ok(schnorrVerify(r.sig, seatedDigest(h, hb(challenge), new TextEncoder().encode(r.ct)), r.host));
-  const body = JSON.parse(nip44.v2.decrypt(r.ct, nip44.v2.utils.getConversationKey(acc.paper.sk, r.host)));
+  // Core 14.23: a list of entries, one per seat holding this key.
+  const [body] = JSON.parse(nip44.v2.decrypt(r.ct, nip44.v2.utils.getConversationKey(acc.paper.sk, r.host)));
   assert.deepEqual(body.servers.map((x: any) => x.host).sort(), Ys.map((y) => y.host.pub).sort());
   assert.equal((await acc.bus.send(acc.paper, Ys[0].kp.pub, { type: 'seated?', h, challenge, sig })).code, 'not_seated', 'a challenge is used once');
   const stranger = newKey(); const s2 = await ask(stranger);

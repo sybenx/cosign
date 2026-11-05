@@ -47,6 +47,8 @@ object Memberships {
         }
     }
     @Synchronized fun joined(slot: String) { failed.remove(slot) }
+    /** After a create on the library's screen: the slot's relays kept, and the membership counted as open. */
+    @Synchronized fun created(slot: String, relays: List<String>) { setRelays(slot, relays); failed.remove(slot); opened += slot }
     @Synchronized fun forget(slot: String) {
         checkSlot(slot)
         (signers.remove(slot) ?: KeykinSigner(app, slot)).forget()

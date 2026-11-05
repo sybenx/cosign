@@ -144,8 +144,12 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         val method = req.opt("method") as? String ?: return false
         val params = req.optJSONArray("params")?.let { a -> (0 until a.length()).map { a.get(it).toString() } } ?: emptyList()
         // Too few params, or any other fault, still gets an answer (review 20 L17).
+        val t0 = System.currentTimeMillis()
         val ans = try { answer(g, ev.pubkey, method, params) } catch (_: IndexOutOfBoundsException) { err("declined: missing params") } catch (_: Exception) { err("declined: refused") }
+        val t1 = System.currentTimeMillis()
         reply(g, ev.pubkey, ans.put("id", id), nip04)
+        // Latency, for the trace (debug builds): the request's age when it reached us, the answer, the reply's publish.
+        Keykin.trace?.invoke("nip46 $method: arrived ${net.now - ev.createdAt} s after it was made; answered in ${t1 - t0} ms; reply published in ${System.currentTimeMillis() - t1} ms")
         return true
     }
 
@@ -163,7 +167,7 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
         }
         if (from != g.client) return err("not-connected: connect first")
         // Doors §2: never on old news. A home that hasn't caught up within 30 seconds does first.
-        if (method != "ping") d.catchUp()
+        if (method != "ping") { val t = System.currentTimeMillis(); d.catchUp(); Keykin.trace?.invoke("nip46 $method: catch-up ${System.currentTimeMillis() - t} ms") }
         // A grant ended on another device (a tombstone, a removal) ends here too.
         if (g.entry != null && d.grants.own[g.entry!!] == null) { end(g); return err("revoked: this site was disconnected") }
         return try {
@@ -195,7 +199,13 @@ class Nip46Home(private val d: Device, private val net: RelayNet, private val se
                     // A site's deletions and list changes are judged and signed one at a time (review 18 M1). Signed
                     // for this grant: the evidence records who got each ciphertext signed (review 17 M1).
                     try {
-                        val (gate, signed) = d.guard.serve(event, owner, g.entry?.let { d.grants.own[it] }?.let { d.grants.scopesOf(it).toList() } ?: emptyList()) { d.sign(kind, content, tags, at, owner) }
+                        // Signed only if the grant is still live then: a site disconnected during the Undo wait or a Confirm
+                        // card gets nothing (red team 23).
+                        val (gate, signed) = d.guard.serve(event, owner, g.entry?.let { d.grants.own[it] }?.let { d.grants.scopesOf(it).toList() } ?: emptyList()) {
+                            val live = grant(g.signer)?.let { x -> x.endedAt == null && (x.entry == null || d.grants.own[x.entry]?.let { e -> !Grants.expired(e, net.now, null) } == true) } == true
+                            if (!live) refuse("declined", "this site was disconnected")
+                            d.sign(kind, content, tags, at, owner)
+                        }
                         gate.error?.let { return err(it) }
                         if (signed != null) return ok(signed.toString())
                         reason = gate.verdict.reason

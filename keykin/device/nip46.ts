@@ -22,6 +22,8 @@ import { expired, type Scope } from './grants.ts';
 
 export const KIND_NIP46 = 24133;
 /** Doors §2: a home answers sites only on news at most this old. */
+/** Requests remembered as answered, at most (red team 23b). */
+const SEEN_MAX = 4096;
 const LINK_S = 600, ENDED_KEEP_S = 30 * 86400, WINDOW_S = 120;
 const HELD_PER_GRANT = 8, HELD_MAX = 64, HELD_TTL_S = 7 * 86400;
 import { listKey, type DoorCaller } from './doors-request.ts';
@@ -134,8 +136,6 @@ export class Nip46Home {
   async handle(e: NostrEvent): Promise<boolean> {
     // Only fresh requests (±2 minutes), each answered once even across a restart (review 11 M5).
     if (e?.kind !== KIND_NIP46 || this.#seen.has(e.id) || Math.abs(this.d.now - e.created_at) > WINDOW_S || !ntVerify(e as any)) return false;
-    this.#seen.set(e.id, e.created_at);
-    for (const [id, at] of this.#seen) if (this.d.now - at > WINDOW_S) this.#seen.delete(id);
     const signer = e.tags.find((t) => t[0] === 'p')?.[1];
     const g = signer ? this.grants.get(signer) : undefined;
     if (!g) return false;
@@ -143,6 +143,12 @@ export class Nip46Home {
     let req: any, mode: 'nip44' | 'nip04' = 'nip44';
     try { req = strictJson(nip44.v2.decrypt(e.content, nip44.v2.utils.getConversationKey(sk, e.pubkey))); }
     catch { try { req = strictJson(await nip04.decrypt(sk, e.pubkey, e.content)); mode = 'nip04'; } catch { return false; } }
+    // Only a request that decrypts is remembered (and answered): a stranger's noise grows nothing (red team 23).
+    if (this.#seen.has(e.id)) return false;
+    this.#seen.set(e.id, e.created_at);
+    for (const [id, at] of this.#seen) if (this.d.now - at > WINDOW_S) this.#seen.delete(id);
+    // Bounded even within the window: the oldest go first (a request seen twice past this is answered twice, harmless).
+    while (this.#seen.size > SEEN_MAX) this.#seen.delete(this.#seen.keys().next().value!);
     if (typeof req?.id !== 'string' || typeof req?.method !== 'string' || !Array.isArray(req.params ?? [])) return false;
     const answer = await this.#answer(g, e.pubkey, req.method, req.params ?? []);
     await this.#reply(g, e.pubkey, { id: req.id, ...answer }, mode);
@@ -184,7 +190,7 @@ export class Nip46Home {
     return {
       entry: g.entry ?? null, key: g.signer, helper: this.d.role === 'helper',
       has: (scope) => this.#has(g, scope),
-      heldWaiting: (lk) => [...this.held.values()].some((x) => x.wait && listKey(x.event) === lk),
+      heldWaiting: (lk) => this.d.doors.heldWaiting(lk),
       ended: () => this.end(g.signer),
       hold: (event) => {
         this.#expireHeld();
@@ -210,11 +216,14 @@ export class Nip46Home {
   held = new Map<string, { id: string; signer: string; event: any; at: number; wait: string | null }>();
   /** Approve with the lock: sign it unchanged, and publish it to the grant's relays and the account's. */
   /** A held event of a live grant, or refused; one a newer version of its list overtook is dropped. */
-  #heldLive(id: string) {
+  async #heldLive(id: string) {
+    await this.d.catchUp();
     this.#expireHeld();
     const h = this.held.get(id); if (!h) throw new KeykinError('unknown_held');
     const g = this.grants.get(h.signer);
-    if (!g || g.endedAt) { this.held.delete(id); this.d.persist(); throw new KeykinError('revoked', 'the site was disconnected'); }
+    // A grant ended here, signed out elsewhere (gone from the grant store) or expired drops it (review 20 M8, as Kotlin's).
+    const e = g?.entry ? this.d.grants.own.get(g.entry) : undefined;
+    if (!g || g.endedAt || (g.entry && (!e || expired(e, this.d.now, this.d.grants.lastUsed.get(e.id))))) { this.held.delete(id); this.d.persist(); throw new KeykinError('revoked', 'the site was disconnected'); }
     // Device policy §4: a newer version of the same list exists, so the held one is dropped, never published.
     const lk = listKey(h.event), newer = lk ? this.d.latestList(lk) : 0;
     if (lk && newer > h.event.created_at) {
@@ -225,7 +234,7 @@ export class Nip46Home {
   }
   #expireHeld() { for (const [k, h] of this.held) if (this.d.now - h.at > HELD_TTL_S) this.held.delete(k); }
   async approveHeld(id: string): Promise<NostrEvent> {
-    const h = this.#heldLive(id);
+    const h = await this.#heldLive(id);
     const { id: _id, ...ev } = h.event;
     const evId = h.event.id;
     if (!this.d.lock) throw new KeykinError('needs_approval', 'this device has no lock: start a hold instead');
@@ -235,7 +244,7 @@ export class Nip46Home {
   }
   /** Lockless: start a hold at every server (core §5.8); `releaseHeld` once its wait has passed. */
   async holdHeld(id: string): Promise<string> {
-    const h = this.#heldLive(id);
+    const h = await this.#heldLive(id);
     let wait: string | null = null;
     for (const s of this.d.servers()) {
       const a = await this.d.bus.send(this.d.kp, s.key, msg('hold', this.d.g, this.d.epochId, 'member', { event: h.event }));
@@ -246,7 +255,7 @@ export class Nip46Home {
     return wait;
   }
   async releaseHeld(id: string): Promise<NostrEvent> {
-    const h = this.#heldLive(id); if (!h.wait) throw new KeykinError('unknown_held', 'no hold was started');
+    const h = await this.#heldLive(id); if (!h.wait) throw new KeykinError('unknown_held', 'no hold was started');
     const { id: _id, ...ev } = h.event;
     const signed = await this.d.sign(ev, { hold: h.wait, owner: this.#ownerOf(h.signer) });
     await this.#publishHeld(h, signed);

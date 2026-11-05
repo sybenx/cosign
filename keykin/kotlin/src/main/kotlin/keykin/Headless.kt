@@ -17,10 +17,16 @@ fun main(args: Array<String>) {
     // Tests only: a clock off by KEYKIN_CLOCK_SKEW seconds; a joined device's state kept in KEYKIN_STATE, so a test can
     // kill the process and start it again from that file.
     System.getenv("KEYKIN_CLOCK_SKEW")?.toLongOrNull()?.let { net.skew = it }
+    // KEYKIN_TRACE=1: the transport's and the NIP-46 home's timings on stderr (latency work).
+    if (System.getenv("KEYKIN_TRACE") == "1") Keykin.trace = { line -> System.err.println("[trace ${System.currentTimeMillis() % 100000}] $line") }
     val stateFile = System.getenv("KEYKIN_STATE")?.let { File(it) }
     try {
-        // The first argument is a TS device's snapshot, or `join:<invite code>` to join as a new device.
-        val d = if (args[0].startsWith("join:")) Device.join(args[0].removePrefix("join:"), net, { println(JSONObject().put("check", it).toString()); System.out.flush() })
+        // The first argument is a TS device's snapshot, `join:<invite code>` to join as a new device, or
+        // `create:<front,front,front>` to create an account by DKG with those three servers (its paper printed once).
+        val d = if (args[0].startsWith("create:")) Create.byDkg(net, args[0].removePrefix("create:").split(","), args[1].split(",")).let { c ->
+                println(JSONObject().put("paper", c.words.joinToString(" ")).put("g", c.device.g).put("signpost", c.signpost).toString()); System.out.flush(); c.paperSk.fill(0)
+                c.device.also { dev -> stateFile?.let { f -> dev.persist = { f.writeText(it) }; dev.saveNow() } } }
+            else if (args[0].startsWith("join:")) Device.join(args[0].removePrefix("join:"), net, { println(JSONObject().put("check", it).toString()); System.out.flush() })
                 .also { dev -> stateFile?.let { f -> dev.persist = { f.writeText(it) }; dev.saveNow() } }
             else Device.fromSnapshot(File(args[0]).readText(), net).also { dev -> dev.persist = { File(args[0]).writeText(it) } }
         println(JSONObject().put("device", d.pub).toString()); System.out.flush()
@@ -109,7 +115,8 @@ fun main(args: Array<String>) {
                     // The membership as this device sees it, without fetching (a Devices screen opened earlier).
                     // The other join direction: scan a new device's hello code, type its digits, approve the add with this
                     // device's lock or, lockless, the paper's words.
-                    "invite_scanned" -> { d.inviteScanned(c.getString("code")); JSONObject().put("offered", true) }
+                    "invite_scanned" -> JSONObject().put("offered", true).put("check", d.inviteScanned(c.getString("code")))
+                    "invite_state" -> d.inviter.let { i -> JSONObject().put("confirmed", i?.confirmed == true).put("contested", i?.contested == true) }
                     "invite_typed" -> JSONObject().put("typed", d.inviter?.typed(c.getString("digits")) == true)
                     "add_invited" -> {
                         val list = d.inviteAddList()

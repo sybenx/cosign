@@ -23,8 +23,10 @@ import org.json.JSONObject
 class KeykinApprove : FragmentActivity() {
     companion object {
         const val SLOT = "keykin.slot"; const val ACTION = "keykin.action"; const val KEY = "keykin.key"; const val ID = "keykin.id"; const val WITH = "keykin.with"
-        /** The actions: report a device lost, check the paper, add the invited device, approve a pair request, remove a device with a pair. */
-        val ACTIONS = setOf("report_lost", "paper_check", "add_invited", "pair_approve", "pair_remove")
+        const val RELAYS = "keykin.relays"; const val FRONTS = "keykin.fronts"
+        /** The actions: create an account (relays, fronts), report a device lost, check the paper, add the invited
+         *  device, approve a pair request, remove a device with a pair. */
+        val ACTIONS = setOf("create", "report_lost", "paper_check", "add_invited", "pair_approve", "pair_remove")
     }
     private lateinit var line: TextView
     private lateinit var col: LinearLayout
@@ -42,6 +44,7 @@ class KeykinApprove : FragmentActivity() {
         setContentView(ScrollView(this).apply { addView(col)
             setOnApplyWindowInsetsListener { v, i -> val b = i.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime() or WindowInsets.Type.displayCutout()); v.setPadding(b.left, b.top, b.right, b.bottom); i } })
         val s = try { Memberships.signer(slot) } catch (_: Exception) { return done(false, "no_membership") }
+        if (action == "create") return create(s)
         val d = s.device ?: return done(false, "no_membership")
         // Today's members first: a screen that acts on a stale list deals the wrong redeal (dry-run result 6).
         Thread { try { d.fetch() } catch (_: Exception) {}; runOnUiThread { show(s, d) } }.start()
@@ -96,6 +99,32 @@ class KeykinApprove : FragmentActivity() {
         button("Cancel") { done(false, "cancelled") }
     }
 
+    /** A new account on this phone (Account admin §1.1): made by DKG with the app's three servers, then its paper's 24
+     *  words shown once, here only. "I've written it down" asks for them back and checks them; "Not now" leaves the
+     *  paper unchecked (a lockless phone keeps the paper's secret until it is, core §4.3 step 4). */
+    private fun create(s: KeykinSigner) {
+        val relays = intent.getStringExtra(RELAYS).orEmpty().split(",").filter { it.isNotBlank() }
+        val fronts = intent.getStringExtra(FRONTS).orEmpty().split(",").filter { it.isNotBlank() }
+        if (relays.isEmpty() || fronts.size != 3) return done(false, "malformed")
+        line.text = "Making your account with three servers…"
+        Thread {
+            val made = try { s.create(relays, fronts) } catch (e: Exception) { return@Thread done(false, (e as? KeykinException)?.code ?: "failed") }
+            Memberships.created(slot, relays)
+            val words = made.words; made.paperSk.fill(0)
+            runOnUiThread {
+                line.text = "Your account is made. This is its paper: write these 24 words down, in order, and keep them safe. They are the only way back in if you lose every device.\n\n" +
+                    words.chunked(6).joinToString("\n") { it.joinToString(" ") }
+                button("I've written it down") {
+                    col.removeAllViews(); col.addView(line)
+                    line.text = "Type the 24 words from your paper, to check you wrote them right."
+                    val typed = wordsField()
+                    button("Check the paper") { val w = typed(); if (w == words) done(true, "created; paper checked", s.device?.pub) else line.text = "Those words don't match. Look at your paper again and type all 24." }
+                    button("Not now") { done(true, "created; paper not checked yet", s.device?.pub) }
+                }
+                button("Not now") { done(true, "created; paper not checked yet", s.device?.pub) }
+            }
+        }.start()
+    }
     /** Approve `list` with this phone's lock (the prompt), or with the paper's words on a lockless phone; then `run`. */
     private fun approveWith(s: KeykinSigner, d: Device, label: String, list: JSONArray, run: (JSONArray, JSONObject) -> String) {
         val lock = s.lock()

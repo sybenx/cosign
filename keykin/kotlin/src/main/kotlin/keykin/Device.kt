@@ -66,6 +66,35 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     }
     /** A welcome's release seeds (each checked against its redeal's `rs`; `base` as the creation seed) and the backup
      *  material, so a joined device re-issues its seeds and passes the material on (review 21 M4). */
+    /** The signpost (core §6.7.5 route 3), as TS `publishSignpost`: a kind 30078 by the account with `d` from the backup
+     *  key, `n` the count of seat and paper changes, `h` over the epoch id and the seated servers; the servers sealed
+     *  twice, NIP-44 to the backup key and under the device-copy key; co-signed like any event (the co-signers check `n`
+     *  and `h`), its id delivered to every server so each refuses a delete aimed at it, and published. */
+    fun publishSignpost(): JSONObject {
+        val v = view
+        val backup = v.backup ?: refuse("no_backup")
+        val servers = JSONArray()
+        for ((sid, holder) in v.seats) {
+            if (!sid.startsWith("server:") || holder == null) continue
+            val m = v.members.firstOrNull { it.key == holder } ?: continue
+            servers.put(JSONObject().put("host", m.host).apply { m.raw.opt("https")?.takeIf { it != JSONObject.NULL }?.let { put("https", it) } }.put("relays", m.raw.optJSONArray("relays") ?: JSONArray()))
+        }
+        val n = changes.count { e -> try { Json.obj(e.content).optJSONObject("change")?.let { it.has("seat") || it.has("paper") } == true } catch (_: Exception) { false } }
+        val d = hex(sha(utf8("keykin-beacon/1"), unhex(backup)))
+        val h = hex(sha(utf8("keykin-beacon/1"), unhex(epochId), utf8(Jcs.of(servers))))
+        val body = servers.toString()
+        val eph = ByteArray(32).also { java.security.SecureRandom().nextBytes(it); it[0] = (it[0].toInt() and 0x7f).toByte() }
+        val toBackup = Nip44.encrypt(body, Nip44.conversationKey(Keykin.secp, eph, backup))
+        val devKey = hex(hkdf32(unhex(baseDk), utf8("keykin-beacon/1")))
+        val content = JSONObject().put("eph", Keykin.secp.pub(eph)).put("backup", toBackup).put("devices", hex(Deal.wrapUnder(devKey, utf8(body)))).toString()
+        eph.fill(0)
+        val ev = sign(30078, content, listOf(listOf("d", d), listOf("n", n.toString()), listOf("h", h)))
+        for (s in servers()) try { net.send(sk, s.key, msg("signpost_id", "member").put("event", ev)) } catch (_: Exception) {}
+        net.publishEvent(ev)
+        return ev
+    }
+    /** A lockless creator keeps the paper's secret until the paper is written down (core §4.3 step 4). */
+    internal fun keepSecret(secret: String) = synchronized(this) { carried.put("keptSecret", secret); save() }
     internal fun takeWelcomeExtras(w: JSONObject) = synchronized(this) {
         w.optJSONArray("seeds")?.let { a -> for (i in 0 until a.length()) (a.opt(i) as? JSONArray)?.let { p ->
             val k = p.optString(0); val x = p.optString(1)
@@ -274,6 +303,7 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         }
         "pair_sign" -> { takePairSign(from, body); JSONObject().put("type", "ack") }
         "join_hello" -> try { inviter?.onHello(from, body, net.now) } catch (_: KeykinException) { null }
+        "join_confirm" -> if (inviter?.onConfirm(from, body) == true) JSONObject().put("type", "ack") else null
         // §4.3 step 4: the kept backup secret goes once a lock change committed (review 14 M4), or comes anew after an F7.
         "kept_done" -> synchronized(this) {
             val v = view; val c = body.optString("change")
@@ -822,17 +852,19 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     /** Inviting (§4.1–§4.2): the code to show, then `addInvited` once the person typed the new device's digits. */
     @Volatile var inviter: Inviter? = null
     fun invite(relays: List<String>): String = Inviter(g, pub, net.now).also { inviter = it }.invite(relays)
-    /** The other direction (§4.1): this device scanned the new device's hello code (the extension shows one). It sends
-     *  the offer, takes the hello, answers the nonce; the new device then shows the 6 digits the person types here,
-     *  and `addInvited` goes on as for an invite. */
-    fun inviteScanned(helloCode: String) {
-        val inv = Inviter(g, pub, net.now, parseCode(helloCode)).also { inviter = it }
+    /** The other direction (§4.1, core 14.24): this device scanned the new device's hello code (the extension shows
+     *  one). It sends the offer, takes the hello, answers the nonce, and returns the 6 digits to show here; the person
+     *  types them on the new device, whose `join_confirm` sets `inviter.confirmed` (and calls `inviter.onConfirmed`).
+     *  `addInvited` then goes on as for an invite. */
+    fun inviteScanned(helloCode: String, onConfirmed: (() -> Unit)? = null): String {
+        val inv = Inviter(g, pub, net.now, parseCode(helloCode)).also { it.onConfirmed = onConfirmed; inviter = it }
         val (to, offer) = inv.offer()
         val hello = net.send(sk, to, offer)
         if (hello.optString("type") != "join_hello") refuse(hello.optString("code").ifEmpty { "no_hello" })
         val nonce = inv.onHello(to, hello, net.now)
         val ack = net.send(sk, to, nonce)
         if (ack.optString("type") != "ack") refuse(ack.optString("code").ifEmpty { "no_ack" })
+        return inv.check
     }
     /** §4.2 steps 2–4 for the invited device: its add (with its lock, approved by this device's lock), a
      *  repair of each of its indices by this device and one server, sealed to it, and the welcome. */
@@ -843,7 +875,8 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
     fun inviteAddList(): JSONArray? {
         val inv = inviter ?: refuse("no_invite")
         val a = inv.accepted ?: refuse("no_hello")
-        if (!inv.confirmed) refuse("not_confirmed", "the person has not typed the new device's number")
+        if (inv.contested) refuse("contested", "someone else answered this code: make a new invite")
+        if (!inv.confirmed) refuse("not_confirmed", "the person has not matched the 6 digits")
         if (view.members.any { it.key == a.n && it.kind == "device" }) return null
         val v = view
         val seats = rec.getJSONObject("seats")
@@ -1010,15 +1043,23 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
             val welcome = java.util.concurrent.CompletableFuture<Pair<String, JSONObject>>()
             // Sigmas by (sender, index), one each and a bounded number: a stranger can't grow them (review 12 L2).
             val sigmas = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+            // Once the welcome names the servers, a server's sigma always gets in and strangers' go (red team 23: a
+            // stranger filling the slots first would otherwise starve the join). Unchecked here; `finish` checks it all.
+            val namedRef = java.util.concurrent.atomic.AtomicReference<Set<String>?>(null)
+            fun purge() { val ns = namedRef.get() ?: return; for (k in sigmas.keys.toList()) { val f = k.substringBefore(':'); if (f != j.m && f !in ns) sigmas.remove(k) } }
             net.host(sk, pub) { from, body, _ ->
                 when (body.optString("type")) {
                     "repair_sigma" -> {
                         val key = "$from:${body.opt("index")}"
-                        if (from == j.m || sigmas.size < SIGMAS_MAX) sigmas.putIfAbsent(key, JSONObject(body.toString()).put("from", from))
+                        val ns = namedRef.get()
+                        if (from == j.m || (if (ns != null) from in ns else sigmas.size < SIGMAS_MAX)) sigmas.putIfAbsent(key, JSONObject(body.toString()).put("from", from))
                         JSONObject().put("type", "ack")
                     }
                     // Only the inviter's welcome counts: `n` is public, and a stranger's would abort the join (review 12 K1).
-                    "welcome" -> if (from == j.m) { welcome.complete(from to body); JSONObject().put("type", "ack") } else null
+                    "welcome" -> if (from == j.m) {
+                        namedRef.set(try { val rv = Event.of(body.getJSONObject("record")); val ch = body.getJSONArray("changes")
+                            Membership.compute(Record.check(rv, rv.pubkey), (0 until ch.length()).map { Event.of(ch.getJSONObject(it)) }).members.filter { it.kind == "server" }.map { it.key }.toSet() } catch (_: Exception) { null })
+                        purge(); welcome.complete(from to body); JSONObject().put("type", "ack") } else null
                     else -> null
                 }
             }
@@ -1137,6 +1178,25 @@ class Device(val sk: ByteArray, val recEv: Event, val rec: JSONObject, changes: 
         val f = JSONObject().put("kinds", JSONArray(listOf(k))).put("authors", JSONArray(listOf(g))).put("limit", 1); if (':' in a) f.put("#d", JSONArray(listOf(a.substringAfter(':'))))
         val (evs, answered, asked) = net.queryCounted(f, 3000)
         return Triple(evs.filter { it.pubkey == g && verifyEvent(it) }, answered, asked)
+    }
+    /** When each address was last asked of the relays (and at least one answered): `latest`'s cache age. */
+    private val latestChecked = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** The account's newest public replaceable event of `kind` (0, 3, 10000–19999; 30000–39999 with `d`), for the app's
+     *  own process, so it doesn't fetch what this device already holds: from the history (what it signed or fetched,
+     *  verified), asked of the relays first when the last ask is older than `maxAgeS` (negative: the cache alone).
+     *  {"event": … | null, "checked_at": when the relays last answered for it (0: never)}. Only what relays publish:
+     *  the event as signed, never a decryption. */
+    fun latest(kind: Int, d: String?, maxAgeS: Long, ask: (String) -> Triple<List<Event>, Int, Int> = ::queryAddr): JSONObject {
+        if (!Rules.replaceable(kind)) refuse("not_replaceable", "kind $kind")
+        if (kind in 30000..39999 && d == null) refuse("malformed", "an addressable kind needs its d")
+        val a = if (kind in 30000..39999) "$kind:$d" else "$kind"
+        val at = latestChecked[a] ?: 0L
+        if (maxAgeS >= 0 && now - at > maxAgeS) {
+            val (evs, answered, _) = try { ask(a) } catch (_: Exception) { Triple(emptyList<Event>(), 0, 1) }
+            for (e in evs) if (Kinds.addrOf(e.kind, e.tags) == a) history.take(e)
+            if (answered > 0) latestChecked[a] = now
+        }
+        return JSONObject().put("event", history.current(a)?.json() ?: JSONObject.NULL).put("checked_at", latestChecked[a] ?: 0L)
     }
     /** §1: the account's events this device signed or fetched, verified, kept on this device only. */
     val history = History { g }

@@ -8,7 +8,7 @@ export { useWasm } from '../src/wasm.ts';
 export { Inviter, Joiner, parseCode } from '../src/join.ts';
 // Joining (core §4.1): with another device's invite code, or by showing this device's own hello code as a QR.
 export { joinByCode, joinByShowing } from '../device/join.ts';
-// A site's requests through any door (Doors §1–§2): `dev.doors.request(entryId, method, params)`; the paper check is
+// A site's requests through any door (Doors §1–§2): `dev.doors.request(entryId, method, params, { origin })` (the asking page's origin, as the browser reports it); the paper check is
 // `dev.checkPaper(words)`.
 export { DoorRequests, type DoorCaller, type DoorAnswer } from '../device/doors-request.ts';
 export { backupWords, readBackupWords } from '../src/backup.ts';
