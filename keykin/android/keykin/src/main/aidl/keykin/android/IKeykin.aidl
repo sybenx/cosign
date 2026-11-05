@@ -53,6 +53,12 @@ interface IKeykin {
     /** The same key for an older data-key state, to read and re-seal a record sealed under it: {"key", "state"}, or
      *  {"error": "state_gone"} once this device can't tell that state's key. */
     String ownKeyAt(String slot, String label, String state);
+    /** F1 (core §6.7.6–§6.7.7): ask every seated server; the seats to move as [{"seat", "host", "why"}] ("quiet": 7 days
+     *  without an answer, "shutdown": a confirmed closing date within 30 days, "denied": a day of refusing the account
+     *  while others serve it), [] while every server counts as alive, or {"error"}. For a seat on that list, the app
+     *  picks a replacement from its server list and starts KeykinApprove action "move_seat" with extras keykin.seat,
+     *  keykin.front (the new server's front-door host key) and keykin.why. Call it about once a day. */
+    String checkServers(String slot);
     /** Name this phone (Account admin §2), as the person typed it; its model is read in the signer process. Every
      *  device's entry in the state's "devices" then carries "name", "model", "same_name" (two devices with one name:
      *  show a warning) and "last_seen" (unix s, this phone's own observation; null for itself or never). Names are

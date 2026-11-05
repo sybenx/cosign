@@ -51,6 +51,13 @@ class KeykinClient(private val context: Context) {
             .apply { key?.let { putExtra(KeykinApprove.KEY, it) }; id?.let { putExtra(KeykinApprove.ID, it) }; with?.let { putExtra(KeykinApprove.WITH, it) }
                 if (context !is android.app.Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
     }
+    /** The F1 card's move (`checkServers` named `seat`, for `why`): the library's screen moves it to the server behind
+     *  `front` (a front-door host key the app picked from its server list), approved with the lock or the paper. */
+    fun moveSeat(slot: String, seat: String, front: String, why: String) {
+        context.startActivity(Intent(context, KeykinApprove::class.java).putExtra(KeykinApprove.SLOT, slot).putExtra(KeykinApprove.ACTION, "move_seat")
+            .putExtra(KeykinApprove.SEAT, seat).putExtra(KeykinApprove.FRONT, front).putExtra(KeykinApprove.WHY, why)
+            .apply { if (context !is android.app.Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+    }
     /** The signer, once bound (a call made from a background thread may wait for it). */
     fun signer(timeoutS: Long = 10): IKeykin = bound.get(timeoutS, TimeUnit.SECONDS)
 }

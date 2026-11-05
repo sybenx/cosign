@@ -23,10 +23,10 @@ import org.json.JSONObject
 class KeykinApprove : FragmentActivity() {
     companion object {
         const val SLOT = "keykin.slot"; const val ACTION = "keykin.action"; const val KEY = "keykin.key"; const val ID = "keykin.id"; const val WITH = "keykin.with"
-        const val RELAYS = "keykin.relays"; const val FRONTS = "keykin.fronts"
+        const val RELAYS = "keykin.relays"; const val FRONTS = "keykin.fronts"; const val SEAT = "keykin.seat"; const val FRONT = "keykin.front"; const val WHY = "keykin.why"
         /** The actions: create an account (relays, fronts), report a device lost, check the paper, make a new paper,
          *  add the invited device, approve a pair request, remove a device with a pair. */
-        val ACTIONS = setOf("create", "report_lost", "paper_check", "new_paper", "add_invited", "pair_approve", "pair_remove")
+        val ACTIONS = setOf("create", "report_lost", "paper_check", "new_paper", "move_seat", "add_invited", "pair_approve", "pair_remove")
     }
     private lateinit var line: TextView
     private lateinit var col: LinearLayout
@@ -69,6 +69,16 @@ class KeykinApprove : FragmentActivity() {
                     done(true, if (ok) "this account's paper" else "not this account's paper") }.start() }
             }
             "new_paper" -> return newPaper(s, d)
+            // The F1 card (core §6.7.6): a seat whose server the device counts as dead, moved to the server the app
+            // picked from its server list (FRONT: that server's front-door host key; WHY: quiet, shutdown or denied).
+            "move_seat" -> {
+                val seat = intent.getStringExtra(SEAT).orEmpty(); val front = intent.getStringExtra(FRONT).orEmpty()
+                if (!seat.startsWith("server:") || !Regex("^[0-9a-f]{64}$").matches(front)) return done(false, "malformed")
+                val why = when (intent.getStringExtra(WHY)) { "shutdown" -> "is closing"; "denied" -> "no longer serves your account"; else -> "stopped answering" }
+                val host = d.view.seats[seat]?.let { k -> d.view.members.firstOrNull { it.key == k }?.host }
+                line.text = "A server (${host?.take(12) ?: seat}…) $why. Move its piece of your key to ${front.take(12)}…? Your paper stays the same."
+                moveSeat(s, d, seat, front)
+            }
             "add_invited" -> {
                 val list = try { d.inviteAddList() } catch (e: KeykinException) { return done(false, e.code) }
                 line.text = "Add the new device to your account? Only if you just typed the number it shows."
@@ -152,6 +162,28 @@ class KeykinApprove : FragmentActivity() {
             } }.start()
         }
         button("Cancel") { done(false, "cancelled") }
+    }
+    /** The F1 card's move: approved with the lock, or the paper's words on a lockless phone; the approval is asked for
+     *  once the new server has enrolled the account (the list names its member key). */
+    private fun moveSeat(s: KeykinSigner, d: Device, seat: String, front: String) {
+        val lock = s.lock()
+        val words = if (lock == null) { col.addView(TextView(this).apply { text = "This phone has no lock: approve with the paper's 24 words." }); wordsField() } else null
+        button("Move it") {
+            val w = words?.invoke()
+            if (lock == null && w?.size != 24) { line.text = "Type all 24 words of the paper first."; return@button }
+            col.removeAllViews(); col.addView(line); line.text = "Moving the piece… (this takes a few seconds)"
+            Thread { finishWith {
+                d.replaceSeat(seat, front) { list ->
+                    if (lock == null) { val sk = keykin.Backup.readBackupWords(w!!); try { d.approveWithPaper(list, sk) } finally { sk.fill(0) } }
+                    else {
+                        val f = java.util.concurrent.CompletableFuture<JSONObject?>()
+                        runOnUiThread { LockPrompt.approveList(this, d, lock, list, "Move a server's piece", "Replace a server") { a, _ -> f.complete(a) } }
+                        f.get(5, java.util.concurrent.TimeUnit.MINUTES) ?: throw KeykinException("not_approved")
+                    }
+                }
+                "moved $seat"
+            } }.start()
+        }
     }
     /** Show `words` (the new paper), and wait for the person to type them back: true once they match (3 tries), false
      *  on Cancel or after 30 minutes. Called off the UI thread. */

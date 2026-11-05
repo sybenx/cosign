@@ -256,6 +256,12 @@ class KeykinService : Service() {
             val (st, key) = d.ownKey(identity, label, state)
             JSONObject().put("key", keykin.hex(key)).put("state", st).toString().also { key.fill(0) }
         } catch (e: Exception) { errorJson(e) }
+        // F1 (core §6.7.6–§6.7.7): ask every seated server, and answer the card's seats [{seat, host, why}] (empty while
+        // all count as alive). The app then picks a replacement from its server list and starts KeykinApprove "move_seat".
+        override fun checkServers(slot: String): String = try {
+            val d = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
+            slow.submit<String> { JSONArray(d.checkServers()).toString() }.get(60, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.ExecutionException) { errorJson((e.cause as? Exception) ?: e) } catch (e: Exception) { errorJson(e) }
         override fun setLabel(slot: String, name: String): String = try {
             val d = onWork { Memberships.signer(slot).device } ?: throw KeykinException("no_membership")
             // The model is this phone's own, read here: a stolen phone can rename itself, never pass for another model.
