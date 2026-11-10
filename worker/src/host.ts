@@ -55,6 +55,8 @@ export class CosignHost extends DurableObject {
   private async load() {
     this.sql.exec('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS log (g TEXT, kind TEXT, v TEXT)');
+    // Without it every group's two reads below scanned the whole log, on every start of the object.
+    this.sql.exec('CREATE INDEX IF NOT EXISTS log_g_kind ON log (g, kind)');
     let host = await this.env.SECRETS.get('host', 'json');
     if (!host) {
       const sk = bytesToHex(randomBytes(32));
@@ -65,10 +67,14 @@ export class CosignHost extends DurableObject {
     const ids: string[] = JSON.parse(this.get('groups') ?? '[]');
     for (const id of ids) await this.open(id);
     for (const x of this.groups.values()) x.g.start();
+    console.log(`[host] started: ${this.groups.size} groups, ${this.rowsRead} rows read`);
     if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 5_000);
   }
 
-  private get(k: string): string | null { return (this.sql.exec('SELECT v FROM kv WHERE k = ?', k).toArray()[0] as any)?.v ?? null; }
+  /** Rows the reads at start cost (SQLite rows read are what the plan counts). */
+  private rowsRead = 0;
+  private read(query: string, ...args: unknown[]) { const c = this.sql.exec(query, ...args); const rows = c.toArray(); this.rowsRead += c.rowsRead; return rows; }
+  private get(k: string): string | null { return (this.read('SELECT v FROM kv WHERE k = ?', k)[0] as any)?.v ?? null; }
   private put(k: string, v: string) { this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', k, v); }
 
   /** A state, split: its secret part (this member's key and shares, any signer key) for KV, the rest for SQLite. */
@@ -85,7 +91,7 @@ export class CosignHost extends DurableObject {
     const secret = JSON.parse(secretJson);
     if (!plain || !secret) return;
     const state = { ...plain, self: { ...plain.self, sk: secret.sk, ...(secret.share ? { share: secret.share } : {}), ...(secret.shares ? { shares: secret.shares } : {}) }, signer: secret.signer };
-    const rows = (kind: string) => this.sql.exec('SELECT v FROM log WHERE g = ? AND kind = ? ORDER BY rowid', id, kind).toArray().map((r: any) => JSON.parse(r.v));
+    const rows = (kind: string) => this.read('SELECT v FROM log WHERE g = ? AND kind = ? ORDER BY rowid', id, kind).map((r: any) => JSON.parse(r.v));
     const loaded: Loaded = { state, archive: JSON.parse(this.get(`a:${id}`) ?? '{}'), history: rows('entry'), saved: rows('saved') };
     const x: Served = { id, g: null as any, secretJson };
     x.g = openGroup(loaded, this.io(x));
