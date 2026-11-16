@@ -32,6 +32,13 @@ import { relayTarget, pushTarget, pinnedAgent, looksPublic } from './egress.ts';
 import { mayJoin, followList, modeOf, modeName, announced, MODES, type Mode } from './join.ts';
 import { fetch as pinnedFetch } from 'undici';
 
+// nostr-tools sends REQ and CLOSE from an un-awaited async call (Subscription.fire and close in
+// abstract-relay.js), so a relay that drops between being opened and being asked rejects with
+// nobody to catch it, and Node exits on an unhandled rejection. On xumbrel that was 9,368
+// restarts by 2026-11-16, each one redialing every relay of every group: cosign-cf took ~8k
+// connections an hour and the Cloudflare account went over its 100k requests a day.
+process.on('unhandledRejection', err => console.error(`[unhandled] ${(err as any)?.message ?? err}`));
+
 const args = process.argv.slice(2);
 const opt = (name: string) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
 const root = opt('--root');
@@ -143,9 +150,12 @@ async function publishOut(relays: string[], e: Event): Promise<number> {
 async function query(relays: string[], filter: Filter, maxWait: number): Promise<Event[]> {
   const open = await openOut(relays, Math.min(maxWait, 5000));
   const got = new Map<string, Event>();
-  await Promise.all(open.map(x => new Promise<void>(resolve => {
-    const t = setTimeout(() => { sub.close(); resolve(); }, maxWait);
-    const sub = x.subscribe([filter], { onevent: (e: Event) => { got.set(e.id, e); }, oneose: () => { clearTimeout(t); sub.close(); resolve(); } });
+  // Only relays still up: one that closed since openOut is skipped, not asked (see unhandledRejection above).
+  await Promise.all(open.filter(x => x.connected).map(x => new Promise<void>(resolve => {
+    let sub: ReturnType<typeof x.subscribe> | undefined;
+    const done = () => { clearTimeout(t); try { sub?.close(); } catch { /* closed meanwhile */ } resolve(); };
+    const t = setTimeout(done, maxWait);
+    try { sub = x.subscribe([filter], { onevent: (e: Event) => { got.set(e.id, e); }, oneose: done }); } catch { done(); }
   })));
   for (const x of open) x.close();
   return [...got.values()];
