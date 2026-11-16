@@ -1845,13 +1845,19 @@ export function openGroup(loaded: Loaded, io: Io) {
   const pingAll = () => { for (const m of members) if (m.pk && m.idx !== me.idx && !isDevice(m)) send(m.pk, { type: 'ping', idx: me.idx, ts: io.now() }); };
 
   // Pick up what's already published under your key, so the first change is judged
-  // against something.
+  // against something. Asked of the group's relays and your own write relays (your kind
+  // 10002, once archived). A big public relay only as a seed, while nothing is archived yet
+  // and so your relays aren't known: it used to be asked every time, for every group, and a
+  // server restarting in a loop got this host's IP banned there (2026-11-16).
+  const ARCHIVE_SEED = 'wss://relay.damus.io';
+  const ARCHIVE_EVERY = 60 * 60_000;
+  const archiveRelays = () => [...new Set([...S.group.relays, ...ourWriteRelays(), ...(archive.all().length ? [] : [ARCHIVE_SEED])])];
   let archivedAt = 0;
   async function fetchArchive() {
     archivedAt = io.now();
     if (!groupX) return;
     try {
-      const events = await io.query([...S.group.relays, 'wss://relay.damus.io'], { authors: [groupX], kinds: [...ARCHIVED] }, 6000);
+      const events = await io.query(archiveRelays(), { authors: [groupX], kinds: [...ARCHIVED] }, 6000);
       let n = 0;
       for (const e of events) if (archive.record(e)) n++;
       if (n) note(`archived ${n} version${n === 1 ? '' : 's'} already on relays`);
@@ -1868,12 +1874,13 @@ export function openGroup(loaded: Loaded, io: Io) {
     // Sites that came by nostrconnect may be listening on relays of their own.
     void io.listen((S.sites as Site[]).filter(s => !s.revoked).flatMap(s => s.relays ?? []), 0);
     setTimeout(pingAll, 2000);
-    setTimeout(() => void fetchArchive(), 3000);
+    // Spread over the first minute: a host starts every group it serves at once, and each fetch opens its own connections.
+    setTimeout(() => void fetchArchive(), 3000 + Math.floor(Math.random() * 57_000));
     setTimeout(syncTo, 4000);
     note('started');
   }
 
-  /** Every 10 s, from the host: pings every minute, forgetting old answers, and the archive every 15 min. */
+  /** Every 10 s, from the host: pings every minute, forgetting old answers, and the archive every hour. */
   // Pings only order who is asked first (a partner that's down times out and the next is asked), and every
   // member pinging every other every 10 s, in every group, was most of a shared relay's traffic.
   let pingedAt = 0;
@@ -1883,7 +1890,7 @@ export function openGroup(loaded: Loaded, io: Io) {
     dropStalePending();
     for (const [k, v] of given) if (io.now() - v.at > 120_000) given.delete(k);
     for (const [k, v] of answers) if (io.now() - v.at > 180_000) answers.delete(k);
-    if (io.now() - archivedAt > 15 * 60_000) void fetchArchive();
+    if (archivedAt && io.now() - archivedAt > ARCHIVE_EVERY) void fetchArchive();
   }
 
   // --- Status page -------------------------------------------------------------
